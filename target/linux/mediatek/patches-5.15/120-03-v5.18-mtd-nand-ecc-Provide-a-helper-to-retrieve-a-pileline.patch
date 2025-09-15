@@ -1,0 +1,73 @@
+From 784866bc4f9f25e0494b77750f95af2a2619e498 Mon Sep 17 00:00:00 2001
+From: Miquel Raynal <miquel.raynal@bootlin.com>
+Date: Thu, 16 Dec 2021 12:16:41 +0100
+Subject: [PATCH 03/15] mtd: nand: ecc: Provide a helper to retrieve a
+ pilelined engine device
+
+In a pipelined engine situation, we might either have the host which
+internally has support for error correction, or have it using an
+external hardware block for this purpose. In the former case, the host
+is also the ECC engine. In the latter case, it is not. In order to get
+the right pointers on the right devices (for example: in order to devm_*
+allocate variables), let's introduce this helper which can safely be
+called by pipelined ECC engines in order to retrieve the right device
+structure.
+
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Link: https://lore.kernel.org/linux-mtd/20211216111654.238086-16-miquel.raynal@bootlin.com
+(cherry picked from commit 5145abeb0649acf810a32e63bd762e617a9b3309)
+---
+ drivers/mtd/nand/ecc.c   | 31 +++++++++++++++++++++++++++++++
+ include/linux/mtd/nand.h |  1 +
+ 2 files changed, 32 insertions(+)
+
+--- a/drivers/mtd/nand/ecc.c
++++ b/drivers/mtd/nand/ecc.c
+@@ -699,6 +699,37 @@ void nand_ecc_put_on_host_hw_engine(stru
+ }
+ EXPORT_SYMBOL(nand_ecc_put_on_host_hw_engine);
+ 
++/*
++ * In the case of a pipelined engine, the device registering the ECC
++ * engine is not necessarily the ECC engine itself but may be a host controller.
++ * It is then useful to provide a helper to retrieve the right device object
++ * which actually represents the ECC engine.
++ */
++struct device *nand_ecc_get_engine_dev(struct device *host)
++{
++	struct platform_device *ecc_pdev;
++	struct device_node *np;
++
++	/*
++	 * If the device node contains this property, it means we need to follow
++	 * it in order to get the right ECC engine device we are looking for.
++	 */
++	np = of_parse_phandle(host->of_node, "nand-ecc-engine", 0);
++	if (!np)
++		return host;
++
++	ecc_pdev = of_find_device_by_node(np);
++	if (!ecc_pdev) {
++		of_node_put(np);
++		return NULL;
++	}
++
++	platform_device_put(ecc_pdev);
++	of_node_put(np);
++
++	return &ecc_pdev->dev;
++}
++
+ MODULE_LICENSE("GPL");
+ MODULE_AUTHOR("Miquel Raynal <miquel.raynal@bootlin.com>");
+ MODULE_DESCRIPTION("Generic ECC engine");
+--- a/include/linux/mtd/nand.h
++++ b/include/linux/mtd/nand.h
+@@ -309,6 +309,7 @@ struct nand_ecc_engine *nand_ecc_get_sw_
+ struct nand_ecc_engine *nand_ecc_get_on_die_hw_engine(struct nand_device *nand);
+ struct nand_ecc_engine *nand_ecc_get_on_host_hw_engine(struct nand_device *nand);
+ void nand_ecc_put_on_host_hw_engine(struct nand_device *nand);
++struct device *nand_ecc_get_engine_dev(struct device *host);
+ 
+ #if IS_ENABLED(CONFIG_MTD_NAND_ECC_SW_HAMMING)
+ struct nand_ecc_engine *nand_ecc_sw_hamming_get_engine(void);

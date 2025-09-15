@@ -1,0 +1,113 @@
+#!/bin/sh
+# Copyright (C) 2014 OpenWrt.org
+
+
+do_snapshot_unpack() {
+	echo "- snapshot -"
+	mkdir /tmp/snapshot
+	cd /tmp/snapshot
+	snapshot_tool read
+	block=`ls block*.tar.gz 2> /dev/null`
+	[ -z "$block" ] || for a in $block; do
+		tar xzf $a -C /
+		rm -f $a
+	done
+}
+
+do_config_unpack() {
+	echo "- config -"
+	snapshot_tool config_read
+	[ -f /tmp/config.tar.gz ] && {
+		tar xzf /tmp/config.tar.gz -C /
+		rm -f /tmp/config.tar.gz
+	}
+}
+
+do_snapshot_push() {
+	cd /volatile/upper
+	tar czf /tmp/snapshot.tar.gz *
+	snapshot_tool write
+	reboot
+}
+
+do_config_push() {
+	cd /volatile/upper
+	tar czf /tmp/config.tar.gz *
+	snapshot_tool config_write
+}
+
+do_snapshot_upgrade() {
+	opkg update
+	[ $? -eq 0 ] || exit 1
+
+	opkg list-upgradable
+	[ $? -eq 0 ] || exit 2
+
+	UPDATES=`opkg list-upgradable | cut -d" " -f1`
+	[ -z "${UPDATES}" ] && exit 0
+
+	opkg upgrade ${UPDATES}
+	[ $? -eq 0 ] || exit 3
+
+	do_snapshot_push
+	sleep 5
+	reboot
+	sleep 10
+}
+
+do_convert_jffs2() {
+	snapshot_tool write
+	sleep 2
+	reboot -f
+}
+
+do_convert() {
+	. /lib/functions.sh
+	. /lib/upgrade/common.sh
+
+	cd /overlay/upper
+	tar czf /tmp/snapshot.tar.gz *
+
+	install_bin /sbin/upgraded
+	ubus call system sysupgrade "{
+		\"prefix\": \"$RAM_ROOT\",
+		\"path\": \"\",
+		\"command\": \". /sbin/snapshot; do_convert_jffs2\"
+	}"
+}
+
+[ -n "$(cat /proc/mounts|grep /overlay|grep jffs2)" ] && {
+case $1 in
+convert)
+	do_convert
+	;;
+esac
+}
+
+[ -d /volatile/upper ] && {
+case $1 in
+push)
+	do_snapshot_push
+	;;
+config)
+	do_config_push
+	;;
+upgrade)
+	do_snapshot_upgrade
+	;;
+info)
+	snapshot_tool info
+	;;
+esac
+}
+
+[ "$SNAPSHOT" = "magic" ] && {
+case $1 in
+unpack)
+	do_snapshot_unpack
+	;;
+config_unpack)
+	do_config_unpack
+	;;
+esac
+}

@@ -1,0 +1,344 @@
+--- /dev/null
++++ b/board/bt/bthomehubv5a/Makefile
+@@ -0,0 +1,27 @@
++#
++# Copyright (C) 2000-2011 Wolfgang Denk, DENX Software Engineering, wd@denx.de
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++include $(TOPDIR)/config.mk
++
++LIB	= $(obj)lib$(BOARD).o
++
++COBJS	= $(BOARD).o
++
++SRCS	:= $(SOBJS:.o=.S) $(COBJS:.o=.c)
++OBJS	:= $(addprefix $(obj),$(COBJS))
++SOBJS	:= $(addprefix $(obj),$(SOBJS))
++
++$(LIB):	$(obj).depend $(OBJS) $(SOBJS)
++	$(call cmd_link_o_target, $(OBJS) $(SOBJS))
++
++#########################################################################
++
++# defines $(obj).depend target
++include $(SRCTREE)/rules.mk
++
++sinclude $(obj).depend
++
++#########################################################################
+--- /dev/null
++++ b/board/bt/bthomehubv5a/bthomehubv5a.c
+@@ -0,0 +1,125 @@
++/*
++ * Copyright (C) 2015 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
++ * Based on p2812hnufx.c: (C) 2013 Luka Perkov <luka@openwrt.org>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#include <common.h>
++#include <asm/gpio.h>
++#include <asm/lantiq/eth.h>
++#include <asm/lantiq/chipid.h>
++#include <asm/lantiq/cpu.h>
++#include <asm/arch/gphy.h>
++
++#if defined(CONFIG_SPL_BUILD)
++#define do_gpio_init	1
++#define do_pll_init	1
++#define do_dcdc_init	0
++#elif defined(CONFIG_SYS_BOOT_RAM)
++#define do_gpio_init	1
++#define do_pll_init	0
++#define do_dcdc_init	1
++#else
++#define do_gpio_init	0
++#define do_pll_init	0
++#define do_dcdc_init	1
++#endif
++
++#define GPIO_POWER_GREEN	14
++#define GPIO_POWER_RED	12
++
++static void gpio_init(void)
++{
++	/* EBU.FL_CS1 as output for NAND CE */
++	gpio_set_altfunc(23, GPIO_ALTSEL_SET, GPIO_ALTSEL_CLR, GPIO_DIR_OUT);
++	/* EBU.FL_A23 as output for NAND CLE */
++	gpio_set_altfunc(24, GPIO_ALTSEL_SET, GPIO_ALTSEL_CLR, GPIO_DIR_OUT);
++	/* EBU.FL_A24 as output for NAND ALE */
++	gpio_set_altfunc(13, GPIO_ALTSEL_SET, GPIO_ALTSEL_CLR, GPIO_DIR_OUT);
++	/* GPIO 3.0 as input for NAND Ready Busy */
++	gpio_set_altfunc(48, GPIO_ALTSEL_SET, GPIO_ALTSEL_CLR, GPIO_DIR_IN);
++	/* GPIO 3.1 as output for NAND Read */
++	gpio_set_altfunc(49, GPIO_ALTSEL_SET, GPIO_ALTSEL_CLR, GPIO_DIR_OUT);
++
++	/* Turn on the green power LED */
++	gpio_direction_output(GPIO_POWER_GREEN, 0);
++
++	/* Turn off the red power LED */
++	gpio_direction_output(GPIO_POWER_RED, 1);
++}
++
++int board_early_init_f(void)
++{
++	if (do_gpio_init)
++		gpio_init();
++
++	if (do_pll_init)
++		ltq_pll_init();
++
++	if (do_dcdc_init)
++		ltq_dcdc_init(0x7F);
++
++	return 0;
++}
++
++int checkboard(void)
++{
++	puts("Board: " CONFIG_BOARD_NAME "\n");
++	ltq_chip_print_info();
++
++	return 0;
++}
++
++void show_boot_progress(int arg)
++{
++	if (!do_gpio_init)
++		return 0;
++
++	if (arg >= 0) {
++		/* Success - turn off the red power LED and turn on the green power LED */
++		gpio_set_value(GPIO_POWER_RED, 1);
++		gpio_set_value(GPIO_POWER_GREEN, 0);
++	} else {
++		/* Failure - turn off green power LED and turn on red power LED */
++		gpio_set_value(GPIO_POWER_GREEN, 1);
++		gpio_set_value(GPIO_POWER_RED, 0);
++	}
++
++	return 0;
++}
++
++static const struct ltq_eth_port_config eth_port_config[] = {
++	/* GMAC0: external Lantiq PEF7071 10/100/1000 PHY for LAN port 3 */
++	{ 0, 0x0, LTQ_ETH_PORT_PHY, PHY_INTERFACE_MODE_RGMII },
++	/* GMAC1: external Lantiq PEF7071 10/100/1000 PHY for LAN port 4 */
++	{ 1, 0x1, LTQ_ETH_PORT_PHY, PHY_INTERFACE_MODE_RGMII },
++	/* GMAC2: internal GPHY0 with 10/100/1000 firmware for LAN port 2 */
++	{ 2, 0x11, LTQ_ETH_PORT_PHY, PHY_INTERFACE_MODE_GMII },
++	/* GMAC3: unused */
++	{ 3, 0x0, LTQ_ETH_PORT_NONE, PHY_INTERFACE_MODE_NONE },
++	/* GMAC4: internal GPHY1 with 10/100/1000 firmware for LAN port 1 */
++	{ 4, 0x13, LTQ_ETH_PORT_PHY, PHY_INTERFACE_MODE_GMII },
++	/* GMAC5: external Lantiq PEF7071 10/100/1000 PHY for WANoE port */
++	{ 5, 0x5, LTQ_ETH_PORT_PHY, PHY_INTERFACE_MODE_RGMII },
++};
++
++static const struct ltq_eth_board_config eth_board_config = {
++	.ports = eth_port_config,
++	.num_ports = ARRAY_SIZE(eth_port_config),
++};
++
++int board_eth_init(bd_t * bis)
++{
++	const enum ltq_gphy_clk clk = LTQ_GPHY_CLK_25MHZ_PLL0;
++	const ulong fw_addr = 0x80FE0000;
++
++	ltq_gphy_phy11g_a2x_load(fw_addr);
++
++	ltq_cgu_gphy_clk_src(clk);
++
++	ltq_rcu_gphy_boot(0, fw_addr);
++	ltq_rcu_gphy_boot(1, fw_addr);
++
++	return ltq_eth_initialize(&eth_board_config);
++}
+--- /dev/null
++++ b/board/bt/bthomehubv5a/config.mk
+@@ -0,0 +1,7 @@
++#
++# Copyright (C) 2012-2013 Daniel Schwierzeck, daniel.schwierzeck@gmail.com
++#
++# SPDX-License-Identifier:	GPL-2.0+
++#
++
++PLATFORM_CPPFLAGS += -I$(TOPDIR)/board/$(BOARDDIR)
+--- /dev/null
++++ b/board/bt/bthomehubv5a/ddr_settings.h
+@@ -0,0 +1,70 @@
++/*
++ * Copyright (C) 2015 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
++ *
++ * The values have been taken from the HH5A GPL source.
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#define	MC_CCR00_VALUE	0x101
++#define	MC_CCR01_VALUE	0x1000101
++#define	MC_CCR02_VALUE	0x1010000
++#define	MC_CCR03_VALUE	0x101
++#define	MC_CCR04_VALUE	0x1000000
++#define	MC_CCR05_VALUE	0x1000101
++#define	MC_CCR06_VALUE	0x1000100
++#define	MC_CCR07_VALUE	0x1010000
++#define	MC_CCR08_VALUE	0x1000101
++#define	MC_CCR09_VALUE	0x0
++#define	MC_CCR10_VALUE	0x2000100
++#define	MC_CCR11_VALUE	0x2000401
++#define	MC_CCR12_VALUE	0x30000
++#define	MC_CCR13_VALUE	0x202
++#define	MC_CCR14_VALUE	0x7080A0F
++#define	MC_CCR15_VALUE	0x2040F
++#define	MC_CCR16_VALUE	0x40000
++#define	MC_CCR17_VALUE	0x70102
++#define	MC_CCR18_VALUE	0x4020002
++#define	MC_CCR19_VALUE	0x30302
++#define	MC_CCR20_VALUE	0x8000700
++#define	MC_CCR21_VALUE	0x40F020A
++#define	MC_CCR22_VALUE	0x0
++#define	MC_CCR23_VALUE	0xC020000
++#define	MC_CCR24_VALUE	0x4401B04
++#define	MC_CCR25_VALUE	0x0
++#define	MC_CCR26_VALUE	0x0
++#define	MC_CCR27_VALUE	0x6420000
++#define	MC_CCR28_VALUE	0x0
++#define	MC_CCR29_VALUE	0x0
++#define	MC_CCR30_VALUE	0x798
++#define	MC_CCR31_VALUE	0x0
++#define	MC_CCR32_VALUE	0x0
++#define	MC_CCR33_VALUE	0x650000
++#define	MC_CCR34_VALUE	0x200C8
++#define	MC_CCR35_VALUE	0x1D445D
++#define	MC_CCR36_VALUE	0xC8
++#define	MC_CCR37_VALUE	0xC351
++#define	MC_CCR38_VALUE	0x0
++#define	MC_CCR39_VALUE	0x141F04
++#define	MC_CCR40_VALUE	0x142704
++#define	MC_CCR41_VALUE	0x141b42
++#define	MC_CCR42_VALUE	0x141b42
++#define	MC_CCR43_VALUE	0x566504
++#define	MC_CCR44_VALUE	0x566504
++#define	MC_CCR45_VALUE	0x565F17
++#define	MC_CCR46_VALUE	0x565F17
++#define	MC_CCR47_VALUE	0x0
++#define	MC_CCR48_VALUE	0x0
++#define	MC_CCR49_VALUE	0x0
++#define	MC_CCR50_VALUE	0x0
++#define	MC_CCR51_VALUE	0x0
++#define	MC_CCR52_VALUE	0x133
++#define	MC_CCR53_VALUE	0xF3014B27
++#define	MC_CCR54_VALUE	0xF3014B27
++#define	MC_CCR55_VALUE	0xF3014B27
++#define	MC_CCR56_VALUE	0xF3014B27
++#define	MC_CCR57_VALUE	0x7800301
++#define	MC_CCR58_VALUE	0x7800301
++#define	MC_CCR59_VALUE	0x7800301
++#define	MC_CCR60_VALUE	0x7800301
++#define	MC_CCR61_VALUE	0x4
+--- a/boards.cfg
++++ b/boards.cfg
+@@ -546,6 +546,8 @@ Active  mips        mips32         vrx20
+ Active  mips        mips32         vrx200      avm             fb3370              fb3370_eva                           fb3370:SYS_BOOT_EVA                                                                                                               Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+ Active  mips        mips32         vrx200      avm             fb3370              fb3370_ram                           fb3370:SYS_BOOT_RAM                                                                                                               Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+ Active  mips        mips32         vrx200      avm             fb3370              fb3370_sfspl                         fb3370:SYS_BOOT_SFSPL                                                                                                             Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
++Active  mips        mips32         vrx200      bt              bthomehubv5a        bthomehubv5a_nandspl                 bthomehubv5a:SYS_BOOT_NANDSPL                                                                                                     Martin Blumenstingl <martin.blumenstingl@googlemail.com>
++Active  mips        mips32         vrx200      bt              bthomehubv5a        bthomehubv5a_ram                     bthomehubv5a:SYS_BOOT_RAM                                                                                                         Martin Blumenstingl <martin.blumenstingl@googlemail.com>
+ Active  mips        mips32         vrx200      lantiq          easy80920           easy80920_nandspl                    easy80920:SYS_BOOT_NANDSPL                                                                                                        Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+ Active  mips        mips32         vrx200      lantiq          easy80920           easy80920_nor                        easy80920:SYS_BOOT_NOR                                                                                                            Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+ Active  mips        mips32         vrx200      lantiq          easy80920           easy80920_norspl                     easy80920:SYS_BOOT_NORSPL                                                                                                         Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+--- /dev/null
++++ b/include/configs/bthomehubv5a.h
+@@ -0,0 +1,89 @@
++/*
++ * Copyright (C) 2016 Mathias Kresin <openwrt@kresin.me>
++ * Copyright (C) 2015 Martin Blumenstingl <martin.blumenstingl@googlemail.com>
++ * Based on p2812hnufx.h: (C) 2013 Luka Perkov <luka@openwrt.org>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++
++#ifndef __CONFIG_H
++#define __CONFIG_H
++
++#define CONFIG_MACH_TYPE	"BTHOMEHUBV5A"
++#define CONFIG_IDENT_STRING	" "CONFIG_MACH_TYPE
++#define CONFIG_BOARD_NAME	"BT Home Hub 5A"
++
++/* Configure SoC */
++#define CONFIG_LTQ_SUPPORT_UART			/* Enable ASC and UART */
++
++#define CONFIG_LTQ_SUPPORT_ETHERNET		/* Enable ethernet */
++
++#define CONFIG_LTQ_SUPPORT_NAND_FLASH		/* Have a ML01G100BHI00 NAND flash */
++#define CONFIG_SYS_NAND_USE_FLASH_BBT
++
++#define CONFIG_LTQ_SUPPORT_SPL_NAND_FLASH	/* Build NAND flash SPL */
++#define CONFIG_SYS_NAND_PAGE_COUNT	64
++#define CONFIG_SYS_NAND_PAGE_SIZE	2048
++#define CONFIG_SYS_NAND_OOBSIZE		64
++#define CONFIG_SYS_NAND_BLOCK_SIZE	(128 * 1024)
++#define CONFIG_SYS_NAND_5_ADDR_CYCLE
++
++#define CONFIG_LTQ_SPL_COMP_LZO			/* Compress SPL with LZO */
++#define CONFIG_LTQ_SPL_CONSOLE			/* Enable SPL console */
++#define CONFIG_LTQ_SPL_MC_TUNE
++
++#define CONFIG_SYS_BOOTM_LEN		0x1000000	/* 16 MB */
++
++/* MTD devices */
++#define CONFIG_MTD_PARTITIONS
++#define CONFIG_MTD_DEVICE
++#define CONFIG_CMD_MTDPARTS
++#define MTDIDS_DEFAULT			"nand0=nand-xway"
++#define MTDPARTS_DEFAULT		"mtdparts=nand-xway:0x07e80000@0x100000(UBI)"
++
++/* UBI */
++#define CONFIG_RBTREE
++#define CONFIG_CMD_UBI
++#define CONFIG_CMD_UBIFS
++
++/* Environment */
++#if defined(CONFIG_SYS_BOOT_NANDSPL)
++#define CONFIG_SPL_TPL_OFFS		0x800
++#define CONFIG_SPL_TPL_SIZE		0x5000
++#define CONFIG_SPL_MC_TUNE_OFFS		0x5800
++#define CONFIG_SPL_U_BOOT_OFFS		0x6000
++#define CONFIG_SPL_U_BOOT_SIZE		0x3a000
++
++#define CONFIG_ENV_IS_IN_NAND
++#define CONFIG_ENV_OVERWRITE
++#define CONFIG_ENV_OFFSET		(640 * 1024)
++#define CONFIG_ENV_SECT_SIZE		(128 * 1024)
++#else
++#define CONFIG_ENV_IS_NOWHERE
++#endif
++
++#define CONFIG_ENV_SIZE			(128 * 1024)
++
++#define CONFIG_LOADADDR			CONFIG_SYS_LOAD_ADDR
++
++/* Console */
++#define CONFIG_LTQ_ADVANCED_CONSOLE
++#define CONFIG_BAUDRATE			115200
++#define CONFIG_CONSOLE_ASC		1
++#define CONFIG_CONSOLE_DEV		"ttyLTQ1"
++
++/* Pull in default board configs for Lantiq XWAY VRX200 */
++#include <asm/lantiq/config.h>
++#include <asm/arch/config.h>
++
++/* Pull in default OpenWrt configs for Lantiq SoC */
++#include "openwrt-lantiq-common.h"
++
++#undef CONFIG_BOOTCOMMAND
++#define CONFIG_BOOTCOMMAND \
++	"mtdparts default; ubi part UBI; ubi read ${loadaddr} kernel; bootm ${loadaddr}"
++
++#define CONFIG_EXTRA_ENV_SETTINGS	\
++	CONFIG_ENV_LANTIQ_DEFAULTS
++
++#endif /* __CONFIG_H */

@@ -1,0 +1,116 @@
+From 31eb6b4386ad91930417e3f5c8157a4b5e31cbd5 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Wed, 2 Feb 2022 01:03:27 +0100
+Subject: [PATCH 08/16] net: dsa: tag_qca: add support for handling mgmt and
+ MIB Ethernet packet
+
+Add connect/disconnect helper to assign private struct to the DSA switch.
+Add support for Ethernet mgmt and MIB if the DSA driver provide an handler
+to correctly parse and elaborate the data.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ include/linux/dsa/tag_qca.h |  7 +++++++
+ net/dsa/tag_qca.c           | 39 ++++++++++++++++++++++++++++++++++---
+ 2 files changed, 43 insertions(+), 3 deletions(-)
+
+--- a/include/linux/dsa/tag_qca.h
++++ b/include/linux/dsa/tag_qca.h
+@@ -72,4 +72,11 @@ struct mib_ethhdr {
+ 	__be16 hdr;		/* qca hdr */
+ } __packed;
+ 
++struct qca_tagger_data {
++	void (*rw_reg_ack_handler)(struct dsa_switch *ds,
++				   struct sk_buff *skb);
++	void (*mib_autocast_handler)(struct dsa_switch *ds,
++				     struct sk_buff *skb);
++};
++
+ #endif /* __TAG_QCA_H */
+--- a/net/dsa/tag_qca.c
++++ b/net/dsa/tag_qca.c
+@@ -5,6 +5,7 @@
+ 
+ #include <linux/etherdevice.h>
+ #include <linux/bitfield.h>
++#include <net/dsa.h>
+ #include <linux/dsa/tag_qca.h>
+ 
+ #include "dsa_priv.h"
+@@ -32,6 +33,9 @@ static struct sk_buff *qca_tag_xmit(stru
+ 
+ static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev)
+ {
++	struct qca_tagger_data *tagger_data;
++	struct dsa_port *dp = dev->dsa_ptr;
++	struct dsa_switch *ds = dp->ds;
+ 	u8 ver, pk_type;
+ 	__be16 *phdr;
+ 	int port;
+@@ -39,6 +43,8 @@ static struct sk_buff *qca_tag_rcv(struc
+ 
+ 	BUILD_BUG_ON(sizeof(struct qca_mgmt_ethhdr) != QCA_HDR_MGMT_HEADER_LEN + QCA_HDR_LEN);
+ 
++	tagger_data = ds->tagger_data;
++
+ 	if (unlikely(!pskb_may_pull(skb, QCA_HDR_LEN)))
+ 		return NULL;
+ 
+@@ -53,13 +59,19 @@ static struct sk_buff *qca_tag_rcv(struc
+ 	/* Get pk type */
+ 	pk_type = FIELD_GET(QCA_HDR_RECV_TYPE, hdr);
+ 
+-	/* Ethernet MDIO read/write packet */
+-	if (pk_type == QCA_HDR_RECV_TYPE_RW_REG_ACK)
++	/* Ethernet mgmt read/write packet */
++	if (pk_type == QCA_HDR_RECV_TYPE_RW_REG_ACK) {
++		if (likely(tagger_data->rw_reg_ack_handler))
++			tagger_data->rw_reg_ack_handler(ds, skb);
+ 		return NULL;
++	}
+ 
+ 	/* Ethernet MIB counter packet */
+-	if (pk_type == QCA_HDR_RECV_TYPE_MIB)
++	if (pk_type == QCA_HDR_RECV_TYPE_MIB) {
++		if (likely(tagger_data->mib_autocast_handler))
++			tagger_data->mib_autocast_handler(ds, skb);
+ 		return NULL;
++	}
+ 
+ 	/* Remove QCA tag and recalculate checksum */
+ 	skb_pull_rcsum(skb, QCA_HDR_LEN);
+@@ -75,9 +87,30 @@ static struct sk_buff *qca_tag_rcv(struc
+ 	return skb;
+ }
+ 
++static int qca_tag_connect(struct dsa_switch *ds)
++{
++	struct qca_tagger_data *tagger_data;
++
++	tagger_data = kzalloc(sizeof(*tagger_data), GFP_KERNEL);
++	if (!tagger_data)
++		return -ENOMEM;
++
++	ds->tagger_data = tagger_data;
++
++	return 0;
++}
++
++static void qca_tag_disconnect(struct dsa_switch *ds)
++{
++	kfree(ds->tagger_data);
++	ds->tagger_data = NULL;
++}
++
+ static const struct dsa_device_ops qca_netdev_ops = {
+ 	.name	= "qca",
+ 	.proto	= DSA_TAG_PROTO_QCA,
++	.connect = qca_tag_connect,
++	.disconnect = qca_tag_disconnect,
+ 	.xmit	= qca_tag_xmit,
+ 	.rcv	= qca_tag_rcv,
+ 	.needed_headroom = QCA_HDR_LEN,

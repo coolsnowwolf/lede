@@ -1,0 +1,321 @@
+From 6c66dff196cbba8515380110dd3599cde31dd896 Mon Sep 17 00:00:00 2001
+From: Ziyang Huang <hzyitc@outlook.com>
+Date: Sun, 8 Sep 2024 16:40:12 +0800
+Subject: [PATCH 1/2] rproc: qcom_q6v5_mpd: split q6_wcss to rootpd and
+ userpd
+
+Split the q6_wcss structure and create a separate userpd struct to clearly
+differentiate between the process to bring up the QDSP6 processor vs 
+process(es) to bring up the Wifi radio(s) (WCSS) for better readability.
+
+Signed-off-by: Ziyang Huang <hzyitc@outlook.com>
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+ drivers/remoteproc/qcom_q6v5_mpd.c | 126 +++++++++++++----------------
+ 1 file changed, 56 insertions(+), 70 deletions(-)
+
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -44,10 +44,6 @@
+ #define VERSION2			2
+ 
+ static LIST_HEAD(upd_rproc_list);
+-enum {
+-	Q6_IPQ,
+-	WCSS_IPQ,
+-};
+ 
+ /**
+  * struct userpd_boot_info_header - header of user pd bootinfo
+@@ -82,10 +78,15 @@ struct q6_wcss {
+ 	phys_addr_t mem_reloc;
+ 	void *mem_region;
+ 	size_t mem_size;
+-	u8 pd_asid;
+ 	const struct wcss_data *desc;
+ 	const char **firmware;
+-	u32 version;
++};
++
++struct userpd {
++	u8 pd_asid;
++	struct device *dev;
++	struct qcom_rproc_ssr ssr_subdev;
++	struct qcom_q6v5 q6;
+ };
+ 
+ struct wcss_data {
+@@ -101,8 +102,8 @@ struct wcss_data {
+  */
+ static u8 qcom_get_pd_asid(struct rproc *rproc)
+ {
+-	struct q6_wcss *wcss = rproc->priv;
+-	u8 bit = wcss->q6.spawn_bit;
++	struct userpd *upd = rproc->priv;
++	u8 bit = upd->q6.spawn_bit;
+ 
+ 	return bit / 8;
+ }
+@@ -131,37 +132,37 @@ static int q6_wcss_start(struct rproc *r
+ static int q6_wcss_spawn_pd(struct rproc *rproc)
+ {
+ 	int ret;
+-	struct q6_wcss *wcss = rproc->priv;
++	struct userpd *upd = rproc->priv;
+ 
+-	ret = qcom_q6v5_request_spawn(&wcss->q6);
++	ret = qcom_q6v5_request_spawn(&upd->q6);
+ 	if (ret == -ETIMEDOUT) {
+-		dev_err(wcss->dev, "%s spawn timedout\n", rproc->name);
++		dev_err(upd->dev, "%s spawn timedout\n", rproc->name);
+ 		return ret;
+ 	}
+ 
+-	ret = qcom_q6v5_wait_for_start(&wcss->q6, msecs_to_jiffies(10000));
++	ret = qcom_q6v5_wait_for_start(&upd->q6, msecs_to_jiffies(10000));
+ 	if (ret == -ETIMEDOUT) {
+-		dev_err(wcss->dev, "%s start timedout\n", rproc->name);
+-		wcss->q6.running = false;
++		dev_err(upd->dev, "%s start timedout\n", rproc->name);
++		upd->q6.running = false;
+ 		return ret;
+ 	}
+-	wcss->q6.running = true;
++	upd->q6.running = true;
+ 	return ret;
+ }
+ 
+ static int wcss_pd_start(struct rproc *rproc)
+ {
+-	struct q6_wcss *wcss = rproc->priv;
+-	u32 pasid = (wcss->pd_asid << 8) | UPD_SWID;
++	struct userpd *upd = rproc->priv;
++	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+ 	ret = qcom_scm_msa_lock(pasid);
+ 	if (ret) {
+-		dev_err(wcss->dev, "failed to power up pd\n");
++		dev_err(upd->dev, "failed to power up pd\n");
+ 		return ret;
+ 	}
+ 
+-	if (wcss->q6.spawn_bit) {
++	if (upd->q6.spawn_bit) {
+ 		ret = q6_wcss_spawn_pd(rproc);
+ 		if (ret)
+ 			return ret;
+@@ -213,22 +214,22 @@ static int q6_wcss_stop(struct rproc *rp
+  */
+ static int wcss_pd_stop(struct rproc *rproc)
+ {
+-	struct q6_wcss *wcss = rproc->priv;
+-	struct rproc *rpd_rproc = dev_get_drvdata(wcss->dev->parent);
+-	u32 pasid = (wcss->pd_asid << 8) | UPD_SWID;
++	struct userpd *upd = rproc->priv;
++	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
++	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+-	if (rproc->state != RPROC_CRASHED && wcss->q6.stop_bit) {
+-		ret = qcom_q6v5_request_stop(&wcss->q6, NULL);
++	if (rproc->state != RPROC_CRASHED && upd->q6.stop_bit) {
++		ret = qcom_q6v5_request_stop(&upd->q6, NULL);
+ 		if (ret) {
+-			dev_err(&rproc->dev, "pd not stopped\n");
++			dev_err(upd->dev, "pd not stopped\n");
+ 			return ret;
+ 		}
+ 	}
+ 
+ 	ret = qcom_scm_msa_unlock(pasid);
+ 	if (ret) {
+-		dev_err(wcss->dev, "failed to power down pd\n");
++		dev_err(upd->dev, "failed to power down pd\n");
+ 		return ret;
+ 	}
+ 
+@@ -273,7 +274,8 @@ static int share_upd_bootinfo_to_q6(stru
+ 	size_t size;
+ 	u16 cnt = 0, version;
+ 	void *ptr;
+-	struct q6_wcss *wcss = rproc->priv, *upd_wcss;
++	struct q6_wcss *wcss = rproc->priv;
++	struct userpd *upd;
+ 	struct rproc *upd_rproc;
+ 	struct userpd_boot_info upd_bootinfo = {0};
+ 	const struct firmware *fw;
+@@ -308,7 +310,7 @@ static int share_upd_bootinfo_to_q6(stru
+ 	ptr += sizeof(u16);
+ 
+ 	list_for_each_entry(upd_rproc, &upd_rproc_list, node) {
+-		upd_wcss = upd_rproc->priv;
++		upd = upd_rproc->priv;
+ 
+ 		/* TYPE */
+ 		upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
+@@ -318,11 +320,11 @@ static int share_upd_bootinfo_to_q6(stru
+ 			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
+ 
+ 		/* Process ID */
+-		upd_bootinfo.pid = upd_wcss->pd_asid + 1;
++		upd_bootinfo.pid = upd->pd_asid + 1;
+ 
+-		ret = request_firmware(&fw, upd_rproc->firmware, upd_wcss->dev);
++		ret = request_firmware(&fw, upd_rproc->firmware, upd->dev);
+ 		if (ret < 0) {
+-			dev_err(upd_wcss->dev, "request_firmware failed: %d\n",	ret);
++			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
+ 			return ret;
+ 		}
+ 
+@@ -421,19 +423,20 @@ static int q6_wcss_load(struct rproc *rp
+  */
+ static int wcss_pd_load(struct rproc *rproc, const struct firmware *fw)
+ {
+-	struct q6_wcss *wcss = rproc->priv;
+-	struct rproc *rpd_rproc = dev_get_drvdata(wcss->dev->parent);
+-	u32 pasid = (wcss->pd_asid << 8) | UPD_SWID;
++	struct userpd *upd = rproc->priv;
++	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
++	struct q6_wcss *wcss = rpd_rproc->priv;
++	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+ 	ret = rproc_boot(rpd_rproc);
+ 	if (ret)
+ 		return ret;
+ 
+-	return qcom_mdt_load(wcss->dev, fw, rproc->firmware,
++	return qcom_mdt_load(upd->dev, fw, rproc->firmware,
+ 			     pasid, wcss->mem_region,
+ 			     wcss->mem_phys, wcss->mem_size,
+-			     &wcss->mem_reloc);
++			     NULL);
+ }
+ 
+ static unsigned long q6_wcss_panic(struct rproc *rproc)
+@@ -465,26 +468,15 @@ static int q6_alloc_memory_region(struct
+ 	struct device_node *node;
+ 	struct device *dev = wcss->dev;
+ 
+-	if (wcss->version == Q6_IPQ) {
+-		node = of_parse_phandle(dev->of_node, "memory-region", 0);
+-		if (node)
+-			rmem = of_reserved_mem_lookup(node);
+-
+-		of_node_put(node);
+-
+-		if (!rmem) {
+-			dev_err(dev, "unable to acquire memory-region\n");
+-			return -EINVAL;
+-		}
+-	} else {
+-		struct rproc *rpd_rproc = dev_get_drvdata(dev->parent);
+-		struct q6_wcss *rpd_wcss = rpd_rproc->priv;
+-
+-		wcss->mem_phys = rpd_wcss->mem_phys;
+-		wcss->mem_reloc = rpd_wcss->mem_reloc;
+-		wcss->mem_size = rpd_wcss->mem_size;
+-		wcss->mem_region = rpd_wcss->mem_region;
+-		return 0;
++	node = of_parse_phandle(dev->of_node, "memory-region", 0);
++	if (node)
++		rmem = of_reserved_mem_lookup(node);
++
++	of_node_put(node);
++
++	if (!rmem) {
++		dev_err(dev, "unable to acquire memory-region\n");
++		return -EINVAL;
+ 	}
+ 
+ 	wcss->mem_phys = rmem->base;
+@@ -508,7 +500,7 @@ static int q6_get_inbound_irq(struct qco
+ {
+ 	int ret, irq;
+ 	char *interrupt, *tmp = (char *)int_name;
+-	struct q6_wcss *wcss = q6->rproc->priv;
++	struct userpd *upd = q6->rproc->priv;
+ 
+ 	irq = platform_get_irq(pdev, index);
+ 	if (irq < 0)
+@@ -520,7 +512,7 @@ static int q6_get_inbound_irq(struct qco
+ 	if (!interrupt)
+ 		return -ENOMEM;
+ 
+-	snprintf(interrupt, BUF_SIZE, "q6v5_wcss_userpd%d_%s", wcss->pd_asid, tmp);
++	snprintf(interrupt, BUF_SIZE, "q6v5_wcss_userpd%d_%s", upd->pd_asid, tmp);
+ 
+ 	ret = devm_request_threaded_irq(&pdev->dev, *pirq,
+ 					NULL, handler,
+@@ -561,7 +553,7 @@ static int init_irq(struct qcom_q6v5 *q6
+ 		    void (*handover)(struct qcom_q6v5 *q6))
+ {
+ 	int ret;
+-	struct q6_wcss *wcss = rproc->priv;
++	struct userpd *upd = rproc->priv;
+ 
+ 	q6->rproc = rproc;
+ 	q6->dev = &pdev->dev;
+@@ -581,7 +573,7 @@ static int init_irq(struct qcom_q6v5 *q6
+ 		return ret;
+ 
+ 	/* Get pd_asid to prepare interrupt names */
+-	wcss->pd_asid = qcom_get_pd_asid(rproc);
++	upd->pd_asid = qcom_get_pd_asid(rproc);
+ 
+ 	ret = q6_get_inbound_irq(q6, pdev, "fatal", 0, &q6->fatal_irq,
+ 				 q6v5_fatal_interrupt);
+@@ -619,7 +611,7 @@ static void q6_release_resources(void)
+ static int q6_register_userpd(struct platform_device *pdev,
+ 			      struct device_node *userpd_np)
+ {
+-	struct q6_wcss *wcss;
++	struct userpd *upd;
+ 	struct rproc *rproc = NULL;
+ 	int ret;
+ 	struct platform_device *userpd_pdev;
+@@ -652,21 +644,16 @@ static int q6_register_userpd(struct pla
+ 
+ 	userpd_pdev->dev.driver = pdev->dev.driver;
+ 	rproc = rproc_alloc(&userpd_pdev->dev, userpd_pdev->name, &wcss_ops,
+-			    firmware_name, sizeof(*wcss));
++			    firmware_name, sizeof(*upd));
+ 	if (!rproc) {
+ 		ret = -ENOMEM;
+ 		goto free_rproc;
+ 	}
+ 
+-	wcss = rproc->priv;
+-	wcss->dev = &userpd_pdev->dev;
+-	wcss->version = WCSS_IPQ;
+-
+-	ret = q6_alloc_memory_region(wcss);
+-	if (ret)
+-		goto free_rproc;
++	upd = rproc->priv;
++	upd->dev = &userpd_pdev->dev;
+ 
+-	ret = init_irq(&wcss->q6, userpd_pdev, rproc,
++	ret = init_irq(&upd->q6, userpd_pdev, rproc,
+ 		       WCSS_CRASH_REASON, NULL, NULL);
+ 	if (ret)
+ 		goto free_rproc;
+@@ -678,7 +665,7 @@ static int q6_register_userpd(struct pla
+ 
+ 	list_add(&rproc->node, &upd_rproc_list);
+ 	platform_set_drvdata(userpd_pdev, rproc);
+-	qcom_add_ssr_subdev(rproc, &wcss->ssr_subdev, userpd_pdev->name);
++	qcom_add_ssr_subdev(rproc, &upd->ssr_subdev, userpd_pdev->name);
+ 	return 0;
+ 
+ free_rproc:
+@@ -719,7 +706,6 @@ static int q6_wcss_probe(struct platform
+ 	wcss->dev = &pdev->dev;
+ 	wcss->desc = desc;
+ 	wcss->firmware = firmware;
+-	wcss->version = Q6_IPQ;
+ 
+ 	ret = q6_alloc_memory_region(wcss);
+ 	if (ret)

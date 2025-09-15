@@ -1,0 +1,199 @@
+From bf42d84868bc82a9cb334a33930f2d1da24f7070 Mon Sep 17 00:00:00 2001
+From: Ziyang Huang <hzyitc@outlook.com>
+Date: Sun, 8 Sep 2024 16:40:12 +0800
+Subject: [PATCH] soc: qcom: mdt_loader: support MPD
+
+Add support for loading user PD specific PIL segments as required by the 
+MPD architecture.
+
+Signed-off-by: Ziyang Huang <hzyitc@outlook.com>
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+ drivers/soc/qcom/mdt_loader.c       | 110 ++++++++++++++++++++++++++--
+ include/linux/soc/qcom/mdt_loader.h |   5 ++
+ 2 files changed, 110 insertions(+), 5 deletions(-)
+
+--- a/drivers/soc/qcom/mdt_loader.c
++++ b/drivers/soc/qcom/mdt_loader.c
+@@ -16,6 +16,16 @@
+ #include <linux/sizes.h>
+ #include <linux/slab.h>
+ #include <linux/soc/qcom/mdt_loader.h>
++#include <linux/dma-mapping.h>
++
++#include "../../remoteproc/qcom_common.h"
++
++#define QCOM_MDT_PF_ASID_MASK	GENMASK(19, 16)
++
++struct segment_load_args {
++	__le64 addr;
++	__le64 blk_size;
++};
+ 
+ static bool mdt_phdr_valid(const struct elf32_phdr *phdr)
+ {
+@@ -69,6 +79,56 @@ static ssize_t mdt_load_split_segment(vo
+ 	return ret;
+ }
+ 
++static int mdt_load_split_segment_dma(int pas_id, unsigned int segment,
++				      const struct elf32_phdr *phdrs,
++				      const char *fw_name,
++				      struct device *dev)
++{
++	const struct elf32_phdr *phdr = &phdrs[segment];
++	struct segment_load_args *args;
++	dma_addr_t *addrs;
++	void *ptr;
++	dma_addr_t dma_args, dma_addrs, dma_ptr;
++	int ret;
++
++	args = dma_alloc_coherent(dev, sizeof(*args) + sizeof(*addrs), &dma_args, GFP_DMA);
++	if (!args) {
++		dev_err(dev, "Error in dma alloc regin: %ld\n", sizeof(*args));
++		return -ENOMEM;
++	}
++
++	addrs = (void *) args + sizeof(*args);
++	dma_addrs = dma_args + sizeof(*args);
++
++	ptr = dma_alloc_coherent(dev, phdr->p_filesz, &dma_ptr, GFP_DMA);
++	if (!ptr) {
++		dev_err(dev, "Error in dma alloc ptr: %d\n", phdr->p_filesz);
++		return -ENOMEM;
++	}
++
++	args->addr = dma_addrs;
++	args->blk_size = phdr->p_filesz;
++
++	addrs[0] = dma_ptr;
++
++	ret = mdt_load_split_segment(ptr, phdrs, segment, fw_name, dev);
++	if (ret < 0) {
++		dev_err(dev, "Error in mdt_load_split_segment: %d\n", ret);
++		return ret;
++	}
++
++	ret = qcom_scm_pas_load_segment(pas_id, segment, dma_args, 1);
++	if (ret < 0) {
++		dev_err(dev, "Error in qcom_scm_pas_load_segment: %d\n", ret);
++		return ret;
++	}
++
++	dma_free_coherent(dev, phdr->p_filesz, ptr, dma_ptr);
++	dma_free_coherent(dev, sizeof(*args) + sizeof(*addrs), args, dma_args);
++
++	return 0;
++}
++
+ /**
+  * qcom_mdt_get_size() - acquire size of the memory region needed to load mdt
+  * @fw:		firmware object for the mdt file
+@@ -295,7 +355,8 @@ static bool qcom_mdt_bins_are_split(cons
+ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw,
+ 			   const char *fw_name, int pas_id, void *mem_region,
+ 			   phys_addr_t mem_phys, size_t mem_size,
+-			   phys_addr_t *reloc_base, bool pas_init)
++			   phys_addr_t *reloc_base, bool pas_init,
++			   bool dma_require, int pd_asid)
+ {
+ 	const struct elf32_phdr *phdrs;
+ 	const struct elf32_phdr *phdr;
+@@ -349,6 +410,14 @@ static int __qcom_mdt_load(struct device
+ 		if (!mdt_phdr_valid(phdr))
+ 			continue;
+ 
++		/*
++		 * While doing PD specific reloading, load only that PD
++		 * specific writeable entries. Skip others
++		 */
++		if (pd_asid && (FIELD_GET(QCOM_MDT_PF_ASID_MASK, phdr->p_flags) != pd_asid ||
++				(phdr->p_flags & PF_W) == 0))
++			continue;
++
+ 		offset = phdr->p_paddr - mem_reloc;
+ 		if (offset < 0 || offset + phdr->p_memsz > mem_size) {
+ 			dev_err(dev, "segment outside memory range\n");
+@@ -366,7 +435,11 @@ static int __qcom_mdt_load(struct device
+ 
+ 		ptr = mem_region + offset;
+ 
+-		if (phdr->p_filesz && !is_split) {
++		if (dma_require && phdr->p_filesz) {
++			ret = mdt_load_split_segment_dma(pas_id, i, phdrs, fw_name, dev);
++			if (ret)
++				break;
++		} else if (phdr->p_filesz && !is_split) {
+ 			/* Firmware is large enough to be non-split */
+ 			if (phdr->p_offset + phdr->p_filesz > fw->size) {
+ 				dev_err(dev, "file %s segment %d would be truncated\n",
+@@ -383,7 +456,7 @@ static int __qcom_mdt_load(struct device
+ 				break;
+ 		}
+ 
+-		if (phdr->p_memsz > phdr->p_filesz)
++		if (!dma_require && phdr->p_memsz > phdr->p_filesz)
+ 			memset(ptr + phdr->p_filesz, 0, phdr->p_memsz - phdr->p_filesz);
+ 	}
+ 
+@@ -418,7 +491,7 @@ int qcom_mdt_load(struct device *dev, co
+ 		return ret;
+ 
+ 	return __qcom_mdt_load(dev, fw, firmware, pas_id, mem_region, mem_phys,
+-			       mem_size, reloc_base, true);
++			       mem_size, reloc_base, true, false, 0);
+ }
+ EXPORT_SYMBOL_GPL(qcom_mdt_load);
+ 
+@@ -441,9 +514,36 @@ int qcom_mdt_load_no_init(struct device
+ 			  size_t mem_size, phys_addr_t *reloc_base)
+ {
+ 	return __qcom_mdt_load(dev, fw, firmware, pas_id, mem_region, mem_phys,
+-			       mem_size, reloc_base, false);
++			       mem_size, reloc_base, false, false, 0);
+ }
+ EXPORT_SYMBOL_GPL(qcom_mdt_load_no_init);
+ 
++/**
++ * qcom_mdt_load_pd_seg() - load userpd specific PIL segements
++ * @dev:	device handle to associate resources with
++ * @fw:		firmware object for the mdt file
++ * @firmware:	name of the firmware, for construction of segment file names
++ * @pas_id:	PAS identifier
++ * @mem_region:	allocated memory region to load firmware into
++ * @mem_phys:	physical address of allocated memory region
++ * @mem_size:	size of the allocated memory region
++ * @reloc_base:	adjusted physical address after relocation
++ *
++ * Here userpd PIL segements are stitched with rootpd firmware.
++ * This function reloads userpd specific PIL segments during SSR
++ * of userpd.
++ *
++ * Returns 0 on success, negative errno otherwise.
++ */
++int qcom_mdt_load_pd_seg(struct device *dev, const struct firmware *fw,
++			 const char *firmware, int pas_id, int pd_asid, void *mem_region,
++			 phys_addr_t mem_phys, size_t mem_size,
++			 phys_addr_t *reloc_base)
++{
++	return __qcom_mdt_load(dev, fw, firmware, pas_id, mem_region, mem_phys,
++			       mem_size, reloc_base, false, true, pd_asid);
++}
++EXPORT_SYMBOL_GPL(qcom_mdt_load_pd_seg);
++
+ MODULE_DESCRIPTION("Firmware parser for Qualcomm MDT format");
+ MODULE_LICENSE("GPL v2");
+--- a/include/linux/soc/qcom/mdt_loader.h
++++ b/include/linux/soc/qcom/mdt_loader.h
+@@ -30,6 +30,11 @@ int qcom_mdt_load_no_init(struct device
+ void *qcom_mdt_read_metadata(const struct firmware *fw, size_t *data_len,
+ 			     const char *fw_name, struct device *dev);
+ 
++int qcom_mdt_load_pd_seg(struct device *dev, const struct firmware *fw,
++			 const char *firmware, int pas_id, int pd_asid, void *mem_region,
++			 phys_addr_t mem_phys, size_t mem_size,
++			 phys_addr_t *reloc_base);
++
+ #else /* !IS_ENABLED(CONFIG_QCOM_MDT_LOADER) */
+ 
+ static inline ssize_t qcom_mdt_get_size(const struct firmware *fw)

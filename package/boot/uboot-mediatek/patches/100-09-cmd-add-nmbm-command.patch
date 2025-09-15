@@ -1,0 +1,370 @@
+From 0af8d0aac77f4df4bc7dadbcdea5d9a16f5f3e45 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Mon, 25 Jul 2022 10:44:57 +0800
+Subject: [PATCH 43/71] cmd: add nmbm command
+
+Add nmbm command for debugging, data operations and image-booting support
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ cmd/Kconfig  |   6 +
+ cmd/Makefile |   1 +
+ cmd/nmbm.c   | 327 +++++++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 334 insertions(+)
+ create mode 100644 cmd/nmbm.c
+
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -1392,6 +1392,12 @@ config CMD_NAND_TORTURE
+ 
+ endif # CMD_NAND
+ 
++config CMD_NMBM
++	depends on NMBM_MTD
++	bool "nmbm"
++	help
++	  NAND mapping block management (NMBM) utility
++
+ config CMD_NVME
+ 	bool "nvme"
+ 	depends on NVME
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -127,6 +127,7 @@ obj-y += legacy-mtd-utils.o
+ endif
+ obj-$(CONFIG_CMD_MUX) += mux.o
+ obj-$(CONFIG_CMD_NAND) += nand.o
++obj-$(CONFIG_CMD_NMBM) += nmbm.o
+ obj-$(CONFIG_CMD_NET) += net.o
+ obj-$(CONFIG_CMD_NVEDIT_EFI) += nvedit_efi.o
+ obj-$(CONFIG_CMD_ONENAND) += onenand.o
+--- /dev/null
++++ b/cmd/nmbm.c
+@@ -0,0 +1,327 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2020 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include <command.h>
++#include <image.h>
++#include <stdbool.h>
++#include <linux/types.h>
++#include <linux/mtd/mtd.h>
++#include <jffs2/load_kernel.h>
++
++#include <nmbm/nmbm-mtd.h>
++
++static int nmbm_parse_offset_size(struct mtd_info *mtd, char *off_str,
++				  char *size_str, uint64_t *off,
++				  uint64_t *size)
++{
++	char *end;
++
++	*off = simple_strtoull(off_str, &end, 16);
++	if (end == off_str) {
++		printf("Error: offset '%s' is invalid\n", off_str);
++		return -EINVAL;
++	}
++
++	if (*off >= mtd->size) {
++		printf("Error: offset '0x%llx' is beyond the end of device\n",
++		       *off);
++		return -EINVAL;
++	}
++
++	*size = simple_strtoull(size_str, &end, 16);
++	if (end == off_str) {
++		printf("Error: size '%s' is invalid\n", off_str);
++		return -EINVAL;
++	}
++
++	if (*off + *size > mtd->size) {
++		printf("Error: size '0x%llx' is too large\n", *size);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int do_nmbm_erase(struct mtd_info *mtd, uint64_t offset, uint64_t size)
++{
++	struct erase_info ei;
++	int ret;
++
++	memset(&ei, 0, sizeof(ei));
++
++	ei.mtd = mtd;
++	ei.addr = offset;
++	ei.len = size;
++
++	printf("Erasing from 0x%llx, size 0x%llx ...\n", offset, size);
++
++	ret = mtd_erase(mtd, &ei);
++
++	if (!ret) {
++		printf("Succeeded\n");
++		return CMD_RET_SUCCESS;
++	}
++
++	printf("Failed at 0x%llx\n", ei.fail_addr);
++
++	return CMD_RET_FAILURE;
++}
++
++static int do_nmbm_rw(int read, struct mtd_info *mtd, uintptr_t addr,
++	       uint64_t offset, size_t size)
++{
++	size_t retlen;
++	int ret;
++
++	printf("%s 0x%llx, size 0x%zx\n", read ? "Reading from" : "Writing to",
++		offset, size);
++
++	if (read)
++		ret = mtd_read(mtd, offset, size, &retlen, (void *)addr);
++	else
++		ret = mtd_write(mtd, offset, size, &retlen, (void *)addr);
++
++	if (!ret) {
++		printf("Succeeded\n");
++		return CMD_RET_SUCCESS;
++	}
++
++	printf("Failed at 0x%llx\n", offset + retlen);
++
++	return CMD_RET_FAILURE;
++}
++
++static int do_nmbm_mtd_boot(struct cmd_tbl *cmdtp, struct mtd_info *mtd,
++			    int argc, char *const argv[])
++{
++	bool print_image_contents = true;
++	uintptr_t loadaddr = image_load_addr;
++	char *end, *image_name;
++	const char *ep;
++	size_t retlen;
++	uint32_t size;
++	uint64_t off;
++	int ret;
++
++#if defined(CONFIG_CMD_MTDPARTS)
++	struct mtd_device *partdev;
++	struct mtd_info *partmtd;
++	struct part_info *part;
++	u8 pnum;
++#endif
++
++	ep = env_get("autostart");
++
++	if (ep && !strcmp(ep, "yes"))
++		print_image_contents = false;
++
++	if (argc == 2) {
++		loadaddr = simple_strtoul(argv[0], &end, 0);
++		if (*end || end == argv[0]) {
++			printf("'%s' is not a valid address\n", argv[0]);
++			return CMD_RET_FAILURE;
++		}
++
++		argc--;
++		argv++;
++	}
++
++	off = simple_strtoull(argv[0], &end, 0);
++	if (*end || end == argv[0]) {
++#if defined(CONFIG_CMD_MTDPARTS)
++		ret = mtdparts_init();
++		if (ret)
++			return CMD_RET_FAILURE;
++
++		ret = find_dev_and_part(argv[0], &partdev, &pnum, &part);
++		if (ret)
++			return CMD_RET_FAILURE;
++
++		if (partdev->id->type != MTD_DEV_TYPE_NMBM) {
++			printf("'%s' is not a NMBM device partition\n",
++				argv[0]);
++			return CMD_RET_FAILURE;
++		}
++
++		partmtd = nmbm_mtd_get_upper_by_index(partdev->id->num);
++
++		if (partmtd != mtd) {
++			printf("'%s' does not belong to this device\n",
++				argv[0]);
++			return CMD_RET_FAILURE;
++		}
++
++		off = part->offset;
++#else
++		printf("'%s' is not a valid offset\n", argv[0]);
++		return CMD_RET_FAILURE;
++#endif
++	}
++
++	ret = mtd_read(mtd, off, sizeof(struct legacy_img_hdr), &retlen,
++		       (void *)loadaddr);
++	if (ret || retlen != sizeof(struct legacy_img_hdr)) {
++		printf("Failed to read NMBM at offset 0x%08llx\n", off);
++		return CMD_RET_FAILURE;
++	}
++
++	switch (genimg_get_format((void *)loadaddr)) {
++#if defined(CONFIG_LEGACY_IMAGE_FORMAT)
++	case IMAGE_FORMAT_LEGACY:
++		size = image_get_image_size((struct legacy_img_hdr *)loadaddr);
++		image_name = "legacy";
++		break;
++#endif
++#if defined(CONFIG_FIT)
++	case IMAGE_FORMAT_FIT:
++		size = fit_get_size((const void *)loadaddr);
++		image_name = "FIT";
++		break;
++#endif
++	default:
++		printf("Error: no Image found at offset 0x%08llx\n", off);
++		return CMD_RET_FAILURE;
++	}
++
++	printf("Loading %s image at offset 0x%llx to memory 0x%08lx, size 0x%x ...\n",
++	       image_name, off, loadaddr, size);
++
++	ret = mtd_read(mtd, off, size, &retlen, (void *)loadaddr);
++	if (ret || retlen != size) {
++		printf("Error: Failed to load image at offset 0x%08llx\n",
++		       off + retlen);
++		return CMD_RET_FAILURE;
++	}
++
++	switch (genimg_get_format((void *)loadaddr)) {
++#if defined(CONFIG_LEGACY_IMAGE_FORMAT)
++	case IMAGE_FORMAT_LEGACY:
++		if (print_image_contents)
++			image_print_contents((void *)loadaddr);
++		break;
++#endif
++#if defined(CONFIG_FIT)
++	case IMAGE_FORMAT_FIT:
++		if (print_image_contents)
++			fit_print_contents((void *)loadaddr);
++		break;
++#endif
++	}
++
++	image_load_addr = loadaddr;
++
++	return bootm_maybe_autostart(cmdtp, "nmbm");
++}
++
++static int do_nmbm(struct cmd_tbl *cmdtp, int flag, int argc,
++		   char *const argv[])
++{
++	struct mtd_info *mtd;
++	uint64_t offset, size;
++	char *end;
++	uintptr_t addr;
++	int ret, all = 0;
++
++	if (argc == 1)
++		return CMD_RET_USAGE;
++
++	if (!strcmp(argv[1], "list")) {
++		nmbm_mtd_list_devices();
++		return CMD_RET_SUCCESS;
++	}
++
++	if (argc < 3)
++		return CMD_RET_USAGE;
++
++	if (!strcmp(argv[2], "info"))
++		return !!nmbm_mtd_print_info(argv[1]);
++
++	if (!strcmp(argv[2], "state"))
++		return !!nmbm_mtd_print_states(argv[1]);
++
++	if (!strcmp(argv[2], "bad"))
++		return !!nmbm_mtd_print_bad_blocks(argv[1]);
++
++	if (!strcmp(argv[2], "mapping")) {
++		if (argc >= 4) {
++			if (!strcmp(argv[3], "all"))
++				all = 1;
++		}
++
++		return nmbm_mtd_print_mappings(argv[1], all);
++	}
++
++	if (argc < 4)
++		return CMD_RET_USAGE;
++
++	mtd = get_mtd_device_nm(argv[1]);
++	if (IS_ERR(mtd)) {
++		printf("Error: NMBM device '%s' not found\n", argv[1]);
++		return CMD_RET_FAILURE;
++	}
++
++	if (mtd->type != MTD_DEV_TYPE_NMBM) {
++		printf("Error: '%s' is not a NMBM device\n", argv[1]);
++		return CMD_RET_FAILURE;
++	}
++
++	if (!strcmp(argv[2], "boot"))
++		return do_nmbm_mtd_boot(cmdtp, mtd, argc - 3, argv + 3);
++
++	if (argc < 5)
++		return CMD_RET_USAGE;
++
++	if (!strcmp(argv[2], "erase")) {
++		ret = nmbm_parse_offset_size(mtd, argv[3], argv[4], &offset,
++					     &size);
++		if (ret)
++			return CMD_RET_FAILURE;
++
++		return do_nmbm_erase(mtd, offset, size);
++	}
++
++	if (argc < 6)
++		return CMD_RET_USAGE;
++
++	ret = nmbm_parse_offset_size(mtd, argv[4], argv[5], &offset, &size);
++	if (ret)
++		return CMD_RET_FAILURE;
++
++	if (size > SIZE_MAX) {
++		printf("Error: size 0x%llx is too large\n", size);
++		return -EINVAL;
++	}
++
++	addr = simple_strtoul(argv[3], &end, 16);
++	if (end == argv[3]) {
++		printf("Error: addr '%s' is invalid\n", argv[3]);
++		return -EINVAL;
++	}
++
++	if (!strcmp(argv[2], "read"))
++		return do_nmbm_rw(1, mtd, addr, offset, (size_t)size);
++
++	if (!strcmp(argv[2], "write"))
++		return do_nmbm_rw(0, mtd, addr, offset, (size_t)size);
++
++	return CMD_RET_USAGE;
++}
++
++U_BOOT_CMD(
++	nmbm,	CONFIG_SYS_MAXARGS,	0,	do_nmbm,
++	"NMBM utility commands",
++	"\n"
++	"nmbm list                                - List NMBM devices\n"
++	"nmbm <name> info                         - Display NMBM information\n"
++	"nmbm <name> state                        - Display block states\n"
++	"nmbm <name> bad                          - Display bad blocks\n"
++	"nmbm <name> boot <part | [loadaddr] offset>  - Boot from NMBM\n"
++	"nmbm <name> mapping [all]                - Display block mapping\n"
++	"nmbm <name> erase <offset> <size>        - Erase blocks\n"
++	"nmbm <name> read <addr> <offset> <size>  - Read data\n"
++	"nmbm <name> write <addr> <offset> <size> - Write data\n"
++);

@@ -1,0 +1,5102 @@
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -3919,6 +3919,10 @@
+ 		force	Enable ASPM even on devices that claim not to support it.
+ 			WARNING: Forcing ASPM on may cause system lockups.
+ 
++	pcie_hp=	[PCIE] PCI Express Hotplug driver options:
++		nomsi	Do not use MSI for PCI Express Native Hotplug (this
++			makes all PCIe ports use INTx for hotplug services).
++
+ 	pcie_ports=	[PCIE] PCIe port services handling:
+ 		native	Use native PCIe services (PME, AER, DPC, PCIe hotplug)
+ 			even if the platform doesn't give the OS permission to
+--- a/Documentation/devicetree/bindings/arm/cpus.yaml
++++ b/Documentation/devicetree/bindings/arm/cpus.yaml
+@@ -162,6 +162,10 @@ properties:
+       - nvidia,tegra132-denver
+       - nvidia,tegra186-denver
+       - nvidia,tegra194-carmel
++      - phytium,ftc660
++      - phytium,ftc661
++      - phytium,ftc662
++      - phytium,ftc663
+       - qcom,krait
+       - qcom,kryo
+       - qcom,kryo260
+--- a/Documentation/devicetree/bindings/net/macb.txt
++++ b/Documentation/devicetree/bindings/net/macb.txt
+@@ -16,6 +16,8 @@ Required properties:
+   Use "cdns,zynq-gem" Xilinx Zynq-7xxx SoC.
+   Use "cdns,zynqmp-gem" for Zynq Ultrascale+ MPSoC.
+   Use "sifive,fu540-c000-gem" for SiFive FU540-C000 SoC.
++  Use "cdns,phytium-gem-1.0" for GEM version 1.0 on Phytium SoCs
++  Use "cdns,phytium-gem-2.0" for GEM version 2.0 on Phytium SoCs
+   Or the generic form: "cdns,emac".
+ - reg: Address and length of the register set for the device
+ 	For "sifive,fu540-c000-gem", second range is required to specify the
+--- a/Documentation/devicetree/bindings/net/snps,dwmac.yaml
++++ b/Documentation/devicetree/bindings/net/snps,dwmac.yaml
+@@ -56,6 +56,7 @@ properties:
+         - amlogic,meson8m2-dwmac
+         - amlogic,meson-gxbb-dwmac
+         - amlogic,meson-axg-dwmac
++        - phytium,gmac
+         - snps,dwmac
+         - snps,dwmac-3.50a
+         - snps,dwmac-3.610
+--- a/arch/arm/include/asm/arch_timer.h
++++ b/arch/arm/include/asm/arch_timer.h
+@@ -7,6 +7,7 @@
+ #include <asm/hwcap.h>
+ #include <linux/clocksource.h>
+ #include <linux/init.h>
++#include <linux/io-64-nonatomic-lo-hi.h>
+ #include <linux/types.h>
+ 
+ #include <clocksource/arm_arch_timer.h>
+@@ -24,29 +25,35 @@ int arch_timer_arch_init(void);
+  * the code. At least it does so with a recent GCC (4.6.3).
+  */
+ static __always_inline
+-void arch_timer_reg_write_cp15(int access, enum arch_timer_reg reg, u32 val)
++void arch_timer_reg_write_cp15(int access, enum arch_timer_reg reg, u64 val)
+ {
+ 	if (access == ARCH_TIMER_PHYS_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+-			asm volatile("mcr p15, 0, %0, c14, c2, 1" : : "r" (val));
++			asm volatile("mcr p15, 0, %0, c14, c2, 1" : : "r" ((u32)val));
++			isb();
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			asm volatile("mcr p15, 0, %0, c14, c2, 0" : : "r" (val));
++		case ARCH_TIMER_REG_CVAL:
++			asm volatile("mcrr p15, 2, %Q0, %R0, c14" : : "r" (val));
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_VIRT_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+-			asm volatile("mcr p15, 0, %0, c14, c3, 1" : : "r" (val));
++			asm volatile("mcr p15, 0, %0, c14, c3, 1" : : "r" ((u32)val));
++			isb();
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			asm volatile("mcr p15, 0, %0, c14, c3, 0" : : "r" (val));
++		case ARCH_TIMER_REG_CVAL:
++			asm volatile("mcrr p15, 3, %Q0, %R0, c14" : : "r" (val));
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
++	} else {
++		BUILD_BUG();
+ 	}
+-
+-	isb();
+ }
+ 
+ static __always_inline
+@@ -59,19 +66,19 @@ u32 arch_timer_reg_read_cp15(int access,
+ 		case ARCH_TIMER_REG_CTRL:
+ 			asm volatile("mrc p15, 0, %0, c14, c2, 1" : "=r" (val));
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			asm volatile("mrc p15, 0, %0, c14, c2, 0" : "=r" (val));
+-			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_VIRT_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+ 			asm volatile("mrc p15, 0, %0, c14, c3, 1" : "=r" (val));
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			asm volatile("mrc p15, 0, %0, c14, c3, 0" : "=r" (val));
+-			break;
++		default:
++			BUILD_BUG();
+ 		}
++	} else {
++		BUILD_BUG();
+ 	}
+ 
+ 	return val;
+--- a/arch/arm64/Kconfig.platforms
++++ b/arch/arm64/Kconfig.platforms
+@@ -327,4 +327,9 @@ config ARCH_ZYNQMP
+ 	help
+ 	  This enables support for Xilinx ZynqMP Family
+ 
++config ARCH_PHYTIUM
++    bool "Phytium SoC Family"
++    help
++      This enables support for Phytium ARMv8 SoC family.
++
+ endmenu
+--- a/arch/arm64/boot/dts/Makefile
++++ b/arch/arm64/boot/dts/Makefile
+@@ -30,3 +30,4 @@ subdir-y += ti
+ subdir-y += toshiba
+ subdir-y += xilinx
+ subdir-y += zte
++subdir-y += phytium
+--- a/arch/arm64/include/asm/arch_timer.h
++++ b/arch/arm64/include/asm/arch_timer.h
+@@ -32,7 +32,7 @@
+ 	({								\
+ 		const struct arch_timer_erratum_workaround *__wa;	\
+ 		__wa = __this_cpu_read(timer_unstable_counter_workaround); \
+-		(__wa && __wa->h) ? __wa->h : arch_timer_##h;		\
++		(__wa && __wa->h) ? ({ isb(); __wa->h;}) : arch_timer_##h; \
+ 	})
+ 
+ #else
+@@ -52,8 +52,6 @@ struct arch_timer_erratum_workaround {
+ 	enum arch_timer_erratum_match_type match_type;
+ 	const void *id;
+ 	const char *desc;
+-	u32 (*read_cntp_tval_el0)(void);
+-	u32 (*read_cntv_tval_el0)(void);
+ 	u64 (*read_cntpct_el0)(void);
+ 	u64 (*read_cntvct_el0)(void);
+ 	int (*set_next_event_phys)(unsigned long, struct clock_event_device *);
+@@ -64,25 +62,28 @@ struct arch_timer_erratum_workaround {
+ DECLARE_PER_CPU(const struct arch_timer_erratum_workaround *,
+ 		timer_unstable_counter_workaround);
+ 
+-/* inline sysreg accessors that make erratum_handler() work */
+-static inline notrace u32 arch_timer_read_cntp_tval_el0(void)
++static inline notrace u64 arch_timer_read_cntpct_el0(void)
+ {
+-	return read_sysreg(cntp_tval_el0);
+-}
++	u64 cnt;
+ 
+-static inline notrace u32 arch_timer_read_cntv_tval_el0(void)
+-{
+-	return read_sysreg(cntv_tval_el0);
+-}
++	asm volatile(ALTERNATIVE("isb\n mrs %0, cntpct_el0",
++				 "nop\n" __mrs_s("%0", SYS_CNTPCTSS_EL0),
++				 ARM64_HAS_ECV)
++		     : "=r" (cnt));
+ 
+-static inline notrace u64 arch_timer_read_cntpct_el0(void)
+-{
+-	return read_sysreg(cntpct_el0);
++	return cnt;
+ }
+ 
+ static inline notrace u64 arch_timer_read_cntvct_el0(void)
+ {
+-	return read_sysreg(cntvct_el0);
++	u64 cnt;
++
++	asm volatile(ALTERNATIVE("isb\n mrs %0, cntvct_el0",
++				 "nop\n" __mrs_s("%0", SYS_CNTVCTSS_EL0),
++				 ARM64_HAS_ECV)
++		     : "=r" (cnt));
++
++	return cnt;
+ }
+ 
+ #define arch_timer_reg_read_stable(reg)					\
+@@ -102,51 +103,58 @@ static inline notrace u64 arch_timer_rea
+  * the code.
+  */
+ static __always_inline
+-void arch_timer_reg_write_cp15(int access, enum arch_timer_reg reg, u32 val)
++void arch_timer_reg_write_cp15(int access, enum arch_timer_reg reg, u64 val)
+ {
+ 	if (access == ARCH_TIMER_PHYS_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+ 			write_sysreg(val, cntp_ctl_el0);
++			isb();
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			write_sysreg(val, cntp_tval_el0);
++		case ARCH_TIMER_REG_CVAL:
++			write_sysreg(val, cntp_cval_el0);
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_VIRT_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+ 			write_sysreg(val, cntv_ctl_el0);
++			isb();
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			write_sysreg(val, cntv_tval_el0);
++		case ARCH_TIMER_REG_CVAL:
++			write_sysreg(val, cntv_cval_el0);
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
++	} else {
++		BUILD_BUG();
+ 	}
+-
+-	isb();
+ }
+ 
+ static __always_inline
+-u32 arch_timer_reg_read_cp15(int access, enum arch_timer_reg reg)
++u64 arch_timer_reg_read_cp15(int access, enum arch_timer_reg reg)
+ {
+ 	if (access == ARCH_TIMER_PHYS_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+ 			return read_sysreg(cntp_ctl_el0);
+-		case ARCH_TIMER_REG_TVAL:
+-			return arch_timer_reg_read_stable(cntp_tval_el0);
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_VIRT_ACCESS) {
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+ 			return read_sysreg(cntv_ctl_el0);
+-		case ARCH_TIMER_REG_TVAL:
+-			return arch_timer_reg_read_stable(cntv_tval_el0);
++		default:
++			BUILD_BUG();
+ 		}
+ 	}
+ 
+-	BUG();
++	BUILD_BUG();
++	unreachable();
+ }
+ 
+ static inline u32 arch_timer_get_cntfrq(void)
+@@ -169,7 +177,6 @@ static __always_inline u64 __arch_counte
+ {
+ 	u64 cnt;
+ 
+-	isb();
+ 	cnt = arch_timer_reg_read_stable(cntpct_el0);
+ 	arch_counter_enforce_ordering(cnt);
+ 	return cnt;
+@@ -179,8 +186,10 @@ static __always_inline u64 __arch_counte
+ {
+ 	u64 cnt;
+ 
+-	isb();
+-	cnt = read_sysreg(cntpct_el0);
++	asm volatile(ALTERNATIVE("isb\n mrs %0, cntpct_el0",
++				 "nop\n" __mrs_s("%0", SYS_CNTPCTSS_EL0),
++				 ARM64_HAS_ECV)
++		     : "=r" (cnt));
+ 	arch_counter_enforce_ordering(cnt);
+ 	return cnt;
+ }
+@@ -189,7 +198,6 @@ static __always_inline u64 __arch_counte
+ {
+ 	u64 cnt;
+ 
+-	isb();
+ 	cnt = arch_timer_reg_read_stable(cntvct_el0);
+ 	arch_counter_enforce_ordering(cnt);
+ 	return cnt;
+@@ -199,8 +207,10 @@ static __always_inline u64 __arch_counte
+ {
+ 	u64 cnt;
+ 
+-	isb();
+-	cnt = read_sysreg(cntvct_el0);
++	asm volatile(ALTERNATIVE("isb\n mrs %0, cntvct_el0",
++				 "nop\n" __mrs_s("%0", SYS_CNTVCTSS_EL0),
++				 ARM64_HAS_ECV)
++		     : "=r" (cnt));
+ 	arch_counter_enforce_ordering(cnt);
+ 	return cnt;
+ }
+--- a/arch/arm64/include/asm/cpucaps.h
++++ b/arch/arm64/include/asm/cpucaps.h
+@@ -69,7 +69,7 @@
+ #define ARM64_SPECTRE_BHB			59
+ #define ARM64_WORKAROUND_2457168		60
+ #define ARM64_WORKAROUND_1742098		61
+-
+-#define ARM64_NCAPS				62
++#define ARM64_HAS_ECV				62
++#define ARM64_NCAPS				63
+ 
+ #endif /* __ASM_CPUCAPS_H */
+--- a/arch/arm64/include/asm/esr.h
++++ b/arch/arm64/include/asm/esr.h
+@@ -227,6 +227,9 @@
+ #define ESR_ELx_SYS64_ISS_SYS_CNTVCT	(ESR_ELx_SYS64_ISS_SYS_VAL(3, 3, 2, 14, 0) | \
+ 					 ESR_ELx_SYS64_ISS_DIR_READ)
+ 
++#define ESR_ELx_SYS64_ISS_SYS_CNTVCTSS	(ESR_ELx_SYS64_ISS_SYS_VAL(3, 3, 6, 14, 0) | \
++					 ESR_ELx_SYS64_ISS_DIR_READ)
++
+ #define ESR_ELx_SYS64_ISS_SYS_CNTFRQ	(ESR_ELx_SYS64_ISS_SYS_VAL(3, 3, 0, 14, 0) | \
+ 					 ESR_ELx_SYS64_ISS_DIR_READ)
+ 
+@@ -317,6 +320,9 @@
+ #define ESR_ELx_CP15_64_ISS_SYS_CNTVCT	(ESR_ELx_CP15_64_ISS_SYS_VAL(1, 14) | \
+ 					 ESR_ELx_CP15_64_ISS_DIR_READ)
+ 
++#define ESR_ELx_CP15_64_ISS_SYS_CNTVCTSS (ESR_ELx_CP15_64_ISS_SYS_VAL(9, 14) | \
++					 ESR_ELx_CP15_64_ISS_DIR_READ)
++
+ #define ESR_ELx_CP15_32_ISS_SYS_CNTFRQ	(ESR_ELx_CP15_32_ISS_SYS_VAL(0, 0, 14, 0) |\
+ 					 ESR_ELx_CP15_32_ISS_DIR_READ)
+ 
+--- a/arch/arm64/include/asm/sysreg.h
++++ b/arch/arm64/include/asm/sysreg.h
+@@ -453,6 +453,9 @@
+ 
+ #define SYS_CNTFRQ_EL0			sys_reg(3, 3, 14, 0, 0)
+ 
++#define SYS_CNTPCTSS_EL0		sys_reg(3, 3, 14, 0, 5)
++#define SYS_CNTVCTSS_EL0		sys_reg(3, 3, 14, 0, 6)
++
+ #define SYS_CNTP_TVAL_EL0		sys_reg(3, 3, 14, 2, 0)
+ #define SYS_CNTP_CTL_EL0		sys_reg(3, 3, 14, 2, 1)
+ #define SYS_CNTP_CVAL_EL0		sys_reg(3, 3, 14, 2, 2)
+--- a/arch/arm64/kernel/cpufeature.c
++++ b/arch/arm64/kernel/cpufeature.c
+@@ -1769,6 +1769,16 @@ static const struct arm64_cpu_capabiliti
+ 		.sign = FTR_UNSIGNED,
+ 		.min_field_value = 1,
+ 	},
++	{
++		.desc = "Enhanced Counter Virtualization",
++		.capability = ARM64_HAS_ECV,
++		.type = ARM64_CPUCAP_SYSTEM_FEATURE,
++		.matches = has_cpuid_feature,
++		.sys_reg = SYS_ID_AA64MMFR0_EL1,
++		.field_pos = ID_AA64MMFR0_ECV_SHIFT,
++		.sign = FTR_UNSIGNED,
++		.min_field_value = 1,
++	},
+ #ifdef CONFIG_ARM64_PAN
+ 	{
+ 		.desc = "Privileged Access Never",
+--- a/arch/arm64/kernel/traps.c
++++ b/arch/arm64/kernel/traps.c
+@@ -553,6 +553,12 @@ static const struct sys64_hook sys64_hoo
+ 		.handler = cntvct_read_handler,
+ 	},
+ 	{
++		/* Trap read access to CNTVCTSS_EL0 */
++		.esr_mask = ESR_ELx_SYS64_ISS_SYS_OP_MASK,
++		.esr_val = ESR_ELx_SYS64_ISS_SYS_CNTVCTSS,
++		.handler = cntvct_read_handler,
++	},
++	{
+ 		/* Trap read access to CNTFRQ_EL0 */
+ 		.esr_mask = ESR_ELx_SYS64_ISS_SYS_OP_MASK,
+ 		.esr_val = ESR_ELx_SYS64_ISS_SYS_CNTFRQ,
+@@ -628,6 +634,11 @@ static const struct sys64_hook cp15_64_h
+ 		.esr_val = ESR_ELx_CP15_64_ISS_SYS_CNTVCT,
+ 		.handler = compat_cntvct_read_handler,
+ 	},
++	{
++		.esr_mask = ESR_ELx_CP15_64_ISS_SYS_MASK,
++		.esr_val = ESR_ELx_CP15_64_ISS_SYS_CNTVCTSS,
++		.handler = compat_cntvct_read_handler,
++	},
+ 	{},
+ };
+ 
+--- a/arch/arm64/mm/flush.c
++++ b/arch/arm64/mm/flush.c
+@@ -78,6 +78,8 @@ EXPORT_SYMBOL(flush_dcache_page);
+  * Additional functions defined in assembly.
+  */
+ EXPORT_SYMBOL(__flush_icache_range);
++EXPORT_SYMBOL(__flush_dcache_area);
++EXPORT_SYMBOL(__inval_dcache_area);
+ 
+ #ifdef CONFIG_ARCH_HAS_PMEM_API
+ void arch_wb_cache_pmem(void *addr, size_t size)
+--- a/drivers/acpi/acpi_apd.c
++++ b/drivers/acpi/acpi_apd.c
+@@ -158,6 +158,16 @@ static const struct apd_device_desc hip0
+ 	.fixed_clk_rate = 125000000,
+ };
+ 
++static const struct apd_device_desc phytium_i2c_desc = {
++	.setup = acpi_apd_setup,
++	.fixed_clk_rate = 200000000,
++};
++
++static const struct apd_device_desc phytium_pe220x_i2c_desc = {
++	.setup = acpi_apd_setup,
++	.fixed_clk_rate = 50000000,
++};
++
+ static const struct apd_device_desc thunderx2_i2c_desc = {
+ 	.setup = acpi_apd_setup,
+ 	.fixed_clk_rate = 125000000,
+@@ -240,6 +250,8 @@ static const struct acpi_device_id acpi_
+ 	{ "HISI02A2", APD_ADDR(hip08_i2c_desc) },
+ 	{ "HISI02A3", APD_ADDR(hip08_lite_i2c_desc) },
+ 	{ "HISI0173", APD_ADDR(hip08_spi_desc) },
++	{ "PHYT0003", APD_ADDR(phytium_i2c_desc) },
++	{ "PHYT0038", APD_ADDR(phytium_pe220x_i2c_desc) },
+ 	{ "NXP0001", APD_ADDR(nxp_i2c_desc) },
+ #endif
+ 	{ }
+--- a/drivers/acpi/internal.h
++++ b/drivers/acpi/internal.h
+@@ -90,6 +90,18 @@ bool acpi_scan_is_offline(struct acpi_de
+ acpi_status acpi_sysfs_table_handler(u32 event, void *table, void *context);
+ void acpi_scan_table_handler(u32 event, void *table, void *context);
+ 
++#ifdef CONFIG_ACPI_GENERIC_GSI
++int acpi_register_irq(struct device *dev, u32 hwirq, int trigger,
++		      int polarity, struct fwnode_handle *fwnode);
++#else
++static inline
++int acpi_register_irq(struct device *dev, u32 hwirq, int trigger,
++		      int polarity, struct fwnode_handle *fwnode)
++{
++	return acpi_register_gsi(dev, hwirq, trigger, polarity);
++}
++#endif
++
+ /* --------------------------------------------------------------------------
+                      Device Node Initialization / Removal
+    -------------------------------------------------------------------------- */
+--- a/drivers/acpi/irq.c
++++ b/drivers/acpi/irq.c
+@@ -10,6 +10,8 @@
+ #include <linux/irqdomain.h>
+ #include <linux/of.h>
+ 
++#include "internal.h"
++
+ enum acpi_irq_model_id acpi_irq_model;
+ 
+ static struct fwnode_handle *acpi_gsi_domain_id;
+@@ -38,29 +40,19 @@ int acpi_gsi_to_irq(u32 gsi, unsigned in
+ }
+ EXPORT_SYMBOL_GPL(acpi_gsi_to_irq);
+ 
+-/**
+- * acpi_register_gsi() - Map a GSI to a linux IRQ number
+- * @dev: device for which IRQ has to be mapped
+- * @gsi: GSI IRQ number
+- * @trigger: trigger type of the GSI number to be mapped
+- * @polarity: polarity of the GSI to be mapped
+- *
+- * Returns: a valid linux IRQ number on success
+- *          -EINVAL on failure
+- */
+-int acpi_register_gsi(struct device *dev, u32 gsi, int trigger,
+-		      int polarity)
++int acpi_register_irq(struct device *dev, u32 hwirq, int trigger,
++		      int polarity, struct fwnode_handle *fwnode)
+ {
+ 	struct irq_fwspec fwspec;
+ 	unsigned int irq;
+ 
+-	if (WARN_ON(!acpi_gsi_domain_id)) {
+-		pr_warn("GSI: No registered irqchip, giving up\n");
++	if (!fwnode) {
++		dev_warn(dev, "No registered irqchip for hwirq %d\n", hwirq);
+ 		return -EINVAL;
+ 	}
+ 
+-	fwspec.fwnode = acpi_gsi_domain_id;
+-	fwspec.param[0] = gsi;
++	fwspec.fwnode = fwnode;
++	fwspec.param[0] = hwirq;
+ 	fwspec.param[1] = acpi_dev_get_irq_type(trigger, polarity);
+ 	fwspec.param_count = 2;
+ 
+@@ -70,6 +62,22 @@ int acpi_register_gsi(struct device *dev
+ 
+ 	return irq;
+ }
++
++/**
++ * acpi_register_gsi() - Map a GSI to a linux IRQ number
++ * @dev: device for which IRQ has to be mapped
++ * @gsi: GSI IRQ number
++ * @trigger: trigger type of the GSI number to be mapped
++ * @polarity: polarity of the GSI to be mapped
++ *
++ * Returns: a valid linux IRQ number on success
++ *          -EINVAL on failure
++ */
++int acpi_register_gsi(struct device *dev, u32 gsi, int trigger,
++		      int polarity)
++{
++	return acpi_register_irq(dev, gsi, trigger, polarity, acpi_gsi_domain_id);
++}
+ EXPORT_SYMBOL_GPL(acpi_register_gsi);
+ 
+ /**
+@@ -97,7 +105,7 @@ EXPORT_SYMBOL_GPL(acpi_unregister_gsi);
+  * Return:
+  * The referenced device fwhandle or NULL on failure
+  */
+-static struct fwnode_handle *
++struct fwnode_handle *
+ acpi_get_irq_source_fwhandle(const struct acpi_resource_source *source)
+ {
+ 	struct fwnode_handle *result;
+--- a/drivers/acpi/pci_irq.c
++++ b/drivers/acpi/pci_irq.c
+@@ -22,6 +22,8 @@
+ #include <linux/slab.h>
+ #include <linux/interrupt.h>
+ 
++#include "internal.h"
++
+ #define PREFIX "ACPI: "
+ 
+ #define _COMPONENT		ACPI_PCI_COMPONENT
+@@ -410,6 +412,7 @@ int acpi_pci_irq_enable(struct pci_dev *
+ 	char *link = NULL;
+ 	char link_desc[16];
+ 	int rc;
++	struct fwnode_handle *rs_fwnode;
+ 
+ 	pin = dev->pin;
+ 	if (!pin) {
+@@ -438,7 +441,8 @@ int acpi_pci_irq_enable(struct pci_dev *
+ 			gsi = acpi_pci_link_allocate_irq(entry->link,
+ 							 entry->index,
+ 							 &triggering, &polarity,
+-							 &link);
++							 &link,
++							 &rs_fwnode);
+ 		else
+ 			gsi = entry->index;
+ 	} else
+@@ -462,7 +466,7 @@ int acpi_pci_irq_enable(struct pci_dev *
+ 		return 0;
+ 	}
+ 
+-	rc = acpi_register_gsi(&dev->dev, gsi, triggering, polarity);
++	rc = acpi_register_irq(&dev->dev, gsi, triggering, polarity, rs_fwnode);
+ 	if (rc < 0) {
+ 		dev_warn(&dev->dev, "PCI INT %c: failed to register GSI\n",
+ 			 pin_name(pin));
+--- a/drivers/acpi/pci_link.c
++++ b/drivers/acpi/pci_link.c
+@@ -59,6 +59,7 @@ struct acpi_pci_link_irq {
+ 	u8 resource_type;
+ 	u8 possible_count;
+ 	u32 possible[ACPI_PCI_LINK_MAX_POSSIBLE];
++	struct acpi_resource_source resource_source;
+ 	u8 initialized:1;
+ 	u8 reserved:7;
+ };
+@@ -120,6 +121,8 @@ static acpi_status acpi_pci_link_check_p
+ 		{
+ 			struct acpi_resource_extended_irq *p =
+ 			    &resource->data.extended_irq;
++			struct acpi_resource_source *rs =
++			    &link->irq.resource_source;
+ 			if (!p || !p->interrupt_count) {
+ 				printk(KERN_WARNING PREFIX
+ 					      "Blank _PRS EXT IRQ resource\n");
+@@ -140,6 +143,12 @@ static acpi_status acpi_pci_link_check_p
+ 			link->irq.triggering = p->triggering;
+ 			link->irq.polarity = p->polarity;
+ 			link->irq.resource_type = ACPI_RESOURCE_TYPE_EXTENDED_IRQ;
++			if (p->resource_source.string_length) {
++				rs->index = p->resource_source.index;
++				rs->string_length = p->resource_source.string_length;
++				rs->string_ptr = kstrdup(p->resource_source.string_ptr,
++							 GFP_KERNEL);
++			}
+ 			break;
+ 		}
+ 	default:
+@@ -326,7 +335,8 @@ static int acpi_pci_link_set(struct acpi
+ 			resource->res.data.extended_irq.shareable = ACPI_SHARED;
+ 		resource->res.data.extended_irq.interrupt_count = 1;
+ 		resource->res.data.extended_irq.interrupts[0] = irq;
+-		/* ignore resource_source, it's optional */
++		resource->res.data.extended_irq.resource_source =
++			link->irq.resource_source;
+ 		break;
+ 	default:
+ 		printk(KERN_ERR PREFIX "Invalid Resource_type %d\n", link->irq.resource_type);
+@@ -612,7 +622,7 @@ static int acpi_pci_link_allocate(struct
+  * failure: return -1
+  */
+ int acpi_pci_link_allocate_irq(acpi_handle handle, int index, int *triggering,
+-			       int *polarity, char **name)
++			       int *polarity, char **name, struct fwnode_handle **rs_fwnode)
+ {
+ 	int result;
+ 	struct acpi_device *device;
+@@ -656,6 +666,8 @@ int acpi_pci_link_allocate_irq(acpi_hand
+ 		*polarity = link->irq.polarity;
+ 	if (name)
+ 		*name = acpi_device_bid(link->device);
++	if (rs_fwnode)
++		*rs_fwnode = acpi_get_irq_source_fwhandle(&link->irq.resource_source);
+ 	ACPI_DEBUG_PRINT((ACPI_DB_INFO,
+ 			  "Link %s is referenced\n",
+ 			  acpi_device_bid(link->device)));
+--- a/drivers/char/hw_random/Kconfig
++++ b/drivers/char/hw_random/Kconfig
+@@ -536,6 +536,18 @@ config HW_RANDOM_XIPHERA
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called xiphera-trng.
+ 
++config HW_RANDOM_PHYTIUM
++	tristate "Phytium Random Number Generator support"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	help
++	  This driver provides kernel-side support for the Random Number
++	  Generator hardware found on Phytium SoCs.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called phytium-rng.
++
++	  If unsure, say Y.
++
+ endif # HW_RANDOM
+ 
+ config UML_RANDOM
+--- a/drivers/char/hw_random/Makefile
++++ b/drivers/char/hw_random/Makefile
+@@ -46,3 +46,5 @@ obj-$(CONFIG_HW_RANDOM_OPTEE) += optee-r
+ obj-$(CONFIG_HW_RANDOM_NPCM) += npcm-rng.o
+ obj-$(CONFIG_HW_RANDOM_CCTRNG) += cctrng.o
+ obj-$(CONFIG_HW_RANDOM_XIPHERA) += xiphera-trng.o
++
++obj-$(CONFIG_HW_RANDOM_PHYTIUM) += phytium-rng.o
+\ No newline at end of file
+--- a/drivers/char/ipmi/Kconfig
++++ b/drivers/char/ipmi/Kconfig
+@@ -109,6 +109,27 @@ config ASPEED_KCS_IPMI_BMC
+ 	  The driver implements the BMC side of the KCS contorller, it
+ 	  provides the access of KCS IO space for BMC side.
+ 
++config PHYTIUM_KCS_IPMI_BMC
++	depends on ARCH_PHYTIUM
++	select IPMI_KCS_BMC
++	select REGMAP_MMIO
++	tristate "PHYTIUM KCS IPMI BMC driver"
++	help
++	  Provides a driver for the KCS (Kerboard Controller Style) IPMI
++	  interface found on Phytium SOCs.
++
++	  The driver implements the BMC side of the KCS controller, it
++	  provides the access of KCS IO space for BMC side.
++
++config PHYTIUM_BT_IPMI_BMC
++	depends on ARCH_PHYTIUM
++	depends on REGMAP && REGMAP_MMIO && MFD_SYSCON
++	tristate "PHYTIUM BT BMC driver"
++	help
++	  Provides a driver for the BT (Block Transfer) IPMI interface
++	  found on Phytium SOCs. The driver implements the BMC
++	  side of the BT interface.
++
+ config NPCM7XX_KCS_IPMI_BMC
+ 	depends on ARCH_NPCM7XX || COMPILE_TEST
+ 	select IPMI_KCS_BMC
+--- a/drivers/char/ipmi/Makefile
++++ b/drivers/char/ipmi/Makefile
+@@ -27,3 +27,5 @@ obj-$(CONFIG_ASPEED_BT_IPMI_BMC) += bt-b
+ obj-$(CONFIG_ASPEED_KCS_IPMI_BMC) += kcs_bmc_aspeed.o
+ obj-$(CONFIG_NPCM7XX_KCS_IPMI_BMC) += kcs_bmc_npcm7xx.o
+ obj-$(CONFIG_IPMB_DEVICE_INTERFACE) += ipmb_dev_int.o
++obj-$(CONFIG_PHYTIUM_KCS_IPMI_BMC) += kcs_bmc_phytium.o
++obj-$(CONFIG_PHYTIUM_BT_IPMI_BMC) += bt_bmc_phytium.o
+\ No newline at end of file
+--- a/drivers/clocksource/arm_arch_timer.c
++++ b/drivers/clocksource/arm_arch_timer.c
+@@ -41,23 +41,29 @@
+ #define CNTACR_RWVT	BIT(4)
+ #define CNTACR_RWPT	BIT(5)
+ 
+-#define CNTVCT_LO	0x08
+-#define CNTVCT_HI	0x0c
++#define CNTVCT_LO	0x00
++#define CNTPCT_LO	0x08
+ #define CNTFRQ		0x10
+-#define CNTP_TVAL	0x28
++#define CNTP_CVAL_LO	0x20
+ #define CNTP_CTL	0x2c
+-#define CNTV_TVAL	0x38
++#define CNTV_CVAL_LO	0x30
+ #define CNTV_CTL	0x3c
+ 
+-static unsigned arch_timers_present __initdata;
++/*
++ * The minimum amount of time a generic counter is guaranteed to not roll over
++ * (40 years)
++ */
++#define MIN_ROLLOVER_SECS	(40ULL * 365 * 24 * 3600)
+ 
+-static void __iomem *arch_counter_base;
++static unsigned arch_timers_present __initdata;
+ 
+ struct arch_timer {
+ 	void __iomem *base;
+ 	struct clock_event_device evt;
+ };
+ 
++static struct arch_timer *arch_timer_mem __ro_after_init;
++
+ #define to_arch_timer(e) container_of(e, struct arch_timer, evt)
+ 
+ static u32 arch_timer_rate;
+@@ -85,32 +91,57 @@ static int __init early_evtstrm_cfg(char
+ early_param("clocksource.arm_arch_timer.evtstrm", early_evtstrm_cfg);
+ 
+ /*
++ * Makes an educated guess at a valid counter width based on the Generic Timer
++ * specification. Of note:
++ *   1) the system counter is at least 56 bits wide
++ *   2) a roll-over time of not less than 40 years
++ *
++ * See 'ARM DDI 0487G.a D11.1.2 ("The system counter")' for more details.
++ */
++static int arch_counter_get_width(void)
++{
++	u64 min_cycles = MIN_ROLLOVER_SECS * arch_timer_rate;
++
++	/* guarantee the returned width is within the valid range */
++	return clamp_val(ilog2(min_cycles - 1) + 1, 56, 64);
++}
++
++/*
+  * Architected system timer support.
+  */
+ 
+ static __always_inline
+-void arch_timer_reg_write(int access, enum arch_timer_reg reg, u32 val,
++void arch_timer_reg_write(int access, enum arch_timer_reg reg, u64 val,
+ 			  struct clock_event_device *clk)
+ {
+ 	if (access == ARCH_TIMER_MEM_PHYS_ACCESS) {
+ 		struct arch_timer *timer = to_arch_timer(clk);
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+-			writel_relaxed(val, timer->base + CNTP_CTL);
++			writel_relaxed((u32)val, timer->base + CNTP_CTL);
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			writel_relaxed(val, timer->base + CNTP_TVAL);
++		case ARCH_TIMER_REG_CVAL:
++			/*
++			 * Not guaranteed to be atomic, so the timer
++			 * must be disabled at this point.
++			 */
++			writeq_relaxed(val, timer->base + CNTP_CVAL_LO);
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_MEM_VIRT_ACCESS) {
+ 		struct arch_timer *timer = to_arch_timer(clk);
+ 		switch (reg) {
+ 		case ARCH_TIMER_REG_CTRL:
+-			writel_relaxed(val, timer->base + CNTV_CTL);
++			writel_relaxed((u32)val, timer->base + CNTV_CTL);
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			writel_relaxed(val, timer->base + CNTV_TVAL);
++		case ARCH_TIMER_REG_CVAL:
++			/* Same restriction as above */
++			writeq_relaxed(val, timer->base + CNTV_CVAL_LO);
+ 			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else {
+ 		arch_timer_reg_write_cp15(access, reg, val);
+@@ -129,9 +160,8 @@ u32 arch_timer_reg_read(int access, enum
+ 		case ARCH_TIMER_REG_CTRL:
+ 			val = readl_relaxed(timer->base + CNTP_CTL);
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			val = readl_relaxed(timer->base + CNTP_TVAL);
+-			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else if (access == ARCH_TIMER_MEM_VIRT_ACCESS) {
+ 		struct arch_timer *timer = to_arch_timer(clk);
+@@ -139,9 +169,8 @@ u32 arch_timer_reg_read(int access, enum
+ 		case ARCH_TIMER_REG_CTRL:
+ 			val = readl_relaxed(timer->base + CNTV_CTL);
+ 			break;
+-		case ARCH_TIMER_REG_TVAL:
+-			val = readl_relaxed(timer->base + CNTV_TVAL);
+-			break;
++		default:
++			BUILD_BUG();
+ 		}
+ 	} else {
+ 		val = arch_timer_reg_read_cp15(access, reg);
+@@ -193,13 +222,11 @@ static struct clocksource clocksource_co
+ 	.name	= "arch_sys_counter",
+ 	.rating	= 400,
+ 	.read	= arch_counter_read,
+-	.mask	= CLOCKSOURCE_MASK(56),
+ 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
+ };
+ 
+ static struct cyclecounter cyclecounter __ro_after_init = {
+ 	.read	= arch_counter_read_cc,
+-	.mask	= CLOCKSOURCE_MASK(56),
+ };
+ 
+ struct ate_acpi_oem_info {
+@@ -227,16 +254,6 @@ struct ate_acpi_oem_info {
+ 	_new;						\
+ })
+ 
+-static u32 notrace fsl_a008585_read_cntp_tval_el0(void)
+-{
+-	return __fsl_a008585_read_reg(cntp_tval_el0);
+-}
+-
+-static u32 notrace fsl_a008585_read_cntv_tval_el0(void)
+-{
+-	return __fsl_a008585_read_reg(cntv_tval_el0);
+-}
+-
+ static u64 notrace fsl_a008585_read_cntpct_el0(void)
+ {
+ 	return __fsl_a008585_read_reg(cntpct_el0);
+@@ -273,16 +290,6 @@ static u64 notrace fsl_a008585_read_cntv
+ 	_new;							\
+ })
+ 
+-static u32 notrace hisi_161010101_read_cntp_tval_el0(void)
+-{
+-	return __hisi_161010101_read_reg(cntp_tval_el0);
+-}
+-
+-static u32 notrace hisi_161010101_read_cntv_tval_el0(void)
+-{
+-	return __hisi_161010101_read_reg(cntv_tval_el0);
+-}
+-
+ static u64 notrace hisi_161010101_read_cntpct_el0(void)
+ {
+ 	return __hisi_161010101_read_reg(cntpct_el0);
+@@ -367,16 +374,6 @@ static u64 notrace sun50i_a64_read_cntvc
+ {
+ 	return __sun50i_a64_read_reg(cntvct_el0);
+ }
+-
+-static u32 notrace sun50i_a64_read_cntp_tval_el0(void)
+-{
+-	return read_sysreg(cntp_cval_el0) - sun50i_a64_read_cntpct_el0();
+-}
+-
+-static u32 notrace sun50i_a64_read_cntv_tval_el0(void)
+-{
+-	return read_sysreg(cntv_cval_el0) - sun50i_a64_read_cntvct_el0();
+-}
+ #endif
+ 
+ #ifdef CONFIG_ARM_ARCH_TIMER_OOL_WORKAROUND
+@@ -385,7 +382,7 @@ EXPORT_SYMBOL_GPL(timer_unstable_counter
+ 
+ static atomic_t timer_unstable_counter_workaround_in_use = ATOMIC_INIT(0);
+ 
+-static void erratum_set_next_event_tval_generic(const int access, unsigned long evt,
++static void erratum_set_next_event_generic(const int access, unsigned long evt,
+ 						struct clock_event_device *clk)
+ {
+ 	unsigned long ctrl;
+@@ -406,17 +403,17 @@ static void erratum_set_next_event_tval_
+ 	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
+ }
+ 
+-static __maybe_unused int erratum_set_next_event_tval_virt(unsigned long evt,
++static __maybe_unused int erratum_set_next_event_virt(unsigned long evt,
+ 					    struct clock_event_device *clk)
+ {
+-	erratum_set_next_event_tval_generic(ARCH_TIMER_VIRT_ACCESS, evt, clk);
++	erratum_set_next_event_generic(ARCH_TIMER_VIRT_ACCESS, evt, clk);
+ 	return 0;
+ }
+ 
+-static __maybe_unused int erratum_set_next_event_tval_phys(unsigned long evt,
++static __maybe_unused int erratum_set_next_event_phys(unsigned long evt,
+ 					    struct clock_event_device *clk)
+ {
+-	erratum_set_next_event_tval_generic(ARCH_TIMER_PHYS_ACCESS, evt, clk);
++	erratum_set_next_event_generic(ARCH_TIMER_PHYS_ACCESS, evt, clk);
+ 	return 0;
+ }
+ 
+@@ -426,12 +423,10 @@ static const struct arch_timer_erratum_w
+ 		.match_type = ate_match_dt,
+ 		.id = "fsl,erratum-a008585",
+ 		.desc = "Freescale erratum a005858",
+-		.read_cntp_tval_el0 = fsl_a008585_read_cntp_tval_el0,
+-		.read_cntv_tval_el0 = fsl_a008585_read_cntv_tval_el0,
+ 		.read_cntpct_el0 = fsl_a008585_read_cntpct_el0,
+ 		.read_cntvct_el0 = fsl_a008585_read_cntvct_el0,
+-		.set_next_event_phys = erratum_set_next_event_tval_phys,
+-		.set_next_event_virt = erratum_set_next_event_tval_virt,
++		.set_next_event_phys = erratum_set_next_event_phys,
++		.set_next_event_virt = erratum_set_next_event_virt,
+ 	},
+ #endif
+ #ifdef CONFIG_HISILICON_ERRATUM_161010101
+@@ -439,23 +434,19 @@ static const struct arch_timer_erratum_w
+ 		.match_type = ate_match_dt,
+ 		.id = "hisilicon,erratum-161010101",
+ 		.desc = "HiSilicon erratum 161010101",
+-		.read_cntp_tval_el0 = hisi_161010101_read_cntp_tval_el0,
+-		.read_cntv_tval_el0 = hisi_161010101_read_cntv_tval_el0,
+ 		.read_cntpct_el0 = hisi_161010101_read_cntpct_el0,
+ 		.read_cntvct_el0 = hisi_161010101_read_cntvct_el0,
+-		.set_next_event_phys = erratum_set_next_event_tval_phys,
+-		.set_next_event_virt = erratum_set_next_event_tval_virt,
++		.set_next_event_phys = erratum_set_next_event_phys,
++		.set_next_event_virt = erratum_set_next_event_virt,
+ 	},
+ 	{
+ 		.match_type = ate_match_acpi_oem_info,
+ 		.id = hisi_161010101_oem_info,
+ 		.desc = "HiSilicon erratum 161010101",
+-		.read_cntp_tval_el0 = hisi_161010101_read_cntp_tval_el0,
+-		.read_cntv_tval_el0 = hisi_161010101_read_cntv_tval_el0,
+ 		.read_cntpct_el0 = hisi_161010101_read_cntpct_el0,
+ 		.read_cntvct_el0 = hisi_161010101_read_cntvct_el0,
+-		.set_next_event_phys = erratum_set_next_event_tval_phys,
+-		.set_next_event_virt = erratum_set_next_event_tval_virt,
++		.set_next_event_phys = erratum_set_next_event_phys,
++		.set_next_event_virt = erratum_set_next_event_virt,
+ 	},
+ #endif
+ #ifdef CONFIG_ARM64_ERRATUM_858921
+@@ -472,12 +463,10 @@ static const struct arch_timer_erratum_w
+ 		.match_type = ate_match_dt,
+ 		.id = "allwinner,erratum-unknown1",
+ 		.desc = "Allwinner erratum UNKNOWN1",
+-		.read_cntp_tval_el0 = sun50i_a64_read_cntp_tval_el0,
+-		.read_cntv_tval_el0 = sun50i_a64_read_cntv_tval_el0,
+ 		.read_cntpct_el0 = sun50i_a64_read_cntpct_el0,
+ 		.read_cntvct_el0 = sun50i_a64_read_cntvct_el0,
+-		.set_next_event_phys = erratum_set_next_event_tval_phys,
+-		.set_next_event_virt = erratum_set_next_event_tval_virt,
++		.set_next_event_phys = erratum_set_next_event_phys,
++		.set_next_event_virt = erratum_set_next_event_virt,
+ 	},
+ #endif
+ #ifdef CONFIG_ARM64_ERRATUM_1418040
+@@ -715,10 +704,18 @@ static __always_inline void set_next_eve
+ 					   struct clock_event_device *clk)
+ {
+ 	unsigned long ctrl;
++	u64 cnt;
++
+ 	ctrl = arch_timer_reg_read(access, ARCH_TIMER_REG_CTRL, clk);
+ 	ctrl |= ARCH_TIMER_CTRL_ENABLE;
+ 	ctrl &= ~ARCH_TIMER_CTRL_IT_MASK;
+-	arch_timer_reg_write(access, ARCH_TIMER_REG_TVAL, evt, clk);
++
++	if (access == ARCH_TIMER_PHYS_ACCESS)
++		cnt = __arch_counter_get_cntpct();
++	else
++		cnt = __arch_counter_get_cntvct();
++
++	arch_timer_reg_write(access, ARCH_TIMER_REG_CVAL, evt + cnt, clk);
+ 	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
+ }
+ 
+@@ -736,23 +733,79 @@ static int arch_timer_set_next_event_phy
+ 	return 0;
+ }
+ 
++static u64 arch_counter_get_cnt_mem(struct arch_timer *t, int offset_lo)
++{
++	u32 cnt_lo, cnt_hi, tmp_hi;
++
++	do {
++		cnt_hi = readl_relaxed(t->base + offset_lo + 4);
++		cnt_lo = readl_relaxed(t->base + offset_lo);
++		tmp_hi = readl_relaxed(t->base + offset_lo + 4);
++	} while (cnt_hi != tmp_hi);
++
++	return ((u64) cnt_hi << 32) | cnt_lo;
++}
++
++static __always_inline void set_next_event_mem(const int access, unsigned long evt,
++					   struct clock_event_device *clk)
++{
++	struct arch_timer *timer = to_arch_timer(clk);
++	unsigned long ctrl;
++	u64 cnt;
++
++	ctrl = arch_timer_reg_read(access, ARCH_TIMER_REG_CTRL, clk);
++	ctrl |= ARCH_TIMER_CTRL_ENABLE;
++	ctrl &= ~ARCH_TIMER_CTRL_IT_MASK;
++
++	if (access ==  ARCH_TIMER_MEM_VIRT_ACCESS)
++		cnt = arch_counter_get_cnt_mem(timer, CNTVCT_LO);
++	else
++		cnt = arch_counter_get_cnt_mem(timer, CNTPCT_LO);
++
++	arch_timer_reg_write(access, ARCH_TIMER_REG_CVAL, evt + cnt, clk);
++	arch_timer_reg_write(access, ARCH_TIMER_REG_CTRL, ctrl, clk);
++}
++
+ static int arch_timer_set_next_event_virt_mem(unsigned long evt,
+ 					      struct clock_event_device *clk)
+ {
+-	set_next_event(ARCH_TIMER_MEM_VIRT_ACCESS, evt, clk);
++	set_next_event_mem(ARCH_TIMER_MEM_VIRT_ACCESS, evt, clk);
+ 	return 0;
+ }
+ 
+ static int arch_timer_set_next_event_phys_mem(unsigned long evt,
+ 					      struct clock_event_device *clk)
+ {
+-	set_next_event(ARCH_TIMER_MEM_PHYS_ACCESS, evt, clk);
++	set_next_event_mem(ARCH_TIMER_MEM_PHYS_ACCESS, evt, clk);
+ 	return 0;
+ }
+ 
++static u64 __arch_timer_check_delta(void)
++{
++#ifdef CONFIG_ARM64
++	const struct midr_range broken_cval_midrs[] = {
++		/*
++		 * XGene-1 implements CVAL in terms of TVAL, meaning
++		 * that the maximum timer range is 32bit. Shame on them.
++		 */
++		MIDR_ALL_VERSIONS(MIDR_CPU_MODEL(ARM_CPU_IMP_APM,
++						 APM_CPU_PART_POTENZA)),
++		{},
++	};
++
++	if (is_midr_in_range_list(read_cpuid_id(), broken_cval_midrs)) {
++		pr_warn_once("Broken CNTx_CVAL_EL1, limiting width to 32bits");
++		return CLOCKSOURCE_MASK(32);
++	}
++#endif
++	return CLOCKSOURCE_MASK(arch_counter_get_width());
++}
++
+ static void __arch_timer_setup(unsigned type,
+ 			       struct clock_event_device *clk)
+ {
++	u64 max_delta;
++
+ 	clk->features = CLOCK_EVT_FEAT_ONESHOT;
+ 
+ 	if (type == ARCH_TIMER_TYPE_CP15) {
+@@ -784,6 +837,7 @@ static void __arch_timer_setup(unsigned
+ 		}
+ 
+ 		clk->set_next_event = sne;
++		max_delta = __arch_timer_check_delta();
+ 	} else {
+ 		clk->features |= CLOCK_EVT_FEAT_DYNIRQ;
+ 		clk->name = "arch_mem_timer";
+@@ -800,11 +854,13 @@ static void __arch_timer_setup(unsigned
+ 			clk->set_next_event =
+ 				arch_timer_set_next_event_phys_mem;
+ 		}
++
++		max_delta = CLOCKSOURCE_MASK(56);
+ 	}
+ 
+ 	clk->set_state_shutdown(clk);
+ 
+-	clockevents_config_and_register(clk, arch_timer_rate, 0xf, 0x7fffffff);
++	clockevents_config_and_register(clk, arch_timer_rate, 0xf, max_delta);
+ }
+ 
+ static void arch_timer_evtstrm_enable(int divider)
+@@ -974,15 +1030,7 @@ bool arch_timer_evtstrm_available(void)
+ 
+ static u64 arch_counter_get_cntvct_mem(void)
+ {
+-	u32 vct_lo, vct_hi, tmp_hi;
+-
+-	do {
+-		vct_hi = readl_relaxed(arch_counter_base + CNTVCT_HI);
+-		vct_lo = readl_relaxed(arch_counter_base + CNTVCT_LO);
+-		tmp_hi = readl_relaxed(arch_counter_base + CNTVCT_HI);
+-	} while (vct_hi != tmp_hi);
+-
+-	return ((u64) vct_hi << 32) | vct_lo;
++	return arch_counter_get_cnt_mem(arch_timer_mem, CNTVCT_LO);
+ }
+ 
+ static struct arch_timer_kvm_info arch_timer_kvm_info;
+@@ -995,6 +1043,7 @@ struct arch_timer_kvm_info *arch_timer_g
+ static void __init arch_counter_register(unsigned type)
+ {
+ 	u64 start_count;
++	int width;
+ 
+ 	/* Register the CP15 based counter if we have one */
+ 	if (type & ARCH_TIMER_TYPE_CP15) {
+@@ -1019,6 +1068,10 @@ static void __init arch_counter_register
+ 		arch_timer_read_counter = arch_counter_get_cntvct_mem;
+ 	}
+ 
++	width = arch_counter_get_width();
++	clocksource_counter.mask = CLOCKSOURCE_MASK(width);
++	cyclecounter.mask = CLOCKSOURCE_MASK(width);
++
+ 	if (!arch_counter_suspend_stop)
+ 		clocksource_counter.flags |= CLOCK_SOURCE_SUSPEND_NONSTOP;
+ 	start_count = arch_timer_read_counter();
+@@ -1028,8 +1081,7 @@ static void __init arch_counter_register
+ 	timecounter_init(&arch_timer_kvm_info.timecounter,
+ 			 &cyclecounter, start_count);
+ 
+-	/* 56 bits minimum, so we assume worst case rollover */
+-	sched_clock_register(arch_timer_read_counter, 56, arch_timer_rate);
++	sched_clock_register(arch_timer_read_counter, width, arch_timer_rate);
+ }
+ 
+ static void arch_timer_stop(struct clock_event_device *clk)
+@@ -1170,25 +1222,25 @@ static int __init arch_timer_mem_registe
+ {
+ 	int ret;
+ 	irq_handler_t func;
+-	struct arch_timer *t;
+ 
+-	t = kzalloc(sizeof(*t), GFP_KERNEL);
+-	if (!t)
++	arch_timer_mem = kzalloc(sizeof(*arch_timer_mem), GFP_KERNEL);
++	if (!arch_timer_mem)
+ 		return -ENOMEM;
+ 
+-	t->base = base;
+-	t->evt.irq = irq;
+-	__arch_timer_setup(ARCH_TIMER_TYPE_MEM, &t->evt);
++	arch_timer_mem->base = base;
++	arch_timer_mem->evt.irq = irq;
++	__arch_timer_setup(ARCH_TIMER_TYPE_MEM, &arch_timer_mem->evt);
+ 
+ 	if (arch_timer_mem_use_virtual)
+ 		func = arch_timer_handler_virt_mem;
+ 	else
+ 		func = arch_timer_handler_phys_mem;
+ 
+-	ret = request_irq(irq, func, IRQF_TIMER, "arch_mem_timer", &t->evt);
++	ret = request_irq(irq, func, IRQF_TIMER, "arch_mem_timer", &arch_timer_mem->evt);
+ 	if (ret) {
+ 		pr_err("Failed to request mem timer irq\n");
+-		kfree(t);
++		kfree(arch_timer_mem);
++		arch_timer_mem = NULL;
+ 	}
+ 
+ 	return ret;
+@@ -1436,7 +1488,6 @@ arch_timer_mem_frame_register(struct arc
+ 		return ret;
+ 	}
+ 
+-	arch_counter_base = base;
+ 	arch_timers_present |= ARCH_TIMER_TYPE_MEM;
+ 
+ 	return 0;
+--- a/drivers/crypto/Kconfig
++++ b/drivers/crypto/Kconfig
+@@ -21,7 +21,7 @@ config CRYPTO_DEV_PADLOCK
+ 	  (so called VIA PadLock ACE, Advanced Cryptography Engine)
+ 	  that provides instructions for very fast cryptographic
+ 	  operations with supported algorithms.
+-	  
++
+ 	  The instructions are used only when the CPU supports them.
+ 	  Otherwise software encryption is used.
+ 
+--- a/drivers/dma/Kconfig
++++ b/drivers/dma/Kconfig
+@@ -712,6 +712,13 @@ config ZX_DMA
+ 	help
+ 	  Support the DMA engine for ZTE ZX family platform devices.
+ 
++config PHYTIUM_DDMA
++	bool "Phytium PE220x DDMA support"
++	depends on (ARCH_PHYTIUM || COMPILE_TEST)
++	select DMA_ENGINE
++	select DMA_VIRTUAL_CHANNELS
++	help
++	  Enable support for Phytium PE220x DDMA controller.
+ 
+ # driver files
+ source "drivers/dma/bestcomm/Kconfig"
+--- a/drivers/dma/Makefile
++++ b/drivers/dma/Makefile
+@@ -87,3 +87,4 @@ obj-y += mediatek/
+ obj-y += qcom/
+ obj-y += ti/
+ obj-y += xilinx/
++obj-y += phytium/
+--- a/drivers/edac/Kconfig
++++ b/drivers/edac/Kconfig
+@@ -537,4 +537,11 @@ config EDAC_DMC520
+ 	  Support for error detection and correction on the
+ 	  SoCs with ARM DMC-520 DRAM controller.
+ 
++config EDAC_PHYTIUM
++	tristate "Phytium Pe220x SoC"
++	depends on (ARM64)
++	help
++	  Support for error detection and correction on the
++	  Phytium Pe220x family of SOCs.
++
+ endif # EDAC
+--- a/drivers/edac/Makefile
++++ b/drivers/edac/Makefile
+@@ -89,3 +89,4 @@ obj-$(CONFIG_EDAC_QCOM)			+= qcom_edac.o
+ obj-$(CONFIG_EDAC_ASPEED)		+= aspeed_edac.o
+ obj-$(CONFIG_EDAC_BLUEFIELD)		+= bluefield_edac.o
+ obj-$(CONFIG_EDAC_DMC520)		+= dmc520_edac.o
++obj-$(CONFIG_EDAC_PHYTIUM)		+= phytium_edac.o
+--- a/drivers/firmware/Kconfig
++++ b/drivers/firmware/Kconfig
+@@ -27,6 +27,18 @@ config ARM_SCMI_PROTOCOL
+ 	  This protocol library provides interface for all the client drivers
+ 	  making use of the features offered by the SCMI.
+ 
++if ARM_SCMI_PROTOCOL
++config ARM_SCMI_TRANSPORT_FORCE_POLLING
++	bool "Support force polling mode for SCMI Mailbox"
++	help
++	  Support force polling mode for SCMI Mailbox transports.
++
++	  If you want to configure SCMI Mailbox transport to use polling mode
++	  on the TX path and do not use any completion IRQ facility even when
++	  available through kernel parameter, answer Y. If unsure, say N.
++
++endif #ARM_SCMI_PROTOCOL
++
+ config ARM_SCMI_POWER_DOMAIN
+ 	tristate "SCMI power domain driver"
+ 	depends on ARM_SCMI_PROTOCOL || (COMPILE_TEST && OF)
+--- a/drivers/firmware/arm_scmi/driver.c
++++ b/drivers/firmware/arm_scmi/driver.c
+@@ -98,6 +98,10 @@ struct scmi_info {
+ 	int users;
+ };
+ 
++#ifdef CONFIG_ARM_SCMI_TRANSPORT_FORCE_POLLING
++static bool scmi_force_polling;
++#endif
++
+ #define handle_to_scmi_info(h)	container_of(h, struct scmi_info, handle)
+ 
+ static const int scmi_linux_errmap[] = {
+@@ -344,6 +348,15 @@ static bool scmi_xfer_done_no_timeout(st
+ 	       ktime_after(ktime_get(), stop);
+ }
+ 
++
++#ifdef CONFIG_ARM_SCMI_TRANSPORT_FORCE_POLLING
++static int __init scmi_set_force_polling(char *str)
++{
++	return kstrtobool(str, &scmi_force_polling);
++}
++early_param("scmi.force_polling", scmi_set_force_polling);
++#endif
++
+ /**
+  * scmi_do_xfer() - Do one transfer
+  *
+@@ -366,6 +379,11 @@ int scmi_do_xfer(const struct scmi_handl
+ 	if (unlikely(!cinfo))
+ 		return -EINVAL;
+ 
++#ifdef CONFIG_ARM_SCMI_TRANSPORT_FORCE_POLLING
++	if (scmi_force_polling)
++		xfer->hdr.poll_completion = true;
++#endif
++
+ 	trace_scmi_xfer_begin(xfer->transfer_id, xfer->hdr.id,
+ 			      xfer->hdr.protocol_id, xfer->hdr.seq,
+ 			      xfer->hdr.poll_completion);
+--- a/drivers/firmware/arm_scmi/shmem.c
++++ b/drivers/firmware/arm_scmi/shmem.c
+@@ -32,6 +32,14 @@ struct scmi_shared_mem {
+ void shmem_tx_prepare(struct scmi_shared_mem __iomem *shmem,
+ 		      struct scmi_xfer *xfer)
+ {
++#ifdef CONFIG_ARCH_PHYTIUM
++	/* callee not set cahnnel free when init, caller set it */
++	static int is_init = 0;
++	if(unlikely(is_init == 0)) {
++		iowrite32(0x1, &shmem->channel_status);
++		is_init = 1;
++	}
++#endif
+ 	/*
+ 	 * Ideally channel must be free by now unless OS timeout last
+ 	 * request and platform continued to process the same, wait
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -108,6 +108,10 @@ config GPIO_REGMAP
+ config GPIO_MAX730X
+ 	tristate
+ 
++# This symbol is selected by both MMIO and PCI expanders
++config GPIO_PHYTIUM_CORE
++	tristate
++
+ menu "Memory mapped GPIO drivers"
+ 	depends on HAS_IOMEM
+ 
+@@ -739,6 +743,27 @@ config GPIO_AMD_FCH
+ 	  Note: This driver doesn't registers itself automatically, as it
+ 	  needs to be provided with platform specific configuration.
+ 	  (See eg. CONFIG_PCENGINES_APU2.)
++
++config GPIO_PHYTIUM_PLAT
++	tristate "Phytium GPIO Platform support"
++	default y if ARCH_PHYTIUM
++	depends on ARM64
++	select GPIO_PHYTIUM_CORE
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	select GPIOLIB_IRQCHIP
++	help
++	  Say yes here to enable GPIO support for Phytium SoCs.
++
++config GPIO_PHYTIUM_SGPIO
++	tristate "Phytium SGPIO support"
++	default y if ARCH_PHYTIUM
++	depends on ARM64
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	help
++	  Say yes here to enable SGPIO support for Phytium SoCs.
++
+ endmenu
+ 
+ menu "Port-mapped I/O GPIO drivers"
+@@ -1520,6 +1545,20 @@ config GPIO_SODAVILLE
+ 	help
+ 	  Say Y here to support Intel Sodaville GPIO.
+ 
++
++config GPIO_PHYTIUM_PCI
++	tristate "Phytium GPIO PCI support"
++	select GPIO_PHYTIUM_CORE
++	select IRQ_DOMAIN
++	select GENERIC_IRQ_CHIP
++	select GPIOLIB_IRQCHIP
++	help
++	  Say Y here to support Phytium PCI GPIO controller on px210 chipset.
++	  An interrupt is generated when any of the inputs change state
++	  (low to high or high to low).
++
++	  This driver can be used for Phytium px210.
++
+ endmenu
+ 
+ menu "SPI GPIO expanders"
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -180,3 +180,8 @@ obj-$(CONFIG_GPIO_XTENSA)		+= gpio-xtens
+ obj-$(CONFIG_GPIO_ZEVIO)		+= gpio-zevio.o
+ obj-$(CONFIG_GPIO_ZX)			+= gpio-zx.o
+ obj-$(CONFIG_GPIO_ZYNQ)			+= gpio-zynq.o
++
++obj-$(CONFIG_GPIO_PHYTIUM_CORE)		+= gpio-phytium-core.o
++obj-$(CONFIG_GPIO_PHYTIUM_PCI)		+= gpio-phytium-pci.o
++obj-$(CONFIG_GPIO_PHYTIUM_PLAT)		+= gpio-phytium-platform.o
++obj-$(CONFIG_GPIO_PHYTIUM_SGPIO)	+= gpio-phytium-sgpio.o
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -393,6 +393,8 @@ source "drivers/gpu/drm/tidss/Kconfig"
+ 
+ source "drivers/gpu/drm/xlnx/Kconfig"
+ 
++source "drivers/gpu/drm/phytium/Kconfig"
++
+ # Keep legacy drivers last
+ 
+ menuconfig DRM_LEGACY
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -124,3 +124,4 @@ obj-$(CONFIG_DRM_ASPEED_GFX) += aspeed/
+ obj-$(CONFIG_DRM_MCDE) += mcde/
+ obj-$(CONFIG_DRM_TIDSS) += tidss/
+ obj-y			+= xlnx/
++obj-$(CONFIG_DRM_PHYTIUM) += phytium/
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -2096,6 +2096,16 @@ config SENSORS_INTEL_M10_BMC_HWMON
+ 	  sensors monitor various telemetry data of different components on the
+ 	  card, e.g. board temperature, FPGA core temperature/voltage/current.
+ 
++
++config SENSORS_PHYTIUM
++	tristate "Phytium Fan tach and capture counter driver"
++	help
++	  This driver provides support for Phytium Fan Tacho and capture
++	  counter controllers.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called tacho-phytium.
++
+ if ACPI
+ 
+ comment "ACPI drivers"
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -194,6 +194,8 @@ obj-$(CONFIG_SENSORS_WM831X)	+= wm831x-h
+ obj-$(CONFIG_SENSORS_WM8350)	+= wm8350-hwmon.o
+ obj-$(CONFIG_SENSORS_XGENE)	+= xgene-hwmon.o
+ 
++obj-$(CONFIG_SENSORS_PHYTIUM)	+= tacho-phytium.o
++
+ obj-$(CONFIG_SENSORS_OCC)	+= occ/
+ obj-$(CONFIG_PMBUS)		+= pmbus/
+ 
+--- a/drivers/hwspinlock/Kconfig
++++ b/drivers/hwspinlock/Kconfig
+@@ -65,4 +65,13 @@ config HSEM_U8500
+ 
+ 	  If unsure, say N.
+ 
++config HWSPINLOCK_PHYTIUM
++	tristate "Phytium Hardware Spinlock device"
++	depends on HWSPINLOCK
++	depends on ARCH_PHYTIUM
++	help
++	  Say y here to support the Phytium Hardware Spinlock device.
++
++	  If unsure, say N.
++
+ endif # HWSPINLOCK
+--- a/drivers/hwspinlock/Makefile
++++ b/drivers/hwspinlock/Makefile
+@@ -10,3 +10,5 @@ obj-$(CONFIG_HWSPINLOCK_SIRF)		+= sirf_h
+ obj-$(CONFIG_HWSPINLOCK_SPRD)		+= sprd_hwspinlock.o
+ obj-$(CONFIG_HWSPINLOCK_STM32)		+= stm32_hwspinlock.o
+ obj-$(CONFIG_HSEM_U8500)		+= u8500_hsem.o
++
++obj-$(CONFIG_HWSPINLOCK_PHYTIUM)	+= phytium_hwspinlock.o
+\ No newline at end of file
+--- a/drivers/i2c/busses/Kconfig
++++ b/drivers/i2c/busses/Kconfig
+@@ -1206,6 +1206,34 @@ config I2C_RCAR
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called i2c-rcar.
+ 
++config I2C_PHYTIUM_CORE
++	tristate
++
++config I2C_PHYTIUM_PCI
++	tristate "Phytium I2C PCI"
++	depends on PCI && ARCH_PHYTIUM
++	select I2C_PHYTIUM_CORE
++	select I2C_SMBUS
++	help
++	  If you say yes to this option, support will be included for the
++	  Phytium I2C adapter. Only master mode is supported.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called i2c-phytium-pci.
++
++config I2C_PHYTIUM_PLATFORM
++	tristate "Phytium I2C Platform"
++	depends on (ACPI && COMMON_CLK) || !ACPI
++	select I2C_SLAVE
++	select I2C_PHYTIUM_CORE
++	select I2C_SMBUS
++	help
++	  If you say yes to this option, support will be included for the
++	  Phytium I2C adapter. Only master mode is supported.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called i2c-phytium-platform.
++
+ comment "External I2C/SMBus adapter drivers"
+ 
+ config I2C_DIOLAN_U2C
+--- a/drivers/i2c/busses/Makefile
++++ b/drivers/i2c/busses/Makefile
+@@ -123,6 +123,10 @@ obj-$(CONFIG_I2C_XLR)		+= i2c-xlr.o
+ obj-$(CONFIG_I2C_XLP9XX)	+= i2c-xlp9xx.o
+ obj-$(CONFIG_I2C_RCAR)		+= i2c-rcar.o
+ obj-$(CONFIG_I2C_ZX2967)	+= i2c-zx2967.o
++obj-$(CONFIG_I2C_PHYTIUM_CORE)      += i2c-phytium-core.o
++i2c-phytium-core-objs := i2c-phytium-common.o i2c-phytium-master.o i2c-phytium-slave.o
++obj-$(CONFIG_I2C_PHYTIUM_PCI)       += i2c-phytium-pci.o
++obj-$(CONFIG_I2C_PHYTIUM_PLATFORM)  += i2c-phytium-platform.o
+ 
+ # External I2C/SMBus adapter drivers
+ obj-$(CONFIG_I2C_DIOLAN_U2C)	+= i2c-diolan-u2c.o
+--- a/drivers/iio/adc/Kconfig
++++ b/drivers/iio/adc/Kconfig
+@@ -1226,4 +1226,16 @@ config XILINX_XADC
+ 	  The driver can also be build as a module. If so, the module will be called
+ 	  xilinx-xadc.
+ 
++config PHYTIUM_ADC
++	tristate "Phytium ADC driver"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	select IIO_BUFFER
++	select IIO_TRIGGERED_BUFFER
++	help
++	  Say yes here to build support for Phytium analog to digital
++	  converters (ADC).
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called phytium-adc.
++
+ endmenu
+--- a/drivers/iio/adc/Makefile
++++ b/drivers/iio/adc/Makefile
+@@ -111,3 +111,4 @@ obj-$(CONFIG_VIPERBOARD_ADC) += viperboa
+ xilinx-xadc-y := xilinx-xadc-core.o xilinx-xadc-events.o
+ obj-$(CONFIG_XILINX_XADC) += xilinx-xadc.o
+ obj-$(CONFIG_SD_ADC_MODULATOR) += sd_adc_modulator.o
++obj-$(CONFIG_PHYTIUM_ADC) += phytium-adc.o
+\ No newline at end of file
+--- a/drivers/input/keyboard/Kconfig
++++ b/drivers/input/keyboard/Kconfig
+@@ -788,4 +788,15 @@ config KEYBOARD_MTK_PMIC
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called pmic-keys.
+ 
++config KEYBOARD_PHYTIUM
++	tristate "Phytium keypad support"
++	depends on ARCH_PHYTIUM
++	select INPUT_MATRIXKMAP
++	help
++	  Say Y here if you want to enable support for Phytium keypad
++	  port.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called phytium_keypad.
++
+ endif
+--- a/drivers/input/keyboard/Makefile
++++ b/drivers/input/keyboard/Makefile
+@@ -70,3 +70,4 @@ obj-$(CONFIG_KEYBOARD_TEGRA)		+= tegra-k
+ obj-$(CONFIG_KEYBOARD_TM2_TOUCHKEY)	+= tm2-touchkey.o
+ obj-$(CONFIG_KEYBOARD_TWL4030)		+= twl4030_keypad.o
+ obj-$(CONFIG_KEYBOARD_XTKBD)		+= xtkbd.o
++obj-$(CONFIG_KEYBOARD_PHYTIUM)		+= phytium-keypad.o
+--- a/drivers/input/serio/Kconfig
++++ b/drivers/input/serio/Kconfig
+@@ -40,6 +40,18 @@ config SERIO_I8042
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called i8042.
+ 
++config SERIO_PHYTIUM_PS2
++	depends on SERIO
++	tristate "PHYTIUM PS/2 (keyboard and mouse)"
++	default y if ARCH_PHYTIUM
++	depends on PCI
++	help
++	  This selects support for the PS/2 Host Controller on
++	  Phytium SoCs.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called phytium-ps2.
++
+ config SERIO_SERPORT
+ 	tristate "Serial port line discipline"
+ 	default y
+--- a/drivers/input/serio/Makefile
++++ b/drivers/input/serio/Makefile
+@@ -7,6 +7,7 @@
+ 
+ obj-$(CONFIG_SERIO)		+= serio.o
+ obj-$(CONFIG_SERIO_I8042)	+= i8042.o
++obj-$(CONFIG_SERIO_PHYTIUM_PS2)	+= phytium-ps2.o
+ obj-$(CONFIG_SERIO_PARKBD)	+= parkbd.o
+ obj-$(CONFIG_SERIO_SERPORT)	+= serport.o
+ obj-$(CONFIG_SERIO_CT82C710)	+= ct82c710.o
+--- a/drivers/iommu/arm/arm-smmu-v3/arm-smmu-v3.c
++++ b/drivers/iommu/arm/arm-smmu-v3/arm-smmu-v3.c
+@@ -2873,6 +2873,13 @@ static void arm_smmu_write_msi_msg(struc
+ 	doorbell = (((u64)msg->address_hi) << 32) | msg->address_lo;
+ 	doorbell &= MSI_CFG0_ADDR_MASK;
+ 
++#ifdef CONFIG_PM_SLEEP
++	/* Saves the msg (base addr of msi irq) and restores it during resume */
++	desc->msg.address_lo = msg->address_lo;
++	desc->msg.address_hi = msg->address_hi;
++	desc->msg.data = msg->data;
++#endif
++
+ 	writeq_relaxed(doorbell, smmu->base + cfg[0]);
+ 	writel_relaxed(msg->data, smmu->base + cfg[1]);
+ 	writel_relaxed(ARM_SMMU_MEMATTR_DEVICE_nGnRE, smmu->base + cfg[2]);
+@@ -2928,11 +2935,51 @@ static void arm_smmu_setup_msis(struct a
+ 	devm_add_action(dev, arm_smmu_free_msis, dev);
+ }
+ 
+-static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu)
++#ifdef CONFIG_PM_SLEEP
++static void arm_smmu_resume_msis(struct arm_smmu_device *smmu)
++{
++       struct msi_desc *desc;
++       struct device *dev = smmu->dev;
++
++       for_each_msi_entry(desc, dev) {
++               switch (desc->platform.msi_index) {
++               case EVTQ_MSI_INDEX:
++               case GERROR_MSI_INDEX:
++               case PRIQ_MSI_INDEX: {
++                       phys_addr_t *cfg = arm_smmu_msi_cfg[desc->platform.msi_index];
++                       struct msi_msg *msg = &desc->msg;
++                       phys_addr_t doorbell = (((u64)msg->address_hi) << 32) | msg->address_lo;
++
++                       doorbell &= MSI_CFG0_ADDR_MASK;
++                       writeq_relaxed(doorbell, smmu->base + cfg[0]);
++                       writel_relaxed(msg->data, smmu->base + cfg[1]);
++                       writel_relaxed(ARM_SMMU_MEMATTR_DEVICE_nGnRE,
++                                       smmu->base + cfg[2]);
++                       break;
++               }
++               default:
++                       continue;
++
++               }
++       }
++}
++#else
++static void arm_smmu_resume_msis(struct arm_smmu_device *smmu)
++{
++}
++#endif
++
++static void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu, bool resume)
+ {
+ 	int irq, ret;
+ 
+-	arm_smmu_setup_msis(smmu);
++	if (!resume)
++		arm_smmu_setup_msis(smmu);
++	else {
++		/* The irq doesn't need to be re-requested during resume */
++		arm_smmu_resume_msis(smmu);
++		return;
++	}
+ 
+ 	/* Request interrupt lines */
+ 	irq = smmu->evtq.q.irq;
+@@ -2974,7 +3021,7 @@ static void arm_smmu_setup_unique_irqs(s
+ 	}
+ }
+ 
+-static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
++static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu, bool resume)
+ {
+ 	int ret, irq;
+ 	u32 irqen_flags = IRQ_CTRL_EVTQ_IRQEN | IRQ_CTRL_GERROR_IRQEN;
+@@ -3001,7 +3048,7 @@ static int arm_smmu_setup_irqs(struct ar
+ 		if (ret < 0)
+ 			dev_warn(smmu->dev, "failed to enable combined irq\n");
+ 	} else
+-		arm_smmu_setup_unique_irqs(smmu);
++		arm_smmu_setup_unique_irqs(smmu, resume);
+ 
+ 	if (smmu->features & ARM_SMMU_FEAT_PRI)
+ 		irqen_flags |= IRQ_CTRL_PRIQ_IRQEN;
+@@ -3026,7 +3073,7 @@ static int arm_smmu_device_disable(struc
+ 	return ret;
+ }
+ 
+-static int arm_smmu_device_reset(struct arm_smmu_device *smmu, bool bypass)
++static int arm_smmu_device_reset(struct arm_smmu_device *smmu, bool resume)
+ {
+ 	int ret;
+ 	u32 reg, enables;
+@@ -3134,7 +3181,7 @@ static int arm_smmu_device_reset(struct
+ 		}
+ 	}
+ 
+-	ret = arm_smmu_setup_irqs(smmu);
++	ret = arm_smmu_setup_irqs(smmu, resume);
+ 	if (ret) {
+ 		dev_err(smmu->dev, "failed to setup irqs\n");
+ 		return ret;
+@@ -3144,7 +3191,7 @@ static int arm_smmu_device_reset(struct
+ 		enables &= ~(CR0_EVTQEN | CR0_PRIQEN);
+ 
+ 	/* Enable the SMMU interface, or ensure bypass */
+-	if (!bypass || disable_bypass) {
++	if (!smmu->bypass || disable_bypass) {
+ 		enables |= CR0_SMMUEN;
+ 	} else {
+ 		ret = arm_smmu_update_gbpa(smmu, 0, GBPA_ABORT);
+@@ -3492,6 +3539,26 @@ static void __iomem *arm_smmu_ioremap(st
+ 	return devm_ioremap_resource(dev, &res);
+ }
+ 
++#ifdef CONFIG_PM_SLEEP
++static int arm_smmu_suspend(struct device *dev)
++{
++	/*
++	 * The smmu is powered off and related registers are automatically
++	 * cleared when suspend. No need to do anything.
++	 */
++	return 0;
++}
++
++static int arm_smmu_resume(struct device *dev)
++{
++	struct arm_smmu_device *smmu = dev_get_drvdata(dev);
++
++	arm_smmu_device_reset(smmu, true);
++
++	return 0;
++}
++#endif
++
+ static int arm_smmu_device_probe(struct platform_device *pdev)
+ {
+ 	int irq, ret;
+@@ -3499,7 +3566,6 @@ static int arm_smmu_device_probe(struct
+ 	resource_size_t ioaddr;
+ 	struct arm_smmu_device *smmu;
+ 	struct device *dev = &pdev->dev;
+-	bool bypass;
+ 
+ 	smmu = devm_kzalloc(dev, sizeof(*smmu), GFP_KERNEL);
+ 	if (!smmu) {
+@@ -3517,7 +3583,7 @@ static int arm_smmu_device_probe(struct
+ 	}
+ 
+ 	/* Set bypass mode according to firmware probing result */
+-	bypass = !!ret;
++	smmu->bypass = !!ret;
+ 
+ 	/* Base address */
+ 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+@@ -3578,7 +3644,7 @@ static int arm_smmu_device_probe(struct
+ 	platform_set_drvdata(pdev, smmu);
+ 
+ 	/* Reset the device */
+-	ret = arm_smmu_device_reset(smmu, bypass);
++	ret = arm_smmu_device_reset(smmu, false);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -3623,10 +3689,21 @@ static const struct of_device_id arm_smm
+ };
+ MODULE_DEVICE_TABLE(of, arm_smmu_of_match);
+ 
++#ifdef CONFIG_PM_SLEEP
++static const struct dev_pm_ops arm_smmu_pm_ops = {
++	SET_SYSTEM_SLEEP_PM_OPS(arm_smmu_suspend,
++	arm_smmu_resume)
++};
++#define ARM_SMMU_PM_OPS                (&arm_smmu_pm_ops)
++#else
++#define ARM_SMMU_PM_OPS                NULL
++#endif
++
+ static struct platform_driver arm_smmu_driver = {
+ 	.driver	= {
+ 		.name			= "arm-smmu-v3",
+ 		.of_match_table		= arm_smmu_of_match,
++		.pm			= ARM_SMMU_PM_OPS,
+ 		.suppress_bind_attrs	= true,
+ 	},
+ 	.probe	= arm_smmu_device_probe,
+--- a/drivers/iommu/arm/arm-smmu-v3/arm-smmu-v3.h
++++ b/drivers/iommu/arm/arm-smmu-v3/arm-smmu-v3.h
+@@ -636,6 +636,7 @@ struct arm_smmu_device {
+ 
+ 	/* IOMMU core code handle */
+ 	struct iommu_device		iommu;
++	bool                            bypass;
+ };
+ 
+ /* SMMU private data for each master */
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -599,4 +599,12 @@ config MST_IRQ
+ 	help
+ 	  Support MStar Interrupt Controller.
+ 
++config PHYTIUM_IXIC
++	bool "Phytium SoC PCI Legacy Interrupt Controller"
++	depends on ARCH_PHYTIUM
++	select IRQ_DOMAIN
++	select IRQ_DOMAIN_HIERARCHY
++	help
++	  This enables support PCI Legacy Interrupt on Phytium SoC.
++
+ endmenu
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -114,3 +114,4 @@ obj-$(CONFIG_LOONGSON_PCH_PIC)		+= irq-l
+ obj-$(CONFIG_LOONGSON_PCH_MSI)		+= irq-loongson-pch-msi.o
+ obj-$(CONFIG_MST_IRQ)			+= irq-mst-intc.o
+ obj-$(CONFIG_SL28CPLD_INTC)		+= irq-sl28cpld.o
++obj-$(CONFIG_PHYTIUM_IXIC)		+= irq-phytium-ixic.o
+--- a/drivers/irqchip/irq-gic-v3-its.c
++++ b/drivers/irqchip/irq-gic-v3-its.c
+@@ -4787,6 +4787,7 @@ static void its_restore_enable(void)
+ {
+ 	struct its_node *its;
+ 	int ret;
++	int cpu;
+ 
+ 	raw_spin_lock(&its_lock);
+ 	list_for_each_entry(its, &its_nodes, entry) {
+@@ -4840,6 +4841,23 @@ static void its_restore_enable(void)
+ 		    GITS_TYPER_HCC(gic_read_typer(base + GITS_TYPER)))
+ 			its_cpu_init_collection(its);
+ 	}
++
++    /*
++     * Enable LPIs:firmware just restore GICR_CTLR_ENABLE_LPIs of boot
++     * CPU, the other CPUs also should be restored.
++     */
++    for_each_possible_cpu(cpu) {
++        void __iomem *rbase = gic_data_rdist_cpu(cpu)->rd_base;
++        u32 val;
++
++        /*Enable LPIs*/
++        val = readl_relaxed(rbase + GICR_CTLR);
++        if (val & GICR_CTLR_ENABLE_LPIS)
++            continue;
++
++        val |= GICR_CTLR_ENABLE_LPIS;
++        writel_relaxed(val, rbase + GICR_CTLR);
++    }
+ 	raw_spin_unlock(&its_lock);
+ }
+ 
+--- a/drivers/mailbox/Kconfig
++++ b/drivers/mailbox/Kconfig
+@@ -254,4 +254,13 @@ config QCOM_IPCC
+ 	  acts as an interrupt controller for receiving interrupts from clients.
+ 	  Say Y here if you want to build this driver.
+ 
++config PHYTIUM_MBOX
++	tristate "Phytium SoC Mailbox Support"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	help
++	  Mailbox driver implementation for the Phytium platform. It is used
++	  to send message between application processors and on-chip management
++	  firmware. Say Y here if you want to build this mailbox controller
++	  driver.
++
+ endif
+--- a/drivers/mailbox/Makefile
++++ b/drivers/mailbox/Makefile
+@@ -54,3 +54,5 @@ obj-$(CONFIG_SUN6I_MSGBOX)	+= sun6i-msgb
+ obj-$(CONFIG_SPRD_MBOX)		+= sprd-mailbox.o
+ 
+ obj-$(CONFIG_QCOM_IPCC)		+= qcom-ipcc.o
++
++obj-$(CONFIG_PHYTIUM_MBOX)	+= phytium-mailbox.o
+--- a/drivers/media/platform/Kconfig
++++ b/drivers/media/platform/Kconfig
+@@ -168,6 +168,15 @@ config VIDEO_TI_CAL
+ 	  In TI Technical Reference Manual this module is referred as
+ 	  Camera Interface Subsystem (CAMSS).
+ 
++config VIDEO_PHYTIUM_JPEG
++        tristate "Phytium JPEG Encoder driver"
++        depends on VIDEO_V4L2
++        select VIDEOBUF2_DMA_CONTIG
++	help
++          Support for the Phytium JPEG Encoder Engine embedded
++          in the Phytium SOCs. The engine can capture and
++          compress video data from digital or analog sources.
++
+ endif # V4L_PLATFORM_DRIVERS
+ 
+ menuconfig V4L_MEM2MEM_DRIVERS
+--- a/drivers/media/platform/Makefile
++++ b/drivers/media/platform/Makefile
+@@ -80,3 +80,4 @@ obj-$(CONFIG_VIDEO_QCOM_CAMSS)		+= qcom/
+ obj-$(CONFIG_VIDEO_QCOM_VENUS)		+= qcom/venus/
+ 
+ obj-y					+= sunxi/
++obj-$(CONFIG_VIDEO_PHYTIUM_JPEG)	+= phytium-jpeg/
+\ No newline at end of file
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -1035,6 +1035,21 @@ config UCB1400_CORE
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called ucb1400_core.
+ 
++config MFD_PHYTIUM_I2S_LSD
++	tristate "PHYTIUM px210 I2S LSD MFD driver"
++	depends on (PCI && ARCH_PHYTIUM)
++	select MFD_CORE
++	help
++	  This enables support for the Phytium px210 LSD I2S controller.
++
++config MFD_PHYTIUM_I2S_MMD
++	tristate "PHYTIUM px210 I2S MMD MFD driver"
++	depends on (PCI && ARCH_PHYTIUM)
++	select MFD_CORE
++	help
++	  This enables support for the Phytium px210 MMD I2S controllers
++	  for Display Port.
++
+ config MFD_PM8XXX
+ 	tristate "Qualcomm PM8xxx PMIC chips driver"
+ 	depends on (ARM || HEXAGON || COMPILE_TEST)
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -267,3 +267,6 @@ obj-$(CONFIG_MFD_KHADAS_MCU) 	+= khadas-
+ obj-$(CONFIG_SGI_MFD_IOC3)	+= ioc3.o
+ obj-$(CONFIG_MFD_SIMPLE_MFD_I2C)	+= simple-mfd-i2c.o
+ obj-$(CONFIG_MFD_INTEL_M10_BMC)   += intel-m10-bmc.o
++
++obj-$(CONFIG_MFD_PHYTIUM_I2S_LSD) += phytium_px210_i2s_lsd.o
++obj-$(CONFIG_MFD_PHYTIUM_I2S_MMD) += phytium_px210_i2s_mmd.o
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -1105,3 +1105,37 @@ config MMC_OWL
+ 
+ config MMC_SDHCI_EXTERNAL_DMA
+ 	bool
++
++config MMC_PHYTIUM_SDCI
++	tristate "Phytium SD Host Controller support"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	default y if ARCH_PHYTIUM
++	help
++	  This selects support for the SD/MMC Host Controller on
++	  Phytium SoC family.
++
++	  If you have a controller with this interface, say Y or M here.
++
++	  If unsure, say N.
++
++config MMC_PHYTIUM_MCI_PCI
++	tristate "Phytium octopus PCI MultiMedia Card Interface support"
++	depends on ARCH_PHYTIUM
++	default y if ARCH_PHYTIUM
++	help
++	  This selects support for the PCI MultiMedia Card Interface on Phytium
++	  px210 chipset.
++
++	  If you have a controller with this interface, say Y or M here.
++
++	  If unsure, say N.
++
++config MMC_PHYTIUM_MCI_PLTFM
++	tristate "Phytium MultiMedia Card Interface support"
++	depends on ARCH_PHYTIUM && OF
++	default y if ARCH_PHYTIUM
++        help
++          This selects support for the MultiMedia Card Interface on Phytium SoCs.
++	  If you have a controller with this interface, say Y or M here.
++
++	  If unsure, say N.
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -77,6 +77,7 @@ obj-$(CONFIG_MMC_USDHI6ROL0)	+= usdhi6ro
+ obj-$(CONFIG_MMC_TOSHIBA_PCI)	+= toshsd.o
+ obj-$(CONFIG_MMC_BCM2835)	+= bcm2835.o
+ obj-$(CONFIG_MMC_OWL)		+= owl-mmc.o
++obj-$(CONFIG_MMC_PHYTIUM_SDCI)	+= phytium-sdci.o
+ 
+ obj-$(CONFIG_MMC_REALTEK_PCI)	+= rtsx_pci_sdmmc.o
+ obj-$(CONFIG_MMC_REALTEK_USB)	+= rtsx_usb_sdmmc.o
+@@ -112,3 +113,6 @@ endif
+ 
+ obj-$(CONFIG_MMC_SDHCI_XENON)	+= sdhci-xenon-driver.o
+ sdhci-xenon-driver-y		+= sdhci-xenon.o sdhci-xenon-phy.o
++
++obj-$(CONFIG_MMC_PHYTIUM_MCI_PCI)	+= phytium-mci-pci.o phytium-mci.o
++obj-$(CONFIG_MMC_PHYTIUM_MCI_PLTFM)	+= phytium-mci-plat.o phytium-mci.o
+--- a/drivers/mtd/nand/raw/Kconfig
++++ b/drivers/mtd/nand/raw/Kconfig
+@@ -486,6 +486,25 @@ config MTD_NAND_RICOH
+ 	  expermental, readwrite
+ 	  'SmartMedia/xD new translation layer'
+ 
++config MTD_NAND_PHYTIUM
++	tristate
++
++config MTD_NAND_PHYTIUM_PCI
++	tristate "Support Phytium NAND controller as a PCI device"
++	select MTD_NAND_PHYTIUM
++	depends on PCI
++	help
++	  Enable the driver for NAND flash controller of Phytium Px210 chipset,
++	  using the Phytium NAND controller core.
++
++config MTD_NAND_PHYTIUM_PLAT
++	tristate "Support Phytium NAND controller as a platform device"
++	select MTD_NAND_PHYTIUM
++	depends on ARCH_PHYTIUM
++	help
++	  Enable the driver for NAND flash controller of Phytium CPU chipset,
++	  using the Phytium NAND controller core.
++
+ config MTD_NAND_DISKONCHIP
+ 	tristate "DiskOnChip 2000, Millennium and Millennium Plus (NAND reimplementation)"
+ 	depends on HAS_IOMEM
+--- a/drivers/mtd/nand/raw/Makefile
++++ b/drivers/mtd/nand/raw/Makefile
+@@ -59,6 +59,10 @@ obj-$(CONFIG_MTD_NAND_MESON)		+= meson_n
+ obj-$(CONFIG_MTD_NAND_CADENCE)		+= cadence-nand-controller.o
+ obj-$(CONFIG_MTD_NAND_ARASAN)		+= arasan-nand-controller.o
+ 
++obj-$(CONFIG_MTD_NAND_PHYTIUM)		+= phytium_nand.o
++obj-$(CONFIG_MTD_NAND_PHYTIUM_PCI)	+= phytium_nand_pci.o
++obj-$(CONFIG_MTD_NAND_PHYTIUM_PLAT)	+= phytium_nand_plat.o
++
+ nand-objs := nand_base.o nand_legacy.o nand_bbt.o nand_timings.o nand_ids.o
+ nand-objs += nand_onfi.o
+ nand-objs += nand_jedec.o
+--- a/drivers/mtd/spi-nor/Makefile
++++ b/drivers/mtd/spi-nor/Makefile
+@@ -17,6 +17,7 @@ spi-nor-objs			+= sst.o
+ spi-nor-objs			+= winbond.o
+ spi-nor-objs			+= xilinx.o
+ spi-nor-objs			+= xmc.o
++spi-nor-objs			+= boya.o
+ spi-nor-objs			+= xtx.o
+ obj-$(CONFIG_MTD_SPI_NOR)	+= spi-nor.o
+ 
+--- a/drivers/mtd/spi-nor/controllers/Kconfig
++++ b/drivers/mtd/spi-nor/controllers/Kconfig
+@@ -62,3 +62,12 @@ config SPI_INTEL_SPI_PLATFORM
+ 
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called intel-spi-platform.
++
++config SPI_PHYTIUM_QUADSPI
++    tristate "Phytium Quad SPI Controller"
++    depends on ARCH_PHYTIUM || ARM
++    depends on OF && HAS_IOMEM
++    help
++      This enables support for the Quad SPI controller in master mode.
++      This driver does not support generic SPI. The implementation only
++      supports SPI NOR.
+--- a/drivers/mtd/spi-nor/controllers/Makefile
++++ b/drivers/mtd/spi-nor/controllers/Makefile
+@@ -5,3 +5,4 @@ obj-$(CONFIG_SPI_NXP_SPIFI)	+= nxp-spifi
+ obj-$(CONFIG_SPI_INTEL_SPI)	+= intel-spi.o
+ obj-$(CONFIG_SPI_INTEL_SPI_PCI)	+= intel-spi-pci.o
+ obj-$(CONFIG_SPI_INTEL_SPI_PLATFORM)	+= intel-spi-platform.o
++obj-$(CONFIG_SPI_PHYTIUM_QUADSPI)   += phytium-quadspi.o
+--- a/drivers/mtd/spi-nor/core.c
++++ b/drivers/mtd/spi-nor/core.c
+@@ -2038,6 +2038,7 @@ static const struct spi_nor_manufacturer
+ 	&spi_nor_winbond,
+ 	&spi_nor_xilinx,
+ 	&spi_nor_xmc,
++	&spi_nor_boya,
+ 	&spi_nor_xtx,
+ };
+ 
+--- a/drivers/mtd/spi-nor/core.h
++++ b/drivers/mtd/spi-nor/core.h
+@@ -398,6 +398,7 @@ extern const struct spi_nor_manufacturer
+ extern const struct spi_nor_manufacturer spi_nor_winbond;
+ extern const struct spi_nor_manufacturer spi_nor_xilinx;
+ extern const struct spi_nor_manufacturer spi_nor_xmc;
++extern const struct spi_nor_manufacturer spi_nor_boya;
+ extern const struct spi_nor_manufacturer spi_nor_xtx;
+ 
+ int spi_nor_write_enable(struct spi_nor *nor);
+--- a/drivers/net/can/Kconfig
++++ b/drivers/net/can/Kconfig
+@@ -179,6 +179,8 @@ source "drivers/net/can/softing/Kconfig"
+ source "drivers/net/can/spi/Kconfig"
+ source "drivers/net/can/usb/Kconfig"
+ 
++source "drivers/net/can/phytium/Kconfig"
++
+ endif
+ 
+ config CAN_DEBUG_DEVICES
+--- a/drivers/net/can/Makefile
++++ b/drivers/net/can/Makefile
+@@ -29,5 +29,6 @@ obj-$(CONFIG_CAN_SUN4I)		+= sun4i_can.o
+ obj-$(CONFIG_CAN_TI_HECC)	+= ti_hecc.o
+ obj-$(CONFIG_CAN_XILINXCAN)	+= xilinx_can.o
+ obj-$(CONFIG_PCH_CAN)		+= pch_can.o
++obj-$(CONFIG_CAN_PHYTIUM)	+= phytium/
+ 
+ subdir-ccflags-$(CONFIG_CAN_DEBUG_DEVICES) += -DDEBUG
+--- a/drivers/net/ethernet/cadence/macb.h
++++ b/drivers/net/ethernet/cadence/macb.h
+@@ -9,6 +9,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/phylink.h>
++#include <linux/phy.h>
+ #include <linux/ptp_clock_kernel.h>
+ #include <linux/net_tstamp.h>
+ #include <linux/interrupt.h>
+@@ -17,6 +18,12 @@
+ #define MACB_EXT_DESC
+ #endif
+ 
++enum irq_type {
++	IRQ_TYPE_INTX = 1,
++	IRQ_TYPE_MSI = 2,
++	IRQ_TYPE_MAX = 3,
++};
++
+ #define MACB_GREGS_NBR 16
+ #define MACB_GREGS_VERSION 2
+ #define MACB_MAX_QUEUES 8
+@@ -77,10 +84,13 @@
+ #define MACB_RBQPH		0x04D4
+ 
+ /* GEM register offsets. */
++#define GEM_NCR			0x0000 /* Network Control */
+ #define GEM_NCFGR		0x0004 /* Network Config */
+ #define GEM_USRIO		0x000c /* User IO */
+ #define GEM_DMACFG		0x0010 /* DMA Configuration */
+ #define GEM_JML			0x0048 /* Jumbo Max Length */
++#define GEM_HS_MAC_CONFIG	0x0050 /* GEM high speed config */
++#define GEM_AXI_PIPE	0x0054 /* Axi max pipeline register*/
+ #define GEM_HRB			0x0080 /* Hash Bottom */
+ #define GEM_HRT			0x0084 /* Hash Top */
+ #define GEM_SA1B		0x0088 /* Specific1 Bottom */
+@@ -157,6 +167,7 @@
+ #define GEM_PEFTN		0x01f4 /* PTP Peer Event Frame Tx Ns */
+ #define GEM_PEFRSL		0x01f8 /* PTP Peer Event Frame Rx Sec Low */
+ #define GEM_PEFRN		0x01fc /* PTP Peer Event Frame Rx Ns */
++#define GEM_PCSCNTRL		0x0200 /* PCS Control */
+ #define GEM_DCFG1		0x0280 /* Design Config 1 */
+ #define GEM_DCFG2		0x0284 /* Design Config 2 */
+ #define GEM_DCFG3		0x0288 /* Design Config 3 */
+@@ -166,6 +177,10 @@
+ #define GEM_DCFG7		0x0298 /* Design Config 7 */
+ #define GEM_DCFG8		0x029C /* Design Config 8 */
+ #define GEM_DCFG10		0x02A4 /* Design Config 10 */
++#define GEM_DCFG12		0x02AC /* Design Config 12 */
++#define GEM_USX_CONTROL		0x0A80 /* High speed PCS control register */
++#define GEM_USX_STATUS		0x0A88 /* High speed PCS status register */
++#define GEM_TAIL_ENABLE		0x0E7C /* Phytium: Enable tail */
+ 
+ #define GEM_TXBDCTRL	0x04cc /* TX Buffer Descriptor control register */
+ #define GEM_RXBDCTRL	0x04d0 /* RX Buffer Descriptor control register */
+@@ -200,6 +215,37 @@
+ #define GEM_IER(hw_q)		(0x0600 + ((hw_q) << 2))
+ #define GEM_IDR(hw_q)		(0x0620 + ((hw_q) << 2))
+ #define GEM_IMR(hw_q)		(0x0640 + ((hw_q) << 2))
++#define GEM_TAIL(hw_q)		(0x0e80 + ((hw_q) << 2)) /* Phytium: tail register */
++#define GEM_SRC_SEL_LN          0x1C04
++#define GEM_DIV_SEL0_LN         0x1C08
++#define GEM_DIV_SEL1_LN         0x1C0C
++#define GEM_PMA_XCVR_POWER_STATE  0x1C10
++#define GEM_SPEED_MODE          0x1C14
++#define GEM_MII_SELECT          0x1C18
++#define GEM_SEL_MII_ON_RGMII    0x1C1C
++#define GEM_TX_CLK_SEL0         0x1C20
++#define GEM_TX_CLK_SEL1         0x1C24
++#define GEM_TX_CLK_SEL2         0x1C28
++#define GEM_TX_CLK_SEL3         0x1C2C
++#define GEM_RX_CLK_SEL0         0x1C30
++#define GEM_RX_CLK_SEL1         0x1C34
++#define GEM_CLK_250M_DIV10_DIV100_SEL 0x1C38
++#define GEM_TX_CLK_SEL5         0x1C3C
++#define GEM_TX_CLK_SEL6         0x1C40
++#define GEM_RX_CLK_SEL4         0x1C44
++#define GEM_RX_CLK_SEL5         0x1C48
++#define GEM_TX_CLK_SEL3_0       0x1C70
++#define GEM_TX_CLK_SEL4_0         0x1C74
++#define GEM_RX_CLK_SEL3_0         0x1C78
++#define GEM_RX_CLK_SEL4_0         0x1C7C
++#define GEM_RGMII_TX_CLK_SEL0     0x1C80
++#define GEM_RGMII_TX_CLK_SEL1     0x1C84
++
++#define GEM_PHY_INT_ENABLE        0x1C88
++#define GEM_PHY_INT_CLEAR         0x1C8C
++#define GEM_PHY_INT_STATE         0x1C90
++
++#define GEM_INTX_IRQ_MASK		  0x1C7C /* Phytium: irq mask */
+ 
+ /* Bitfields in NCR */
+ #define MACB_LB_OFFSET		0 /* reserved */
+@@ -231,6 +277,8 @@
+ #define MACB_SRTSM_OFFSET	15
+ #define MACB_OSSMODE_OFFSET 24 /* Enable One Step Synchro Mode */
+ #define MACB_OSSMODE_SIZE	1
++#define MACB_2PT5G_OFFSET	29 /* 2.5G operation selected */
++#define MACB_2PT5G_SIZE		1
+ 
+ /* Bitfields in NCFGR */
+ #define MACB_SPD_OFFSET		0 /* Speed */
+@@ -272,11 +320,19 @@
+ #define MACB_IRXFCS_OFFSET	19
+ #define MACB_IRXFCS_SIZE	1
+ 
++/* GEM specific NCR bitfields. */
++#define GEM_ENABLE_HS_MAC_OFFSET	31
++#define GEM_ENABLE_HS_MAC_SIZE		1
++
+ /* GEM specific NCFGR bitfields. */
++#define GEM_FD_OFFSET		1 /* Full duplex */
++#define GEM_FD_SIZE		1
+ #define GEM_GBE_OFFSET		10 /* Gigabit mode enable */
+ #define GEM_GBE_SIZE		1
+ #define GEM_PCSSEL_OFFSET	11
+ #define GEM_PCSSEL_SIZE		1
++#define GEM_PAE_OFFSET		13 /* Pause enable */
++#define GEM_PAE_SIZE		1
+ #define GEM_CLK_OFFSET		18 /* MDC clock division */
+ #define GEM_CLK_SIZE		3
+ #define GEM_DBW_OFFSET		21 /* Data bus width */
+@@ -461,11 +517,21 @@
+ #define MACB_REV_OFFSET				0
+ #define MACB_REV_SIZE				16
+ 
++/* Bitfield in HS_MAC_CONFIG */
++#define GEM_HS_MAC_SPEED_OFFSET			0
++#define GEM_HS_MAC_SPEED_SIZE			3
++
++/* Bitfields in PCSCNTRL */
++#define GEM_PCSAUTONEG_OFFSET			12
++#define GEM_PCSAUTONEG_SIZE			1
++
+ /* Bitfields in DCFG1. */
+ #define GEM_IRQCOR_OFFSET			23
+ #define GEM_IRQCOR_SIZE				1
+ #define GEM_DBWDEF_OFFSET			25
+ #define GEM_DBWDEF_SIZE				3
++#define GEM_NO_PCS_OFFSET			0
++#define GEM_NO_PCS_SIZE				1
+ 
+ /* Bitfields in DCFG2. */
+ #define GEM_RX_PKT_BUFF_OFFSET			20
+@@ -500,6 +566,30 @@
+ #define GEM_RXBD_RDBUFF_OFFSET			8
+ #define GEM_RXBD_RDBUFF_SIZE			4
+ 
++/* Bitfields in DCFG12. */
++#define GEM_HIGH_SPEED_OFFSET			26
++#define GEM_HIGH_SPEED_SIZE			1
++
++/* Bitfields in USX_CONTROL. */
++#define GEM_USX_CTRL_SPEED_OFFSET		14
++#define GEM_USX_CTRL_SPEED_SIZE			3
++#define GEM_SERDES_RATE_OFFSET			12
++#define GEM_SERDES_RATE_SIZE			2
++#define GEM_RX_SCR_BYPASS_OFFSET		9
++#define GEM_RX_SCR_BYPASS_SIZE			1
++#define GEM_TX_SCR_BYPASS_OFFSET		8
++#define GEM_TX_SCR_BYPASS_SIZE			1
++#define GEM_RX_SYNC_RESET_OFFSET		2
++#define GEM_RX_SYNC_RESET_SIZE			1
++#define GEM_TX_EN_OFFSET			1
++#define GEM_TX_EN_SIZE				1
++#define GEM_SIGNAL_OK_OFFSET			0
++#define GEM_SIGNAL_OK_SIZE			1
++
++/* Bitfields in USX_STATUS. */
++#define GEM_USX_BLOCK_LOCK_OFFSET		0
++#define GEM_USX_BLOCK_LOCK_SIZE			1
++
+ /* Bitfields in TISUBN */
+ #define GEM_SUBNSINCR_OFFSET			0
+ #define GEM_SUBNSINCRL_OFFSET			24
+@@ -658,11 +748,16 @@
+ #define MACB_CAPS_GEM_HAS_PTP			0x00000040
+ #define MACB_CAPS_BD_RD_PREFETCH		0x00000080
+ #define MACB_CAPS_NEEDS_RSTONUBR		0x00000100
++#define MACB_CAPS_SEL_CLK			0x00000200
++#define MACB_CAPS_TAILPTR		0x00001000 /* Phytium: tail register */
++#define MACB_CAPS_CLK_HW_CHG			0x04000000
+ #define MACB_CAPS_MACB_IS_EMAC			0x08000000
+ #define MACB_CAPS_FIFO_MODE			0x10000000
+ #define MACB_CAPS_GIGABIT_MODE_AVAILABLE	0x20000000
+ #define MACB_CAPS_SG_DISABLED			0x40000000
+ #define MACB_CAPS_MACB_IS_GEM			0x80000000
++#define MACB_CAPS_PCS				0x01000000
++#define MACB_CAPS_HIGH_SPEED			0x02000000
+ 
+ /* LSO settings */
+ #define MACB_LSO_UFO_ENABLE			0x01
+@@ -1112,6 +1207,7 @@ struct macb_config {
+ 			    struct clk **rx_clk, struct clk **tsu_clk);
+ 	int	(*init)(struct platform_device *pdev);
+ 	int	jumbo_max_len;
++	void (*sel_clk_hw)(struct macb *bp, int speed);
+ };
+ 
+ struct tsu_incr {
+@@ -1132,6 +1228,7 @@ struct macb_queue {
+ 	unsigned int		RBQS;
+ 	unsigned int		RBQP;
+ 	unsigned int		RBQPH;
++	unsigned int		TAILADDR;
+ 
+ 	unsigned int		tx_head, tx_tail;
+ 	struct macb_dma_desc	*tx_ring;
+@@ -1191,6 +1288,7 @@ struct macb {
+ 	struct clk		*rx_clk;
+ 	struct clk		*tsu_clk;
+ 	struct net_device	*dev;
++	struct ncsi_dev		*ndev;
+ 	union {
+ 		struct macb_stats	macb;
+ 		struct gem_stats	gem;
+@@ -1201,7 +1299,13 @@ struct macb {
+ 	struct mii_bus		*mii_bus;
+ 	struct phylink		*phylink;
+ 	struct phylink_config	phylink_config;
++	struct phylink_pcs	phylink_pcs;
++	int			link;
++	int			speed;
++	int			duplex;
++	int			use_ncsi;
+ 
++	int 		force_phy_mode;
+ 	u32			caps;
+ 	unsigned int		dma_burst_length;
+ 
+@@ -1244,6 +1348,8 @@ struct macb {
+ 	u32	rx_intr_mask;
+ 
+ 	struct macb_pm_data pm_data;
++
++	void (*sel_clk_hw)(struct macb *bp, int speed);
+ };
+ 
+ #ifdef CONFIG_MACB_USE_HWSTAMP
+@@ -1301,6 +1407,24 @@ static inline bool gem_has_ptp(struct ma
+ 	return !!(bp->caps & MACB_CAPS_GEM_HAS_PTP);
+ }
+ 
++enum phytium_type {
++	PHYTIUM_DEV_1P0 = 1,
++	PHYTIUM_DEV_2P0,
++	PHYTIUM_DEV_3P0,
++};
++
++struct phytium_platform_pdata {
++	int			phytium_dev_type;
++	struct clk		*txclk;
++	struct clk		*rxclk;
++	struct clk		*tsu_clk;
++	u32			caps;
++	int			irq_type;
++	int			irq[4];
++	phy_interface_t		phy_interface;
++	const struct property_entry *properties;
++};
++
+ /**
+  * struct macb_platform_data - platform data for MACB Ethernet used for PCI registration
+  * @pclk:		platform clock
+@@ -1309,6 +1433,7 @@ static inline bool gem_has_ptp(struct ma
+ struct macb_platform_data {
+ 	struct clk	*pclk;
+ 	struct clk	*hclk;
++	struct phytium_platform_pdata phytium_macb_pdata;
+ };
+ 
+ #endif /* _MACB_H */
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -35,6 +35,8 @@
+ #include <linux/tcp.h>
+ #include <linux/iopoll.h>
+ #include <linux/pm_runtime.h>
++#include <linux/acpi.h>
++#include <net/ncsi.h>
+ #include "macb.h"
+ 
+ /* This structure is only used for MACB on SiFive FU540 devices */
+@@ -84,6 +86,14 @@ struct sifive_fu540_macb_mgmt {
+ #define MACB_WOL_HAS_MAGIC_PACKET	(0x1 << 0)
+ #define MACB_WOL_ENABLED		(0x1 << 1)
+ 
++#define HS_SPEED_100M			0
++#define HS_SPEED_1000M			1
++#define HS_SPEED_2500M			2
++#define HS_SPEED_5000M			3
++#define HS_SPEED_10000M			4
++#define MACB_SERDES_RATE_5G		0
++#define MACB_SERDES_RATE_10G	1
++
+ /* Graceful stop timeouts in us. We should allow up to
+  * 1 frame time (10 Mbits/s, full-duplex, ignoring collisions)
+  */
+@@ -513,6 +523,10 @@ static void macb_validate(struct phylink
+ 	    state->interface != PHY_INTERFACE_MODE_RMII &&
+ 	    state->interface != PHY_INTERFACE_MODE_GMII &&
+ 	    state->interface != PHY_INTERFACE_MODE_SGMII &&
++		state->interface != PHY_INTERFACE_MODE_2500BASEX &&
++	    state->interface != PHY_INTERFACE_MODE_5GBASER &&
++	    state->interface != PHY_INTERFACE_MODE_10GBASER &&
++		state->interface != PHY_INTERFACE_MODE_USXGMII &&
+ 	    !phy_interface_mode_is_rgmii(state->interface)) {
+ 		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
+ 		return;
+@@ -525,10 +539,47 @@ static void macb_validate(struct phylink
+ 		return;
+ 	}
+ 
++	if ((state->interface == PHY_INTERFACE_MODE_10GBASER ||
++	     state->interface == PHY_INTERFACE_MODE_USXGMII ||
++	     state->interface == PHY_INTERFACE_MODE_5GBASER) &&
++	    !(bp->caps & MACB_CAPS_HIGH_SPEED &&
++	      bp->caps & MACB_CAPS_PCS)) {
++		bitmap_zero(supported, __ETHTOOL_LINK_MODE_MASK_NBITS);
++		return;
++	}
++
+ 	phylink_set_port_modes(mask);
+ 	phylink_set(mask, Autoneg);
+ 	phylink_set(mask, Asym_Pause);
+ 
++	if (bp->caps & MACB_CAPS_GIGABIT_MODE_AVAILABLE &&
++	    (state->interface == PHY_INTERFACE_MODE_NA ||
++	     state->interface == PHY_INTERFACE_MODE_10GBASER ||
++	     state->interface == PHY_INTERFACE_MODE_USXGMII)) {
++		bp->speed = state->speed;
++		bp->link = 1;
++		bp->duplex = state->duplex;
++		if (bp->speed == SPEED_5000) {
++			phylink_set(mask, 5000baseT_Full);
++		} else {
++			phylink_set(mask, 10000baseCR_Full);
++			phylink_set(mask, 10000baseER_Full);
++			phylink_set(mask, 10000baseKR_Full);
++			phylink_set(mask, 10000baseLR_Full);
++			phylink_set(mask, 10000baseLRM_Full);
++			phylink_set(mask, 10000baseSR_Full);
++			phylink_set(mask, 10000baseT_Full);
++		}
++		if (state->interface != PHY_INTERFACE_MODE_NA)
++			goto out;
++	}
++
++	if (state->interface == PHY_INTERFACE_MODE_2500BASEX)
++		phylink_set(mask, 2500baseX_Full);
++
++	if (state->interface == PHY_INTERFACE_MODE_5GBASER)
++		phylink_set(mask, 5000baseT_Full);
++
+ 	phylink_set(mask, 10baseT_Half);
+ 	phylink_set(mask, 10baseT_Full);
+ 	phylink_set(mask, 100baseT_Half);
+@@ -545,23 +596,110 @@ static void macb_validate(struct phylink
+ 		if (!(bp->caps & MACB_CAPS_NO_GIGABIT_HALF))
+ 			phylink_set(mask, 1000baseT_Half);
+ 	}
+-
++out:
+ 	bitmap_and(supported, supported, mask, __ETHTOOL_LINK_MODE_MASK_NBITS);
+ 	bitmap_and(state->advertising, state->advertising, mask,
+ 		   __ETHTOOL_LINK_MODE_MASK_NBITS);
+ }
+ 
+-static void macb_mac_pcs_get_state(struct phylink_config *config,
++static void macb_usx_pcs_link_up(struct phylink_pcs *pcs, unsigned int mode,
++				 phy_interface_t interface, int speed,
++				 int duplex)
++{
++	struct macb *bp = container_of(pcs, struct macb, phylink_pcs);
++	u32 config;
++
++	config = gem_readl(bp, USX_CONTROL);
++	if (speed == SPEED_10000) {
++		config = GEM_BFINS(SERDES_RATE, MACB_SERDES_RATE_10G, config);
++		config = GEM_BFINS(USX_CTRL_SPEED, HS_SPEED_10000M, config);
++	} else if (speed == SPEED_5000) {
++		config = GEM_BFINS(SERDES_RATE, MACB_SERDES_RATE_5G, config);
++		config = GEM_BFINS(USX_CTRL_SPEED, HS_SPEED_5000M, config);
++	}
++
++	config &= ~(GEM_BIT(TX_SCR_BYPASS) | GEM_BIT(RX_SCR_BYPASS));
++	/* reset */
++	config &= ~(GEM_BIT(SIGNAL_OK) | GEM_BIT(TX_EN));
++	config |= GEM_BIT(RX_SYNC_RESET);
++
++	gem_writel(bp, USX_CONTROL, config);
++
++	/* enable rx and tx */
++	config &= ~(GEM_BIT(RX_SYNC_RESET));
++	config |= GEM_BIT(SIGNAL_OK) | GEM_BIT(TX_EN);
++
++	gem_writel(bp, USX_CONTROL, config);
++}
++
++static void macb_usx_pcs_get_state(struct phylink_pcs *pcs,
+ 				   struct phylink_link_state *state)
+ {
++	struct macb *bp = container_of(pcs, struct macb, phylink_pcs);
++	u32 val;
++
++	if (state->interface == PHY_INTERFACE_MODE_5GBASER)
++		state->speed = SPEED_5000;
++	else if (state->interface == PHY_INTERFACE_MODE_10GBASER ||
++		 state->interface == PHY_INTERFACE_MODE_USXGMII)
++		state->speed = bp->speed;
++
++	state->duplex = 1;
++	state->an_complete = 1;
++
++	val = gem_readl(bp, USX_STATUS);
++	state->link = !!(val & GEM_BIT(USX_BLOCK_LOCK));
++	val = gem_readl(bp, NCFGR);
++	if (val & GEM_BIT(PAE))
++		state->pause = MLO_PAUSE_RX;
++}
++
++static int macb_usx_pcs_config(struct phylink_pcs *pcs,
++			       unsigned int mode,
++			       phy_interface_t interface,
++			       const unsigned long *advertising,
++			       bool permit_pause_to_mac)
++{
++	struct macb *bp = container_of(pcs, struct macb, phylink_pcs);
++
++	gem_writel(bp, USX_CONTROL, gem_readl(bp, USX_CONTROL) |
++		   GEM_BIT(SIGNAL_OK));
++
++	return 0;
++}
++
++static void macb_pcs_get_state(struct phylink_pcs *pcs,
++			       struct phylink_link_state *state)
++{
+ 	state->link = 0;
+ }
+ 
+-static void macb_mac_an_restart(struct phylink_config *config)
++static void macb_pcs_an_restart(struct phylink_pcs *pcs)
+ {
+ 	/* Not supported */
+ }
+ 
++static int macb_pcs_config(struct phylink_pcs *pcs,
++			   unsigned int mode,
++			   phy_interface_t interface,
++			   const unsigned long *advertising,
++			   bool permit_pause_to_mac)
++{
++	return 0;
++}
++
++static const struct phylink_pcs_ops macb_phylink_usx_pcs_ops = {
++	.pcs_get_state = macb_usx_pcs_get_state,
++	.pcs_config = macb_usx_pcs_config,
++	.pcs_link_up = macb_usx_pcs_link_up,
++};
++
++static const struct phylink_pcs_ops macb_phylink_pcs_ops = {
++	.pcs_get_state = macb_pcs_get_state,
++	.pcs_an_restart = macb_pcs_an_restart,
++	.pcs_config = macb_pcs_config,
++};
++
+ static void macb_mac_config(struct phylink_config *config, unsigned int mode,
+ 			    const struct phylink_link_state *state)
+ {
+@@ -569,25 +707,57 @@ static void macb_mac_config(struct phyli
+ 	struct macb *bp = netdev_priv(ndev);
+ 	unsigned long flags;
+ 	u32 old_ctrl, ctrl;
++	u32 old_ncr, ncr;
+ 
+ 	spin_lock_irqsave(&bp->lock, flags);
+ 
+-	old_ctrl = ctrl = macb_or_gem_readl(bp, NCFGR);
++	ctrl = macb_or_gem_readl(bp, NCFGR);
++	old_ctrl = ctrl;
++	ncr = macb_or_gem_readl(bp, NCR);
++	old_ncr = ncr;
+ 
+ 	if (bp->caps & MACB_CAPS_MACB_IS_EMAC) {
+ 		if (state->interface == PHY_INTERFACE_MODE_RMII)
+ 			ctrl |= MACB_BIT(RM9200_RMII);
+ 	} else if (macb_is_gem(bp)) {
+ 		ctrl &= ~(GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL));
++		ncr &= ~GEM_BIT(ENABLE_HS_MAC);
+ 
+-		if (state->interface == PHY_INTERFACE_MODE_SGMII)
++		if (state->interface == PHY_INTERFACE_MODE_SGMII ||
++		    state->interface == PHY_INTERFACE_MODE_2500BASEX) {
+ 			ctrl |= GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL);
++		} else if (state->interface == PHY_INTERFACE_MODE_10GBASER ||
++			   state->interface == PHY_INTERFACE_MODE_USXGMII ||
++			   state->interface == PHY_INTERFACE_MODE_5GBASER) {
++			ctrl |= GEM_BIT(PCSSEL);
++			ncr |= GEM_BIT(ENABLE_HS_MAC);
++		}
+ 	}
+ 
+ 	/* Apply the new configuration, if any */
+ 	if (old_ctrl ^ ctrl)
+ 		macb_or_gem_writel(bp, NCFGR, ctrl);
+ 
++	if (old_ncr ^ ncr)
++		macb_or_gem_writel(bp, NCR, ncr);
++
++	/* Disable AN for SGMII fixed link configuration, enable otherwise.
++	 * Must be written after PCSSEL is set in NCFGR,
++	 * otherwise writes will not take effect.
++	 */
++	if (macb_is_gem(bp) && (state->interface == PHY_INTERFACE_MODE_SGMII ||
++				PHY_INTERFACE_MODE_2500BASEX)) {
++		u32 pcsctrl, old_pcsctrl;
++
++		old_pcsctrl = gem_readl(bp, PCSCNTRL);
++		if (mode == MLO_AN_FIXED)
++			pcsctrl = old_pcsctrl & ~GEM_BIT(PCSAUTONEG);
++		else
++			pcsctrl = old_pcsctrl | GEM_BIT(PCSAUTONEG);
++		if (old_pcsctrl != pcsctrl)
++			gem_writel(bp, PCSCNTRL, pcsctrl);
++	}
++
+ 	spin_unlock_irqrestore(&bp->lock, flags);
+ }
+ 
+@@ -600,18 +770,184 @@ static void macb_mac_link_down(struct ph
+ 	unsigned int q;
+ 	u32 ctrl;
+ 
++	if (bp->use_ncsi)
++		ncsi_stop_dev(bp->ndev);
++
+ 	if (!(bp->caps & MACB_CAPS_MACB_IS_EMAC))
+ 		for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue)
+ 			queue_writel(queue, IDR,
+ 				     bp->rx_intr_mask | MACB_TX_INT_FLAGS | MACB_BIT(HRESP));
+ 
+ 	/* Disable Rx and Tx */
+-	ctrl = macb_readl(bp, NCR) & ~(MACB_BIT(RE) | MACB_BIT(TE));
++	ctrl = macb_readl(bp, NCR) & ~(MACB_BIT(RE) | MACB_BIT(TE)) & ~(MACB_BIT(2PT5G));
+ 	macb_writel(bp, NCR, ctrl);
+ 
+ 	netif_tx_stop_all_queues(ndev);
+ }
+ 
++static void phytium_gem1p0_sel_clk(struct macb *bp, int speed)
++{
++	if (bp->phy_interface == PHY_INTERFACE_MODE_10GBASER ||
++	    bp->phy_interface == PHY_INTERFACE_MODE_USXGMII) {
++		gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++		if (speed == SPEED_5000) {
++			gem_writel(bp, DIV_SEL0_LN, 0x8); /*0x1c08*/
++			gem_writel(bp, DIV_SEL0_LN, 0x8); /*0x1c08*/
++			gem_writel(bp, DIV_SEL1_LN, 0x2); /*0x1c0c*/
++			gem_writel(bp, PMA_XCVR_POWER_STATE, 0x0); /*0x1c10*/
++		} else {
++			gem_writel(bp, DIV_SEL0_LN, 0x4); /*0x1c08*/
++			gem_writel(bp, DIV_SEL1_LN, 0x1); /*0x1c0c*/
++			gem_writel(bp, PMA_XCVR_POWER_STATE, 0x1); /*0x1c10*/
++		}
++	} else if (bp->phy_interface ==  PHY_INTERFACE_MODE_5GBASER) {
++		gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++		gem_writel(bp, DIV_SEL0_LN, 0x8); /*0x1c08*/
++		gem_writel(bp, DIV_SEL1_LN, 0x2); /*0x1c0c*/
++		gem_writel(bp, PMA_XCVR_POWER_STATE, 0x0); /*0x1c10*/
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_2500BASEX) {
++		gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++		gem_writel(bp, DIV_SEL0_LN, 0x1); /*0x1c08*/
++		gem_writel(bp, DIV_SEL1_LN, 0x2); /*0x1c0c*/
++		gem_writel(bp, PMA_XCVR_POWER_STATE, 0x1); /*0x1c10*/
++		gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++		gem_writel(bp, TX_CLK_SEL1, 0x1); /*0x1c24*/
++		gem_writel(bp, TX_CLK_SEL2, 0x1); /*0x1c28*/
++		gem_writel(bp, TX_CLK_SEL3, 0x1); /*0x1c2c*/
++		gem_writel(bp, RX_CLK_SEL0, 0x1); /*0x1c30*/
++		gem_writel(bp, RX_CLK_SEL1, 0x0); /*0x1c34*/
++		gem_writel(bp, TX_CLK_SEL3_0, 0x0); /*0x1c70*/
++		gem_writel(bp, TX_CLK_SEL4_0, 0x0); /*0x1c74*/
++		gem_writel(bp, RX_CLK_SEL3_0, 0x0); /*0x1c78*/
++		gem_writel(bp, RX_CLK_SEL4_0, 0x0); /*0x1c7c*/
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII) {
++		if (speed == SPEED_1000) {
++			gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++			gem_writel(bp, DIV_SEL0_LN, 0x4); /*0x1c08*/
++			gem_writel(bp, DIV_SEL1_LN, 0x8); /*0x1c0c*/
++			gem_writel(bp, PMA_XCVR_POWER_STATE, 0x1); /*0x1c10*/
++			gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++			gem_writel(bp, TX_CLK_SEL1, 0x0); /*0x1c24*/
++			gem_writel(bp, TX_CLK_SEL2, 0x0); /*0x1c28*/
++			gem_writel(bp, TX_CLK_SEL3, 0x1); /*0x1c2c*/
++			gem_writel(bp, RX_CLK_SEL0, 0x1); /*0x1c30*/
++			gem_writel(bp, RX_CLK_SEL1, 0x0); /*0x1c34*/
++			gem_writel(bp, TX_CLK_SEL3_0, 0x0); /*0x1c70*/
++			gem_writel(bp, TX_CLK_SEL4_0, 0x0); /*0x1c74*/
++			gem_writel(bp, RX_CLK_SEL3_0, 0x0); /*0x1c78*/
++			gem_writel(bp, RX_CLK_SEL4_0, 0x0); /*0x1c7c*/
++		} else if (speed == SPEED_100  || speed == SPEED_10) {
++			gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++			gem_writel(bp, DIV_SEL0_LN, 0x4); /*0x1c08*/
++			gem_writel(bp, DIV_SEL1_LN, 0x8); /*0x1c0c*/
++			gem_writel(bp, PMA_XCVR_POWER_STATE, 0x1); /*0x1c10*/
++			gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++			gem_writel(bp, TX_CLK_SEL1, 0x0); /*0x1c24*/
++			gem_writel(bp, TX_CLK_SEL2, 0x1); /*0x1c28*/
++			gem_writel(bp, TX_CLK_SEL3, 0x1); /*0x1c2c*/
++			gem_writel(bp, RX_CLK_SEL0, 0x1); /*0x1c30*/
++			gem_writel(bp, RX_CLK_SEL1, 0x0); /*0x1c34*/
++			gem_writel(bp, TX_CLK_SEL3_0, 0x1); /*0x1c70*/
++			gem_writel(bp, TX_CLK_SEL4_0, 0x0); /*0x1c74*/
++			gem_writel(bp, RX_CLK_SEL3_0, 0x0); /*0x1c78*/
++			gem_writel(bp, RX_CLK_SEL4_0, 0x1); /*0x1c7c*/
++		}
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_RGMII ||
++		   bp->phy_interface == PHY_INTERFACE_MODE_RGMII_ID) {
++		if (speed == SPEED_1000) {
++			gem_writel(bp, MII_SELECT, 0x1); /*0x1c18*/
++			gem_writel(bp, SEL_MII_ON_RGMII, 0x0); /*0x1c1c*/
++			gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++			gem_writel(bp, TX_CLK_SEL1, 0x1); /*0x1c24*/
++			gem_writel(bp, TX_CLK_SEL2, 0x0); /*0x1c28*/
++			gem_writel(bp, TX_CLK_SEL3, 0x0); /*0x1c2c*/
++			gem_writel(bp, RX_CLK_SEL0, 0x0); /*0x1c30*/
++			gem_writel(bp, RX_CLK_SEL1, 0x1); /*0x1c34*/
++			gem_writel(bp, CLK_250M_DIV10_DIV100_SEL, 0x0); /*0x1c38*/
++			gem_writel(bp, RX_CLK_SEL5, 0x1); /*0x1c48*/
++			gem_writel(bp, RGMII_TX_CLK_SEL0, 0x1); /*0x1c80*/
++			gem_writel(bp, RGMII_TX_CLK_SEL1, 0x0); /*0x1c84*/
++		} else if (speed == SPEED_100) {
++			gem_writel(bp, MII_SELECT, 0x1); /*0x1c18*/
++			gem_writel(bp, SEL_MII_ON_RGMII, 0x0); /*0x1c1c*/
++			gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++			gem_writel(bp, TX_CLK_SEL1, 0x1); /*0x1c24*/
++			gem_writel(bp, TX_CLK_SEL2, 0x0); /*0x1c28*/
++			gem_writel(bp, TX_CLK_SEL3, 0x0); /*0x1c2c*/
++			gem_writel(bp, RX_CLK_SEL0, 0x0); /*0x1c30*/
++			gem_writel(bp, RX_CLK_SEL1, 0x1); /*0x1c34*/
++			gem_writel(bp, CLK_250M_DIV10_DIV100_SEL, 0x0); /*0x1c38*/
++			gem_writel(bp, RX_CLK_SEL5, 0x1); /*0x1c48*/
++			gem_writel(bp, RGMII_TX_CLK_SEL0, 0x0); /*0x1c80*/
++			gem_writel(bp, RGMII_TX_CLK_SEL1, 0x0); /*0x1c84*/
++		} else {
++			gem_writel(bp, MII_SELECT, 0x1); /*0x1c18*/
++			gem_writel(bp, SEL_MII_ON_RGMII, 0x0); /*0x1c1c*/
++			gem_writel(bp, TX_CLK_SEL0, 0x0); /*0x1c20*/
++			gem_writel(bp, TX_CLK_SEL1, 0x1); /*0x1c24*/
++			gem_writel(bp, TX_CLK_SEL2, 0x0); /*0x1c28*/
++			gem_writel(bp, TX_CLK_SEL3, 0x0); /*0x1c2c*/
++			gem_writel(bp, RX_CLK_SEL0, 0x0); /*0x1c30*/
++			gem_writel(bp, RX_CLK_SEL1, 0x1); /*0x1c34*/
++			gem_writel(bp, CLK_250M_DIV10_DIV100_SEL, 0x1); /*0x1c38*/
++			gem_writel(bp, RX_CLK_SEL5, 0x1); /*0x1c48*/
++			gem_writel(bp, RGMII_TX_CLK_SEL0, 0x0); /*0x1c80*/
++			gem_writel(bp, RGMII_TX_CLK_SEL1, 0x0); /*0x1c84*/
++		}
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_RMII) {
++		gem_writel(bp, RX_CLK_SEL5, 0x1); /*0x1c48*/
++	}
++
++	if (speed == SPEED_100)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_100M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_1000)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_1000M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_2500)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_2500M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_5000)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_5000M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_10000)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_10000M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++}
++
++static void phytium_gem2p0_sel_clk(struct macb *bp, int speed)
++{
++	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII) {
++		if (speed == SPEED_100 || speed == SPEED_10) {
++			gem_writel(bp, SRC_SEL_LN, 0x1); /*0x1c04*/
++			gem_writel(bp, DIV_SEL1_LN, 0x1); /*0x1c0c*/
++		}
++	}
++
++	if (speed == SPEED_100 || speed == SPEED_10)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_100M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_1000)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_1000M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_2500)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_2500M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++}
++
++static void phytium_gem3p0_sel_clk(struct macb *bp, int speed)
++{
++	if (speed == SPEED_100 || speed == SPEED_10)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_100M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_1000)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_1000M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++	else if (speed == SPEED_2500)
++		gem_writel(bp, HS_MAC_CONFIG, GEM_BFINS(HS_MAC_SPEED, HS_SPEED_2500M,
++							gem_readl(bp, HS_MAC_CONFIG)));
++}
++
+ static void macb_mac_link_up(struct phylink_config *config,
+ 			     struct phy_device *phy,
+ 			     unsigned int mode, phy_interface_t interface,
+@@ -624,9 +960,13 @@ static void macb_mac_link_up(struct phyl
+ 	unsigned long flags;
+ 	unsigned int q;
+ 	u32 ctrl;
++	int err;
+ 
+ 	spin_lock_irqsave(&bp->lock, flags);
+ 
++	if (bp->caps & MACB_CAPS_SEL_CLK)
++		bp->sel_clk_hw(bp, speed);
++
+ 	ctrl = macb_or_gem_readl(bp, NCFGR);
+ 
+ 	ctrl &= ~(MACB_BIT(SPD) | MACB_BIT(FD));
+@@ -642,7 +982,7 @@ static void macb_mac_link_up(struct phyl
+ 		if (macb_is_gem(bp)) {
+ 			ctrl &= ~GEM_BIT(GBE);
+ 
+-			if (speed == SPEED_1000)
++			if (speed == SPEED_1000 || speed == SPEED_2500)
+ 				ctrl |= GEM_BIT(GBE);
+ 		}
+ 
+@@ -664,18 +1004,71 @@ static void macb_mac_link_up(struct phyl
+ 
+ 	macb_or_gem_writel(bp, NCFGR, ctrl);
+ 
++	if (speed == SPEED_2500) {
++		u32 network_ctrl;
++
++		network_ctrl = macb_readl(bp, NCR);
++		network_ctrl |= MACB_BIT(2PT5G);
++		macb_writel(bp, NCR, network_ctrl);
++	}
++
++	if (bp->phy_interface == PHY_INTERFACE_MODE_10GBASER ||
++	    bp->phy_interface == PHY_INTERFACE_MODE_USXGMII) {
++		if (speed == SPEED_5000)
++			gem_writel(bp, HS_MAC_CONFIG,
++				   GEM_BFINS(HS_MAC_SPEED, HS_SPEED_5000M,
++					     gem_readl(bp, HS_MAC_CONFIG)));
++		else
++			gem_writel(bp, HS_MAC_CONFIG,
++				   GEM_BFINS(HS_MAC_SPEED, HS_SPEED_10000M,
++					     gem_readl(bp, HS_MAC_CONFIG)));
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_5GBASER)
++		gem_writel(bp, HS_MAC_CONFIG,
++			   GEM_BFINS(HS_MAC_SPEED, HS_SPEED_5000M,
++				     gem_readl(bp, HS_MAC_CONFIG)));
++
+ 	spin_unlock_irqrestore(&bp->lock, flags);
+ 
+ 	/* Enable Rx and Tx */
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(RE) | MACB_BIT(TE));
+ 
++	if (bp->use_ncsi) {
++		/* Start the NCSI device */
++		err = ncsi_start_dev(bp->ndev);
++		if (err) {
++			netdev_err(bp->dev, "Ncsi start dev failed (error %d)\n", err);
++			return;
++		}
++	}
++
+ 	netif_tx_wake_all_queues(ndev);
+ }
+ 
++static int macb_mac_prepare(struct phylink_config *config, unsigned int mode,
++			    phy_interface_t interface)
++{
++	struct net_device *ndev = to_net_dev(config->dev);
++	struct macb *bp = netdev_priv(ndev);
++
++	if (interface == PHY_INTERFACE_MODE_10GBASER ||
++	    interface == PHY_INTERFACE_MODE_5GBASER ||
++	    interface == PHY_INTERFACE_MODE_USXGMII)
++		bp->phylink_pcs.ops = &macb_phylink_usx_pcs_ops;
++	else if (interface == PHY_INTERFACE_MODE_SGMII ||
++		 interface == PHY_INTERFACE_MODE_2500BASEX)
++		bp->phylink_pcs.ops = &macb_phylink_pcs_ops;
++	else
++		bp->phylink_pcs.ops = NULL;
++
++	if (bp->phylink_pcs.ops)
++		phylink_set_pcs(bp->phylink, &bp->phylink_pcs);
++
++	return 0;
++}
++
+ static const struct phylink_mac_ops macb_phylink_ops = {
+ 	.validate = macb_validate,
+-	.mac_pcs_get_state = macb_mac_pcs_get_state,
+-	.mac_an_restart = macb_mac_an_restart,
++	.mac_prepare = macb_mac_prepare,
+ 	.mac_config = macb_mac_config,
+ 	.mac_link_down = macb_mac_link_down,
+ 	.mac_link_up = macb_mac_link_up,
+@@ -693,8 +1086,14 @@ static int macb_phylink_connect(struct m
+ 	struct device_node *dn = bp->pdev->dev.of_node;
+ 	struct net_device *dev = bp->dev;
+ 	struct phy_device *phydev;
++	struct macb_platform_data *pdata = dev_get_platdata(&bp->pdev->dev);
+ 	int ret;
+ 
++	if (pdata && pdata->phytium_macb_pdata.properties) {
++		phylink_start(bp->phylink);
++		return 0;
++	}
++
+ 	if (dn)
+ 		ret = phylink_of_phy_connect(bp->phylink, dn, 0);
+ 
+@@ -704,6 +1103,7 @@ static int macb_phylink_connect(struct m
+ 			netdev_err(dev, "no PHY found\n");
+ 			return -ENXIO;
+ 		}
++		phydev->force_mode = bp->force_phy_mode;
+ 
+ 		/* attach the mac to the phy */
+ 		ret = phylink_connect_phy(bp->phylink, phydev);
+@@ -719,6 +1119,29 @@ static int macb_phylink_connect(struct m
+ 	return 0;
+ }
+ 
++static void macb_get_pcs_fixed_state(struct phylink_config *config,
++				     struct phylink_link_state *state)
++{
++	struct net_device *ndev = to_net_dev(config->dev);
++	struct macb *bp = netdev_priv(ndev);
++
++	state->link = (macb_readl(bp, NSR) & MACB_BIT(NSR_LINK)) != 0;
++}
++
++static void macb_get_usx_pcs_fixed_state(struct phylink_config *config,
++					 struct phylink_link_state *state)
++{
++	u32 val;
++	struct net_device *ndev = to_net_dev(config->dev);
++	struct macb *bp = netdev_priv(ndev);
++
++	val = gem_readl(bp, USX_STATUS);
++	state->link = !!(val & GEM_BIT(USX_BLOCK_LOCK));
++	val = gem_readl(bp, NCFGR);
++	if (val & GEM_BIT(PAE))
++		state->pause = MLO_PAUSE_RX;
++}
++
+ /* based on au1000_eth. c*/
+ static int macb_mii_probe(struct net_device *dev)
+ {
+@@ -727,8 +1150,19 @@ static int macb_mii_probe(struct net_dev
+ 	bp->phylink_config.dev = &dev->dev;
+ 	bp->phylink_config.type = PHYLINK_NETDEV;
+ 
++	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII ||
++		bp->phy_interface == PHY_INTERFACE_MODE_2500BASEX) {
++		bp->phylink_config.poll_fixed_state = true;
++		bp->phylink_config.get_fixed_state = macb_get_pcs_fixed_state;
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_10GBASER ||
++			bp->phy_interface == PHY_INTERFACE_MODE_USXGMII) {
++		bp->phylink_config.poll_fixed_state = true;
++		bp->phylink_config.get_fixed_state = macb_get_usx_pcs_fixed_state;
++	}
++
+ 	bp->phylink = phylink_create(&bp->phylink_config, bp->pdev->dev.fwnode,
+ 				     bp->phy_interface, &macb_phylink_ops);
++
+ 	if (IS_ERR(bp->phylink)) {
+ 		netdev_err(dev, "Could not create a phylink instance (%ld)\n",
+ 			   PTR_ERR(bp->phylink));
+@@ -2097,6 +2531,8 @@ static netdev_tx_t macb_start_xmit(struc
+ 	wmb();
+ 	skb_tx_timestamp(skb);
+ 
++	if (bp->caps & MACB_CAPS_TAILPTR)
++		queue_writel(queue, TAILADDR, BIT(31) | macb_tx_ring_wrap(bp, queue->tx_head));
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
+ 
+ 	if (CIRC_SPACE(queue->tx_head, queue->tx_tail, bp->tx_ring_size) < 1)
+@@ -2294,6 +2730,9 @@ static void gem_init_rings(struct macb *
+ 		queue->tx_head = 0;
+ 		queue->tx_tail = 0;
+ 
++		if (bp->caps & MACB_CAPS_TAILPTR)
++			queue_writel(queue, TAILADDR, BIT(31) | queue->tx_head);
++
+ 		queue->rx_tail = 0;
+ 		queue->rx_prepared_head = 0;
+ 
+@@ -2463,6 +2902,45 @@ static void macb_configure_dma(struct ma
+ 	}
+ }
+ 
++static int phytium_mac_config(struct macb *bp)
++{
++	u32 old_ctrl, ctrl;
++	u32 old_ncr, ncr;
++
++	netdev_dbg(bp->dev, "phytium mac config");
++
++	ncr = macb_readl(bp, NCR);
++	old_ncr = ncr;
++	ctrl = macb_or_gem_readl(bp, NCFGR);
++	old_ctrl = ctrl;
++
++	ncr &= ~(GEM_BIT(ENABLE_HS_MAC) | MACB_BIT(2PT5G));
++	ctrl &= ~(GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL) | MACB_BIT(SPD) | MACB_BIT(FD));
++	if (macb_is_gem(bp))
++		ctrl &= ~GEM_BIT(GBE);
++
++	if (bp->phy_interface == PHY_INTERFACE_MODE_2500BASEX) {
++		ctrl |= GEM_BIT(PCSSEL) | GEM_BIT(SGMIIEN);
++		ncr |= MACB_BIT(2PT5G);
++	} else if (bp->phy_interface == PHY_INTERFACE_MODE_USXGMII ||
++		bp->phy_interface == PHY_INTERFACE_MODE_5GBASER) {
++		ctrl |= GEM_BIT(PCSSEL);
++		ncr |= GEM_BIT(ENABLE_HS_MAC);
++	}
++
++	if (bp->duplex)
++		ctrl |= MACB_BIT(FD);
++
++	/* Apply the new configuration, if any */
++	if (old_ctrl ^ ctrl)
++		macb_or_gem_writel(bp, NCFGR, ctrl);
++
++	if (old_ncr ^ ncr)
++		macb_or_gem_writel(bp, NCR, ncr);
++
++	return 0;
++}
++
+ static void macb_init_hw(struct macb *bp)
+ {
+ 	u32 config;
+@@ -2491,6 +2969,25 @@ static void macb_init_hw(struct macb *bp
+ 	if (bp->caps & MACB_CAPS_JUMBO)
+ 		bp->rx_frm_len_mask = MACB_RX_JFRMLEN_MASK;
+ 
++	gem_writel(bp, AXI_PIPE, 0x1010);
++	if (bp->caps & MACB_CAPS_TAILPTR)
++		gem_writel(bp, TAIL_ENABLE, 0x80000001);
++
++	if (bp->phy_interface == PHY_INTERFACE_MODE_USXGMII ||
++	    bp->phy_interface == PHY_INTERFACE_MODE_5GBASER ||
++	    bp->phy_interface == PHY_INTERFACE_MODE_2500BASEX) {
++		/* phytium need hwclock */
++		if (bp->caps & MACB_CAPS_SEL_CLK)
++			bp->sel_clk_hw(bp, bp->speed);
++		phytium_mac_config(bp);
++		if (bp->link)
++			macb_usx_pcs_link_up(&bp->phylink_pcs, 0,
++					     bp->phy_interface, bp->speed, bp->duplex);
++	} else {
++		bp->speed = SPEED_10;
++		bp->duplex = DUPLEX_HALF;
++	}
++
+ 	macb_configure_dma(bp);
+ }
+ 
+@@ -2615,7 +3112,10 @@ static void macb_set_rx_mode(struct net_
+ 
+ static int macb_open(struct net_device *dev)
+ {
+-	size_t bufsz = dev->mtu + ETH_HLEN + ETH_FCS_LEN + NET_IP_ALIGN;
++	/* adjust bufsz to be at least the size of a standard frame,
++	 * to fix rx error when set small size mtu.
++	 */
++	size_t bufsz = (dev->mtu < ETH_DATA_LEN ? ETH_DATA_LEN : dev->mtu) + ETH_HLEN + ETH_FCS_LEN + NET_IP_ALIGN;
+ 	struct macb *bp = netdev_priv(dev);
+ 	struct macb_queue *queue;
+ 	unsigned int q;
+@@ -3543,6 +4043,8 @@ static const struct net_device_ops macb_
+ #endif
+ 	.ndo_set_features	= macb_set_features,
+ 	.ndo_features_check	= macb_features_check,
++	.ndo_vlan_rx_add_vid	= ncsi_vlan_rx_add_vid,
++	.ndo_vlan_rx_kill_vid	= ncsi_vlan_rx_kill_vid,
+ };
+ 
+ /* Configure peripheral capabilities according to device tree
+@@ -3552,16 +4054,26 @@ static void macb_configure_caps(struct m
+ 				const struct macb_config *dt_conf)
+ {
+ 	u32 dcfg;
++	struct macb_platform_data *pdata;
+ 
+ 	if (dt_conf)
+ 		bp->caps = dt_conf->caps;
+ 
++	pdata = dev_get_platdata(&bp->pdev->dev);
++	if (pdata && pdata->phytium_macb_pdata.phytium_dev_type == PHYTIUM_DEV_3P0)
++		bp->caps |= pdata->phytium_macb_pdata.caps;
++
+ 	if (hw_is_gem(bp->regs, bp->native_io)) {
+ 		bp->caps |= MACB_CAPS_MACB_IS_GEM;
+ 
+ 		dcfg = gem_readl(bp, DCFG1);
+ 		if (GEM_BFEXT(IRQCOR, dcfg) == 0)
+ 			bp->caps |= MACB_CAPS_ISR_CLEAR_ON_WRITE;
++		if (GEM_BFEXT(NO_PCS, dcfg) == 0)
++			bp->caps |= MACB_CAPS_PCS;
++		dcfg = gem_readl(bp, DCFG12);
++		if (GEM_BFEXT(HIGH_SPEED, dcfg) == 1)
++			bp->caps |= MACB_CAPS_HIGH_SPEED;
+ 		dcfg = gem_readl(bp, DCFG2);
+ 		if ((dcfg & (GEM_BIT(RX_PKT_BUFF) | GEM_BIT(TX_PKT_BUFF))) == 0)
+ 			bp->caps |= MACB_CAPS_FIFO_MODE;
+@@ -3603,6 +4115,165 @@ static void macb_probe_queues(void __iom
+ 	*num_queues = hweight32(*queue_mask);
+ }
+ 
++#ifdef CONFIG_ACPI
++static int phytium_clk_acpi_init(struct platform_device *pdev, struct clk **pclk,
++				 struct clk **hclk, struct clk **tx_clk,
++				 struct clk **rx_clk, struct clk **tsu_clk)
++{
++	struct macb_platform_data *pdata;
++	int err;
++
++	pdata = dev_get_platdata(&pdev->dev);
++	if (pdata) {
++		*pclk = pdata->pclk;
++		*hclk = pdata->hclk;
++		*tx_clk = pdata->phytium_macb_pdata.txclk;
++		*rx_clk = pdata->phytium_macb_pdata.rxclk;
++		*tsu_clk = pdata->phytium_macb_pdata.tsu_clk;
++	} else {
++		*pclk = NULL;
++		*hclk = NULL;
++		*tx_clk = NULL;
++		*rx_clk = NULL;
++		*tsu_clk = NULL;
++	}
++
++	err = clk_prepare_enable(*pclk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable pclk (%d)\n", err);
++		return err;
++	}
++
++	err = clk_prepare_enable(*hclk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable hclk (%d)\n", err);
++		goto err_disable_pclk;
++	}
++
++	err = clk_prepare_enable(*tx_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable tx_clk (%d)\n", err);
++		goto err_disable_hclk;
++	}
++
++	err = clk_prepare_enable(*rx_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable rx_clk (%d)\n", err);
++		goto err_disable_txclk;
++	}
++
++	err = clk_prepare_enable(*tsu_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable tsu_clk (%d)\n", err);
++		goto err_disable_rxclk;
++	}
++
++	return 0;
++
++err_disable_rxclk:
++	clk_disable_unprepare(*rx_clk);
++
++err_disable_txclk:
++	clk_disable_unprepare(*tx_clk);
++
++err_disable_hclk:
++	clk_disable_unprepare(*hclk);
++
++err_disable_pclk:
++	clk_disable_unprepare(*pclk);
++
++	return err;
++}
++#endif
++
++static int phytium_clk_init(struct platform_device *pdev, struct clk **pclk,
++			    struct clk **hclk, struct clk **tx_clk,
++			    struct clk **rx_clk, struct clk **tsu_clk)
++{
++	struct macb_platform_data *pdata;
++	int err;
++
++	pdata = dev_get_platdata(&pdev->dev);
++	if (pdata) {
++		*pclk = pdata->pclk;
++		*hclk = pdata->hclk;
++		*tx_clk = pdata->phytium_macb_pdata.txclk;
++		*rx_clk = pdata->phytium_macb_pdata.rxclk;
++		*tsu_clk = pdata->phytium_macb_pdata.tsu_clk;
++	} else {
++		*pclk = devm_clk_get(&pdev->dev, "pclk");
++		*hclk = devm_clk_get(&pdev->dev, "hclk");
++		*tx_clk = devm_clk_get_optional(&pdev->dev, "tx_clk");
++		*rx_clk = devm_clk_get_optional(&pdev->dev, "rx_clk");
++		*tsu_clk = devm_clk_get_optional(&pdev->dev, "tsu_clk");
++	}
++
++	if (IS_ERR_OR_NULL(*pclk))
++		return dev_err_probe(&pdev->dev,
++				     IS_ERR(*pclk) ? PTR_ERR(*pclk) : -ENODEV,
++				     "failed to get pclk\n");
++
++	if (IS_ERR_OR_NULL(*hclk))
++		return dev_err_probe(&pdev->dev,
++				     IS_ERR(*hclk) ? PTR_ERR(*hclk) : -ENODEV,
++				     "failed to get hclk\n");
++
++	if (IS_ERR(*tx_clk))
++		return PTR_ERR(*tx_clk);
++
++	if (IS_ERR(*rx_clk))
++		return PTR_ERR(*rx_clk);
++
++	if (IS_ERR(*tsu_clk))
++		return PTR_ERR(*tsu_clk);
++
++	err = clk_prepare_enable(*pclk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable pclk (%d)\n", err);
++		return err;
++	}
++
++	err = clk_prepare_enable(*hclk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable hclk (%d)\n", err);
++		goto err_disable_pclk;
++	}
++
++	err = clk_prepare_enable(*tx_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable tx_clk (%d)\n", err);
++		goto err_disable_hclk;
++	}
++
++	err = clk_prepare_enable(*rx_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable rx_clk (%d)\n", err);
++		goto err_disable_txclk;
++	}
++
++	err = clk_prepare_enable(*tsu_clk);
++	if (err) {
++		dev_err(&pdev->dev, "failed to enable tsu_clk (%d)\n", err);
++		goto err_disable_rxclk;
++	}
++
++	return 0;
++
++err_disable_rxclk:
++	clk_disable_unprepare(*rx_clk);
++
++err_disable_txclk:
++	clk_disable_unprepare(*tx_clk);
++
++err_disable_hclk:
++	clk_disable_unprepare(*hclk);
++
++err_disable_pclk:
++	clk_disable_unprepare(*pclk);
++
++	return err;
++}
++
+ static int macb_clk_init(struct platform_device *pdev, struct clk **pclk,
+ 			 struct clk **hclk, struct clk **tx_clk,
+ 			 struct clk **rx_clk, struct clk **tsu_clk)
+@@ -3696,6 +4367,225 @@ err_disable_pclk:
+ 	return err;
+ }
+ 
++static irqreturn_t phytium_macb_interrupt_intx(int irq, void *dev_id)
++{
++	struct macb *bp = dev_id;
++	u32 irq_mask;
++	int i;
++
++	irq_mask = gem_readl(bp, INTX_IRQ_MASK);
++	if (unlikely(!irq_mask))
++		return IRQ_NONE;
++
++	gem_writel(bp, INTX_IRQ_MASK, irq_mask);
++
++	for (i = 0; i < bp->num_queues; i++) {
++		if ((irq_mask & bp->queue_mask) & BIT(i))
++			macb_interrupt(irq, &bp->queues[i]);
++	}
++	return IRQ_HANDLED;
++}
++
++static int phytium_queue_request_irq(struct platform_device *pdev, unsigned int q)
++{
++	int err;
++	struct macb_queue *queue;
++	struct macb_platform_data *pdata = dev_get_platdata(&pdev->dev);
++	struct net_device *dev = platform_get_drvdata(pdev);
++	struct macb *bp = netdev_priv(dev);
++
++	queue = &bp->queues[q];
++	if (q == 0 && pdata->phytium_macb_pdata.irq_type == IRQ_TYPE_INTX) {
++		dev->irq = pdata->phytium_macb_pdata.irq[q];
++		err = devm_request_irq(&pdev->dev, dev->irq, phytium_macb_interrupt_intx,
++				       IRQF_SHARED, dev->name, bp);
++		if (err) {
++			dev_err(&pdev->dev,
++				"Unable to request dev %d (error %d)\n",
++				dev->irq, err);
++		}
++	}
++
++	if (pdata->phytium_macb_pdata.irq_type == IRQ_TYPE_MSI) {
++		queue->irq = pdata->phytium_macb_pdata.irq[q];
++		err = devm_request_irq(&pdev->dev, queue->irq, macb_interrupt,
++				       0, dev->name, queue);
++		if (err) {
++			dev_err(&pdev->dev,
++				"Unable to request IRQ %d (error %d)\n",
++				queue->irq, err);
++		}
++	}
++
++	return err;
++}
++
++static int phytium_init(struct platform_device *pdev)
++{
++	struct net_device *dev = platform_get_drvdata(pdev);
++	unsigned int hw_q, q;
++	struct macb *bp = netdev_priv(dev);
++	struct macb_queue *queue;
++	int err;
++	u32 val, reg;
++	struct macb_platform_data *pdata;
++
++	bp->tx_ring_size = DEFAULT_TX_RING_SIZE;
++	bp->rx_ring_size = DEFAULT_RX_RING_SIZE;
++
++	pdata = dev_get_platdata(&pdev->dev);
++
++	/* set the queue register mapping once for all: queue0 has a special
++	 * register mapping but we don't want to test the queue index then
++	 * compute the corresponding register offset at run time.
++	 */
++	for (hw_q = 0, q = 0; hw_q < MACB_MAX_QUEUES; ++hw_q) {
++		if (!(bp->queue_mask & (1 << hw_q)))
++			continue;
++
++		queue = &bp->queues[q];
++		queue->bp = bp;
++		netif_napi_add(dev, &queue->napi, macb_poll, NAPI_POLL_WEIGHT);
++		if (hw_q) {
++			queue->ISR  = GEM_ISR(hw_q - 1);
++			queue->IER  = GEM_IER(hw_q - 1);
++			queue->IDR  = GEM_IDR(hw_q - 1);
++			queue->IMR  = GEM_IMR(hw_q - 1);
++			queue->TBQP = GEM_TBQP(hw_q - 1);
++			queue->RBQP = GEM_RBQP(hw_q - 1);
++			queue->RBQS = GEM_RBQS(hw_q - 1);
++#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
++			if (bp->hw_dma_cap & HW_DMA_CAP_64B) {
++				queue->TBQPH = GEM_TBQPH(hw_q - 1);
++				queue->RBQPH = GEM_RBQPH(hw_q - 1);
++			}
++#endif
++		} else {
++			/* queue0 uses legacy registers */
++			queue->ISR  = MACB_ISR;
++			queue->IER  = MACB_IER;
++			queue->IDR  = MACB_IDR;
++			queue->IMR  = MACB_IMR;
++			queue->TBQP = MACB_TBQP;
++			queue->RBQP = MACB_RBQP;
++#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
++			if (bp->hw_dma_cap & HW_DMA_CAP_64B) {
++				queue->TBQPH = MACB_TBQPH;
++				queue->RBQPH = MACB_RBQPH;
++			}
++#endif
++		}
++
++		if (bp->caps & MACB_CAPS_TAILPTR)
++			queue->TAILADDR = GEM_TAIL(hw_q);
++		/* get irq: here we use the linux queue index, not the hardware
++		 * queue index. the queue irq definitions in the device tree
++		 * must remove the optional gaps that could exist in the
++		 * hardware queue mask.
++		 */
++		if (pdata && pdata->phytium_macb_pdata.phytium_dev_type == PHYTIUM_DEV_3P0) {
++			err = phytium_queue_request_irq(pdev, q);
++		} else {
++			queue->irq = platform_get_irq(pdev, q);
++			err = devm_request_irq(&pdev->dev, queue->irq, macb_interrupt,
++					       IRQF_SHARED, dev->name, queue);
++			if (err) {
++				dev_err(&pdev->dev,
++					"Unable to request IRQ %d (error %d)\n",
++					queue->irq, err);
++				return err;
++			}
++		}
++
++		INIT_WORK(&queue->tx_error_task, macb_tx_error_task);
++		q++;
++	}
++
++	dev->netdev_ops = &macb_netdev_ops;
++
++	/* setup appropriated routines according to adapter type */
++	if (macb_is_gem(bp)) {
++		bp->max_tx_length = GEM_MAX_TX_LEN;
++		bp->macbgem_ops.mog_alloc_rx_buffers = gem_alloc_rx_buffers;
++		bp->macbgem_ops.mog_free_rx_buffers = gem_free_rx_buffers;
++		bp->macbgem_ops.mog_init_rings = gem_init_rings;
++		bp->macbgem_ops.mog_rx = gem_rx;
++		dev->ethtool_ops = &gem_ethtool_ops;
++	} else {
++		bp->max_tx_length = MACB_MAX_TX_LEN;
++		bp->macbgem_ops.mog_alloc_rx_buffers = macb_alloc_rx_buffers;
++		bp->macbgem_ops.mog_free_rx_buffers = macb_free_rx_buffers;
++		bp->macbgem_ops.mog_init_rings = macb_init_rings;
++		bp->macbgem_ops.mog_rx = macb_rx;
++		dev->ethtool_ops = &macb_ethtool_ops;
++	}
++
++	/* Set features */
++	dev->hw_features = NETIF_F_SG;
++
++	/* Check LSO capability */
++	if (GEM_BFEXT(PBUF_LSO, gem_readl(bp, DCFG6)))
++		dev->hw_features |= MACB_NETIF_LSO;
++
++	/* Checksum offload is only available on gem with packet buffer */
++	if (macb_is_gem(bp) && !(bp->caps & MACB_CAPS_FIFO_MODE))
++		dev->hw_features |= NETIF_F_HW_CSUM | NETIF_F_RXCSUM;
++	if (bp->caps & MACB_CAPS_SG_DISABLED)
++		dev->hw_features &= ~NETIF_F_SG;
++	dev->features = dev->hw_features;
++
++	/* Check RX Flow Filters support.
++	 * Max Rx flows set by availability of screeners & compare regs:
++	 * each 4-tuple define requires 1 T2 screener reg + 3 compare regs
++	 */
++	reg = gem_readl(bp, DCFG8);
++	bp->max_tuples = min((GEM_BFEXT(SCR2CMP, reg) / 3),
++			     GEM_BFEXT(T2SCR, reg));
++	INIT_LIST_HEAD(&bp->rx_fs_list.list);
++	if (bp->max_tuples > 0) {
++		/* also needs one ethtype match to check IPv4 */
++		if (GEM_BFEXT(SCR2ETH, reg) > 0) {
++			/* program this reg now */
++			reg = 0;
++			reg = GEM_BFINS(ETHTCMP, (uint16_t)ETH_P_IP, reg);
++			gem_writel_n(bp, ETHT, SCRT2_ETHT, reg);
++			/* Filtering is supported in hw but don't enable it in kernel now */
++			dev->hw_features |= NETIF_F_NTUPLE;
++			/* init Rx flow definitions */
++			bp->rx_fs_list.count = 0;
++			spin_lock_init(&bp->rx_fs_lock);
++		} else {
++			bp->max_tuples = 0;
++		}
++	}
++
++	if (!(bp->caps & MACB_CAPS_USRIO_DISABLED)) {
++		val = 0;
++		if (phy_interface_mode_is_rgmii(bp->phy_interface))
++			val = GEM_BIT(RGMII);
++		else if (bp->phy_interface == PHY_INTERFACE_MODE_RMII &&
++			 (bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII))
++			val = MACB_BIT(RMII);
++		else if (!(bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII))
++			val = MACB_BIT(MII);
++
++		if (bp->caps & MACB_CAPS_USRIO_HAS_CLKEN)
++			val |= MACB_BIT(CLKEN);
++
++		macb_or_gem_writel(bp, USRIO, val);
++	}
++
++	/* Set MII management clock divider */
++	val = macb_mdc_clk_div(bp);
++	val |= macb_dbw(bp);
++	if (bp->phy_interface == PHY_INTERFACE_MODE_SGMII ||
++	    bp->phy_interface == PHY_INTERFACE_MODE_2500BASEX)
++		val |= GEM_BIT(SGMIIEN) | GEM_BIT(PCSSEL);
++	macb_writel(bp, NCFGR, val);
++
++	return 0;
++}
++
+ static int macb_init(struct platform_device *pdev)
+ {
+ 	struct net_device *dev = platform_get_drvdata(pdev);
+@@ -4436,6 +5326,75 @@ static const struct macb_config zynq_con
+ 	.init = macb_init,
+ };
+ 
++static const struct macb_config phytium_gem1p0_config = {
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_SEL_CLK,
++	.dma_burst_length = 16,
++	.clk_init = phytium_clk_init,
++	.init = phytium_init,
++	.jumbo_max_len = 16360,
++	.sel_clk_hw = phytium_gem1p0_sel_clk,
++};
++
++static const struct macb_config phytium_gem2p0_config = {
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_SEL_CLK,
++	.dma_burst_length = 16,
++	.clk_init = macb_clk_init,
++	.init = macb_init,
++	.jumbo_max_len = 10240,
++	.sel_clk_hw = phytium_gem2p0_sel_clk,
++};
++
++static const struct macb_config phytium_gem3p0_config = {
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_SEL_CLK |
++			MACB_CAPS_TAILPTR,
++	.dma_burst_length = 16,
++	.clk_init = phytium_clk_init,
++	.init = phytium_init,
++	.jumbo_max_len = 10240,
++	.sel_clk_hw = phytium_gem3p0_sel_clk,
++};
++
++#ifdef CONFIG_ACPI
++static const struct macb_config phytium_gem1p0_acpi_config = {
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_SEL_CLK,
++	.dma_burst_length = 16,
++	.clk_init = phytium_clk_acpi_init,
++	.init = phytium_init,
++	.jumbo_max_len = 10240,
++	.sel_clk_hw = phytium_gem1p0_sel_clk,
++};
++
++static const struct macb_config phytium_gem3p0_acpi_config = {
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_SEL_CLK |
++			MACB_CAPS_TAILPTR,
++	.dma_burst_length = 16,
++	.clk_init = phytium_clk_acpi_init,
++	.init = phytium_init,
++	.jumbo_max_len = 10240,
++	.sel_clk_hw = phytium_gem3p0_sel_clk,
++};
++#endif
++
+ static const struct of_device_id macb_dt_ids[] = {
+ 	{ .compatible = "cdns,at32ap7000-macb" },
+ 	{ .compatible = "cdns,at91sam9260-macb", .data = &at91sam9260_config },
+@@ -4453,11 +5412,26 @@ static const struct of_device_id macb_dt
+ 	{ .compatible = "cdns,zynqmp-gem", .data = &zynqmp_config},
+ 	{ .compatible = "cdns,zynq-gem", .data = &zynq_config },
+ 	{ .compatible = "sifive,fu540-c000-gem", .data = &fu540_c000_config },
++	{ .compatible = "cdns,phytium-gem-1.0", .data = &phytium_gem1p0_config },
++	{ .compatible = "cdns,phytium-gem-2.0", .data = &phytium_gem2p0_config },
++	{ .compatible = "cdns,phytium-gem-3.0", .data = &phytium_gem3p0_config },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, macb_dt_ids);
+ #endif /* CONFIG_OF */
+ 
++#ifdef CONFIG_ACPI
++static const struct acpi_device_id macb_acpi_ids[] = {
++	{ .id = "PHYT0036", .driver_data = (kernel_ulong_t)&phytium_gem1p0_acpi_config },
++	{ .id = "PHYT0046", .driver_data = (kernel_ulong_t)&phytium_gem3p0_acpi_config },
++	{ }
++};
++
++MODULE_DEVICE_TABLE(acpi, macb_acpi_ids);
++#else
++#define macb_acpi_ids NULL
++#endif
++
+ static const struct macb_config default_gem_config = {
+ 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
+ 			MACB_CAPS_JUMBO |
+@@ -4468,6 +5442,32 @@ static const struct macb_config default_
+ 	.jumbo_max_len = 10240,
+ };
+ 
++static void gem_ncsi_handler(struct ncsi_dev *nd)
++{
++	if (unlikely(nd->state != ncsi_dev_state_functional))
++		return;
++
++	netdev_dbg(nd->dev, "NCSI interface %s\n",
++		   nd->link_up ? "up" : "down");
++}
++
++static int macb_get_phy_mode(struct platform_device *pdev)
++{
++	const char *pm;
++	int err, i;
++
++	err = device_property_read_string(&pdev->dev, "phy-mode", &pm);
++	if (err < 0)
++		return err;
++
++	for (i = 0; i < PHY_INTERFACE_MODE_MAX; i++) {
++		if (!strcasecmp(pm, phy_modes(i)))
++			return i;
++	}
++
++	return -ENODEV;
++}
++
+ static int macb_probe(struct platform_device *pdev)
+ {
+ 	const struct macb_config *macb_config = &default_gem_config;
+@@ -4476,17 +5476,26 @@ static int macb_probe(struct platform_de
+ 			struct clk **) = macb_config->clk_init;
+ 	int (*init)(struct platform_device *) = macb_config->init;
+ 	struct device_node *np = pdev->dev.of_node;
+-	struct clk *pclk, *hclk = NULL, *tx_clk = NULL, *rx_clk = NULL;
++	struct clk *pclk = NULL, *hclk = NULL, *tx_clk = NULL, *rx_clk = NULL;
+ 	struct clk *tsu_clk = NULL;
+ 	unsigned int queue_mask, num_queues;
++	struct macb_platform_data *pdata;
+ 	bool native_io;
+-	phy_interface_t interface;
+ 	struct net_device *dev;
+ 	struct resource *regs;
+ 	void __iomem *mem;
+ 	struct macb *bp;
+ 	int err, val;
+ 
++	pdata = dev_get_platdata(&pdev->dev);
++	if (pdata) {
++		if (pdata->phytium_macb_pdata.phytium_dev_type == PHYTIUM_DEV_3P0) {
++			macb_config = &phytium_gem3p0_config;
++			clk_init = macb_config->clk_init;
++			init = macb_config->init;
++		}
++	}
++
+ 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+ 	mem = devm_ioremap_resource(&pdev->dev, regs);
+ 	if (IS_ERR(mem))
+@@ -4501,6 +5510,15 @@ static int macb_probe(struct platform_de
+ 			clk_init = macb_config->clk_init;
+ 			init = macb_config->init;
+ 		}
++	} else if (has_acpi_companion(&pdev->dev)) {
++		const struct acpi_device_id *match;
++
++		match = acpi_match_device(macb_acpi_ids, &pdev->dev);
++		if (match && match->driver_data) {
++			macb_config = (void *)match->driver_data;
++			clk_init = macb_config->clk_init;
++			init = macb_config->init;
++		}
+ 	}
+ 
+ 	err = clk_init(pdev, &pclk, &hclk, &tx_clk, &rx_clk, &tsu_clk);
+@@ -4549,8 +5567,11 @@ static int macb_probe(struct platform_de
+ 	if (macb_config)
+ 		bp->jumbo_max_len = macb_config->jumbo_max_len;
+ 
++	if (macb_config)
++		bp->sel_clk_hw = macb_config->sel_clk_hw;
++
+ 	bp->wol = 0;
+-	if (of_get_property(np, "magic-packet", NULL))
++	if (device_property_read_bool(&pdev->dev, "magic-packet"))
+ 		bp->wol |= MACB_WOL_HAS_MAGIC_PACKET;
+ 	device_set_wakeup_capable(&pdev->dev, bp->wol & MACB_WOL_HAS_MAGIC_PACKET);
+ 
+@@ -4602,22 +5623,47 @@ static int macb_probe(struct platform_de
+ 	else if (err)
+ 		macb_get_hwaddr(bp);
+ 
+-	err = of_get_phy_mode(np, &interface);
+-	if (err)
+-		/* not found in DT, MII by default */
+-		bp->phy_interface = PHY_INTERFACE_MODE_MII;
+-	else
+-		bp->phy_interface = interface;
++	err = macb_get_phy_mode(pdev);
++	if (err < 0) {
++		if (pdata && pdata->phytium_macb_pdata.phytium_dev_type == PHYTIUM_DEV_3P0)
++			bp->phy_interface = pdata->phytium_macb_pdata.phy_interface;
++		else
++			bp->phy_interface = PHY_INTERFACE_MODE_MII;
++	} else {
++		bp->phy_interface = err;
++	}
++
++	bp->link = 0;
++	bp->duplex = DUPLEX_UNKNOWN;
++	bp->speed = SPEED_UNKNOWN;
+ 
+ 	/* IP specific init */
+ 	err = init(pdev);
+ 	if (err)
+ 		goto err_out_free_netdev;
+ 
++	if (device_property_read_bool(&pdev->dev, "force-phy-mode")) {
++		bp->force_phy_mode = 1;
++	}
++
+ 	err = macb_mii_init(bp);
+ 	if (err)
+ 		goto err_out_free_netdev;
+ 
++	if (device_property_read_bool(&pdev->dev, "use-ncsi")) {
++		if (!IS_ENABLED(CONFIG_NET_NCSI)) {
++			dev_err(&pdev->dev, "NCSI stack not enabled\n");
++			goto err_out_free_netdev;
++		}
++		dev_notice(&pdev->dev, "Using NCSI interface\n");
++		bp->use_ncsi = 1;
++		bp->ndev = ncsi_register_dev(dev, gem_ncsi_handler);
++		if (!bp->ndev)
++			goto err_out_free_netdev;
++	} else {
++		bp->use_ncsi = 0;
++	}
++
+ 	netif_carrier_off(dev);
+ 
+ 	err = register_netdev(dev);
+@@ -4661,6 +5707,7 @@ static int macb_remove(struct platform_d
+ {
+ 	struct net_device *dev;
+ 	struct macb *bp;
++	struct macb_platform_data *pdata = dev_get_platdata(&pdev->dev);
+ 
+ 	dev = platform_get_drvdata(pdev);
+ 
+@@ -4669,16 +5716,21 @@ static int macb_remove(struct platform_d
+ 		mdiobus_unregister(bp->mii_bus);
+ 		mdiobus_free(bp->mii_bus);
+ 
++		if (bp->ndev)
++			ncsi_unregister_dev(bp->ndev);
+ 		unregister_netdev(dev);
+ 		tasklet_kill(&bp->hresp_err_tasklet);
+ 		pm_runtime_disable(&pdev->dev);
+ 		pm_runtime_dont_use_autosuspend(&pdev->dev);
+ 		if (!pm_runtime_suspended(&pdev->dev)) {
+-			clk_disable_unprepare(bp->tx_clk);
+-			clk_disable_unprepare(bp->hclk);
+-			clk_disable_unprepare(bp->pclk);
+-			clk_disable_unprepare(bp->rx_clk);
+-			clk_disable_unprepare(bp->tsu_clk);
++			if (!pdata) {
++				clk_disable_unprepare(bp->tx_clk);
++				clk_disable_unprepare(bp->hclk);
++				clk_disable_unprepare(bp->pclk);
++				clk_disable_unprepare(bp->rx_clk);
++				clk_disable_unprepare(bp->tsu_clk);
++			}
++
+ 			pm_runtime_set_suspended(&pdev->dev);
+ 		}
+ 		phylink_destroy(bp->phylink);
+@@ -4895,6 +5947,7 @@ static struct platform_driver macb_drive
+ 	.driver		= {
+ 		.name		= "macb",
+ 		.of_match_table	= of_match_ptr(macb_dt_ids),
++		.acpi_match_table = ACPI_PTR(macb_acpi_ids),
+ 		.pm	= &macb_pm_ops,
+ 	},
+ };
+--- a/drivers/net/ethernet/cadence/macb_pci.c
++++ b/drivers/net/ethernet/cadence/macb_pci.c
+@@ -21,17 +21,166 @@
+ 
+ #define CDNS_VENDOR_ID 0x17cd
+ #define CDNS_DEVICE_ID 0xe007
++#define PCI_DEVICE_ID_GMAC_3P0 0xdc3b
++#define PCI_SUBDEVICE_ID_SGMII				0x1000
++#define PCI_SUBDEVICE_ID_1000BASEX			0x1001
++#define PCI_SUBDEVICE_ID_USXGMII			0x1004
++#define PCI_SUBDEVICE_ID_10GBASER			0x1005
+ 
+ #define GEM_PCLK_RATE 50000000
+ #define GEM_HCLK_RATE 50000000
++#define GEM_TXCLK_RATE 25000000
++#define GEM_RXCLK_RATE 25000000
++#define GEM_TSUCLK_RATE 300000000
++
++static const u32 fixedlink[][5] = {
++	{0, 1, 1000, 1, 0},
++	{0, 1, 2500, 1, 0},
++	{0, 1, 5000, 1, 0},
++	{0, 1, 10000, 1, 0},
++};
++
++static const struct property_entry fl_properties[][2] = {
++	{PROPERTY_ENTRY_U32_ARRAY("fixed-link", fixedlink[0]), {}},
++	{PROPERTY_ENTRY_U32_ARRAY("fixed-link", fixedlink[1]), {}},
++	{PROPERTY_ENTRY_U32_ARRAY("fixed-link", fixedlink[2]), {}},
++	{PROPERTY_ENTRY_U32_ARRAY("fixed-link", fixedlink[3]), {}},
++};
++
++static const struct phytium_platform_pdata phytium_sgmii_pdata = {
++	.phytium_dev_type = PHYTIUM_DEV_3P0,
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_USRIO_DISABLED |
++			MACB_CAPS_TAILPTR,
++	.phy_interface = PHY_INTERFACE_MODE_SGMII,
++};
++
++static const struct phytium_platform_pdata phytium_1000basex_pdata = {
++	.phytium_dev_type = PHYTIUM_DEV_3P0,
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_USRIO_DISABLED |
++			MACB_CAPS_TAILPTR,
++	.phy_interface = PHY_INTERFACE_MODE_SGMII,
++	.properties = fl_properties[0],
++};
++
++static const struct phytium_platform_pdata phytium_usxgmii_pdata = {
++	.phytium_dev_type = PHYTIUM_DEV_3P0,
++	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE |
++			MACB_CAPS_JUMBO |
++			MACB_CAPS_GEM_HAS_PTP |
++			MACB_CAPS_BD_RD_PREFETCH |
++			MACB_CAPS_USRIO_DISABLED |
++			MACB_CAPS_TAILPTR,
++	.phy_interface = PHY_INTERFACE_MODE_USXGMII,
++	.properties = fl_properties[3],
++};
++
++static int phytium_macb_pci_init(struct pci_dev *pdev, struct macb_platform_data *plat_data,
++				 struct platform_device_info *plat_info,
++				 struct phytium_platform_pdata *phytium_data)
++{
++	int i;
++	int err;
++	char clkname[20];
++
++	err = pci_alloc_irq_vectors(pdev, 4, 4, PCI_IRQ_MSI);
++	if (err < 0) {
++		dev_err(&pdev->dev, "err=%d, fialed to allocate MSI entry", err);
++		plat_data->phytium_macb_pdata.irq_type = IRQ_TYPE_INTX;
++		plat_data->phytium_macb_pdata.irq[0] = pdev->irq;
++
++	} else {
++		plat_data->phytium_macb_pdata.irq_type = IRQ_TYPE_MSI;
++		for (i = 0; i < 4; i++)
++			plat_data->phytium_macb_pdata.irq[i] = pci_irq_vector(pdev, i);
++	}
++
++	plat_data->phytium_macb_pdata.phytium_dev_type = phytium_data->phytium_dev_type;
++	plat_data->phytium_macb_pdata.caps = phytium_data->caps;
++	plat_data->phytium_macb_pdata.phy_interface = phytium_data->phy_interface;
++	if (phytium_data && phytium_data->properties) {
++		plat_info->fwnode = NULL;
++		plat_info->properties = phytium_data->properties;
++		plat_data->phytium_macb_pdata.properties = phytium_data->properties;
++	}
++
++	snprintf(clkname, 20, "txclk:%02x", plat_info->id);
++	plat_data->phytium_macb_pdata.txclk =
++		clk_register_fixed_rate(&pdev->dev, clkname, NULL, 0, GEM_TXCLK_RATE);
++	if (IS_ERR(plat_data->phytium_macb_pdata.txclk)) {
++		err = PTR_ERR(plat_data->phytium_macb_pdata.txclk);
++		goto err_txclk_register;
++	}
++
++	snprintf(clkname, 20, "rxclk:%02x", plat_info->id);
++	plat_data->phytium_macb_pdata.rxclk =
++		clk_register_fixed_rate(&pdev->dev, clkname, NULL, 0, GEM_RXCLK_RATE);
++	if (IS_ERR(plat_data->phytium_macb_pdata.rxclk)) {
++		err = PTR_ERR(plat_data->phytium_macb_pdata.rxclk);
++		goto err_rxclk_register;
++	}
++
++	snprintf(clkname, 20, "tsuclk:%02x", plat_info->id);
++	plat_data->phytium_macb_pdata.tsu_clk =
++		clk_register_fixed_rate(&pdev->dev, clkname, NULL, 0, GEM_TSUCLK_RATE);
++	if (IS_ERR(plat_data->phytium_macb_pdata.tsu_clk)) {
++		err = PTR_ERR(plat_data->phytium_macb_pdata.tsu_clk);
++		goto err_tsuclk_register;
++	}
++
++	return 0;
++
++err_tsuclk_register:
++	clk_unregister(plat_data->phytium_macb_pdata.rxclk);
++
++err_rxclk_register:
++	clk_unregister(plat_data->phytium_macb_pdata.txclk);
++
++err_txclk_register:
++
++	return err;
++}
++
++static void phytium_macb_pci_uninit(struct pci_dev *pdev)
++{
++	struct platform_device *plat_dev = pci_get_drvdata(pdev);
++	struct macb_platform_data *plat_data = dev_get_platdata(&plat_dev->dev);
++
++	plat_dev->dev.dma_ops = NULL;
++	plat_dev->dev.iommu = NULL;
++	plat_dev->dev.iommu_group = NULL;
++	plat_dev->dev.dma_range_map = NULL;
++
++	clk_unregister(plat_data->phytium_macb_pdata.txclk);
++	clk_unregister(plat_data->phytium_macb_pdata.rxclk);
++	clk_unregister(plat_data->phytium_macb_pdata.tsu_clk);
++
++	if (plat_data->phytium_macb_pdata.properties) {
++		struct fwnode_handle *fw_node = dev_fwnode(&plat_dev->dev);
++
++		if (fw_node)
++			fwnode_remove_software_node(fw_node);
++		fw_node = NULL;
++	}
++}
+ 
+ static int macb_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+ {
+ 	int err;
+ 	struct platform_device *plat_dev;
+ 	struct platform_device_info plat_info;
++	struct phytium_platform_pdata *phytium_data = NULL;
+ 	struct macb_platform_data plat_data;
+ 	struct resource res[2];
++	char pclk_name[20] = "pclk";
++	char hclk_name[20] = "hclk";
+ 
+ 	/* enable pci device */
+ 	err = pcim_enable_device(pdev);
+@@ -48,9 +197,6 @@ static int macb_probe(struct pci_dev *pd
+ 	res[0].end = pci_resource_end(pdev, 0);
+ 	res[0].name = PCI_DRIVER_NAME;
+ 	res[0].flags = IORESOURCE_MEM;
+-	res[1].start = pci_irq_vector(pdev, 0);
+-	res[1].name = PCI_DRIVER_NAME;
+-	res[1].flags = IORESOURCE_IRQ;
+ 
+ 	dev_info(&pdev->dev, "EMAC physical base addr: %pa\n",
+ 		 &res[0].start);
+@@ -58,32 +204,48 @@ static int macb_probe(struct pci_dev *pd
+ 	/* set up macb platform data */
+ 	memset(&plat_data, 0, sizeof(plat_data));
+ 
++	/* set up platform device info */
++	memset(&plat_info, 0, sizeof(plat_info));
++	plat_info.parent = &pdev->dev;
++	plat_info.fwnode = pdev->dev.fwnode;
++	plat_info.name = PLAT_DRIVER_NAME;
++	plat_info.id = pdev->devfn;
++	plat_info.res = res;
++	plat_info.num_res = ARRAY_SIZE(res);
++	plat_info.data = &plat_data;
++	plat_info.size_data = sizeof(plat_data);
++	plat_info.dma_mask = pdev->dma_mask;
++	if (pdev->vendor == PCI_VENDOR_ID_PHYTIUM)
++		phytium_data = (struct phytium_platform_pdata *)id->driver_data;
++
+ 	/* initialize clocks */
+-	plat_data.pclk = clk_register_fixed_rate(&pdev->dev, "pclk", NULL, 0,
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0) {
++		plat_info.id = (pdev->bus->number << 8) | pdev->devfn;
++		snprintf(pclk_name, 20, "pclk:%02x", plat_info.id);
++		snprintf(hclk_name, 20, "hclk:%02x", plat_info.id);
++	}
++	plat_data.pclk = clk_register_fixed_rate(&pdev->dev, pclk_name, NULL, 0,
+ 						 GEM_PCLK_RATE);
+ 	if (IS_ERR(plat_data.pclk)) {
+ 		err = PTR_ERR(plat_data.pclk);
+ 		goto err_pclk_register;
+ 	}
+ 
+-	plat_data.hclk = clk_register_fixed_rate(&pdev->dev, "hclk", NULL, 0,
++	plat_data.hclk = clk_register_fixed_rate(&pdev->dev, hclk_name, NULL, 0,
+ 						 GEM_HCLK_RATE);
+ 	if (IS_ERR(plat_data.hclk)) {
+ 		err = PTR_ERR(plat_data.hclk);
+ 		goto err_hclk_register;
+ 	}
+ 
+-	/* set up platform device info */
+-	memset(&plat_info, 0, sizeof(plat_info));
+-	plat_info.parent = &pdev->dev;
+-	plat_info.fwnode = pdev->dev.fwnode;
+-	plat_info.name = PLAT_DRIVER_NAME;
+-	plat_info.id = pdev->devfn;
+-	plat_info.res = res;
+-	plat_info.num_res = ARRAY_SIZE(res);
+-	plat_info.data = &plat_data;
+-	plat_info.size_data = sizeof(plat_data);
+-	plat_info.dma_mask = pdev->dma_mask;
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0) {
++		if (phytium_macb_pci_init(pdev, &plat_data, &plat_info, phytium_data))
++			goto err_phytium_clk_register;
++	}
++
++	res[1].start = pci_irq_vector(pdev, 0);
++	res[1].name = PCI_DRIVER_NAME;
++	res[1].flags = IORESOURCE_IRQ;
+ 
+ 	/* register platform device */
+ 	plat_dev = platform_device_register_full(&plat_info);
+@@ -92,11 +254,21 @@ static int macb_probe(struct pci_dev *pd
+ 		goto err_plat_dev_register;
+ 	}
+ 
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0) {
++		plat_dev->dev.dma_ops = (&pdev->dev)->dma_ops;
++		plat_dev->dev.iommu = (&pdev->dev)->iommu;
++		plat_dev->dev.iommu_group = (&pdev->dev)->iommu_group;
++		plat_dev->dev.dma_range_map = (&pdev->dev)->dma_range_map;
++	}
+ 	pci_set_drvdata(pdev, plat_dev);
+ 
+ 	return 0;
+ 
+ err_plat_dev_register:
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0)
++		clk_unregister(plat_data.phytium_macb_pdata.tsu_clk);
++
++err_phytium_clk_register:
+ 	clk_unregister(plat_data.hclk);
+ 
+ err_hclk_register:
+@@ -113,11 +285,26 @@ static void macb_remove(struct pci_dev *
+ 
+ 	clk_unregister(plat_data->pclk);
+ 	clk_unregister(plat_data->hclk);
++
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0)
++		phytium_macb_pci_uninit(pdev);
+ 	platform_device_unregister(plat_dev);
++
++	if (pdev->device == PCI_DEVICE_ID_GMAC_3P0)
++		pci_free_irq_vectors(pdev);
+ }
+ 
+ static const struct pci_device_id dev_id_table[] = {
+ 	{ PCI_DEVICE(CDNS_VENDOR_ID, CDNS_DEVICE_ID), },
++	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_PHYTIUM, PCI_DEVICE_ID_GMAC_3P0,
++				PCI_VENDOR_ID_PHYTIUM, PCI_SUBDEVICE_ID_SGMII),
++		.driver_data = (kernel_ulong_t)&phytium_sgmii_pdata},
++	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_PHYTIUM, PCI_DEVICE_ID_GMAC_3P0,
++				PCI_VENDOR_ID_PHYTIUM, PCI_SUBDEVICE_ID_1000BASEX),
++		.driver_data = (kernel_ulong_t)&phytium_1000basex_pdata},
++	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_PHYTIUM, PCI_DEVICE_ID_GMAC_3P0,
++				PCI_VENDOR_ID_PHYTIUM, PCI_SUBDEVICE_ID_USXGMII),
++		.driver_data = (kernel_ulong_t)&phytium_usxgmii_pdata},
+ 	{ 0, }
+ };
+ 
+--- a/drivers/net/ethernet/stmicro/stmmac/Kconfig
++++ b/drivers/net/ethernet/stmicro/stmmac/Kconfig
+@@ -117,6 +117,16 @@ config DWMAC_OXNAS
+ 	  This selects the Oxford Semiconductor OXNASSoC glue layer support for
+ 	  the stmmac device driver. This driver is used for OX820.
+ 
++config DWMAC_PHYTIUM
++	tristate "Phytium dwmac support"
++	default ARCH_PHYTIUM
++	depends on (OF || ACPI) && (ARCH_PHYTIUM || COMPILE_TEST)
++	help
++	  Support for GMAC controller on Phytium SoCs.
++
++	  This selects the Phytium GMAC glue layer support for the
++	  stmmac device driver.
++
+ config DWMAC_QCOM_ETHQOS
+ 	tristate "Qualcomm ETHQOS support"
+ 	default ARCH_QCOM
+--- a/drivers/net/ethernet/stmicro/stmmac/Makefile
++++ b/drivers/net/ethernet/stmicro/stmmac/Makefile
+@@ -18,6 +18,7 @@ obj-$(CONFIG_DWMAC_LPC18XX)	+= dwmac-lpc
+ obj-$(CONFIG_DWMAC_MEDIATEK)	+= dwmac-mediatek.o
+ obj-$(CONFIG_DWMAC_MESON)	+= dwmac-meson.o dwmac-meson8b.o
+ obj-$(CONFIG_DWMAC_OXNAS)	+= dwmac-oxnas.o
++obj-$(CONFIG_DWMAC_PHYTIUM)	+= dwmac-phytium.o
+ obj-$(CONFIG_DWMAC_QCOM_ETHQOS)	+= dwmac-qcom-ethqos.o
+ obj-$(CONFIG_DWMAC_ROCKCHIP)	+= dwmac-rk.o
+ obj-$(CONFIG_DWMAC_SOCFPGA)	+= dwmac-altr-socfpga.o
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -394,6 +394,12 @@ config XILINX_GMII2RGMII
+ 	  the Reduced Gigabit Media Independent Interface(RGMII) between
+ 	  Ethernet physical media devices and the Gigabit Ethernet controller.
+ 
++config MOTORCOMM_PHY
++	tristate "Motorcomm PHYs"
++	help
++		Enables support for Motorcomm network PHYs.
++		Currently supports the YT8511 gigabit PHY.
++
+ endif # PHYLIB
+ 
+ config MICREL_KS8995MA
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -96,3 +96,5 @@ obj-$(CONFIG_STE10XP)		+= ste10Xp.o
+ obj-$(CONFIG_TERANETICS_PHY)	+= teranetics.o
+ obj-$(CONFIG_VITESSE_PHY)	+= vitesse.o
+ obj-$(CONFIG_XILINX_GMII2RGMII) += xilinx_gmii2rgmii.o
++
++obj-$(CONFIG_MOTORCOMM_PHY)    += motorcomm.o
+--- a/drivers/net/phy/at803x.c
++++ b/drivers/net/phy/at803x.c
+@@ -103,6 +103,10 @@
+ #define AT803X_DEBUG_REG_GREEN			0x3D
+ #define   AT803X_DEBUG_GATE_CLK_IN1000		BIT(6)
+ 
++#define AT803X_DEBUG_REG_B			0x0B
++#define AT803X_DEBUG_REG_B_HIBERNATION_ENABLE	0x1
++#define AT803X_DEBUG_REG_B_HIBERNATION_OFFSET	15
++
+ #define AT803X_DEBUG_REG_1F			0x1F
+ #define AT803X_DEBUG_PLL_ON			BIT(2)
+ #define AT803X_DEBUG_RGMII_1V8			BIT(3)
+@@ -284,6 +288,20 @@ static int at803x_enable_tx_delay(struct
+ 				     AT803X_DEBUG_TX_CLK_DLY_EN);
+ }
+ 
++static inline int at803x_disable_hibernate(struct phy_device *phydev)
++{
++	int ret = 0;
++	u16 val = 0;
++
++	ret = at803x_debug_reg_read(phydev, AT803X_DEBUG_REG_B);
++	if (ret < 0)
++		return ret;
++
++	val = ret & 0xffff;
++	val &= (~(AT803X_DEBUG_REG_B_HIBERNATION_ENABLE << AT803X_DEBUG_REG_B_HIBERNATION_OFFSET));
++	return phy_write(phydev, AT803X_DEBUG_DATA, val);
++}
++
+ static int at803x_disable_rx_delay(struct phy_device *phydev)
+ {
+ 	return at803x_debug_reg_mask(phydev, AT803X_DEBUG_ANALOG_TEST_CTRL,
+@@ -717,6 +735,10 @@ static int at803x_config_init(struct phy
+ {
+ 	int ret;
+ 
++	ret = at803x_disable_hibernate(phydev);
++	if (ret < 0)
++		return ret;
++
+ 	/* The RX and TX delay default is:
+ 	 *   after HW reset: RX delay enabled and TX delay disabled
+ 	 *   after SW reset: RX delay enabled, while TX delay retains the
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -306,6 +306,9 @@ static int phylink_parse_mode(struct phy
+ 			phylink_set(pl->supported, 2500baseX_Full);
+ 			break;
+ 
++		case PHY_INTERFACE_MODE_5GBASER:
++			phylink_set(pl->supported, 5000baseT_Full);
++			break;
+ 		case PHY_INTERFACE_MODE_USXGMII:
+ 		case PHY_INTERFACE_MODE_10GKR:
+ 		case PHY_INTERFACE_MODE_10GBASER:
+--- a/drivers/pci/hotplug/pciehp.h
++++ b/drivers/pci/hotplug/pciehp.h
+@@ -109,6 +109,11 @@ struct controller {
+ 	unsigned int ist_running;
+ 	int request_result;
+ 	wait_queue_head_t requester;
++
++#ifdef CONFIG_ARCH_PHYTIUM
++	u32 buses;
++	u16 slot_ctrl_t;
++#endif
+ };
+ 
+ /**
+--- a/drivers/pci/hotplug/pciehp_ctrl.c
++++ b/drivers/pci/hotplug/pciehp_ctrl.c
+@@ -226,6 +226,11 @@ void pciehp_handle_presence_or_link_chan
+ {
+ 	int present, link_active;
+ 
++#ifdef CONFIG_ARCH_PHYTIUM
++	struct pci_dev *pdev = ctrl->pcie->port;
++	u16 slot_ctrl_val;
++#endif
++
+ 	/*
+ 	 * If the slot is on and presence or link has changed, turn it off.
+ 	 * Even if it's occupied again, we cannot assume the card is the same.
+@@ -244,6 +249,21 @@ void pciehp_handle_presence_or_link_chan
+ 		if (events & PCI_EXP_SLTSTA_PDC)
+ 			ctrl_info(ctrl, "Slot(%s): Card not present\n",
+ 				  slot_name(ctrl));
++#ifdef CONFIG_ARCH_PHYTIUM
++		if ((ctrl->buses > 0) && (ctrl->slot_ctrl > 0)) {
++			pci_write_config_dword(pdev, PCI_PRIMARY_BUS, ctrl->buses);
++			slot_ctrl_val = ctrl->slot_ctrl_t | PCI_EXP_SLTCTL_ABPE |
++					PCI_EXP_SLTCTL_PFDE | PCI_EXP_SLTCTL_MRLSCE |
++					PCI_EXP_SLTCTL_PDCE | PCI_EXP_SLTCTL_CCIE |
++					PCI_EXP_SLTCTL_HPIE | PCI_EXP_SLTCTL_ATTN_IND_BLINK |
++					PCI_EXP_SLTCTL_PWR_IND_ON |
++					PCI_EXP_SLTCTL_DLLSCE;
++			slot_ctrl_val &= ~PCI_EXP_SLTCTL_PWR_OFF;
++			pcie_capability_write_word(pdev, PCI_EXP_SLTCTL, slot_ctrl_val);
++			ctrl_info(ctrl, "Ctrl buses=0x%x, slot_ctrl=0x%x\n",
++				  ctrl->buses, slot_ctrl_val);
++		}
++#endif
+ 		pciehp_disable_slot(ctrl, SURPRISE_REMOVAL);
+ 		break;
+ 	default:
+--- a/drivers/pci/hotplug/pciehp_hpc.c
++++ b/drivers/pci/hotplug/pciehp_hpc.c
+@@ -597,7 +597,7 @@ static irqreturn_t pciehp_isr(int irq, v
+ 	 * in the Slot Control register (PCIe r4.0, sec 6.7.3.4).
+ 	 */
+ 	if (pdev->current_state == PCI_D3cold ||
+-	    (!(ctrl->slot_ctrl & PCI_EXP_SLTCTL_HPIE) && !pciehp_poll_mode))
++			(!(ctrl->slot_ctrl & PCI_EXP_SLTCTL_HPIE) && !pciehp_poll_mode))
+ 		return IRQ_NONE;
+ 
+ 	/*
+@@ -695,7 +695,13 @@ static irqreturn_t pciehp_ist(int irq, v
+ 	struct controller *ctrl = (struct controller *)dev_id;
+ 	struct pci_dev *pdev = ctrl_dev(ctrl);
+ 	irqreturn_t ret;
++#ifdef CONFIG_ARCH_PHYTIUM
++	u32 events, buses;
++	u16 slot_ctrl;
++	bool link_active;
++#else
+ 	u32 events;
++#endif
+ 
+ 	ctrl->ist_running = true;
+ 	pci_config_pm_runtime_get(pdev);
+@@ -715,6 +721,23 @@ static irqreturn_t pciehp_ist(int irq, v
+ 		goto out;
+ 	}
+ 
++#ifdef CONFIG_ARCH_PHYTIUM
++	if(ctrl->state == ON_STATE) {
++		pci_read_config_dword(pdev, PCI_PRIMARY_BUS, &buses);
++		pcie_capability_read_word(pdev, PCI_EXP_SLTCTL, &slot_ctrl);
++		ctrl->buses = buses;
++		ctrl->slot_ctrl_t = slot_ctrl;
++                ctrl_dbg(ctrl, "Ctrl buses=0x%x, slot_ctrl=0x%x\n",
++				ctrl->buses, ctrl->slot_ctrl_t);
++        }
++
++	mdelay(1000);
++
++	link_active = pciehp_check_link_active(ctrl);
++	if((ctrl->state == ON_STATE) && (link_active == false))
++		events |= PCI_EXP_SLTSTA_DLLSC;
++#endif
++
+ 	/* Check Attention Button Pressed */
+ 	if (events & PCI_EXP_SLTSTA_ABP) {
+ 		ctrl_info(ctrl, "Slot(%s): Attention button pressed\n",
+@@ -749,7 +772,6 @@ static irqreturn_t pciehp_ist(int irq, v
+ 	else if (events & (PCI_EXP_SLTSTA_PDC | PCI_EXP_SLTSTA_DLLSC))
+ 		pciehp_handle_presence_or_link_change(ctrl, events);
+ 	up_read(&ctrl->reset_lock);
+-
+ 	ret = IRQ_HANDLED;
+ out:
+ 	pci_config_pm_runtime_put(pdev);
+--- a/drivers/pci/pcie/portdrv.h
++++ b/drivers/pci/pcie/portdrv.h
+@@ -123,6 +123,19 @@ void pcie_port_bus_unregister(void);
+ 
+ struct pci_dev;
+ 
++#ifdef CONFIG_HOTPLUG_PCI_PCIE
++extern bool pciehp_msi_disabled;
++
++static inline bool pciehp_no_msi(void)
++{
++	return pciehp_msi_disabled;
++}
++
++#else  /* !CONFIG_HOTPLUG_PCI_PCIE */
++static inline bool pciehp_no_msi(void) { return false; }
++#endif /* !CONFIG_HOTPLUG_PCI_PCIE */
++
++
+ #ifdef CONFIG_PCIE_PME
+ extern bool pcie_pme_msi_disabled;
+ 
+--- a/drivers/pci/pcie/portdrv_core.c
++++ b/drivers/pci/pcie/portdrv_core.c
+@@ -25,6 +25,17 @@ struct portdrv_service_data {
+ 	u32 service;
+ };
+ 
++bool pciehp_msi_disabled;
++
++static int __init pciehp_setup(char *str)
++{
++	if (!strncmp(str, "nomsi", 5))
++		pciehp_msi_disabled = true;
++
++	return 1;
++}
++__setup("pcie_hp=", pciehp_setup);
++
+ /**
+  * release_pcie_device - free PCI Express port service device structure
+  * @dev: Port service device to release
+@@ -177,6 +188,9 @@ static int pcie_init_service_irqs(struct
+ 	if ((mask & PCIE_PORT_SERVICE_PME) && pcie_pme_no_msi())
+ 		goto legacy_irq;
+ 
++	if ((mask & PCIE_PORT_SERVICE_HP) && pciehp_no_msi())
++		goto legacy_irq;
++
+ 	/* Try to use MSI-X or MSI if supported */
+ 	if (pcie_port_enable_irq_vec(dev, irqs, mask) == 0)
+ 		return 0;
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -31,6 +31,7 @@
+ #include <linux/suspend.h>
+ #include <linux/switchtec.h>
+ #include <asm/dma.h>	/* isa_dma_bridge_buggy */
++#include <linux/crash_dump.h>
+ #include "pci.h"
+ 
+ static ktime_t fixup_debug_start(struct pci_dev *dev,
+@@ -3902,12 +3903,12 @@ static int nvme_disable_and_flr(struct p
+ 	void __iomem *bar;
+ 	u16 cmd;
+ 	u32 cfg;
+-
++	printk("%s began\n", __func__);
+ 	if (dev->class != PCI_CLASS_STORAGE_EXPRESS ||
+ 	    !pcie_has_flr(dev) || !pci_resource_start(dev, 0))
+ 		return -ENOTTY;
+ 
+-	if (probe)
++	if (probe & !is_kdump_kernel())
+ 		return 0;
+ 
+ 	bar = pci_iomap(dev, 0, NVME_REG_CC + sizeof(cfg));
+@@ -3961,7 +3962,7 @@ static int nvme_disable_and_flr(struct p
+ 	pci_iounmap(dev, bar);
+ 
+ 	pcie_flr(dev);
+-
++	printk("%s finished\n", __func__);
+ 	return 0;
+ }
+ 
+@@ -4057,6 +4058,7 @@ static const struct pci_dev_reset_method
+ 	{ PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_IVB_M2_VGA,
+ 		reset_ivb_igd },
+ 	{ PCI_VENDOR_ID_SAMSUNG, 0xa804, nvme_disable_and_flr },
++	{ PCI_VENDOR_ID_SAMSUNG, 0xa809, nvme_disable_and_flr },
+ 	{ PCI_VENDOR_ID_INTEL, 0x0953, delay_250ms_after_flr },
+ 	{ PCI_VENDOR_ID_CHELSIO, PCI_ANY_ID,
+ 		reset_chelsio_generic_dev },
+@@ -4996,6 +4998,10 @@ static const struct pci_dev_acs_enabled
+ 	{ PCI_VENDOR_ID_ZHAOXIN, PCI_ANY_ID, pci_quirk_zhaoxin_pcie_ports_acs },
+ 	/* Wangxun nics */
+ 	{ PCI_VENDOR_ID_WANGXUN, PCI_ANY_ID, pci_quirk_wangxun_nic_acs },
++	/* Phytium Technology */
++	{ 0x10b5, PCI_ANY_ID, pci_quirk_xgene_acs },
++	{ 0x17cd, PCI_ANY_ID, pci_quirk_xgene_acs },
++	{ 0x1db7, PCI_ANY_ID, pci_quirk_xgene_acs },
+ 	{ 0 }
+ };
+ 
+@@ -5380,6 +5386,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SE
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0144, quirk_no_ext_tags);
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0420, quirk_no_ext_tags);
+ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, 0x0422, quirk_no_ext_tags);
++DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_PHYTIUM, 0xdc3a, quirk_no_ext_tags);
+ 
+ #ifdef CONFIG_PCI_ATS
+ static void quirk_no_ats(struct pci_dev *pdev)
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -570,4 +570,14 @@ config PWM_ZX
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called pwm-zx.
+ 
++config PWM_PHYTIUM
++	tristate "Phytium PWM support"
++	depends on ARCH_PHYTIUM
++	help
++	  Generic PWM framework driver for the PWM controller found on
++	  Phytium SoCs.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called pwm-phytium.
++
+ endif
+--- a/drivers/pwm/Makefile
++++ b/drivers/pwm/Makefile
+@@ -55,3 +55,5 @@ obj-$(CONFIG_PWM_TWL)		+= pwm-twl.o
+ obj-$(CONFIG_PWM_TWL_LED)	+= pwm-twl-led.o
+ obj-$(CONFIG_PWM_VT8500)	+= pwm-vt8500.o
+ obj-$(CONFIG_PWM_ZX)		+= pwm-zx.o
++
++obj-$(CONFIG_PWM_PHYTIUM)       += pwm-phytium.o
+--- a/drivers/pwm/sysfs.c
++++ b/drivers/pwm/sysfs.c
+@@ -260,7 +260,7 @@ static int pwm_export_child(struct devic
+ 	export->child.parent = parent;
+ 	export->child.devt = MKDEV(0, 0);
+ 	export->child.groups = pwm_groups;
+-	dev_set_name(&export->child, "pwm%u", pwm->hwpwm);
++	dev_set_name(&export->child, "pwm%u", pwm->pwm);
+ 
+ 	ret = device_register(&export->child);
+ 	if (ret) {
+--- a/drivers/remoteproc/Kconfig
++++ b/drivers/remoteproc/Kconfig
+@@ -288,6 +288,12 @@ config TI_K3_R5_REMOTEPROC
+ 	  It's safe to say N here if you're not interested in utilizing
+ 	  a slave processor.
+ 
++config HOMO_REMOTEPROC
++	bool "homogeneous remoteproc support"
++	select RPMSG_VIRTIO
++	help
++	  Say y here to support homogeneous processors via the remote processor framework.
++
+ endif # REMOTEPROC
+ 
+ endmenu
+--- a/drivers/remoteproc/Makefile
++++ b/drivers/remoteproc/Makefile
+@@ -34,3 +34,4 @@ obj-$(CONFIG_ST_SLIM_REMOTEPROC)	+= st_s
+ obj-$(CONFIG_STM32_RPROC)		+= stm32_rproc.o
+ obj-$(CONFIG_TI_K3_DSP_REMOTEPROC)	+= ti_k3_dsp_remoteproc.o
+ obj-$(CONFIG_TI_K3_R5_REMOTEPROC)	+= ti_k3_r5_remoteproc.o
++obj-$(CONFIG_HOMO_REMOTEPROC)  += homo_remoteproc.o
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -701,6 +701,16 @@ config RTC_DRV_S5M
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called rtc-s5m.
+ 
++config RTC_DRV_SD3068
++	tristate "ZXW Shenzhen whwave SD3068"
++        select REGMAP_I2C
++        help
++          If you say yes here you get support for the ZXW Shenzhen whwave
++          SD3068 RTC chips.
++
++          This driver can also be built as a module. If so, the module
++          will be called rtc-sd3068
++
+ config RTC_DRV_SD3078
+ 	tristate "ZXW Shenzhen whwave SD3078"
+ 	select REGMAP_I2C
+--- a/drivers/rtc/Makefile
++++ b/drivers/rtc/Makefile
+@@ -153,6 +153,7 @@ obj-$(CONFIG_RTC_DRV_S3C)	+= rtc-s3c.o
+ obj-$(CONFIG_RTC_DRV_S5M)	+= rtc-s5m.o
+ obj-$(CONFIG_RTC_DRV_SA1100)	+= rtc-sa1100.o
+ obj-$(CONFIG_RTC_DRV_SC27XX)	+= rtc-sc27xx.o
++obj-$(CONFIG_RTC_DRV_SD3068)   += rtc-sd3068.o
+ obj-$(CONFIG_RTC_DRV_SD3078)   += rtc-sd3078.o
+ obj-$(CONFIG_RTC_DRV_SH)	+= rtc-sh.o
+ obj-$(CONFIG_RTC_DRV_SIRFSOC)	+= rtc-sirfsoc.o
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -585,6 +585,44 @@ config SPI_ORION
+ 	  This enables using the SPI master controller on the Orion
+ 	  and MVEBU chips.
+ 
++config SPI_PHYTIUM
++	tristate
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++
++config SPI_PHYTIUM_PLAT
++	tristate "Phytium SPI controller platform support"
++	select SPI_PHYTIUM
++	help
++	  This selects a platform driver for Phytium SPI controller.
++
++	  If you say yes to this option, support will be included for
++	  Pd1904 and pd2008 families of SPI controller.
++
++config SPI_PHYTIUM_PCI
++	tristate "Phytium SPI controller PCI support"
++	depends on PCI
++	select SPI_PHYTIUM
++	help
++	  This selects a PCI driver for Phytium SPI controller.
++
++	  If you say yes to this option, support will be included for
++	  Phytium px210 chipset of SPI controller.
++
++	  If unsure, say N.
++
++config SPI_PHYTIUM_QSPI
++	tristate "Phytium Quad SPI controller"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	depends on OF
++	depends on SPI_MEM
++	help
++	  This enables support for Phytium Quad SPI flash controller.
++
++	  This driver does not support generic SPI. The implementation only
++	  supports spi-mem interface.
++
++	  If unsure, say N.
++
+ config SPI_PIC32
+ 	tristate "Microchip PIC32 series SPI"
+ 	depends on MACH_PIC32 || COMPILE_TEST
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -82,6 +82,11 @@ obj-$(CONFIG_SPI_OMAP_100K)		+= spi-omap
+ obj-$(CONFIG_SPI_OMAP24XX)		+= spi-omap2-mcspi.o
+ obj-$(CONFIG_SPI_TI_QSPI)		+= spi-ti-qspi.o
+ obj-$(CONFIG_SPI_ORION)			+= spi-orion.o
++obj-$(CONFIG_SPI_PHYTIUM)		+= spi-phytium.o
++obj-$(CONFIG_SPI_PHYTIUM_PLAT)		+= spi-phytium-plat.o
++obj-$(CONFIG_SPI_PHYTIUM_PCI)		+= spi-phytium-pci.o
++obj-$(CONFIG_SPI_PHYTIUM_QSPI)		+= spi-phytium-qspi.o
++obj-$(CONFIG_SPI_PHYTIUM)       += spi-phytium-dma.o
+ obj-$(CONFIG_SPI_PIC32)			+= spi-pic32.o
+ obj-$(CONFIG_SPI_PIC32_SQI)		+= spi-pic32-sqi.o
+ obj-$(CONFIG_SPI_PL022)			+= spi-pl022.o
+--- a/drivers/tee/optee/core.c
++++ b/drivers/tee/optee/core.c
+@@ -5,6 +5,7 @@
+ 
+ #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+ 
++#include <linux/acpi.h>
+ #include <linux/arm-smccc.h>
+ #include <linux/crash_dump.h>
+ #include <linux/errno.h>
+@@ -776,6 +777,14 @@ static const struct of_device_id optee_d
+ };
+ MODULE_DEVICE_TABLE(of, optee_dt_match);
+ 
++#ifdef CONFIG_ACPI
++static const struct acpi_device_id optee_acpi_match[] = {
++	{ "PHYT8003" },
++	{ }
++};
++MODULE_DEVICE_TABLE(acpi, optee_acpi_match);
++#endif
++
+ static struct platform_driver optee_driver = {
+ 	.probe  = optee_probe,
+ 	.remove = optee_remove,
+@@ -783,6 +792,7 @@ static struct platform_driver optee_driv
+ 	.driver = {
+ 		.name = "optee",
+ 		.of_match_table = optee_dt_match,
++		.acpi_match_table = ACPI_PTR(optee_acpi_match),
+ 	},
+ };
+ module_platform_driver(optee_driver);
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -73,6 +73,17 @@ config SERIAL_AMBA_PL011_CONSOLE
+ 	  your boot loader (lilo or loadlin) about how to pass options to the
+ 	  kernel at boot time.)
+ 
++config SERIAL_PHYTIUM_PCI
++	tristate "Phytium PCI serial port support"
++	depends on PCI
++	select SERIAL_CORE
++	help
++	  This driver supports the Phytium UART controller on PCI/PCIe adapters.
++	  If you want to compile this driver into the kernel, say Y here.  To
++	  compile this driver as a module, choose M here.
++
++	  If unsure, say N.
++
+ config SERIAL_EARLYCON_ARM_SEMIHOST
+ 	bool "Early console using ARM semihosting"
+ 	depends on ARM64 || ARM
+--- a/drivers/tty/serial/Makefile
++++ b/drivers/tty/serial/Makefile
+@@ -91,6 +91,8 @@ obj-$(CONFIG_SERIAL_RDA)	+= rda-uart.o
+ obj-$(CONFIG_SERIAL_MILBEAUT_USIO) += milbeaut_usio.o
+ obj-$(CONFIG_SERIAL_SIFIVE)	+= sifive.o
+ 
++obj-$(CONFIG_SERIAL_PHYTIUM_PCI) += phytium-uart.o
++
+ # GPIOLIB helpers for modem control lines
+ obj-$(CONFIG_SERIAL_MCTRL_GPIO)	+= serial_mctrl_gpio.o
+ 
+--- a/drivers/usb/Kconfig
++++ b/drivers/usb/Kconfig
+@@ -125,6 +125,8 @@ source "drivers/usb/chipidea/Kconfig"
+ 
+ source "drivers/usb/isp1760/Kconfig"
+ 
++source "drivers/usb/phytium/Kconfig"
++
+ comment "USB port drivers"
+ 
+ if USB
+--- a/drivers/usb/Makefile
++++ b/drivers/usb/Makefile
+@@ -66,3 +66,5 @@ obj-$(CONFIG_USBIP_CORE)	+= usbip/
+ obj-$(CONFIG_TYPEC)		+= typec/
+ 
+ obj-$(CONFIG_USB_ROLE_SWITCH)	+= roles/
++
++obj-$(CONFIG_USB_PHYTIUM)   += phytium/
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -72,6 +72,8 @@
+ #define PCI_DEVICE_ID_ASMEDIA_2142_XHCI			0x2142
+ #define PCI_DEVICE_ID_ASMEDIA_3242_XHCI			0x3242
+ 
++#define PCI_DEVICE_ID_PHYTIUM_XHCI				0xdc27
++
+ static const char hcd_name[] = "xhci_hcd";
+ 
+ static struct hc_driver __read_mostly xhci_pci_hc_driver;
+@@ -283,6 +285,9 @@ static void xhci_pci_quirks(struct devic
+ 	if (pdev->vendor == PCI_VENDOR_ID_VIA)
+ 		xhci->quirks |= XHCI_RESET_ON_RESUME;
+ 
++	if (pdev->vendor == PCI_VENDOR_ID_PHYTIUM ||
++	    pdev->device == PCI_DEVICE_ID_PHYTIUM_XHCI)
++		xhci->quirks |= XHCI_RESET_ON_RESUME;
+ 	/* See https://bugzilla.kernel.org/show_bug.cgi?id=79511 */
+ 	if (pdev->vendor == PCI_VENDOR_ID_VIA &&
+ 			pdev->device == 0x3432)
+--- a/drivers/usb/host/xhci-plat.c
++++ b/drivers/usb/host/xhci-plat.c
+@@ -137,6 +137,10 @@ static const struct xhci_plat_priv xhci_
+ 	.quirks = XHCI_RESET_ON_RESUME | XHCI_SUSPEND_RESUME_CLKS,
+ };
+ 
++static const struct xhci_plat_priv xhci_plat_phytium_pe220x = {
++	.quirks = XHCI_RESET_ON_RESUME,
++};
++
+ static const struct of_device_id usb_xhci_of_match[] = {
+ 	{
+ 		.compatible = "generic-xhci",
+@@ -178,6 +182,9 @@ static const struct of_device_id usb_xhc
+ 	}, {
+ 		.compatible = "brcm,bcm7445-xhci",
+ 		.data = &xhci_plat_brcm,
++	}, {
++		.compatible = "phytium,pe220x-xhci",
++		.data = &xhci_plat_phytium_pe220x,
+ 	},
+ 	{},
+ };
+@@ -289,6 +296,8 @@ static int xhci_plat_probe(struct platfo
+ 
+ 	if (pdev->dev.of_node)
+ 		priv_match = of_device_get_match_data(&pdev->dev);
++	else if (has_acpi_companion(&pdev->dev))
++		priv_match = acpi_device_get_match_data(&pdev->dev);
+ 	else
+ 		priv_match = dev_get_platdata(&pdev->dev);
+ 
+@@ -536,6 +545,7 @@ static const struct dev_pm_ops xhci_plat
+ static const struct acpi_device_id usb_xhci_acpi_match[] = {
+ 	/* XHCI-compliant USB Controller */
+ 	{ "PNP0D10", },
++	{ "PHYT0039", (kernel_ulong_t)&xhci_plat_phytium_pe220x },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(acpi, usb_xhci_acpi_match);
+--- a/drivers/w1/masters/Kconfig
++++ b/drivers/w1/masters/Kconfig
+@@ -74,5 +74,15 @@ config W1_MASTER_SGI
+ 	  This support is also available as a module.  If so, the module
+ 	  will be called sgi_w1.
+ 
++config W1_MASTER_PHYTIUM
++	tristate "Phytium 1-wire driver"
++	depends on ARCH_PHYTIUM || COMPILE_TEST
++	help
++	  Say Y here if you want to get support for the 1-wire interface
++	  on an Phytium SoC.
++
++	  This driver can also be built as a module.  If so, the module
++	  will be called phytium-w1.
++
+ endmenu
+ 
+--- a/drivers/w1/masters/Makefile
++++ b/drivers/w1/masters/Makefile
+@@ -12,3 +12,5 @@ obj-$(CONFIG_W1_MASTER_DS1WM)		+= ds1wm.
+ obj-$(CONFIG_W1_MASTER_GPIO)		+= w1-gpio.o
+ obj-$(CONFIG_HDQ_MASTER_OMAP)		+= omap_hdq.o
+ obj-$(CONFIG_W1_MASTER_SGI)		+= sgi_w1.o
++
++obj-$(CONFIG_W1_MASTER_PHYTIUM)		+= phytium_w1.o
+\ No newline at end of file
+--- a/include/acpi/acpi_drivers.h
++++ b/include/acpi/acpi_drivers.h
+@@ -68,7 +68,7 @@
+ 
+ int acpi_irq_penalty_init(void);
+ int acpi_pci_link_allocate_irq(acpi_handle handle, int index, int *triggering,
+-			       int *polarity, char **name);
++			       int *polarity, char **name, struct fwnode_handle **rs_fwnode);
+ int acpi_pci_link_free_irq(acpi_handle handle);
+ 
+ /* ACPI PCI Device Binding (pci_bind.c) */
+--- a/include/clocksource/arm_arch_timer.h
++++ b/include/clocksource/arm_arch_timer.h
+@@ -24,7 +24,7 @@
+ 
+ enum arch_timer_reg {
+ 	ARCH_TIMER_REG_CTRL,
+-	ARCH_TIMER_REG_TVAL,
++	ARCH_TIMER_REG_CVAL,
+ };
+ 
+ enum arch_timer_ppi_nr {
+--- a/include/linux/acpi.h
++++ b/include/linux/acpi.h
+@@ -340,6 +340,16 @@ struct irq_domain *acpi_irq_create_hiera
+ 					     const struct irq_domain_ops *ops,
+ 					     void *host_data);
+ 
++#ifdef CONFIG_ACPI_GENERIC_GSI
++struct fwnode_handle *acpi_get_irq_source_fwhandle(const struct acpi_resource_source *source);
++#else
++static inline
++struct fwnode_handle *acpi_get_irq_source_fwhandle(const struct acpi_resource_source *source)
++{
++	return NULL;
++}
++#endif
++
+ #ifdef CONFIG_X86_IO_APIC
+ extern int acpi_get_override_irq(u32 gsi, int *trigger, int *polarity);
+ #else
+--- a/include/linux/cpuhotplug.h
++++ b/include/linux/cpuhotplug.h
+@@ -196,6 +196,7 @@ enum cpuhp_state {
+ 	CPUHP_AP_ONLINE_DYN_END		= CPUHP_AP_ONLINE_DYN + 30,
+ 	CPUHP_AP_X86_HPET_ONLINE,
+ 	CPUHP_AP_X86_KVM_CLK_ONLINE,
++	CPUHP_AP_HOMO_RPROC_STARTING,
+ 	CPUHP_AP_ACTIVE,
+ 	CPUHP_ONLINE,
+ };
+--- a/include/linux/pci_ids.h
++++ b/include/linux/pci_ids.h
+@@ -3142,4 +3142,6 @@
+ 
+ #define PCI_VENDOR_ID_NCUBE		0x10ff
+ 
++#define PCI_VENDOR_ID_PHYTIUM		0x1db7
++
+ #endif /* _LINUX_PCI_IDS_H */
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -107,6 +107,7 @@ extern const int phy_10gbit_features_arr
+  * @PHY_INTERFACE_MODE_100BASEX: 100 BaseX
+  * @PHY_INTERFACE_MODE_1000BASEX: 1000 BaseX
+  * @PHY_INTERFACE_MODE_2500BASEX: 2500 BaseX
++ * @PHY_INTERFACE_MODE_5GBASER: 5G BaseR
+  * @PHY_INTERFACE_MODE_RXAUI: Reduced XAUI
+  * @PHY_INTERFACE_MODE_XAUI: 10 Gigabit Attachment Unit Interface
+  * @PHY_INTERFACE_MODE_10GBASER: 10G BaseR
+@@ -139,6 +140,7 @@ typedef enum {
+ 	PHY_INTERFACE_MODE_100BASEX,
+ 	PHY_INTERFACE_MODE_1000BASEX,
+ 	PHY_INTERFACE_MODE_2500BASEX,
++	PHY_INTERFACE_MODE_5GBASER,
+ 	PHY_INTERFACE_MODE_RXAUI,
+ 	PHY_INTERFACE_MODE_XAUI,
+ 	/* 10GBASE-R, XFI, SFI - single lane 10G Serdes */
+@@ -209,6 +211,8 @@ static inline const char *phy_modes(phy_
+ 		return "1000base-x";
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+ 		return "2500base-x";
++	case PHY_INTERFACE_MODE_5GBASER:
++		return "5gbase-r";
+ 	case PHY_INTERFACE_MODE_RXAUI:
+ 		return "rxaui";
+ 	case PHY_INTERFACE_MODE_XAUI:
+@@ -549,7 +553,7 @@ struct phy_device {
+ 	struct phy_driver *drv;
+ 
+ 	u32 phy_id;
+-
++	u32 force_mode;
+ 	struct phy_c45_device_ids c45_ids;
+ 	unsigned is_c45:1;
+ 	unsigned is_internal:1;
+--- a/include/sound/hdaudio.h
++++ b/include/sound/hdaudio.h
+@@ -340,6 +340,7 @@ struct hdac_bus {
+ 	bool align_bdle_4k:1;		/* BDLE align 4K boundary */
+ 	bool reverse_assign:1;		/* assign devices in reverse order */
+ 	bool corbrp_self_clear:1;	/* CORBRP clears itself after reset */
++	bool cmd_resend:1;		/* command resend */
+ 	bool polling_mode:1;
+ 	bool needs_damn_long_delay:1;
+ 
+--- a/include/uapi/linux/serial_core.h
++++ b/include/uapi/linux/serial_core.h
+@@ -279,4 +279,11 @@
+ /* Freescale LINFlexD UART */
+ #define PORT_LINFLEXUART	122
+ 
++
++/* Phytium PCI UART
++ * use bigger value to aviod code confilct
++ * when update in the future.
++ */
++#define PORT_PHYTIUM   200
++
+ #endif /* _UAPILINUX_SERIAL_CORE_H */
+--- a/sound/hda/hdac_controller.c
++++ b/sound/hda/hdac_controller.c
+@@ -143,6 +143,9 @@ int snd_hdac_bus_send_cmd(struct hdac_bu
+ {
+ 	unsigned int addr = azx_command_addr(val);
+ 	unsigned int wp, rp;
++	unsigned long timeout;
++	unsigned int rirb_wp;
++	int i = 0;
+ 
+ 	spin_lock_irq(&bus->reg_lock);
+ 
+@@ -169,6 +172,42 @@ int snd_hdac_bus_send_cmd(struct hdac_bu
+ 	bus->corb.buf[wp] = cpu_to_le32(val);
+ 	snd_hdac_chip_writew(bus, CORBWP, wp);
+ 
++	if (bus->cmd_resend) {
++		timeout = jiffies + msecs_to_jiffies(1000);
++		udelay(80);
++		rirb_wp = snd_hdac_chip_readw(bus, RIRBWP);
++		while (rirb_wp == bus->rirb.wp) {
++			udelay(80);
++			rirb_wp = snd_hdac_chip_readw(bus, RIRBWP);
++			if (rirb_wp != bus->rirb.wp)
++				break;
++			if (i > 5)
++				break;
++			if (time_after(jiffies, timeout))
++				break;
++
++			/* add command to corb */
++			wp = snd_hdac_chip_readw(bus, CORBWP);
++			if (wp == 0xffff) {
++				/* something wrong, controller likely turned to D3 */
++				spin_unlock_irq(&bus->reg_lock);
++				return -EIO;
++			}
++			wp++;
++			wp %= AZX_MAX_CORB_ENTRIES;
++
++			rp = snd_hdac_chip_readw(bus, CORBRP);
++			if (wp == rp) {
++				/* oops, it's full */
++				spin_unlock_irq(&bus->reg_lock);
++				return -EAGAIN;
++			}
++			bus->corb.buf[wp] = cpu_to_le32(val);
++			snd_hdac_chip_writew(bus, CORBWP, wp);
++			i++;
++		}
++	}
++
+ 	spin_unlock_irq(&bus->reg_lock);
+ 
+ 	return 0;
+--- a/sound/hda/hdac_stream.c
++++ b/sound/hda/hdac_stream.c
+@@ -87,7 +87,11 @@ void snd_hdac_stream_start(struct hdac_s
+ 
+ 	trace_snd_hdac_stream_start(bus, azx_dev);
+ 
++#ifdef CONFIG_SND_HDA_PHYTIUM
++	azx_dev->start_wallclk = snd_hdac_chip_readl(bus, WALLCLK) / 15;
++#else
+ 	azx_dev->start_wallclk = snd_hdac_chip_readl(bus, WALLCLK);
++#endif
+ 	if (!fresh_start)
+ 		azx_dev->start_wallclk -= azx_dev->period_wallclk;
+ 
+@@ -550,7 +554,11 @@ static u64 azx_cc_read(const struct cycl
+ {
+ 	struct hdac_stream *azx_dev = container_of(cc, struct hdac_stream, cc);
+ 
++#ifdef CONFIG_SND_HDA_PHYTIUM
++	return snd_hdac_chip_readl(azx_dev->bus, WALLCLK) / 25;
++#else
+ 	return snd_hdac_chip_readl(azx_dev->bus, WALLCLK);
++#endif
+ }
+ 
+ static void azx_timecounter_init(struct hdac_stream *azx_dev,
+--- a/sound/pci/hda/Kconfig
++++ b/sound/pci/hda/Kconfig
+@@ -26,6 +26,22 @@ config SND_HDA_INTEL
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called snd-hda-intel.
+ 
++config SND_HDA_PHYTIUM
++	tristate "PHYTIUM HD Audio"
++	depends on SOUND
++	select SND_HDA
++	select SND_HDA_ALIGNED_MMIO
++	help
++	  Say Y here to support the HDA controller present in PHYTIUM
++	  SoCs
++
++	  This options enables support for the HD Audio controller
++	  present in some PHYTIUM SoCs, used to communicate audio
++	  to the "High Definition Audio" codec.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called snd-hda-phytium.
++
+ config SND_HDA_TEGRA
+ 	tristate "NVIDIA Tegra HD Audio"
+ 	depends on ARCH_TEGRA
+--- a/sound/pci/hda/Makefile
++++ b/sound/pci/hda/Makefile
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: GPL-2.0
+ snd-hda-intel-objs := hda_intel.o
+ snd-hda-tegra-objs := hda_tegra.o
++snd-hda-phytium-objs := hda_phytium.o
+ 
+ snd-hda-codec-y := hda_bind.o hda_codec.o hda_jack.o hda_auto_parser.o hda_sysfs.o
+ snd-hda-codec-y += hda_controller.o
+@@ -48,3 +49,4 @@ obj-$(CONFIG_SND_HDA_CODEC_HDMI) += snd-
+ # when built in kernel
+ obj-$(CONFIG_SND_HDA_INTEL) += snd-hda-intel.o
+ obj-$(CONFIG_SND_HDA_TEGRA) += snd-hda-tegra.o
++obj-$(CONFIG_SND_HDA_PHYTIUM) += snd-hda-phytium.o
+--- a/sound/pci/hda/hda_controller.c
++++ b/sound/pci/hda/hda_controller.c
+@@ -17,6 +17,8 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/slab.h>
+ 
++#include "hda_phytium.h"
++
+ #ifdef CONFIG_X86
+ /* for art-tsc conversion */
+ #include <asm/tsc.h>
+@@ -157,6 +159,10 @@ static int azx_pcm_prepare(struct snd_pc
+ 		snd_hda_spdif_out_of_nid(apcm->codec, hinfo->nid);
+ 	unsigned short ctls = spdif ? spdif->ctls : 0;
+ 
++	struct hda_ft *hda;
++	hda = container_of(chip, struct hda_ft, chip);
++	hda->substream = substream;
++
+ 	trace_azx_pcm_prepare(chip, azx_dev);
+ 	dsp_lock(azx_dev);
+ 	if (dsp_is_locked(azx_dev)) {
+--- a/sound/soc/Kconfig
++++ b/sound/soc/Kconfig
+@@ -77,6 +77,7 @@ source "sound/soc/ux500/Kconfig"
+ source "sound/soc/xilinx/Kconfig"
+ source "sound/soc/xtensa/Kconfig"
+ source "sound/soc/zte/Kconfig"
++source "sound/soc/phytium/Kconfig"
+ 
+ # Supported codecs
+ source "sound/soc/codecs/Kconfig"
+--- a/sound/soc/Makefile
++++ b/sound/soc/Makefile
+@@ -60,3 +60,4 @@ obj-$(CONFIG_SND_SOC)	+= ux500/
+ obj-$(CONFIG_SND_SOC)	+= xilinx/
+ obj-$(CONFIG_SND_SOC)	+= xtensa/
+ obj-$(CONFIG_SND_SOC)	+= zte/
++obj-$(CONFIG_SND_SOC)	+= phytium/
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -795,6 +795,15 @@ config SND_SOC_ES8328_SPI
+ 	depends on SPI_MASTER
+ 	select SND_SOC_ES8328
+ 
++config SND_SOC_ES8336
++	tristate "Everest Semi ES8336 CODEC"
++	depends on I2C
++	select GPIO_PHYTIUM_PCI
++
++config SND_SOC_ES8388
++	tristate "Everest Semi ES8388 CODEC"
++	depends on I2C
++
+ config SND_SOC_GTM601
+ 	tristate 'GTM601 UMTS modem audio codec'
+ 
+--- a/sound/soc/codecs/Makefile
++++ b/sound/soc/codecs/Makefile
+@@ -90,6 +90,8 @@ snd-soc-es8316-objs := es8316.o
+ snd-soc-es8328-objs := es8328.o
+ snd-soc-es8328-i2c-objs := es8328-i2c.o
+ snd-soc-es8328-spi-objs := es8328-spi.o
++snd-soc-es8336-objs := es8336.o
++snd-soc-es8388-objs := es8388.o
+ snd-soc-gtm601-objs := gtm601.o
+ snd-soc-hdac-hdmi-objs := hdac_hdmi.o
+ snd-soc-hdac-hda-objs := hdac_hda.o
+@@ -399,6 +401,8 @@ obj-$(CONFIG_SND_SOC_ES8316)    += snd-s
+ obj-$(CONFIG_SND_SOC_ES8328)	+= snd-soc-es8328.o
+ obj-$(CONFIG_SND_SOC_ES8328_I2C)+= snd-soc-es8328-i2c.o
+ obj-$(CONFIG_SND_SOC_ES8328_SPI)+= snd-soc-es8328-spi.o
++obj-$(CONFIG_SND_SOC_ES8336)	+= snd-soc-es8336.o
++obj-$(CONFIG_SND_SOC_ES8388)	+= snd-soc-es8388.o
+ obj-$(CONFIG_SND_SOC_GTM601)    += snd-soc-gtm601.o
+ obj-$(CONFIG_SND_SOC_HDAC_HDMI) += snd-soc-hdac-hdmi.o
+ obj-$(CONFIG_SND_SOC_HDAC_HDA) += snd-soc-hdac-hda.o

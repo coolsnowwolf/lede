@@ -1,0 +1,112 @@
+From 0bccc3722bdd88e8ae995e77ef9f7b77ee4cbdee Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 7 Apr 2021 22:45:54 +0100
+Subject: [PATCH 2/2] mtd: blktrans: call add disks after mtd device
+To: linux-mtd@lists.infradead.org
+Cc: Vignesh Raghavendra <vigneshr@ti.com>,
+    Richard Weinberger <richard@nod.at>,
+    Miquel Raynal <miquel.raynal@bootlin.com>,
+    David Woodhouse <dwmw2@infradead.org>
+
+Calling device_add_disk while holding mtd_table_mutex leads
+to deadlock in case part_bits!=0 as block partition parsers
+will try to open the newly created disks, trying to acquire
+mutex once again.
+Move device_add_disk to additional function called after
+add partitions of an MTD device have been added and locks
+have been released.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/mtd/mtd_blkdevs.c    | 33 ++++++++++++++++++++++++++-------
+ drivers/mtd/mtdcore.c        |  3 +++
+ include/linux/mtd/blktrans.h |  1 +
+ 3 files changed, 30 insertions(+), 7 deletions(-)
+
+--- a/drivers/mtd/mtd_blkdevs.c
++++ b/drivers/mtd/mtd_blkdevs.c
+@@ -386,19 +386,8 @@ int add_mtd_blktrans_dev(struct mtd_blkt
+ 	if (new->readonly)
+ 		set_disk_ro(gd, 1);
+ 
+-	ret = device_add_disk(&new->mtd->dev, gd, NULL);
+-	if (ret)
+-		goto out_cleanup_disk;
+-
+-	if (new->disk_attributes) {
+-		ret = sysfs_create_group(&disk_to_dev(gd)->kobj,
+-					new->disk_attributes);
+-		WARN_ON(ret);
+-	}
+ 	return 0;
+ 
+-out_cleanup_disk:
+-	put_disk(new->disk);
+ out_free_tag_set:
+ 	blk_mq_free_tag_set(new->tag_set);
+ out_kfree_tag_set:
+@@ -408,6 +397,35 @@ out_list_del:
+ 	return ret;
+ }
+ 
++void register_mtd_blktrans_devs(void)
++{
++	struct mtd_blktrans_ops *tr;
++	struct mtd_blktrans_dev *dev, *next;
++	int ret;
++
++	list_for_each_entry(tr, &blktrans_majors, list) {
++		list_for_each_entry_safe(dev, next, &tr->devs, list) {
++			if (disk_live(dev->disk))
++				continue;
++
++			ret = device_add_disk(&dev->mtd->dev, dev->disk, NULL);
++			if (ret)
++				goto out_cleanup_disk;
++
++			if (dev->disk_attributes) {
++				ret = sysfs_create_group(&disk_to_dev(dev->disk)->kobj,
++							dev->disk_attributes);
++				WARN_ON(ret);
++			}
++		}
++	}
++
++	return;
++
++out_cleanup_disk:
++	put_disk(dev->disk);
++}
++
+ int del_mtd_blktrans_dev(struct mtd_blktrans_dev *old)
+ {
+ 	unsigned long flags;
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -32,6 +32,7 @@
+ 
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
++#include <linux/mtd/blktrans.h>
+ 
+ #include "mtdcore.h"
+ 
+@@ -1100,6 +1101,8 @@ int mtd_device_parse_register(struct mtd
+ 		register_reboot_notifier(&mtd->reboot_notifier);
+ 	}
+ 
++	register_mtd_blktrans_devs();
++
+ out:
+ 	if (ret) {
+ 		nvmem_unregister(mtd->otp_user_nvmem);
+--- a/include/linux/mtd/blktrans.h
++++ b/include/linux/mtd/blktrans.h
+@@ -76,6 +76,7 @@ extern int deregister_mtd_blktrans(struc
+ extern int add_mtd_blktrans_dev(struct mtd_blktrans_dev *dev);
+ extern int del_mtd_blktrans_dev(struct mtd_blktrans_dev *dev);
+ extern int mtd_blktrans_cease_background(struct mtd_blktrans_dev *dev);
++extern void register_mtd_blktrans_devs(void);
+ 
+ /**
+  * module_mtd_blktrans() - Helper macro for registering a mtd blktrans driver

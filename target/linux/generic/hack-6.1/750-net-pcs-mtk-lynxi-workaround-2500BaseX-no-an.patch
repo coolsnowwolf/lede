@@ -1,0 +1,53 @@
+From 880d1311335120f64447ca9d11933872d734e19a Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 27 Mar 2023 18:41:54 +0100
+Subject: [PATCH] generic: pcs-mtk-lynxi: add hack to use 2500Base-X without AN
+
+Using 2500Base-T SFP modules e.g. on the BananaPi R3 requires manually
+disabling auto-negotiation, e.g. using ethtool. While a proper fix
+using SFP quirks is being discussed upstream, bring a work-around to
+restore user experience to what it was before the switch to the
+dedicated SGMII PCS driver.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+
+--- a/drivers/net/pcs/pcs-mtk-lynxi.c
++++ b/drivers/net/pcs/pcs-mtk-lynxi.c
+@@ -114,14 +114,23 @@ static void mtk_pcs_lynxi_get_state(stru
+ 				    struct phylink_link_state *state)
+ {
+ 	struct mtk_pcs_lynxi *mpcs = pcs_to_mtk_pcs_lynxi(pcs);
+-	unsigned int bm, adv;
++	unsigned int bm, bmsr, adv;
+ 
+ 	/* Read the BMSR and LPA */
+ 	regmap_read(mpcs->regmap, SGMSYS_PCS_CONTROL_1, &bm);
+-	regmap_read(mpcs->regmap, SGMSYS_PCS_ADVERTISE, &adv);
++	bmsr = FIELD_GET(SGMII_BMSR, bm);
++
++	if (state->interface == PHY_INTERFACE_MODE_2500BASEX) {
++		state->link = !!(bmsr & BMSR_LSTATUS);
++		state->an_complete = !!(bmsr & BMSR_ANEGCOMPLETE);
++		state->speed = SPEED_2500;
++		state->duplex = DUPLEX_FULL;
+ 
+-	phylink_mii_c22_pcs_decode_state(state, FIELD_GET(SGMII_BMSR, bm),
+-					 FIELD_GET(SGMII_LPA, adv));
++		return;
++	}
++
++	regmap_read(mpcs->regmap, SGMSYS_PCS_ADVERTISE, &adv);
++	phylink_mii_c22_pcs_decode_state(state, bmsr, FIELD_GET(SGMII_LPA, adv));
+ }
+ 
+ static void mtk_sgmii_reset(struct mtk_pcs_lynxi *mpcs)
+@@ -163,7 +172,8 @@ static int mtk_pcs_lynxi_config(struct p
+ 	if (neg_mode & PHYLINK_PCS_NEG_INBAND)
+ 		sgm_mode |= SGMII_REMOTE_FAULT_DIS;
+ 
+-	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED) {
++	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED &&
++	    interface != PHY_INTERFACE_MODE_2500BASEX) {
+ 		if (interface == PHY_INTERFACE_MODE_SGMII)
+ 			sgm_mode |= SGMII_SPEED_DUPLEX_AN;
+ 		bmcr = BMCR_ANENABLE;

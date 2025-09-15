@@ -1,0 +1,149 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 14 Sep 2023 13:17:16 +0200
+Subject: [PATCH] cfg80211: allow grace period for DFS available after beacon
+ shutdown
+
+Fixes reconfiguring an AP on a DFS channel in non-ETSI regdomain
+
+Fixes: b35a51c7dd25 ("cfg80211: Make pre-CAC results valid only for ETSI domain")
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -175,6 +175,8 @@ enum ieee80211_channel_flags {
+  * @dfs_state: current state of this channel. Only relevant if radar is required
+  *	on this channel.
+  * @dfs_state_entered: timestamp (jiffies) when the dfs state was entered.
++ * @dfs_state_last_available: timestamp (jiffies) of the last time when the
++ *	channel was available.
+  * @dfs_cac_ms: DFS CAC time in milliseconds, this is valid for DFS channels.
+  */
+ struct ieee80211_channel {
+@@ -191,6 +193,7 @@ struct ieee80211_channel {
+ 	int orig_mag, orig_mpwr;
+ 	enum nl80211_dfs_state dfs_state;
+ 	unsigned long dfs_state_entered;
++	unsigned long dfs_state_last_available;
+ 	unsigned int dfs_cac_ms;
+ };
+ 
+--- a/net/wireless/ap.c
++++ b/net/wireless/ap.c
+@@ -30,6 +30,9 @@ static int ___cfg80211_stop_ap(struct cf
+ 	if (!wdev->links[link_id].ap.beacon_interval)
+ 		return -ENOENT;
+ 
++	cfg80211_update_last_available(wdev->wiphy,
++				       &wdev->links[link_id].ap.chandef);
++
+ 	err = rdev_stop_ap(rdev, dev, link_id);
+ 	if (!err) {
+ 		wdev->conn_owner_nlportid = 0;
+@@ -41,9 +44,6 @@ static int ___cfg80211_stop_ap(struct cf
+ 		if (notify)
+ 			nl80211_send_ap_stopped(wdev, link_id);
+ 
+-		/* Should we apply the grace period during beaconing interface
+-		 * shutdown also?
+-		 */
+ 		cfg80211_sched_dfs_chan_update(rdev);
+ 	}
+ 
+--- a/net/wireless/chan.c
++++ b/net/wireless/chan.c
+@@ -461,6 +461,8 @@ static void cfg80211_set_chans_dfs_state
+ 
+ 		c->dfs_state = dfs_state;
+ 		c->dfs_state_entered = jiffies;
++		if (dfs_state == NL80211_DFS_AVAILABLE)
++			c->dfs_state_last_available = jiffies;
+ 	}
+ }
+ 
+@@ -874,6 +876,49 @@ static bool cfg80211_get_chans_dfs_avail
+ 	return true;
+ }
+ 
++static void
++__cfg80211_update_last_available(struct wiphy *wiphy,
++					 u32 center_freq,
++					 u32 bandwidth)
++{
++	struct ieee80211_channel *c;
++	u32 freq, start_freq, end_freq;
++
++	start_freq = cfg80211_get_start_freq(center_freq, bandwidth);
++	end_freq = cfg80211_get_end_freq(center_freq, bandwidth);
++
++	/*
++	 * Check entire range of channels for the bandwidth.
++	 * If any channel in between is disabled or has not
++	 * had gone through CAC return false
++	 */
++	for (freq = start_freq; freq <= end_freq; freq += MHZ_TO_KHZ(20)) {
++		c = ieee80211_get_channel_khz(wiphy, freq);
++		if (!c)
++			return;
++
++		c->dfs_state_last_available = jiffies;
++	}
++}
++
++void cfg80211_update_last_available(struct wiphy *wiphy,
++				    const struct cfg80211_chan_def *chandef)
++{
++	int width;
++
++	width = cfg80211_chandef_get_width(chandef);
++	if (width < 0)
++		return;
++
++	__cfg80211_update_last_available(wiphy, MHZ_TO_KHZ(chandef->center_freq1),
++						 width);
++	if (chandef->width != NL80211_CHAN_WIDTH_80P80)
++	    return;
++
++	__cfg80211_update_last_available(wiphy, MHZ_TO_KHZ(chandef->center_freq2),
++						 width);
++}
++
+ static bool cfg80211_chandef_dfs_available(struct wiphy *wiphy,
+ 				const struct cfg80211_chan_def *chandef)
+ {
+--- a/net/wireless/core.h
++++ b/net/wireless/core.h
+@@ -481,6 +481,8 @@ void cfg80211_set_dfs_state(struct wiphy
+ 			    enum nl80211_dfs_state dfs_state);
+ 
+ void cfg80211_dfs_channels_update_work(struct work_struct *work);
++void cfg80211_update_last_available(struct wiphy *wiphy,
++				    const struct cfg80211_chan_def *chandef);
+ 
+ void cfg80211_sched_dfs_chan_update(struct cfg80211_registered_device *rdev);
+ 
+--- a/net/wireless/mlme.c
++++ b/net/wireless/mlme.c
+@@ -930,6 +930,8 @@ void cfg80211_dfs_channels_update_work(s
+ 			if (c->dfs_state == NL80211_DFS_UNAVAILABLE) {
+ 				time_dfs_update = IEEE80211_DFS_MIN_NOP_TIME_MS;
+ 				radar_event = NL80211_RADAR_NOP_FINISHED;
++				timeout = c->dfs_state_entered +
++					  msecs_to_jiffies(time_dfs_update);
+ 			} else {
+ 				if (regulatory_pre_cac_allowed(wiphy) ||
+ 				    cfg80211_any_wiphy_oper_chan(wiphy, c))
+@@ -937,11 +939,10 @@ void cfg80211_dfs_channels_update_work(s
+ 
+ 				time_dfs_update = REG_PRE_CAC_EXPIRY_GRACE_MS;
+ 				radar_event = NL80211_RADAR_PRE_CAC_EXPIRED;
++				timeout = c->dfs_state_last_available +
++					  msecs_to_jiffies(time_dfs_update);
+ 			}
+ 
+-			timeout = c->dfs_state_entered +
+-				  msecs_to_jiffies(time_dfs_update);
+-
+ 			if (time_after_eq(jiffies, timeout)) {
+ 				c->dfs_state = NL80211_DFS_USABLE;
+ 				c->dfs_state_entered = jiffies;

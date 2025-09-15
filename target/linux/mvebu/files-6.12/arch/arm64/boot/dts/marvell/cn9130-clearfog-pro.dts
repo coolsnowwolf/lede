@@ -1,0 +1,513 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright SolidRun Ltd.
+ * Copyright (C) 2024 Tobias Schramm <tobias@t-sys.eu>
+ *
+ * Device tree for the CN9130-based ClearFog Pro
+ */
+
+#include "cn9130.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/ {
+	model = "SolidRun ClearFog Pro";
+	compatible = "solidrun,clearfog-pro", "marvell,armada-ap807-quad",
+		     "marvell,armada-ap807";
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	aliases {
+		gpio1 = &cp0_gpio1;
+		gpio2 = &cp0_gpio2;
+		i2c0 = &cp0_i2c0;
+		ethernet0 = &cp0_eth0;
+		ethernet1 = &cp0_eth1;
+		ethernet2 = &cp0_eth2;
+		spi1 = &cp0_spi1;
+	};
+
+	memory@00000000 {
+		reg = <0x0 0x0 0x1 0x0>;
+		device_type = "memory";
+	};
+
+	/* Virtual regulator, root of power tree */
+	vin: regulator-vin {
+		compatible = "regulator-fixed";
+		regulator-name = "vin";
+		regulator-always-on;
+		regulator-min-microvolt = <12000000>;
+		regulator-max-microvolt = <12000000>;
+	};
+
+	/* Regulators supplied by vin */
+	v_5v0: regulator-v_5v0 {
+		compatible = "regulator-fixed";
+		regulator-name = "v_5v0";
+		regulator-always-on;
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		vin-supply = <&vin>;
+	};
+
+	v_3v3: regulator-v_3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "v_3v3";
+		regulator-always-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&vin>;
+	};
+
+	/* Regulators supplied by v_5v0 */
+	v_1v8: regulator-v_1v8 {
+		compatible = "regulator-fixed";
+		regulator-name = "v_1v8";
+		regulator-always-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&v_5v0>;
+	};
+
+	v_5v0_usb3_hst_vbus: regulator-v_5v0_usb3_hst_vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "v_5v0_usb3_hst_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpios = <&expander0 6 GPIO_ACTIVE_LOW>;
+		vin-supply = <&v_5v0>;
+	};
+
+	/* Regulators internal to SOM */
+	vqmmc: regulator-vqmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "vqmmc";
+		regulator-always-on;
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&v_5v0>;
+	};
+
+	cp0_usb3_0_phy1: cp0_usb3_phy@1 {
+		compatible = "usb-nop-xceiv";
+		vbus-supply = <&v_5v0_usb3_hst_vbus>;
+	};
+
+	cp0_sfp_eth0: sfp-eth@0 {
+		compatible = "sff,sfp";
+		i2c-bus = <&cp0_i2c1>;
+		los-gpio = <&expander0 12 GPIO_ACTIVE_HIGH>;
+		mod-def0-gpio = <&expander0 15 GPIO_ACTIVE_LOW>;
+		tx-disable-gpio = <&expander0 14 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&expander0 13 GPIO_ACTIVE_HIGH>;
+		maximum-power-milliwatt = <2000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&cp0_button_pin>;
+
+		reset {
+			label = "Reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&cp0_gpio2 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+/* on-board eMMC  */
+&ap_sdhci0 {
+	bus-width = <8>;
+	pinctrl-names = "default";
+	vqmmc-supply = <&vqmmc>;
+	status = "okay";
+};
+
+&cp0_crypto {
+	status = "okay";
+};
+
+&cp0_ethernet {
+	status = "okay";
+};
+
+&cp0_gpio1 {
+	status = "okay";
+};
+
+&cp0_gpio2 {
+	status = "okay";
+};
+
+&cp0_i2c0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_i2c0_pins>;
+	clock-frequency = <100000>;
+
+	/*
+	 * PCA9655 GPIO expander, up to 1MHz clock.
+	 *  0-CON3 CLKREQ#
+	 *  1-CON3 PERST#
+	 *  2-CON2 PERST#
+	 *  3-CON3 W_DISABLE
+	 *  4-CON2 CLKREQ#
+	 *  5-USB3 overcurrent
+	 *  6-USB3 power
+	 *  7-CON2 W_DISABLE
+	 *  8-JP4 P1
+	 *  9-JP4 P4
+	 * 10-JP4 P5
+	 * 11-m.2 DEVSLP
+	 * 12-SFP_LOS
+	 * 13-SFP_TX_FAULT
+	 * 14-SFP_TX_DISABLE
+	 * 15-SFP_MOD_DEF0
+	 */
+	expander0: gpio-expander@20 {
+		compatible = "nxp,pca9555";
+		reg = <0x20>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&cp0_gpio1>;
+		interrupts = <4 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cp0_expander0_pins>;
+		vcc-supply = <&v_3v3>;
+
+		pcie1_0_clkreq {
+			gpio-hog;
+			gpios = <0 GPIO_ACTIVE_LOW>;
+			input;
+			line-name = "pcie1.0-clkreq";
+		};
+
+		pcie1_0_w_disable {
+			gpio-hog;
+			gpios = <3 GPIO_ACTIVE_LOW>;
+			output-low;
+			line-name = "pcie1.0-w-disable";
+		};
+
+		pcie2_0_clkreq {
+			gpio-hog;
+			gpios = <4 GPIO_ACTIVE_LOW>;
+			input;
+			line-name = "pcie2.0-clkreq";
+		};
+
+		pcie2_0_w_disable {
+			gpio-hog;
+			gpios = <7 GPIO_ACTIVE_LOW>;
+			output-low;
+			line-name = "pcie2.0-w-disable";
+		};
+
+		usb3_ilimit {
+			gpio-hog;
+			gpios = <5 GPIO_ACTIVE_LOW>;
+			input;
+			line-name = "usb3-current-limit";
+		};
+
+		m2_devslp {
+			gpio-hog;
+			gpios = <11 GPIO_ACTIVE_HIGH>;
+			output-low;
+			line-name = "m.2 devslp";
+		};
+	};
+
+	/* ADC only for mikroBUS connector */
+	mcp3021@4c {
+		compatible = "microchip,mcp3021";
+		reg = <0x4c>;
+	};
+
+	/* EEPROM on the SOM */
+	eeprom@53 {
+		compatible = "atmel,24c02";
+		reg = <0x53>;
+		pagesize = <16>;
+		read-only;
+
+		nvmem-layout {
+			compatible = "onie,tlv-layout";
+
+			onie_tlv_macaddr: mac-address {
+				#nvmem-cell-cells = <1>;
+			};
+		};
+	};
+};
+
+/* SMBUS on mini PCIe sockets */
+&cp0_i2c1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_i2c1_pins>;
+	clock-frequency = <100000>;
+};
+
+&cp0_mdio {
+	status = "okay";
+
+	phy0: ethernet-phy@0 {
+		reg = <0>;
+		/* Green led blinks on activity, orange LED on link */
+		marvell,reg-init = <3 16 0 0x0064>;
+	};
+
+	switch@4 {
+		compatible = "marvell,mv88e6085";
+		reg = <4>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&cp0_gpio1>;
+		interrupts = <29 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cp0_dsa0_pins>;
+		reset-gpios = <&cp0_gpio1 27 GPIO_ACTIVE_LOW>;
+
+		mdio-external {
+			compatible = "marvell,mv88e6xxx-mdio-external";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* 88E1512 PHY */
+			port6_phy: ethernet-phy@1 {
+				reg = <1>;
+			};
+		};
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				label = "lan5";
+			};
+
+			port@1 {
+				reg = <1>;
+				label = "lan4";
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "lan3";
+			};
+
+			port@3 {
+				reg = <3>;
+				label = "lan2";
+			};
+
+			port@4 {
+				reg = <4>;
+				label = "lan1";
+			};
+
+			port@5 {
+				reg = <5>;
+				ethernet = <&cp0_eth1>;
+				label = "cpu";
+				phy-mode = "rgmii-id";
+
+				fixed-link {
+					speed = <1000>;
+					full-duplex;
+				};
+			};
+
+			port@6 {
+				/* 88E1512 external phy */
+				reg = <6>;
+				label = "lan6";
+				phy-handle = <&port6_phy>;
+				phy-mode = "rgmii-id";
+			};
+		};
+	};
+};
+
+/* SRDS #0 - SATA on bottom M.2 B-Key connector */
+&cp0_sata0 {
+	status = "okay";
+
+	sata-port@0 {
+		status = "disabled";
+	};
+
+	sata-port@1 {
+		phys = <&cp0_comphy0 1>;
+		target-supply = <&v_3v3>;
+	};
+};
+
+&cp0_utmi {
+	status = "okay";
+};
+
+/* mini PCIe slot far from SOM, USB 2.0 only, SS lanes unused */
+&cp0_usb3_0 {
+	status = "okay";
+	phys = <&cp0_utmi0>;
+	phy-names = "utmi";
+	dr_mode = "host";
+};
+
+/* SRDS #1 - USB-A 3.0 host port */
+&cp0_usb3_1 {
+	status = "okay";
+	phys = <&cp0_utmi1>, <&cp0_comphy1 0>;
+	phy-names = "utmi", "usb";
+	usb-phy = <&cp0_usb3_0_phy1>;
+	dr_mode = "host";
+};
+
+/* SRDS #2 - SFP+ 10GE */
+&cp0_eth0 {
+	status = "okay";
+	phy-mode = "10gbase-r";
+	phys = <&cp0_comphy2 0>;
+	managed = "in-band-status";
+	nvmem-cells = <&onie_tlv_macaddr 0>;
+	nvmem-cell-names = "mac-address";
+	sfp = <&cp0_sfp_eth0>;
+};
+
+/* SRDS #3 - SGMII 1GE to L2 switch */
+&cp0_eth1 {
+	status = "okay";
+	phys = <&cp0_comphy3 1>;
+	phy-mode = "sgmii";
+	nvmem-cells = <&onie_tlv_macaddr 1>;
+	nvmem-cell-names = "mac-address";
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
+};
+
+/* SRDS #4 - mini PCIe slot near SOM */
+&cp0_pcie1 {
+	status = "okay";
+	phys = <&cp0_comphy4 1>;
+	num-lanes = <1>;
+	reset-gpios = <&expander0 2 GPIO_ACTIVE_LOW>;
+};
+
+/* SRDS #5 - mini PCIe slot far from SOM */
+&cp0_pcie2 {
+	status = "okay";
+	phys = <&cp0_comphy5 2>;
+	num-lanes = <1>;
+	reset-gpios = <&expander0 1 GPIO_ACTIVE_LOW>;
+};
+
+/* GE PHY RGMII */
+&cp0_eth2 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_ge2_rgmii_pins>;
+	phy = <&phy0>;
+	phy-mode = "rgmii-id";
+	nvmem-cells = <&onie_tlv_macaddr 2>;
+	nvmem-cell-names = "mac-address";
+};
+
+/* micro SD card slot */
+&cp0_sdhci0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_sdhci_pins &cp0_sdhci_cd_pins>;
+	bus-width = <4>;
+	cd-gpios = <&cp0_gpio2 11 GPIO_ACTIVE_LOW>;
+	no-1-8-v;
+	vqmmc-supply = <&v_3v3>;
+	vmmc-supply = <&v_3v3>;
+};
+
+&cp0_spi1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&cp0_spi1_pins>;
+
+	spi-flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0x0>;
+		#address-cells = <0x1>;
+		#size-cells = <0x1>;
+		spi-max-frequency = <10000000>;
+	};
+};
+
+&cp0_syscon0 {
+	cp0_pinctrl: pinctrl {
+		compatible = "marvell,cp115-standalone-pinctrl";
+
+		cp0_i2c0_pins: cp0-i2c0-pins {
+			marvell,pins = "mpp37", "mpp38";
+			marvell,function = "i2c0";
+		};
+
+		cp0_i2c1_pins: cp0-i2c1-pins {
+			marvell,pins = "mpp35", "mpp36";
+			marvell,function = "i2c1";
+		};
+
+		cp0_ge2_rgmii_pins: cp0-ge2-rgmii-pins {
+			marvell,pins = "mpp44", "mpp45", "mpp46",
+				       "mpp47", "mpp48", "mpp49",
+				       "mpp50", "mpp51", "mpp52",
+				       "mpp53", "mpp54", "mpp55";
+			marvell,function = "ge1";
+		};
+
+		cp0_sdhci_cd_pins: cp0-sdhci-cd-pins {
+			marvell,pins = "mpp43";
+			marvell,function = "sdio";
+		};
+
+		cp0_sdhci_pins: cp0-sdhci-pins {
+			marvell,pins = "mpp56", "mpp57", "mpp58",
+				       "mpp59", "mpp60", "mpp61";
+			marvell,function = "sdio";
+		};
+
+		cp0_spi1_pins: cp0-spi1-pins {
+			marvell,pins = "mpp12", "mpp13", "mpp14",
+				       "mpp15", "mpp16";
+			marvell,function = "spi1";
+		};
+
+		cp0_dsa0_pins: cp0-dsa0-pins {
+			marvell,pins = "mpp27", "mpp29";
+			marvell,function = "gpio";
+		};
+
+		cp0_button_pin: cp0-button-pin {
+			marvell,pins = "mpp32";
+			marvell,function = "gpio";
+		};
+
+		cp0_expander0_pins: cp0-expander0-pins {
+			marvell,pins = "mpp4";
+			marvell,function = "gpio";
+		};
+	};
+};

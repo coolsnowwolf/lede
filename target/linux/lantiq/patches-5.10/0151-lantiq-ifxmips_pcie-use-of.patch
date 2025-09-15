@@ -1,0 +1,387 @@
+--- a/arch/mips/pci/ifxmips_pcie.c
++++ b/arch/mips/pci/ifxmips_pcie.c
+@@ -16,8 +16,15 @@
+ #include <asm/paccess.h>
+ #include <linux/pci.h>
+ #include <linux/pci_regs.h>
++#include <linux/phy/phy.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++#include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ 
++#include <linux/of_gpio.h>
++#include <linux/of_platform.h>
++
+ #include "ifxmips_pcie.h"
+ #include "ifxmips_pcie_reg.h"
+ 
+@@ -40,6 +47,10 @@
+ static DEFINE_SPINLOCK(ifx_pcie_lock);
+ 
+ u32 g_pcie_debug_flag = PCIE_MSG_ANY & (~PCIE_MSG_CFG);
++static int pcie_reset_gpio;
++static struct phy *ltq_pcie_phy;
++static struct reset_control *ltq_pcie_reset;
++static struct regmap *ltq_rcu_regmap;
+ 
+ static ifx_pcie_irq_t pcie_irqs[IFX_PCIE_CORE_NR] = {
+     {
+@@ -82,6 +93,22 @@ void ifx_pcie_debug(const char *fmt, ...
+ 	printk("%s", buf);
+ }
+ 
++static inline void pcie_ep_gpio_rst_init(int pcie_port)
++{
++	gpio_direction_output(pcie_reset_gpio, 1);
++	gpio_set_value(pcie_reset_gpio, 1);
++}
++
++static inline void pcie_device_rst_assert(int pcie_port)
++{
++	gpio_set_value(pcie_reset_gpio, 0);
++}
++
++static inline void pcie_device_rst_deassert(int pcie_port)
++{
++	mdelay(100);
++	gpio_direction_output(pcie_reset_gpio, 1);
++}
+ 
+ static inline int pcie_ltssm_enable(int pcie_port)
+ {
+@@ -988,10 +1015,22 @@ int  ifx_pcie_bios_plat_dev_init(struct
+ static int
+ pcie_rc_initialize(int pcie_port)
+ {
+-	int i;
++	int i, ret;
+ #define IFX_PCIE_PHY_LOOP_CNT  5
+ 
+-	pcie_rcu_endian_setup(pcie_port);
++	regmap_update_bits(ltq_rcu_regmap, 0x4c, IFX_RCU_AHB_BE_PCIE_M,
++			   IFX_RCU_AHB_BE_PCIE_M);
++
++#ifdef CONFIG_IFX_PCIE_HW_SWAP
++	regmap_update_bits(ltq_rcu_regmap, 0x4c, IFX_RCU_AHB_BE_PCIE_S,
++			   IFX_RCU_AHB_BE_PCIE_S);
++#else
++	regmap_update_bits(ltq_rcu_regmap, 0x4c, IFX_RCU_AHB_BE_PCIE_S,
++			   0x0);
++#endif
++
++	regmap_update_bits(ltq_rcu_regmap, 0x4c, IFX_RCU_AHB_BE_XBAR_M,
++			   0x0);
+ 
+ 	pcie_ep_gpio_rst_init(pcie_port);
+ 
+@@ -1000,26 +1039,21 @@ pcie_rc_initialize(int pcie_port)
+ 	* reset PCIe PHY will solve this issue 
+ 	*/
+ 	for (i = 0; i < IFX_PCIE_PHY_LOOP_CNT; i++) {
+-		/* Disable PCIe PHY Analog part for sanity check */
+-		pcie_phy_pmu_disable(pcie_port);
+-
+-		pcie_phy_rst_assert(pcie_port);
+-		pcie_phy_rst_deassert(pcie_port);
+-
+-		/* Make sure PHY PLL is stable */
+-		udelay(20);
+-
+-		/* PCIe Core reset enabled, low active, sw programmed */
+-		pcie_core_rst_assert(pcie_port);
++		ret = phy_init(ltq_pcie_phy);
++		if (ret)
++			continue;
+ 
+ 		/* Put PCIe EP in reset status */
+ 		pcie_device_rst_assert(pcie_port);
+ 
+-		/* PCI PHY & Core reset disabled, high active, sw programmed */
+-		pcie_core_rst_deassert(pcie_port);
++		udelay(1);
++		reset_control_deassert(ltq_pcie_reset);
+ 
+-		/* Already in a quiet state, program PLL, enable PHY, check ready bit */
+-		pcie_phy_clock_mode_setup(pcie_port);
++		ret = phy_power_on(ltq_pcie_phy);
++		if (ret) {
++			phy_exit(ltq_pcie_phy);
++			continue;
++		}
+ 
+ 		/* Enable PCIe PHY and Clock */
+ 		pcie_core_pmu_setup(pcie_port);
+@@ -1035,6 +1069,10 @@ pcie_rc_initialize(int pcie_port)
+ 		/* Once link is up, break out */
+ 		if (pcie_app_loigc_setup(pcie_port) == 0)
+ 			break;
++
++		phy_power_off(ltq_pcie_phy);
++		reset_control_assert(ltq_pcie_reset);
++		phy_exit(ltq_pcie_phy);
+ 	}
+ 	if (i >= IFX_PCIE_PHY_LOOP_CNT) {
+ 		printk(KERN_ERR "%s link up failed!!!!!\n", __func__);
+@@ -1045,17 +1083,67 @@ pcie_rc_initialize(int pcie_port)
+ 	return 0;
+ }
+ 
+-static int __init ifx_pcie_bios_init(void)
++static int ifx_pcie_bios_probe(struct platform_device *pdev)
+ {
++    struct device_node *node = pdev->dev.of_node;
+     void __iomem *io_map_base;
+     int pcie_port;
+     int startup_port;
++    struct device_node *np;
++    struct pci_bus *bus;
++
++    /*
++     * In case a PCI device is physical present, the Lantiq PCI driver need
++     * to be loaded prior to the Lantiq PCIe driver. Otherwise none of them
++     * will work.
++     *
++     * In case the lantiq PCI driver is enabled in the device tree, check if
++     * a PCI bus (hopefully the one of the Lantiq PCI driver one) is already
++     * registered.
++     *
++     * It will fail if there is another PCI controller, this controller is
++     * registered before the Lantiq PCIe driver is probe and the lantiq PCI
++     */
++    np = of_find_compatible_node(NULL, NULL, "lantiq,pci-xway");
++
++    if (of_device_is_available(np)) {
++        bus = pci_find_next_bus(bus);
++
++        if (!bus)
++	     return -EPROBE_DEFER;
++    }
+ 
+     /* Enable AHB Master/ Slave */
+     pcie_ahb_pmu_setup();
+ 
+     startup_port = IFX_PCIE_PORT0;
+-    
++
++    ltq_pcie_phy = devm_phy_get(&pdev->dev, "pcie");
++    if (IS_ERR(ltq_pcie_phy)) {
++        dev_err(&pdev->dev, "failed to get the PCIe PHY\n");
++        return PTR_ERR(ltq_pcie_phy);
++    }
++
++    ltq_pcie_reset = devm_reset_control_get_shared(&pdev->dev, NULL);
++    if (IS_ERR(ltq_pcie_reset)) {
++        dev_err(&pdev->dev, "failed to get the PCIe reset line\n");
++        return PTR_ERR(ltq_pcie_reset);
++    }
++
++    ltq_rcu_regmap = syscon_regmap_lookup_by_phandle(node, "lantiq,rcu");
++    if (IS_ERR(ltq_rcu_regmap))
++        return PTR_ERR(ltq_rcu_regmap);
++
++    pcie_reset_gpio = of_get_named_gpio(node, "gpio-reset", 0);
++    if (gpio_is_valid(pcie_reset_gpio)) {
++        int ret = devm_gpio_request(&pdev->dev, pcie_reset_gpio, "pcie-reset");
++        if (ret) {
++            dev_err(&pdev->dev, "failed to request gpio %d\n", pcie_reset_gpio);
++            return ret;
++        }
++        gpio_direction_output(pcie_reset_gpio, 1);
++    }
++
+     for (pcie_port = startup_port; pcie_port < IFX_PCIE_CORE_NR; pcie_port++){
+ 	if (pcie_rc_initialize(pcie_port) == 0) {
+ 	    IFX_PCIE_PRINT(PCIE_MSG_INIT, "%s: ifx_pcie_cfg_base 0x%p\n", 
+@@ -1067,6 +1155,7 @@ static int __init ifx_pcie_bios_init(voi
+                 return -ENOMEM;
+             }
+             ifx_pcie_controller[pcie_port].pcic.io_map_base = (unsigned long)io_map_base;
++            pci_load_of_ranges(&ifx_pcie_controller[pcie_port].pcic, node);
+ 
+             register_pci_controller(&ifx_pcie_controller[pcie_port].pcic);
+             /* XXX, clear error status */
+@@ -1083,6 +1172,30 @@ static int __init ifx_pcie_bios_init(voi
+ 
+     return 0;
+ }
++
++static const struct of_device_id ifxmips_pcie_match[] = {
++        { .compatible = "lantiq,pcie-xrx200" },
++        {},
++};
++MODULE_DEVICE_TABLE(of, ifxmips_pcie_match);
++
++static struct platform_driver ltq_pci_driver = {
++        .probe = ifx_pcie_bios_probe,
++        .driver = {
++                .name = "pcie-xrx200",
++                .owner = THIS_MODULE,
++                .of_match_table = ifxmips_pcie_match,
++        },
++};
++
++int __init ifx_pcie_bios_init(void)
++{
++        int ret = platform_driver_register(&ltq_pci_driver);
++        if (ret)
++                pr_info("pcie-xrx200: Error registering platform driver!");
++        return ret;
++}
++
+ arch_initcall(ifx_pcie_bios_init);
+ 
+ MODULE_LICENSE("GPL");
+--- a/arch/mips/pci/ifxmips_pcie_vr9.h
++++ b/arch/mips/pci/ifxmips_pcie_vr9.h
+@@ -22,8 +22,6 @@
+ #include <linux/gpio.h>
+ #include <lantiq_soc.h>
+ 
+-#define IFX_PCIE_GPIO_RESET  494
+-
+ #define IFX_REG_R32    ltq_r32
+ #define IFX_REG_W32    ltq_w32
+ #define CONFIG_IFX_PCIE_HW_SWAP
+@@ -53,21 +51,6 @@
+ #define OUT			((volatile u32*)(IFX_GPIO + 0x0070))
+ 
+ 
+-static inline void pcie_ep_gpio_rst_init(int pcie_port)
+-{
+-
+-	gpio_request(IFX_PCIE_GPIO_RESET, "pcie-reset");
+-	gpio_direction_output(IFX_PCIE_GPIO_RESET, 1);
+-	gpio_set_value(IFX_PCIE_GPIO_RESET, 1);
+-
+-/*    ifx_gpio_pin_reserve(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-    ifx_gpio_output_set(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-    ifx_gpio_dir_out_set(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-    ifx_gpio_altsel0_clear(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-    ifx_gpio_altsel1_clear(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-    ifx_gpio_open_drain_set(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);*/
+-}
+-
+ static inline void pcie_ahb_pmu_setup(void) 
+ {
+ 	/* Enable AHB bus master/slave */
+@@ -79,24 +62,6 @@ static inline void pcie_ahb_pmu_setup(vo
+     //AHBS_PMU_SETUP(IFX_PMU_ENABLE);
+ }
+ 
+-static inline void pcie_rcu_endian_setup(int pcie_port)
+-{
+-    u32 reg;
+-
+-    reg = IFX_REG_R32(IFX_RCU_AHB_ENDIAN);
+-#ifdef CONFIG_IFX_PCIE_HW_SWAP
+-    reg |= IFX_RCU_AHB_BE_PCIE_M;
+-    reg |= IFX_RCU_AHB_BE_PCIE_S;
+-    reg &= ~IFX_RCU_AHB_BE_XBAR_M;
+-#else 
+-    reg |= IFX_RCU_AHB_BE_PCIE_M;
+-    reg &= ~IFX_RCU_AHB_BE_PCIE_S;
+-    reg &= ~IFX_RCU_AHB_BE_XBAR_M;
+-#endif /* CONFIG_IFX_PCIE_HW_SWAP */
+-    IFX_REG_W32(reg, IFX_RCU_AHB_ENDIAN);
+-    IFX_PCIE_PRINT(PCIE_MSG_REG, "%s IFX_RCU_AHB_ENDIAN: 0x%08x\n", __func__, IFX_REG_R32(IFX_RCU_AHB_ENDIAN));
+-}
+-
+ static inline void pcie_phy_pmu_enable(int pcie_port)
+ {
+ 	struct clk *clk;
+@@ -115,17 +80,6 @@ static inline void pcie_phy_pmu_disable(
+ //    PCIE_PHY_PMU_SETUP(IFX_PMU_DISABLE);
+ }
+ 
+-static inline void pcie_pdi_big_endian(int pcie_port)
+-{
+-    u32 reg;
+-
+-    /* SRAM2PDI endianness control. */
+-    reg = IFX_REG_R32(IFX_RCU_AHB_ENDIAN);
+-    /* Config AHB->PCIe and PDI endianness */
+-    reg |= IFX_RCU_AHB_BE_PCIE_PDI;
+-    IFX_REG_W32(reg, IFX_RCU_AHB_ENDIAN);
+-}
+-
+ static inline void pcie_pdi_pmu_enable(int pcie_port)
+ {
+     /* Enable PDI to access PCIe PHY register */
+@@ -135,65 +89,6 @@ static inline void pcie_pdi_pmu_enable(i
+     //PDI_PMU_SETUP(IFX_PMU_ENABLE);
+ }
+ 
+-static inline void pcie_core_rst_assert(int pcie_port)
+-{
+-    u32 reg;
+-
+-    reg = IFX_REG_R32(IFX_RCU_RST_REQ);
+-
+-    /* Reset PCIe PHY & Core, bit 22, bit 26 may be affected if write it directly  */
+-    reg |= 0x00400000;
+-    IFX_REG_W32(reg, IFX_RCU_RST_REQ);
+-}
+-
+-static inline void pcie_core_rst_deassert(int pcie_port)
+-{
+-    u32 reg;
+-
+-    /* Make sure one micro-second delay */
+-    udelay(1);
+-
+-    /* Reset PCIe PHY & Core, bit 22 */
+-    reg = IFX_REG_R32(IFX_RCU_RST_REQ);
+-    reg &= ~0x00400000;
+-    IFX_REG_W32(reg, IFX_RCU_RST_REQ);
+-}
+-
+-static inline void pcie_phy_rst_assert(int pcie_port)
+-{
+-    u32 reg;
+-
+-    reg = IFX_REG_R32(IFX_RCU_RST_REQ);
+-    reg |= 0x00001000; /* Bit 12 */
+-    IFX_REG_W32(reg, IFX_RCU_RST_REQ);
+-}
+-
+-static inline void pcie_phy_rst_deassert(int pcie_port)
+-{
+-    u32 reg;
+-
+-    /* Make sure one micro-second delay */
+-    udelay(1);
+-
+-    reg = IFX_REG_R32(IFX_RCU_RST_REQ);
+-    reg &= ~0x00001000; /* Bit 12 */
+-    IFX_REG_W32(reg, IFX_RCU_RST_REQ);
+-}
+-
+-static inline void pcie_device_rst_assert(int pcie_port)
+-{
+-	gpio_set_value(IFX_PCIE_GPIO_RESET, 0);
+-//    ifx_gpio_output_clear(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-}
+-
+-static inline void pcie_device_rst_deassert(int pcie_port)
+-{
+-    mdelay(100);
+-	gpio_direction_output(IFX_PCIE_GPIO_RESET, 1);
+-//    gpio_set_value(IFX_PCIE_GPIO_RESET, 1);
+-    //ifx_gpio_output_set(IFX_PCIE_GPIO_RESET, ifx_pcie_gpio_module_id);
+-}
+-
+ static inline void pcie_core_pmu_setup(int pcie_port)
+ {
+ 	struct clk *clk;
+--- a/arch/mips/pci/Makefile
++++ b/arch/mips/pci/Makefile
+@@ -43,7 +43,7 @@ obj-$(CONFIG_PCI_LANTIQ)	+= pci-lantiq.o
+ obj-$(CONFIG_SOC_MT7620)	+= pci-mt7620.o
+ obj-$(CONFIG_SOC_RT288X)	+= pci-rt2880.o
+ obj-$(CONFIG_SOC_RT3883)	+= pci-rt3883.o
+-obj-$(CONFIG_PCIE_LANTIQ)	+= ifxmips_pcie_phy.o ifxmips_pcie.o fixup-lantiq-pcie.o
++obj-$(CONFIG_PCIE_LANTIQ)	+= ifxmips_pcie.o fixup-lantiq-pcie.o
+ obj-$(CONFIG_PCIE_LANTIQ_MSI)	+= pcie-lantiq-msi.o
+ obj-$(CONFIG_TANBAC_TB0219)	+= fixup-tb0219.o
+ obj-$(CONFIG_TANBAC_TB0226)	+= fixup-tb0226.o

@@ -1,0 +1,231 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2010 Jo-Philipp Wich
+
+START=50
+
+USE_PROCD=1
+
+UHTTPD_BIN="/usr/sbin/uhttpd"
+PX5G_BIN="/usr/sbin/px5g"
+OPENSSL_BIN="/usr/bin/openssl"
+
+append_arg() {
+	local cfg="$1"
+	local var="$2"
+	local opt="$3"
+	local def="$4"
+	local val
+
+	config_get val "$cfg" "$var"
+	[ -n "$val" -o -n "$def" ] && procd_append_param command "$opt" "${val:-$def}"
+}
+
+append_bool() {
+	local cfg="$1"
+	local var="$2"
+	local opt="$3"
+	local def="$4"
+	local val
+
+	config_get_bool val "$cfg" "$var" "$def"
+	[ "$val" = 1 ] && procd_append_param command "$opt"
+}
+
+generate_keys() {
+	local cfg="$1"
+	local key="$2"
+	local crt="$3"
+	local days bits country state location organization commonname
+
+	config_get days       "$cfg" days
+	config_get bits       "$cfg" bits
+	config_get country    "$cfg" country
+	config_get state      "$cfg" state
+	config_get location   "$cfg" location
+	config_get organization "$cfg" organization
+	config_get commonname "$cfg" commonname
+	config_get key_type   "$cfg" key_type
+	config_get ec_curve   "$cfg" ec_curve
+
+	# Prefer px5g for certificate generation (existence evaluated last)
+	local GENKEY_CMD=""
+	local KEY_OPTS="rsa:${bits:-2048}"
+	local UNIQUEID=$(dd if=/dev/urandom bs=1 count=4 | hexdump -e '1/1 "%02x"')
+	[ "$key_type" = "ec" ] && KEY_OPTS="ec -pkeyopt ec_paramgen_curve:${ec_curve:-P-256}"
+	[ -x "$OPENSSL_BIN" ] && GENKEY_CMD="$OPENSSL_BIN req -x509 -sha256 -outform der -nodes"
+	[ -x "$PX5G_BIN" ] && GENKEY_CMD="$PX5G_BIN selfsigned -der"
+	[ -n "$GENKEY_CMD" ] && {
+		$GENKEY_CMD \
+			-days ${days:-730} -newkey ${KEY_OPTS} -keyout "${UHTTPD_KEY}.new" -out "${UHTTPD_CERT}.new" \
+			-subj /C="${country:-ZZ}"/ST="${state:-Somewhere}"/L="${location:-Unknown}"/O="${organization:-OpenWrt$UNIQUEID}"/CN="${commonname:-OpenWrt}"
+		sync
+		mv "${UHTTPD_KEY}.new" "${UHTTPD_KEY}"
+		mv "${UHTTPD_CERT}.new" "${UHTTPD_CERT}"
+	}
+}
+
+create_httpauth() {
+	local cfg="$1"
+	local prefix username password
+
+	config_get prefix "$cfg" prefix
+	config_get username "$cfg" username
+	config_get password "$cfg" password
+
+	if [ -z "$prefix" ] || [ -z "$username" ] || [ -z "$password" ]; then
+		return
+	fi
+	echo "${prefix}:${username}:${password}" >>$httpdconf
+	haveauth=1
+}
+
+append_lua_prefix() {
+	local v="$1"
+	local prefix="${v%%=*}"
+	local handler="${v#*=}"
+
+	if [ "$prefix" != "$handler" ] && [ -n "$prefix" ] && [ -f "$handler" ]; then
+		procd_append_param command -l "$prefix" -L "$handler"
+	else
+		echo "Skipping invalid Lua prefix \"$v\"" >&2
+	fi
+}
+
+append_ucode_prefix() {
+	local v="$1"
+	local prefix="${v%%=*}"
+	local handler="${v#*=}"
+
+	if [ "$prefix" != "$handler" ] && [ -n "$prefix" ] && [ -f "$handler" ]; then
+		procd_append_param command -o "$prefix" -O "$handler"
+	else
+		echo "Skipping invalid ucode prefix \"$v\"" >&2
+	fi
+}
+
+start_instance()
+{
+	UHTTPD_CERT=""
+	UHTTPD_KEY=""
+
+	local cfg="$1"
+	local realm="$(uci_get system.@system[0].hostname)"
+	local listen http https interpreter indexes path handler httpdconf haveauth
+	local enabled
+
+	config_get_bool enabled "$cfg" 'enabled' 1
+	[ $enabled -gt 0 ] || return
+
+	procd_open_instance
+	procd_set_param respawn
+	procd_set_param stderr 1
+	procd_set_param command "$UHTTPD_BIN" -f
+
+	config_get config "$cfg" config
+	if [ -z "$config" ]; then
+		mkdir -p /var/etc/uhttpd
+		httpdconf="/var/etc/uhttpd/httpd.${cfg}.conf"
+		rm -f ${httpdconf}
+		config_list_foreach "$cfg" httpauth create_httpauth
+		if [ "$haveauth" = "1" ]; then
+			procd_append_param command -c ${httpdconf}
+			[ -r /etc/httpd.conf ] && cat /etc/httpd.conf >>/var/etc/uhttpd/httpd.${cfg}.conf
+		fi
+	fi
+
+	append_arg "$cfg" home "-h"
+	append_arg "$cfg" realm "-r" "${realm:-OpenWrt}"
+	append_arg "$cfg" config "-c"
+	append_arg "$cfg" cgi_prefix "-x"
+	[ -f /usr/lib/uhttpd_lua.so ] && {
+		local len
+		config_get len "$cfg" lua_prefix_LENGTH
+
+		if [ -n "$len" ]; then
+			config_list_foreach "$cfg" lua_prefix append_lua_prefix
+		else
+			config_get prefix "$cfg" lua_prefix
+			config_get handler "$cfg" lua_handler
+			append_lua_prefix "$prefix=$handler"
+		fi
+	}
+	[ -f /usr/lib/uhttpd_ubus.so ] && {
+		append_arg "$cfg" ubus_prefix "-u"
+		append_arg "$cfg" ubus_socket "-U"
+		append_bool "$cfg" ubus_cors "-X" 0
+	}
+	[ -f /usr/lib/uhttpd_ucode.so ] && {
+		config_list_foreach "$cfg" ucode_prefix append_ucode_prefix
+	}
+	append_arg "$cfg" script_timeout "-t"
+	append_arg "$cfg" network_timeout "-T"
+	append_arg "$cfg" http_keepalive "-k"
+	append_arg "$cfg" tcp_keepalive "-A"
+	append_arg "$cfg" error_page "-E"
+	append_arg "$cfg" max_requests "-n" 3
+	append_arg "$cfg" max_connections "-N"
+
+	append_bool "$cfg" no_ubusauth "-a" 0
+	append_bool "$cfg" no_symlinks "-S" 0
+	append_bool "$cfg" no_dirlists "-D" 0
+	append_bool "$cfg" rfc1918_filter "-R" 0
+
+	config_get alias_list "$cfg" alias
+	for alias in $alias_list; do
+		 procd_append_param command -y "$alias"
+	done
+
+	config_get http "$cfg" listen_http
+	for listen in $http; do
+		 procd_append_param command -p "$listen"
+	done
+
+	config_get interpreter "$cfg" interpreter
+	for path in $interpreter; do
+		procd_append_param command -i "$path"
+	done
+
+	config_get indexes "$cfg" index_page
+	for path in $indexes; do
+		procd_append_param command -I "$path"
+	done
+
+	config_get https "$cfg" listen_https
+	config_get UHTTPD_KEY  "$cfg" key  /etc/uhttpd.key
+	config_get UHTTPD_CERT "$cfg" cert /etc/uhttpd.crt
+
+	[ -f /lib/libustream-ssl.so ] && [ -n "$https" ] && {
+		[ -s "$UHTTPD_CERT" -a -s "$UHTTPD_KEY" ] || {
+			config_foreach generate_keys cert
+		}
+
+		[ -f "$UHTTPD_CERT" -a -f "$UHTTPD_KEY" ] && {
+			append_arg "$cfg" cert "-C"
+			append_arg "$cfg" key  "-K"
+
+			for listen in $https; do
+				procd_append_param command -s "$listen"
+			done
+		}
+
+		append_bool "$cfg" redirect_https "-q" 0
+	}
+
+	config_get json_script "$cfg" json_script
+	for file in $json_script; do
+		[ -s "$file" ] && procd_append_param command -H "$file"
+	done
+
+	procd_close_instance
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "uhttpd"
+	procd_add_raw_trigger acme.renew 5000 /etc/init.d/uhttpd reload
+}
+
+start_service() {
+	config_load uhttpd
+	config_foreach start_instance uhttpd
+}

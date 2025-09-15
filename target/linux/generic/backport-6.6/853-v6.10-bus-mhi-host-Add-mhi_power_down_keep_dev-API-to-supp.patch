@@ -1,0 +1,140 @@
+--- a/drivers/bus/mhi/host/init.c
++++ b/drivers/bus/mhi/host/init.c
+@@ -43,6 +43,7 @@ const char * const dev_state_tran_str[DE
+ 	[DEV_ST_TRANSITION_FP] = "FLASH PROGRAMMER",
+ 	[DEV_ST_TRANSITION_SYS_ERR] = "SYS ERROR",
+ 	[DEV_ST_TRANSITION_DISABLE] = "DISABLE",
++	[DEV_ST_TRANSITION_DISABLE_DESTROY_DEVICE] = "DISABLE (DESTROY DEVICE)",
+ };
+ 
+ const char * const mhi_ch_state_type_str[MHI_CH_STATE_TYPE_MAX] = {
+--- a/drivers/bus/mhi/host/internal.h
++++ b/drivers/bus/mhi/host/internal.h
+@@ -69,6 +69,7 @@ enum dev_st_transition {
+ 	DEV_ST_TRANSITION_FP,
+ 	DEV_ST_TRANSITION_SYS_ERR,
+ 	DEV_ST_TRANSITION_DISABLE,
++	DEV_ST_TRANSITION_DISABLE_DESTROY_DEVICE,
+ 	DEV_ST_TRANSITION_MAX,
+ };
+ 
+--- a/drivers/bus/mhi/host/pm.c
++++ b/drivers/bus/mhi/host/pm.c
+@@ -466,7 +466,8 @@ error_mission_mode:
+ }
+ 
+ /* Handle shutdown transitions */
+-static void mhi_pm_disable_transition(struct mhi_controller *mhi_cntrl)
++static void mhi_pm_disable_transition(struct mhi_controller *mhi_cntrl,
++				      bool destroy_device)
+ {
+ 	enum mhi_pm_state cur_state;
+ 	struct mhi_event *mhi_event;
+@@ -528,8 +529,16 @@ skip_mhi_reset:
+ 	dev_dbg(dev, "Waiting for all pending threads to complete\n");
+ 	wake_up_all(&mhi_cntrl->state_event);
+ 
+-	dev_dbg(dev, "Reset all active channels and remove MHI devices\n");
+-	device_for_each_child(&mhi_cntrl->mhi_dev->dev, NULL, mhi_destroy_device);
++	/*
++	 * Only destroy the 'struct device' for channels if indicated by the
++	 * 'destroy_device' flag. Because, during system suspend or hibernation
++	 * state, there is no need to destroy the 'struct device' as the endpoint
++	 * device would still be physically attached to the machine.
++	 */
++	if (destroy_device) {
++		dev_dbg(dev, "Reset all active channels and remove MHI devices\n");
++		device_for_each_child(&mhi_cntrl->mhi_dev->dev, NULL, mhi_destroy_device);
++	}
+ 
+ 	mutex_lock(&mhi_cntrl->pm_mutex);
+ 
+@@ -836,7 +845,10 @@ void mhi_pm_st_worker(struct work_struct
+ 			mhi_pm_sys_error_transition(mhi_cntrl);
+ 			break;
+ 		case DEV_ST_TRANSITION_DISABLE:
+-			mhi_pm_disable_transition(mhi_cntrl);
++			mhi_pm_disable_transition(mhi_cntrl, false);
++			break;
++		case DEV_ST_TRANSITION_DISABLE_DESTROY_DEVICE:
++			mhi_pm_disable_transition(mhi_cntrl, true);
+ 			break;
+ 		default:
+ 			break;
+@@ -1190,7 +1202,8 @@ error_exit:
+ }
+ EXPORT_SYMBOL_GPL(mhi_async_power_up);
+ 
+-void mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful)
++static void __mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful,
++			     bool destroy_device)
+ {
+ 	enum mhi_pm_state cur_state, transition_state;
+ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
+@@ -1226,15 +1239,32 @@ void mhi_power_down(struct mhi_controlle
+ 	write_unlock_irq(&mhi_cntrl->pm_lock);
+ 	mutex_unlock(&mhi_cntrl->pm_mutex);
+ 
+-	mhi_queue_state_transition(mhi_cntrl, DEV_ST_TRANSITION_DISABLE);
++	if (destroy_device)
++		mhi_queue_state_transition(mhi_cntrl,
++					   DEV_ST_TRANSITION_DISABLE_DESTROY_DEVICE);
++	else
++		mhi_queue_state_transition(mhi_cntrl,
++					   DEV_ST_TRANSITION_DISABLE);
+ 
+ 	/* Wait for shutdown to complete */
+ 	flush_work(&mhi_cntrl->st_worker);
+ 
+ 	disable_irq(mhi_cntrl->irq[0]);
+ }
++
++void mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful)
++{
++	__mhi_power_down(mhi_cntrl, graceful, true);
++}
+ EXPORT_SYMBOL_GPL(mhi_power_down);
+ 
++void mhi_power_down_keep_dev(struct mhi_controller *mhi_cntrl,
++			       bool graceful)
++{
++	__mhi_power_down(mhi_cntrl, graceful, false);
++}
++EXPORT_SYMBOL_GPL(mhi_power_down_keep_dev);
++
+ int mhi_sync_power_up(struct mhi_controller *mhi_cntrl)
+ {
+ 	int ret = mhi_async_power_up(mhi_cntrl);
+--- a/include/linux/mhi.h
++++ b/include/linux/mhi.h
+@@ -649,13 +649,29 @@ int mhi_async_power_up(struct mhi_contro
+ int mhi_sync_power_up(struct mhi_controller *mhi_cntrl);
+ 
+ /**
+- * mhi_power_down - Start MHI power down sequence
++ * mhi_power_down - Power down the MHI device and also destroy the
++ *                  'struct device' for the channels associated with it.
++ *                  See also mhi_power_down_keep_dev() which is a variant
++ *                  of this API that keeps the 'struct device' for channels
++ *                  (useful during suspend/hibernation).
+  * @mhi_cntrl: MHI controller
+  * @graceful: Link is still accessible, so do a graceful shutdown process
+  */
+ void mhi_power_down(struct mhi_controller *mhi_cntrl, bool graceful);
+ 
+ /**
++ * mhi_power_down_keep_dev - Power down the MHI device but keep the 'struct
++ *                           device' for the channels associated with it.
++ *                           This is a variant of 'mhi_power_down()' and
++ *                           useful in scenarios such as suspend/hibernation
++ *                           where destroying of the 'struct device' is not
++ *                           needed.
++ * @mhi_cntrl: MHI controller
++ * @graceful: Link is still accessible, so do a graceful shutdown process
++ */
++void mhi_power_down_keep_dev(struct mhi_controller *mhi_cntrl, bool graceful);
++
++/**
+  * mhi_unprepare_after_power_down - Free any allocated memory after power down
+  * @mhi_cntrl: MHI controller
+  */

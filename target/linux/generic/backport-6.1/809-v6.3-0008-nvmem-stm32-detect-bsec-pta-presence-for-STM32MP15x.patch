@@ -1,0 +1,85 @@
+From df2f34ef1d924125ffaf29dfdaf7cdbd3183c321 Mon Sep 17 00:00:00 2001
+From: Patrick Delaunay <patrick.delaunay@foss.st.com>
+Date: Mon, 6 Feb 2023 13:43:52 +0000
+Subject: [PATCH] nvmem: stm32: detect bsec pta presence for STM32MP15x
+
+On STM32MP15x SoC, the SMC backend is optional when OP-TEE is used;
+the PTA BSEC should be used as it is done on STM32MP13x platform,
+but the BSEC SMC can be also used: it is a legacy mode in OP-TEE,
+not recommended but used in previous OP-TEE firmware.
+
+The presence of OP-TEE is dynamically detected in STM32MP15x device tree
+and the supported NVMEM backend is dynamically detected:
+- PTA with stm32_bsec_pta_find
+- SMC with stm32_bsec_check
+
+With OP-TEE but without PTA and SMC detection, the probe is deferred for
+STM32MP15x devices.
+
+On STM32MP13x platform, only the PTA is supported with cfg->ta = true
+and this detection is skipped.
+
+Signed-off-by: Patrick Delaunay <patrick.delaunay@foss.st.com>
+Reviewed-by: Etienne Carriere <etienne.carriere@linaro.org>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230206134356.839737-19-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/stm32-romem.c | 38 +++++++++++++++++++++++++++++++++----
+ 1 file changed, 34 insertions(+), 4 deletions(-)
+
+--- a/drivers/nvmem/stm32-romem.c
++++ b/drivers/nvmem/stm32-romem.c
+@@ -159,6 +159,31 @@ static int stm32_bsec_pta_write(void *co
+ 	return stm32_bsec_optee_ta_write(priv->ctx, priv->lower, offset, buf, bytes);
+ }
+ 
++static bool stm32_bsec_smc_check(void)
++{
++	u32 val;
++	int ret;
++
++	/* check that the OP-TEE support the BSEC SMC (legacy mode) */
++	ret = stm32_bsec_smc(STM32_SMC_READ_SHADOW, 0, 0, &val);
++
++	return !ret;
++}
++
++static bool optee_presence_check(void)
++{
++	struct device_node *np;
++	bool tee_detected = false;
++
++	/* check that the OP-TEE node is present and available. */
++	np = of_find_compatible_node(NULL, NULL, "linaro,optee-tz");
++	if (np && of_device_is_available(np))
++		tee_detected = true;
++	of_node_put(np);
++
++	return tee_detected;
++}
++
+ static int stm32_romem_probe(struct platform_device *pdev)
+ {
+ 	const struct stm32_romem_cfg *cfg;
+@@ -195,11 +220,16 @@ static int stm32_romem_probe(struct plat
+ 	} else {
+ 		priv->cfg.size = cfg->size;
+ 		priv->lower = cfg->lower;
+-		if (cfg->ta) {
++		if (cfg->ta || optee_presence_check()) {
+ 			rc = stm32_bsec_optee_ta_open(&priv->ctx);
+-			/* wait for OP-TEE client driver to be up and ready */
+-			if (rc)
+-				return rc;
++			if (rc) {
++				/* wait for OP-TEE client driver to be up and ready */
++				if (rc == -EPROBE_DEFER)
++					return -EPROBE_DEFER;
++				/* BSEC PTA is required or SMC not supported */
++				if (cfg->ta || !stm32_bsec_smc_check())
++					return rc;
++			}
+ 		}
+ 		if (priv->ctx) {
+ 			rc = devm_add_action_or_reset(dev, stm32_bsec_optee_ta_close, priv->ctx);

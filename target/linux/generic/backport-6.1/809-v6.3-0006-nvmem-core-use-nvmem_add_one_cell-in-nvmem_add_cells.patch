@@ -1,0 +1,93 @@
+From 50014d659617dc58780a5d31ceb76c82779a9d8b Mon Sep 17 00:00:00 2001
+From: Michael Walle <michael@walle.cc>
+Date: Mon, 6 Feb 2023 13:43:50 +0000
+Subject: [PATCH] nvmem: core: use nvmem_add_one_cell() in
+ nvmem_add_cells_from_of()
+
+Convert nvmem_add_cells_from_of() to use the new nvmem_add_one_cell().
+This will remove duplicate code and it will make it possible to add a
+hook to a nvmem layout in between, which can change fields before the
+cell is finally added.
+
+Signed-off-by: Michael Walle <michael@walle.cc>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230206134356.839737-17-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/core.c | 45 ++++++++++++++------------------------------
+ 1 file changed, 14 insertions(+), 31 deletions(-)
+
+--- a/drivers/nvmem/core.c
++++ b/drivers/nvmem/core.c
+@@ -687,15 +687,14 @@ static int nvmem_validate_keepouts(struc
+ 
+ static int nvmem_add_cells_from_of(struct nvmem_device *nvmem)
+ {
+-	struct device_node *parent, *child;
+ 	struct device *dev = &nvmem->dev;
+-	struct nvmem_cell_entry *cell;
++	struct device_node *child;
+ 	const __be32 *addr;
+-	int len;
++	int len, ret;
+ 
+-	parent = dev->of_node;
++	for_each_child_of_node(dev->of_node, child) {
++		struct nvmem_cell_info info = {0};
+ 
+-	for_each_child_of_node(parent, child) {
+ 		addr = of_get_property(child, "reg", &len);
+ 		if (!addr)
+ 			continue;
+@@ -705,40 +704,24 @@ static int nvmem_add_cells_from_of(struc
+ 			return -EINVAL;
+ 		}
+ 
+-		cell = kzalloc(sizeof(*cell), GFP_KERNEL);
+-		if (!cell) {
+-			of_node_put(child);
+-			return -ENOMEM;
+-		}
+-
+-		cell->nvmem = nvmem;
+-		cell->offset = be32_to_cpup(addr++);
+-		cell->bytes = be32_to_cpup(addr);
+-		cell->name = kasprintf(GFP_KERNEL, "%pOFn", child);
++		info.offset = be32_to_cpup(addr++);
++		info.bytes = be32_to_cpup(addr);
++		info.name = kasprintf(GFP_KERNEL, "%pOFn", child);
+ 
+ 		addr = of_get_property(child, "bits", &len);
+ 		if (addr && len == (2 * sizeof(u32))) {
+-			cell->bit_offset = be32_to_cpup(addr++);
+-			cell->nbits = be32_to_cpup(addr);
++			info.bit_offset = be32_to_cpup(addr++);
++			info.nbits = be32_to_cpup(addr);
+ 		}
+ 
+-		if (cell->nbits)
+-			cell->bytes = DIV_ROUND_UP(
+-					cell->nbits + cell->bit_offset,
+-					BITS_PER_BYTE);
+-
+-		if (!IS_ALIGNED(cell->offset, nvmem->stride)) {
+-			dev_err(dev, "cell %s unaligned to nvmem stride %d\n",
+-				cell->name, nvmem->stride);
+-			/* Cells already added will be freed later. */
+-			kfree_const(cell->name);
+-			kfree(cell);
++		info.np = of_node_get(child);
++
++		ret = nvmem_add_one_cell(nvmem, &info);
++		kfree(info.name);
++		if (ret) {
+ 			of_node_put(child);
+-			return -EINVAL;
++			return ret;
+ 		}
+-
+-		cell->np = of_node_get(child);
+-		nvmem_cell_entry_add(cell);
+ 	}
+ 
+ 	return 0;

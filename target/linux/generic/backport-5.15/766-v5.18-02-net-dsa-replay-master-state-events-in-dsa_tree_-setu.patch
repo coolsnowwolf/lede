@@ -1,0 +1,89 @@
+From e83d56537859849f2223b90749e554831b1f3c27 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Wed, 2 Feb 2022 01:03:21 +0100
+Subject: [PATCH 02/16] net: dsa: replay master state events in
+ dsa_tree_{setup,teardown}_master
+
+In order for switch driver to be able to make simple and reliable use of
+the master tracking operations, they must also be notified of the
+initial state of the DSA master, not just of the changes. This is
+because they might enable certain features only during the time when
+they know that the DSA master is up and running.
+
+Therefore, this change explicitly checks the state of the DSA master
+under the same rtnl_mutex as we were holding during the
+dsa_master_setup() and dsa_master_teardown() call. The idea being that
+if the DSA master became operational in between the moment in which it
+became a DSA master (dsa_master_setup set dev->dsa_ptr) and the moment
+when we checked for the master being up, there is a chance that we
+would emit a ->master_state_change() call with no actual state change.
+We need to avoid that by serializing the concurrent netdevice event with
+us. If the netdevice event started before, we force it to finish before
+we begin, because we take rtnl_lock before making netdev_uses_dsa()
+return true. So we also handle that early event and do nothing on it.
+Similarly, if the dev_open() attempt is concurrent with us, it will
+attempt to take the rtnl_mutex, but we're holding it. We'll see that
+the master flag IFF_UP isn't set, then when we release the rtnl_mutex
+we'll process the NETDEV_UP notifier.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/dsa/dsa2.c | 28 ++++++++++++++++++++++++----
+ 1 file changed, 24 insertions(+), 4 deletions(-)
+
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -15,6 +15,7 @@
+ #include <linux/of.h>
+ #include <linux/of_net.h>
+ #include <net/devlink.h>
++#include <net/sch_generic.h>
+ 
+ #include "dsa_priv.h"
+ 
+@@ -1082,9 +1083,18 @@ static int dsa_tree_setup_master(struct
+ 
+ 	list_for_each_entry(dp, &dst->ports, list) {
+ 		if (dsa_port_is_cpu(dp)) {
+-			err = dsa_master_setup(dp->master, dp);
++			struct net_device *master = dp->master;
++			bool admin_up = (master->flags & IFF_UP) &&
++					!qdisc_tx_is_noop(master);
++
++			err = dsa_master_setup(master, dp);
+ 			if (err)
+ 				return err;
++
++			/* Replay master state event */
++			dsa_tree_master_admin_state_change(dst, master, admin_up);
++			dsa_tree_master_oper_state_change(dst, master,
++							  netif_oper_up(master));
+ 		}
+ 	}
+ 
+@@ -1099,9 +1109,19 @@ static void dsa_tree_teardown_master(str
+ 
+ 	rtnl_lock();
+ 
+-	list_for_each_entry(dp, &dst->ports, list)
+-		if (dsa_port_is_cpu(dp))
+-			dsa_master_teardown(dp->master);
++	list_for_each_entry(dp, &dst->ports, list) {
++		if (dsa_port_is_cpu(dp)) {
++			struct net_device *master = dp->master;
++
++			/* Synthesizing an "admin down" state is sufficient for
++			 * the switches to get a notification if the master is
++			 * currently up and running.
++			 */
++			dsa_tree_master_admin_state_change(dst, master, false);
++
++			dsa_master_teardown(master);
++		}
++	}
+ 
+ 	rtnl_unlock();
+ }

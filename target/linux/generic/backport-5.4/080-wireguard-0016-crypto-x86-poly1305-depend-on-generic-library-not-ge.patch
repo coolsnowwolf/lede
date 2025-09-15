@@ -1,0 +1,217 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ard Biesheuvel <ardb@kernel.org>
+Date: Fri, 8 Nov 2019 13:22:22 +0100
+Subject: [PATCH] crypto: x86/poly1305 - depend on generic library not generic
+ shash
+
+commit 1b2c6a5120489d41c8ea3b8dacd0b4586289b158 upstream.
+
+Remove the dependency on the generic Poly1305 driver. Instead, depend
+on the generic library so that we only reuse code without pulling in
+the generic skcipher implementation as well.
+
+While at it, remove the logic that prefers the non-SIMD path for short
+inputs - this is no longer necessary after recent FPU handling changes
+on x86.
+
+Since this removes the last remaining user of the routines exported
+by the generic shash driver, unexport them and make them static.
+
+Signed-off-by: Ard Biesheuvel <ardb@kernel.org>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ arch/x86/crypto/poly1305_glue.c    | 66 +++++++++++++++++++++++++-----
+ crypto/Kconfig                     |  2 +-
+ crypto/poly1305_generic.c          | 11 ++---
+ include/crypto/internal/poly1305.h |  9 ----
+ 4 files changed, 60 insertions(+), 28 deletions(-)
+
+--- a/arch/x86/crypto/poly1305_glue.c
++++ b/arch/x86/crypto/poly1305_glue.c
+@@ -34,6 +34,24 @@ static void poly1305_simd_mult(u32 *a, c
+ 	poly1305_block_sse2(a, m, b, 1);
+ }
+ 
++static unsigned int poly1305_scalar_blocks(struct poly1305_desc_ctx *dctx,
++					   const u8 *src, unsigned int srclen)
++{
++	unsigned int datalen;
++
++	if (unlikely(!dctx->sset)) {
++		datalen = crypto_poly1305_setdesckey(dctx, src, srclen);
++		src += srclen - datalen;
++		srclen = datalen;
++	}
++	if (srclen >= POLY1305_BLOCK_SIZE) {
++		poly1305_core_blocks(&dctx->h, dctx->r, src,
++				     srclen / POLY1305_BLOCK_SIZE, 1);
++		srclen %= POLY1305_BLOCK_SIZE;
++	}
++	return srclen;
++}
++
+ static unsigned int poly1305_simd_blocks(struct poly1305_desc_ctx *dctx,
+ 					 const u8 *src, unsigned int srclen)
+ {
+@@ -91,12 +109,6 @@ static int poly1305_simd_update(struct s
+ 	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
+ 	unsigned int bytes;
+ 
+-	/* kernel_fpu_begin/end is costly, use fallback for small updates */
+-	if (srclen <= 288 || !crypto_simd_usable())
+-		return crypto_poly1305_update(desc, src, srclen);
+-
+-	kernel_fpu_begin();
+-
+ 	if (unlikely(dctx->buflen)) {
+ 		bytes = min(srclen, POLY1305_BLOCK_SIZE - dctx->buflen);
+ 		memcpy(dctx->buf + dctx->buflen, src, bytes);
+@@ -105,25 +117,57 @@ static int poly1305_simd_update(struct s
+ 		dctx->buflen += bytes;
+ 
+ 		if (dctx->buflen == POLY1305_BLOCK_SIZE) {
+-			poly1305_simd_blocks(dctx, dctx->buf,
+-					     POLY1305_BLOCK_SIZE);
++			if (likely(crypto_simd_usable())) {
++				kernel_fpu_begin();
++				poly1305_simd_blocks(dctx, dctx->buf,
++						     POLY1305_BLOCK_SIZE);
++				kernel_fpu_end();
++			} else {
++				poly1305_scalar_blocks(dctx, dctx->buf,
++						       POLY1305_BLOCK_SIZE);
++			}
+ 			dctx->buflen = 0;
+ 		}
+ 	}
+ 
+ 	if (likely(srclen >= POLY1305_BLOCK_SIZE)) {
+-		bytes = poly1305_simd_blocks(dctx, src, srclen);
++		if (likely(crypto_simd_usable())) {
++			kernel_fpu_begin();
++			bytes = poly1305_simd_blocks(dctx, src, srclen);
++			kernel_fpu_end();
++		} else {
++			bytes = poly1305_scalar_blocks(dctx, src, srclen);
++		}
+ 		src += srclen - bytes;
+ 		srclen = bytes;
+ 	}
+ 
+-	kernel_fpu_end();
+-
+ 	if (unlikely(srclen)) {
+ 		dctx->buflen = srclen;
+ 		memcpy(dctx->buf, src, srclen);
+ 	}
++}
++
++static int crypto_poly1305_init(struct shash_desc *desc)
++{
++	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
++
++	poly1305_core_init(&dctx->h);
++	dctx->buflen = 0;
++	dctx->rset = 0;
++	dctx->sset = false;
++
++	return 0;
++}
++
++static int crypto_poly1305_final(struct shash_desc *desc, u8 *dst)
++{
++	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
++
++	if (unlikely(!dctx->sset))
++		return -ENOKEY;
+ 
++	poly1305_final_generic(dctx, dst);
+ 	return 0;
+ }
+ 
+--- a/crypto/Kconfig
++++ b/crypto/Kconfig
+@@ -697,7 +697,7 @@ config CRYPTO_POLY1305
+ config CRYPTO_POLY1305_X86_64
+ 	tristate "Poly1305 authenticator algorithm (x86_64/SSE2/AVX2)"
+ 	depends on X86 && 64BIT
+-	select CRYPTO_POLY1305
++	select CRYPTO_LIB_POLY1305_GENERIC
+ 	help
+ 	  Poly1305 authenticator algorithm, RFC7539.
+ 
+--- a/crypto/poly1305_generic.c
++++ b/crypto/poly1305_generic.c
+@@ -19,7 +19,7 @@
+ #include <linux/module.h>
+ #include <asm/unaligned.h>
+ 
+-int crypto_poly1305_init(struct shash_desc *desc)
++static int crypto_poly1305_init(struct shash_desc *desc)
+ {
+ 	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
+ 
+@@ -30,7 +30,6 @@ int crypto_poly1305_init(struct shash_de
+ 
+ 	return 0;
+ }
+-EXPORT_SYMBOL_GPL(crypto_poly1305_init);
+ 
+ static void poly1305_blocks(struct poly1305_desc_ctx *dctx, const u8 *src,
+ 			    unsigned int srclen)
+@@ -47,8 +46,8 @@ static void poly1305_blocks(struct poly1
+ 			     srclen / POLY1305_BLOCK_SIZE, 1);
+ }
+ 
+-int crypto_poly1305_update(struct shash_desc *desc,
+-			   const u8 *src, unsigned int srclen)
++static int crypto_poly1305_update(struct shash_desc *desc,
++				  const u8 *src, unsigned int srclen)
+ {
+ 	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
+ 	unsigned int bytes;
+@@ -80,9 +79,8 @@ int crypto_poly1305_update(struct shash_
+ 
+ 	return 0;
+ }
+-EXPORT_SYMBOL_GPL(crypto_poly1305_update);
+ 
+-int crypto_poly1305_final(struct shash_desc *desc, u8 *dst)
++static int crypto_poly1305_final(struct shash_desc *desc, u8 *dst)
+ {
+ 	struct poly1305_desc_ctx *dctx = shash_desc_ctx(desc);
+ 
+@@ -92,7 +90,6 @@ int crypto_poly1305_final(struct shash_d
+ 	poly1305_final_generic(dctx, dst);
+ 	return 0;
+ }
+-EXPORT_SYMBOL_GPL(crypto_poly1305_final);
+ 
+ static struct shash_alg poly1305_alg = {
+ 	.digestsize	= POLY1305_DIGEST_SIZE,
+--- a/include/crypto/internal/poly1305.h
++++ b/include/crypto/internal/poly1305.h
+@@ -10,8 +10,6 @@
+ #include <linux/types.h>
+ #include <crypto/poly1305.h>
+ 
+-struct shash_desc;
+-
+ /*
+  * Poly1305 core functions.  These implement the ε-almost-∆-universal hash
+  * function underlying the Poly1305 MAC, i.e. they don't add an encrypted nonce
+@@ -28,13 +26,6 @@ void poly1305_core_blocks(struct poly130
+ 			  unsigned int nblocks, u32 hibit);
+ void poly1305_core_emit(const struct poly1305_state *state, void *dst);
+ 
+-/* Crypto API helper functions for the Poly1305 MAC */
+-int crypto_poly1305_init(struct shash_desc *desc);
+-
+-int crypto_poly1305_update(struct shash_desc *desc,
+-			   const u8 *src, unsigned int srclen);
+-int crypto_poly1305_final(struct shash_desc *desc, u8 *dst);
+-
+ /*
+  * Poly1305 requires a unique key for each tag, which implies that we can't set
+  * it on the tfm that gets accessed by multiple users simultaneously. Instead we

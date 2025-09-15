@@ -1,0 +1,77 @@
+From f10843e04a075202dbb39dfcee047e3a2fdf5a8d Mon Sep 17 00:00:00 2001
+From: Michael Walle <michael@walle.cc>
+Date: Mon, 12 Apr 2021 19:47:18 +0200
+Subject: of: net: fix of_get_mac_addr_nvmem() for non-platform devices
+
+of_get_mac_address() already supports fetching the MAC address by an
+nvmem provider. But until now, it was just working for platform devices.
+Esp. it was not working for DSA ports and PCI devices. It gets more
+common that PCI devices have a device tree binding since SoCs contain
+integrated root complexes.
+
+Use the nvmem of_* binding to fetch the nvmem cells by a struct
+device_node. We still have to try to read the cell by device first
+because there might be a nvmem_cell_lookup associated with that device.
+
+Signed-off-by: Michael Walle <michael@walle.cc>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/of/of_net.c | 35 ++++++++++++++++++++++++++++++-----
+ 1 file changed, 30 insertions(+), 5 deletions(-)
+
+--- a/drivers/of/of_net.c
++++ b/drivers/of/of_net.c
+@@ -11,6 +11,7 @@
+ #include <linux/phy.h>
+ #include <linux/export.h>
+ #include <linux/device.h>
++#include <linux/nvmem-consumer.h>
+ 
+ /**
+  * of_get_phy_mode - Get phy mode for given device_node
+@@ -59,15 +60,39 @@ static int of_get_mac_addr(struct device
+ static int of_get_mac_addr_nvmem(struct device_node *np, u8 *addr)
+ {
+ 	struct platform_device *pdev = of_find_device_by_node(np);
++	struct nvmem_cell *cell;
++	const void *mac;
++	size_t len;
+ 	int ret;
+ 
+-	if (!pdev)
+-		return -ENODEV;
++	/* Try lookup by device first, there might be a nvmem_cell_lookup
++	 * associated with a given device.
++	 */
++	if (pdev) {
++		ret = nvmem_get_mac_address(&pdev->dev, addr);
++		put_device(&pdev->dev);
++		return ret;
++	}
++
++	cell = of_nvmem_cell_get(np, "mac-address");
++	if (IS_ERR(cell))
++		return PTR_ERR(cell);
++
++	mac = nvmem_cell_read(cell, &len);
++	nvmem_cell_put(cell);
++
++	if (IS_ERR(mac))
++		return PTR_ERR(mac);
++
++	if (len != ETH_ALEN || !is_valid_ether_addr(mac)) {
++		kfree(mac);
++		return -EINVAL;
++	}
+ 
+-	ret = nvmem_get_mac_address(&pdev->dev, addr);
+-	put_device(&pdev->dev);
++	memcpy(addr, mac, ETH_ALEN);
++	kfree(mac);
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ /**

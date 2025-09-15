@@ -1,0 +1,63 @@
+From 7cc39a6bedbd85f3ff7e16845f310e4ce8d9833f Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 6 Sep 2022 00:31:19 +0100
+Subject: [PATCH] net: sfp: add quirk for ATS SFP-GE-T 1000Base-TX module
+To: netdev@vger.kernel.org,
+    linux-kernel@vger.kernel.org,
+    Russell King <linux@armlinux.org.uk>,
+    Andrew Lunn <andrew@lunn.ch>,
+    Heiner Kallweit <hkallweit1@gmail.com>
+Cc: David S. Miller <davem@davemloft.net>,
+    Eric Dumazet <edumazet@google.com>,
+    Jakub Kicinski <kuba@kernel.org>,
+    Paolo Abeni <pabeni@redhat.com>,
+    Josef Schlehofer <pepe.schlehofer@gmail.com>
+
+This copper module comes with broken TX_FAULT indicator which must be
+ignored for it to work. Implement ignoring TX_FAULT state bit also
+during reset/insertion and mute the warning telling the user that the
+module indicates TX_FAULT.
+
+Co-authored-by: Josef Schlehofer <pepe.schlehofer@gmail.com>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/phy/sfp.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -410,6 +410,9 @@ static const struct sfp_quirk sfp_quirks
+ 	SFP_QUIRK("HUAWEI", "MA5671A", sfp_quirk_2500basex,
+ 		  sfp_fixup_ignore_tx_fault),
+ 
++	// OEM SFP-GE-T is 1000Base-T module
++	SFP_QUIRK_F("OEM", "SFP-GE-T", sfp_fixup_ignore_tx_fault),
++
+ 	// Lantech 8330-262D-E can operate at 2500base-X, but incorrectly report
+ 	// 2500MBd NRZ in their EEPROM
+ 	SFP_QUIRK_M("Lantech", "8330-262D-E", sfp_quirk_2500basex),
+@@ -2344,7 +2347,8 @@ static void sfp_sm_main(struct sfp *sfp,
+ 			 * or t_start_up, so assume there is a fault.
+ 			 */
+ 			sfp_sm_fault(sfp, SFP_S_INIT_TX_FAULT,
+-				     sfp->sm_fault_retries == N_FAULT_INIT);
++				     !sfp->tx_fault_ignore &&
++				     (sfp->sm_fault_retries == N_FAULT_INIT));
+ 		} else if (event == SFP_E_TIMEOUT || event == SFP_E_TX_CLEAR) {
+ 	init_done:
+ 			/* Create mdiobus and start trying for PHY */
+@@ -2578,10 +2582,12 @@ static void sfp_check_state(struct sfp *
+ 	mutex_lock(&sfp->st_mutex);
+ 	state = sfp_get_state(sfp);
+ 	changed = state ^ sfp->state;
+-	if (sfp->tx_fault_ignore)
++	if (sfp->tx_fault_ignore) {
+ 		changed &= SFP_F_PRESENT | SFP_F_LOS;
+-	else
++		state &= ~SFP_F_TX_FAULT;
++	} else {
+ 		changed &= SFP_F_PRESENT | SFP_F_LOS | SFP_F_TX_FAULT;
++	}
+ 
+ 	for (i = 0; i < GPIO_MAX; i++)
+ 		if (changed & BIT(i))

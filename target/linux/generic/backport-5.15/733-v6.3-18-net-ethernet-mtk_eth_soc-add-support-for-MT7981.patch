@@ -1,0 +1,183 @@
+--- a/drivers/net/ethernet/mediatek/mtk_eth_path.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_path.c
+@@ -96,12 +96,20 @@ static int set_mux_gmac2_gmac0_to_gephy(
+ 
+ static int set_mux_u3_gmac2_to_qphy(struct mtk_eth *eth, int path)
+ {
+-	unsigned int val = 0;
++	unsigned int val = 0, mask = 0, reg = 0;
+ 	bool updated = true;
+ 
+ 	switch (path) {
+ 	case MTK_ETH_PATH_GMAC2_SGMII:
+-		val = CO_QPHY_SEL;
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_U3_COPHY_V2)) {
++			reg = USB_PHY_SWITCH_REG;
++			val = SGMII_QPHY_SEL;
++			mask = QPHY_SEL_MASK;
++		} else {
++			reg = INFRA_MISC2;
++			val = CO_QPHY_SEL;
++			mask = val;
++		}
+ 		break;
+ 	default:
+ 		updated = false;
+@@ -109,7 +117,7 @@ static int set_mux_u3_gmac2_to_qphy(stru
+ 	}
+ 
+ 	if (updated)
+-		regmap_update_bits(eth->infra, INFRA_MISC2, CO_QPHY_SEL, val);
++		regmap_update_bits(eth->infra, reg, mask, val);
+ 
+ 	dev_dbg(eth->dev, "path %s in %s updated = %d\n",
+ 		mtk_eth_path_name(path), __func__, updated);
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -4751,6 +4751,26 @@ static const struct mtk_soc_data mt7629_
+ 	},
+ };
+ 
++static const struct mtk_soc_data mt7981_data = {
++	.reg_map = &mt7986_reg_map,
++	.ana_rgc3 = 0x128,
++	.caps = MT7981_CAPS,
++	.hw_features = MTK_HW_FEATURES,
++	.required_clks = MT7981_CLKS_BITMAP,
++	.required_pctl = false,
++	.offload_version = 2,
++	.hash_offset = 4,
++	.foe_entry_size = sizeof(struct mtk_foe_entry),
++	.txrx = {
++		.txd_size = sizeof(struct mtk_tx_dma_v2),
++		.rxd_size = sizeof(struct mtk_rx_dma_v2),
++		.rx_irq_done_mask = MTK_RX_DONE_INT_V2,
++		.rx_dma_l4_valid = RX_DMA_L4_VALID_V2,
++		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
++		.dma_len_offset = 8,
++	},
++};
++
+ static const struct mtk_soc_data mt7986_data = {
+ 	.reg_map = &mt7986_reg_map,
+ 	.ana_rgc3 = 0x128,
+@@ -4793,6 +4813,7 @@ const struct of_device_id of_mtk_match[]
+ 	{ .compatible = "mediatek,mt7622-eth", .data = &mt7622_data},
+ 	{ .compatible = "mediatek,mt7623-eth", .data = &mt7623_data},
+ 	{ .compatible = "mediatek,mt7629-eth", .data = &mt7629_data},
++	{ .compatible = "mediatek,mt7981-eth", .data = &mt7981_data},
+ 	{ .compatible = "mediatek,mt7986-eth", .data = &mt7986_data},
+ 	{ .compatible = "ralink,rt5350-eth", .data = &rt5350_data},
+ 	{},
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -553,11 +553,22 @@
+ #define SGMSYS_QPHY_PWR_STATE_CTRL 0xe8
+ #define	SGMII_PHYA_PWD		BIT(4)
+ 
++/* Register to QPHY wrapper control */
++#define SGMSYS_QPHY_WRAP_CTRL	0xec
++#define SGMII_PN_SWAP_MASK	GENMASK(1, 0)
++#define SGMII_PN_SWAP_TX_RX	(BIT(0) | BIT(1))
++#define MTK_SGMII_FLAG_PN_SWAP	BIT(0)
++
+ /* Infrasys subsystem config registers */
+ #define INFRA_MISC2            0x70c
+ #define CO_QPHY_SEL            BIT(0)
+ #define GEPHY_MAC_SEL          BIT(1)
+ 
++/* Top misc registers */
++#define USB_PHY_SWITCH_REG	0x218
++#define QPHY_SEL_MASK		GENMASK(1, 0)
++#define SGMII_QPHY_SEL		0x2
++
+ /* MT7628/88 specific stuff */
+ #define MT7628_PDMA_OFFSET	0x0800
+ #define MT7628_SDM_OFFSET	0x0c00
+@@ -738,6 +749,17 @@ enum mtk_clks_map {
+ 				 BIT(MTK_CLK_SGMII2_CDR_FB) | \
+ 				 BIT(MTK_CLK_SGMII_CK) | \
+ 				 BIT(MTK_CLK_ETH2PLL) | BIT(MTK_CLK_SGMIITOP))
++#define MT7981_CLKS_BITMAP	(BIT(MTK_CLK_FE) | BIT(MTK_CLK_GP2) | BIT(MTK_CLK_GP1) | \
++				 BIT(MTK_CLK_WOCPU0) | \
++				 BIT(MTK_CLK_SGMII_TX_250M) | \
++				 BIT(MTK_CLK_SGMII_RX_250M) | \
++				 BIT(MTK_CLK_SGMII_CDR_REF) | \
++				 BIT(MTK_CLK_SGMII_CDR_FB) | \
++				 BIT(MTK_CLK_SGMII2_TX_250M) | \
++				 BIT(MTK_CLK_SGMII2_RX_250M) | \
++				 BIT(MTK_CLK_SGMII2_CDR_REF) | \
++				 BIT(MTK_CLK_SGMII2_CDR_FB) | \
++				 BIT(MTK_CLK_SGMII_CK))
+ #define MT7986_CLKS_BITMAP	(BIT(MTK_CLK_FE) | BIT(MTK_CLK_GP2) | BIT(MTK_CLK_GP1) | \
+ 				 BIT(MTK_CLK_WOCPU1) | BIT(MTK_CLK_WOCPU0) | \
+ 				 BIT(MTK_CLK_SGMII_TX_250M) | \
+@@ -851,6 +873,7 @@ enum mkt_eth_capabilities {
+ 	MTK_NETSYS_V2_BIT,
+ 	MTK_SOC_MT7628_BIT,
+ 	MTK_RSTCTRL_PPE1_BIT,
++	MTK_U3_COPHY_V2_BIT,
+ 
+ 	/* MUX BITS*/
+ 	MTK_ETH_MUX_GDM1_TO_GMAC1_ESW_BIT,
+@@ -885,6 +908,7 @@ enum mkt_eth_capabilities {
+ #define MTK_NETSYS_V2		BIT(MTK_NETSYS_V2_BIT)
+ #define MTK_SOC_MT7628		BIT(MTK_SOC_MT7628_BIT)
+ #define MTK_RSTCTRL_PPE1	BIT(MTK_RSTCTRL_PPE1_BIT)
++#define MTK_U3_COPHY_V2		BIT(MTK_U3_COPHY_V2_BIT)
+ 
+ #define MTK_ETH_MUX_GDM1_TO_GMAC1_ESW		\
+ 	BIT(MTK_ETH_MUX_GDM1_TO_GMAC1_ESW_BIT)
+@@ -957,6 +981,11 @@ enum mkt_eth_capabilities {
+ 		      MTK_MUX_U3_GMAC2_TO_QPHY | \
+ 		      MTK_MUX_GMAC12_TO_GEPHY_SGMII | MTK_QDMA)
+ 
++#define MT7981_CAPS  (MTK_GMAC1_SGMII | MTK_GMAC2_SGMII | MTK_GMAC2_GEPHY | \
++		      MTK_MUX_GMAC12_TO_GEPHY_SGMII | MTK_QDMA | \
++		      MTK_MUX_U3_GMAC2_TO_QPHY | MTK_U3_COPHY_V2 | \
++		      MTK_NETSYS_V2 | MTK_RSTCTRL_PPE1)
++
+ #define MT7986_CAPS  (MTK_GMAC1_SGMII | MTK_GMAC2_SGMII | \
+ 		      MTK_MUX_GMAC12_TO_GEPHY_SGMII | MTK_QDMA | \
+ 		      MTK_NETSYS_V2 | MTK_RSTCTRL_PPE1)
+@@ -1070,12 +1099,14 @@ struct mtk_soc_data {
+  * @ana_rgc3:          The offset refers to register ANA_RGC3 related to regmap
+  * @interface:         Currently configured interface mode
+  * @pcs:               Phylink PCS structure
++ * @flags:             Flags indicating hardware properties
+  */
+ struct mtk_pcs {
+ 	struct regmap	*regmap;
+ 	u32             ana_rgc3;
+ 	phy_interface_t	interface;
+ 	struct phylink_pcs pcs;
++	u32		flags;
+ };
+ 
+ /* struct mtk_sgmii -  This is the structure holding sgmii regmap and its
+--- a/drivers/net/ethernet/mediatek/mtk_sgmii.c
++++ b/drivers/net/ethernet/mediatek/mtk_sgmii.c
+@@ -87,6 +87,11 @@ static int mtk_pcs_config(struct phylink
+ 		regmap_update_bits(mpcs->regmap, SGMSYS_QPHY_PWR_STATE_CTRL,
+ 				   SGMII_PHYA_PWD, SGMII_PHYA_PWD);
+ 
++		if (mpcs->flags & MTK_SGMII_FLAG_PN_SWAP)
++			regmap_update_bits(mpcs->regmap, SGMSYS_QPHY_WRAP_CTRL,
++					   SGMII_PN_SWAP_MASK,
++					   SGMII_PN_SWAP_TX_RX);
++
+ 		/* Reset SGMII PCS state */
+ 		regmap_update_bits(mpcs->regmap, SGMII_RESERVED_0,
+ 				   SGMII_SW_RESET, SGMII_SW_RESET);
+@@ -186,6 +191,11 @@ int mtk_sgmii_init(struct mtk_sgmii *ss,
+ 
+ 		ss->pcs[i].ana_rgc3 = ana_rgc3;
+ 		ss->pcs[i].regmap = syscon_node_to_regmap(np);
++
++		ss->pcs[i].flags = 0;
++		if (of_property_read_bool(np, "mediatek,pnswap"))
++			ss->pcs[i].flags |= MTK_SGMII_FLAG_PN_SWAP;
++
+ 		of_node_put(np);
+ 		if (IS_ERR(ss->pcs[i].regmap))
+ 			return PTR_ERR(ss->pcs[i].regmap);

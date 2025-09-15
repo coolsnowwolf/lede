@@ -1,0 +1,196 @@
+From f9ee3f28ecb979c77423be965ef9dd313bdb9e9b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Mon, 8 Mar 2021 16:58:34 +0100
+Subject: [PATCH] mips: bmips: automatically detect RAM size
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Some devices have different amounts of RAM installed depending on HW revision.
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+---
+ arch/mips/bmips/setup.c | 119 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 119 insertions(+)
+
+--- a/arch/mips/bmips/setup.c
++++ b/arch/mips/bmips/setup.c
+@@ -19,6 +19,7 @@
+ #include <linux/of_platform.h>
+ #include <linux/libfdt.h>
+ #include <linux/smp.h>
++#include <linux/types.h>
+ #include <asm/addrspace.h>
+ #include <asm/bmips.h>
+ #include <asm/bootinfo.h>
+@@ -34,13 +35,16 @@
+ #define REG_BCM6318_SOB		((void __iomem *)CKSEG1ADDR(0x10000900))
+ #define BCM6318_FREQ_SHIFT	23
+ #define BCM6318_FREQ_MASK	(0x3 << BCM6318_FREQ_SHIFT)
++#define BCM6318_SDRAM_ADDR	((void __iomem *)CKSEG1ADDR(0x10004000))
+ 
+ #define REG_BCM6328_OTP		((void __iomem *)CKSEG1ADDR(0x1000062c))
+ #define BCM6328_TP1_DISABLED	BIT(9)
+ #define REG_BCM6328_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001a40))
+ #define BCM6328_FCVO_SHIFT	7
+ #define BCM6328_FCVO_MASK	(0x1f << BCM6328_FCVO_SHIFT)
++#define BCM6328_MEMC_ADDR	((void __iomem *)CKSEG1ADDR(0x10003000))
+ 
++#define BCM6358_MEMC_ADDR	((void __iomem *)0xfffe1200)
+ #define REG_BCM6358_DDR_PLLC	((void __iomem *)0xfffe12b8)
+ #define BCM6358_PLLC_M1_SHIFT	0
+ #define BCM6358_PLLC_M1_MASK	(0xff << BCM6358_PLLC_M1_SHIFT)
+@@ -52,7 +56,9 @@
+ #define REG_BCM6362_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001814))
+ #define BCM6362_FCVO_SHIFT	1
+ #define BCM6362_FCVO_MASK	(0x1f << BCM6362_FCVO_SHIFT)
++#define BCM6362_MEMC_ADDR	((void __iomem *)CKSEG1ADDR(0x10003000))
+ 
++#define BCM6368_MEMC_ADDR	((void __iomem *)CKSEG1ADDR(0x10001200))
+ #define REG_BCM6368_DDR_PLLC	((void __iomem *)CKSEG1ADDR(0x100012a0))
+ #define BCM6368_PLLC_P1_SHIFT	0
+ #define BCM6368_PLLC_P1_MASK	(0xf << BCM6368_PLLC_P1_SHIFT)
+@@ -67,6 +73,21 @@
+ #define REG_BCM63268_MISC_SB	((void __iomem *)CKSEG1ADDR(0x10001814))
+ #define BCM63268_FCVO_SHIFT	21
+ #define BCM63268_FCVO_MASK	(0xf << BCM63268_FCVO_SHIFT)
++#define BCM63268_MEMC_ADDR	((void __iomem *)CKSEG1ADDR(0x10003000))
++
++#define SDRAM_CFG_REG		0x0
++#define SDRAM_SPACE_SHIFT	4
++#define SDRAM_SPACE_MASK	(0xf << SDRAM_SPACE_SHIFT)
++
++#define MEMC_CFG_REG		0x4
++#define MEMC_CFG_32B_SHIFT	1
++#define MEMC_CFG_32B_MASK	(1 << MEMC_CFG_32B_SHIFT)
++#define MEMC_CFG_COL_SHIFT	3
++#define MEMC_CFG_COL_MASK	(0x3 << MEMC_CFG_COL_SHIFT)
++#define MEMC_CFG_ROW_SHIFT	6
++#define MEMC_CFG_ROW_MASK	(0x3 << MEMC_CFG_ROW_SHIFT)
++
++#define DDR_CSEND_REG		0x8
+ 
+ extern bool bmips_rac_flush_disable;
+ 
+@@ -77,6 +98,11 @@ struct bmips_cpufreq {
+ 	u32			(*cpu_freq)(void);
+ };
+ 
++struct bmips_memsize {
++	const char		*compatible;
++	phys_addr_t		(*mem_size)(void);
++};
++
+ struct bmips_quirk {
+ 	const char		*compatible;
+ 	void			(*quirk_fn)(void);
+@@ -341,9 +367,90 @@ void __init plat_time_init(void)
+ 	mips_hpt_frequency = freq;
+ }
+ 
++static inline phys_addr_t bmips_dram_size(unsigned int cols,
++					  unsigned int rows,
++					  unsigned int is_32b,
++					  unsigned int banks)
++{
++	rows += 11; /* 0 => 11 address bits ... 2 => 13 address bits */
++	cols += 8; /* 0 => 8 address bits ... 2 => 10 address bits */
++	is_32b += 1;
++
++	return 1 << (cols + rows + is_32b + banks);
++}
++
++static phys_addr_t _bcm6318_memsize(void __iomem *addr)
++{
++	u32 val;
++
++	val = __raw_readl(addr + SDRAM_CFG_REG);
++	val = (val & SDRAM_SPACE_MASK) >> SDRAM_SPACE_SHIFT;
++
++	return (1 << (val + 20));
++}
++
++static phys_addr_t _bcm6328_memsize(void __iomem *addr)
++{
++	return __raw_readl(addr + DDR_CSEND_REG) << 24;
++}
++
++static phys_addr_t _bcm6358_memsize(void __iomem *addr)
++{
++	unsigned int cols, rows, is_32b;
++	u32 val;
++
++	val = __raw_readl(addr + MEMC_CFG_REG);
++	rows = (val & MEMC_CFG_ROW_MASK) >> MEMC_CFG_ROW_SHIFT;
++	cols = (val & MEMC_CFG_COL_MASK) >> MEMC_CFG_COL_SHIFT;
++	is_32b = (val & MEMC_CFG_32B_MASK) ? 0 : 1;
++
++	return bmips_dram_size(cols, rows, is_32b, 2);
++}
++
++static phys_addr_t bcm6318_memsize(void)
++{
++	return _bcm6318_memsize(BCM6318_SDRAM_ADDR);
++}
++
++static phys_addr_t bcm6328_memsize(void)
++{
++	return _bcm6328_memsize(BCM6328_MEMC_ADDR);
++}
++
++static phys_addr_t bcm6358_memsize(void)
++{
++	return _bcm6358_memsize(BCM6358_MEMC_ADDR);
++}
++
++static phys_addr_t bcm6362_memsize(void)
++{
++	return _bcm6328_memsize(BCM6362_MEMC_ADDR);
++}
++
++static phys_addr_t bcm6368_memsize(void)
++{
++	return _bcm6358_memsize(BCM6368_MEMC_ADDR);
++}
++
++static phys_addr_t bcm63268_memsize(void)
++{
++	return _bcm6328_memsize(BCM63268_MEMC_ADDR);
++}
++
++static const struct bmips_memsize bmips_memsize_list[] = {
++	{ "brcm,bcm6318", &bcm6318_memsize },
++	{ "brcm,bcm6328", &bcm6328_memsize },
++	{ "brcm,bcm6358", &bcm6358_memsize },
++	{ "brcm,bcm6362", &bcm6362_memsize },
++	{ "brcm,bcm6368", &bcm6368_memsize },
++	{ "brcm,bcm63268", &bcm63268_memsize },
++	{ /* sentinel */ }
++};
++
+ void __init plat_mem_setup(void)
+ {
+ 	void *dtb;
++	const struct bmips_memsize *ms;
+ 	const struct bmips_quirk *q;
+ 
+ 	set_io_port_base(0);
+@@ -361,6 +468,18 @@ void __init plat_mem_setup(void)
+ 
+ 	__dt_setup_arch(dtb);
+ 
++	for (ms = bmips_memsize_list; ms->mem_size; ms++) {
++		if (of_flat_dt_is_compatible(of_get_flat_dt_root(),
++					     ms->compatible)) {
++			phys_addr_t mem = ms->mem_size();
++			if (mem) {
++				memblock_add(0, mem);
++				printk("%uMB of RAM installed\n", mem >> 20);
++				break;
++			}
++		}
++	}
++
+ 	for (q = bmips_quirk_list; q->quirk_fn; q++) {
+ 		if (of_flat_dt_is_compatible(of_get_flat_dt_root(),
+ 					     q->compatible)) {

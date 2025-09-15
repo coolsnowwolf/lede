@@ -1,0 +1,2172 @@
+From af969b14aedcc0ae27dcefab4327ff2d153dec8b Mon Sep 17 00:00:00 2001
+From: Alan Modra <amodra@gmail.com>
+Date: Thu, 28 Mar 2024 19:25:42 +1030
+Subject: [PATCH 1/2] PR 30569, always call elf_backend_size_dynamic_sections
+
+This largely mechanical patch is preparation for a followup patch.
+
+For quite some time I've thought that it would be useful to call
+elf_backend_size_dynamic_sections even when no dynamic objects are
+seen by the linker.  That's what this patch does, with some renaming.
+There are no functional changes to the linker, just a move of the
+dynobj test in bfd_elf_size_dynamic_sections to target backend
+functions, replacing the asserts/aborts already there.  No doubt some
+of the current always_size_sections functions could be moved to
+size_dynamic_sections but I haven't made that change.
+
+Because both hooks are now always called, I have renamed
+always_size_sections to early_size_sections and size_dynamic_sections
+to late_size_sections.  I condisdered calling late_size_sections plain
+size_sections, since this is the usual target dynamic section sizing
+hook, but decided that searching the sources for "size_sections" would
+then hit early_size_sections and other functions.
+---
+ bfd/elf-bfd.h          | 35 +++++++++++++++++------------------
+ bfd/elf-m10300.c       | 11 ++++++-----
+ bfd/elf32-arc.c        |  9 +++++----
+ bfd/elf32-arm.c        | 15 ++++++++-------
+ bfd/elf32-bfin.c       | 31 ++++++++++++++++---------------
+ bfd/elf32-cr16.c       | 11 ++++++-----
+ bfd/elf32-cris.c       | 13 +++++++------
+ bfd/elf32-csky.c       |  8 ++++----
+ bfd/elf32-frv.c        | 23 ++++++++++++-----------
+ bfd/elf32-hppa.c       |  8 ++++----
+ bfd/elf32-i386.c       |  7 +++----
+ bfd/elf32-lm32.c       | 15 ++++++++-------
+ bfd/elf32-m32c.c       |  8 ++++----
+ bfd/elf32-m32r.c       | 11 ++++++-----
+ bfd/elf32-m68k.c       | 16 ++++++++--------
+ bfd/elf32-metag.c      |  8 ++++----
+ bfd/elf32-microblaze.c |  9 +++++----
+ bfd/elf32-mips.c       |  6 ++----
+ bfd/elf32-nds32.c      |  9 +++++----
+ bfd/elf32-nios2.c      | 15 ++++++++-------
+ bfd/elf32-or1k.c       |  9 +++++----
+ bfd/elf32-ppc.c        | 11 ++++++-----
+ bfd/elf32-rl78.c       |  8 ++++----
+ bfd/elf32-s390.c       | 10 +++++-----
+ bfd/elf32-score.c      | 35 ++++++++++++++++++-----------------
+ bfd/elf32-score.h      |  4 ++--
+ bfd/elf32-score7.c     | 13 +++++++------
+ bfd/elf32-sh.c         | 15 +++++++--------
+ bfd/elf32-sparc.c      |  3 +--
+ bfd/elf32-tic6x.c      | 14 +++++++-------
+ bfd/elf32-tilegx.c     |  2 +-
+ bfd/elf32-tilepro.c    | 11 +++++------
+ bfd/elf32-vax.c        | 16 +++++++---------
+ bfd/elf32-xstormy16.c  |  8 ++++----
+ bfd/elf32-xtensa.c     | 13 ++++++-------
+ bfd/elf64-alpha.c      | 19 ++++++++++---------
+ bfd/elf64-hppa.c       | 11 ++++-------
+ bfd/elf64-ia64-vms.c   | 13 +++++++------
+ bfd/elf64-mips.c       |  8 ++++----
+ bfd/elf64-ppc.c        | 12 ++++++------
+ bfd/elf64-s390.c       | 10 +++++-----
+ bfd/elf64-sparc.c      |  4 ++--
+ bfd/elf64-tilegx.c     |  2 +-
+ bfd/elf64-x86-64.c     |  7 +++----
+ bfd/elflink.c          |  9 ++++-----
+ bfd/elfn32-mips.c      |  6 ++----
+ bfd/elfnn-aarch64.c    | 21 +++++++++++----------
+ bfd/elfnn-ia64.c       | 11 ++++++-----
+ bfd/elfnn-kvx.c        | 19 +++++++++----------
+ bfd/elfnn-loongarch.c  |  9 +++++----
+ bfd/elfnn-riscv.c      |  7 ++++---
+ bfd/elfxx-mips.c       | 15 ++++++++-------
+ bfd/elfxx-mips.h       |  4 ++--
+ bfd/elfxx-sparc.c      |  7 ++++---
+ bfd/elfxx-sparc.h      |  2 +-
+ bfd/elfxx-target.h     | 12 ++++++------
+ bfd/elfxx-tilegx.c     |  7 ++++---
+ bfd/elfxx-tilegx.h     |  2 +-
+ bfd/elfxx-x86.c        |  8 ++++----
+ bfd/elfxx-x86.h        |  8 ++++----
+ ld/emultempl/vms.em    |  7 +++----
+ 61 files changed, 343 insertions(+), 337 deletions(-)
+
+--- a/bfd/elf-bfd.h
++++ b/bfd/elf-bfd.h
+@@ -1135,7 +1135,7 @@ struct elf_backend_data
+   /* The ADJUST_DYNAMIC_SYMBOL function is called by the ELF backend
+      linker for every symbol which is defined by a dynamic object and
+      referenced by a regular object.  This is called after all the
+-     input files have been seen, but before the SIZE_DYNAMIC_SECTIONS
++     input files have been seen, but before the LATE_SIZE_SECTIONS
+      function has been called.  The hash table entry should be
+      bfd_link_hash_defined ore bfd_link_hash_defweak, and it should be
+      defined in a section from a dynamic object.  Dynamic object
+@@ -1147,24 +1147,23 @@ struct elf_backend_data
+   bool (*elf_backend_adjust_dynamic_symbol)
+     (struct bfd_link_info *info, struct elf_link_hash_entry *h);
+ 
+-  /* The ALWAYS_SIZE_SECTIONS function is called by the backend linker
+-     after all the linker input files have been seen but before the
+-     section sizes have been set.  This is called after
+-     ADJUST_DYNAMIC_SYMBOL, but before SIZE_DYNAMIC_SECTIONS.  */
+-  bool (*elf_backend_always_size_sections)
++  /* The EARLY_SIZE_SECTIONS and LATE_SIZE_SECTIONS functions are
++     called by the backend linker after all linker input files have
++     been seen and sections have been assigned to output sections, but
++     before the section sizes have been set.  Both of these functions
++     are called even when no dynamic object is seen by the linker.
++     Between them, they must set the sizes of the dynamic sections and
++     other backend specific sections, and may fill in their contents.
++     Most backends need only use LATE_SIZE_SECTIONS.
++     EARLY_SIZE_SECTIONS is called before --export-dynamic makes some
++     symbols dynamic and before ADJUST_DYNAMIC_SYMBOL processes
++     dynamic symbols, LATE_SIZE_SECTIONS afterwards.  The generic ELF
++     linker can handle the .dynsym, .dynstr and .hash sections.
++     Besides those, these functions must handle the .interp section
++     and any other sections created by CREATE_DYNAMIC_SECTIONS.  */
++  bool (*elf_backend_early_size_sections)
+     (bfd *output_bfd, struct bfd_link_info *info);
+-
+-  /* The SIZE_DYNAMIC_SECTIONS function is called by the ELF backend
+-     linker after all the linker input files have been seen but before
+-     the sections sizes have been set.  This is called after
+-     ADJUST_DYNAMIC_SYMBOL has been called on all appropriate symbols.
+-     It is only called when linking against a dynamic object.  It must
+-     set the sizes of the dynamic sections, and may fill in their
+-     contents as well.  The generic ELF linker can handle the .dynsym,
+-     .dynstr and .hash sections.  This function must handle the
+-     .interp section and any sections created by the
+-     CREATE_DYNAMIC_SECTIONS entry point.  */
+-  bool (*elf_backend_size_dynamic_sections)
++  bool (*elf_backend_late_size_sections)
+     (bfd *output_bfd, struct bfd_link_info *info);
+ 
+   /* The STRIP_ZERO_SIZED_DYNAMIC_SECTIONS function is called by the
+--- a/bfd/elf-m10300.c
++++ b/bfd/elf-m10300.c
+@@ -5003,8 +5003,8 @@ _bfd_mn10300_elf_adjust_dynamic_symbol (
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-_bfd_mn10300_elf_size_dynamic_sections (bfd * output_bfd,
+-					struct bfd_link_info * info)
++_bfd_mn10300_elf_late_size_sections (bfd * output_bfd,
++				     struct bfd_link_info * info)
+ {
+   struct elf32_mn10300_link_hash_table *htab = elf32_mn10300_hash_table (info);
+   bfd * dynobj;
+@@ -5012,7 +5012,8 @@ _bfd_mn10300_elf_size_dynamic_sections (
+   bool relocs;
+ 
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -5499,8 +5500,8 @@ mn10300_elf_mkobject (bfd *abfd)
+   _bfd_mn10300_elf_create_dynamic_sections
+ #define elf_backend_adjust_dynamic_symbol \
+   _bfd_mn10300_elf_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-  _bfd_mn10300_elf_size_dynamic_sections
++#define elf_backend_late_size_sections \
++  _bfd_mn10300_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_finish_dynamic_symbol \
+   _bfd_mn10300_elf_finish_dynamic_symbol
+--- a/bfd/elf32-arc.c
++++ b/bfd/elf32-arc.c
+@@ -2702,8 +2702,8 @@ elf_arc_finish_dynamic_sections (bfd * o
+ 
+ /* Set the sizes of the dynamic sections.  */
+ static bool
+-elf_arc_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-			       struct bfd_link_info *info)
++elf_arc_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			    struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -2711,7 +2711,8 @@ elf_arc_size_dynamic_sections (bfd *outp
+   struct elf_link_hash_table *htab = elf_hash_table (info);
+ 
+   dynobj = htab->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->dynamic_sections_created)
+     {
+@@ -3126,7 +3127,7 @@ arc_elf_relax_section (bfd *abfd, asecti
+ #define elf_backend_finish_dynamic_symbol    elf_arc_finish_dynamic_symbol
+ 
+ #define elf_backend_finish_dynamic_sections  elf_arc_finish_dynamic_sections
+-#define elf_backend_size_dynamic_sections    elf_arc_size_dynamic_sections
++#define elf_backend_late_size_sections       elf_arc_late_size_sections
+ 
+ #define elf_backend_can_gc_sections	1
+ #define elf_backend_want_got_plt	1
+--- a/bfd/elf32-arm.c
++++ b/bfd/elf32-arm.c
+@@ -16709,8 +16709,8 @@ bfd_elf32_arm_set_byteswap_code (struct
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf32_arm_size_dynamic_sections (bfd * output_bfd ATTRIBUTE_UNUSED,
+-				 struct bfd_link_info * info)
++elf32_arm_late_size_sections (bfd * output_bfd ATTRIBUTE_UNUSED,
++			      struct bfd_link_info * info)
+ {
+   bfd * dynobj;
+   asection * s;
+@@ -16723,7 +16723,9 @@ elf32_arm_size_dynamic_sections (bfd * o
+     return false;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
++
+   check_use_blx (htab);
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+@@ -17095,8 +17097,7 @@ elf32_arm_size_dynamic_sections (bfd * o
+    _TLS_MODULE_BASE_, if needed.  */
+ 
+ static bool
+-elf32_arm_always_size_sections (bfd *output_bfd,
+-				struct bfd_link_info *info)
++elf32_arm_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   asection *tls_sec;
+   struct elf32_arm_link_hash_table *htab;
+@@ -20263,8 +20264,8 @@ elf32_arm_backend_symbol_processing (bfd
+ #define elf_backend_create_dynamic_sections	elf32_arm_create_dynamic_sections
+ #define elf_backend_finish_dynamic_symbol	elf32_arm_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections	elf32_arm_finish_dynamic_sections
+-#define elf_backend_size_dynamic_sections	elf32_arm_size_dynamic_sections
+-#define elf_backend_always_size_sections	elf32_arm_always_size_sections
++#define elf_backend_late_size_sections		elf32_arm_late_size_sections
++#define elf_backend_early_size_sections		elf32_arm_early_size_sections
+ #define elf_backend_init_index_section		_bfd_elf_init_2_index_sections
+ #define elf_backend_init_file_header		elf32_arm_init_file_header
+ #define elf_backend_reloc_type_class		elf32_arm_reloc_type_class
+--- a/bfd/elf32-bfin.c
++++ b/bfd/elf32-bfin.c
+@@ -4031,8 +4031,8 @@ _bfinfdpic_size_got_plt (bfd *output_bfd
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf32_bfinfdpic_size_dynamic_sections (bfd *output_bfd,
+-				      struct bfd_link_info *info)
++elf32_bfinfdpic_late_size_sections (bfd *output_bfd,
++				    struct bfd_link_info *info)
+ {
+   struct elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -4041,7 +4041,8 @@ elf32_bfinfdpic_size_dynamic_sections (b
+ 
+   htab = elf_hash_table (info);
+   dynobj = htab->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->dynamic_sections_created)
+     {
+@@ -4090,7 +4091,7 @@ elf32_bfinfdpic_size_dynamic_sections (b
+ }
+ 
+ static bool
+-elf32_bfinfdpic_always_size_sections (bfd *output_bfd,
++elf32_bfinfdpic_early_size_sections (bfd *output_bfd,
+ 				     struct bfd_link_info *info)
+ {
+   if (!bfd_link_relocatable (info)
+@@ -5128,15 +5129,16 @@ bfin_discard_copies (struct elf_link_has
+ }
+ 
+ static bool
+-bfin_size_dynamic_sections (bfd * output_bfd ATTRIBUTE_UNUSED,
+-			    struct bfd_link_info *info)
++bfin_late_size_sections (bfd * output_bfd ATTRIBUTE_UNUSED,
++			 struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   bool relocs;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -5428,8 +5430,7 @@ struct bfd_elf_special_section const elf
+ #define elf_backend_check_relocs	bfin_check_relocs
+ #define elf_backend_adjust_dynamic_symbol \
+ 					bfin_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-					bfin_size_dynamic_sections
++#define elf_backend_late_size_sections	bfin_late_size_sections
+ #define elf_backend_relocate_section	bfin_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+ 					bfin_finish_dynamic_symbol
+@@ -5475,9 +5476,9 @@ struct bfd_elf_special_section const elf
+ #undef bfd_elf32_bfd_link_hash_table_create
+ #define bfd_elf32_bfd_link_hash_table_create \
+ 		bfinfdpic_elf_link_hash_table_create
+-#undef elf_backend_always_size_sections
+-#define elf_backend_always_size_sections \
+-		elf32_bfinfdpic_always_size_sections
++#undef elf_backend_early_size_sections
++#define elf_backend_early_size_sections \
++		elf32_bfinfdpic_early_size_sections
+ 
+ #undef elf_backend_create_dynamic_sections
+ #define elf_backend_create_dynamic_sections \
+@@ -5485,9 +5486,9 @@ struct bfd_elf_special_section const elf
+ #undef elf_backend_adjust_dynamic_symbol
+ #define elf_backend_adjust_dynamic_symbol \
+ 		elf32_bfinfdpic_adjust_dynamic_symbol
+-#undef elf_backend_size_dynamic_sections
+-#define elf_backend_size_dynamic_sections \
+-		elf32_bfinfdpic_size_dynamic_sections
++#undef elf_backend_late_size_sections
++#define elf_backend_late_size_sections \
++		elf32_bfinfdpic_late_size_sections
+ #undef elf_backend_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_symbol \
+ 		elf32_bfinfdpic_finish_dynamic_symbol
+--- a/bfd/elf32-cr16.c
++++ b/bfd/elf32-cr16.c
+@@ -2381,15 +2381,16 @@ _bfd_cr16_elf_adjust_dynamic_symbol (str
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-_bfd_cr16_elf_size_dynamic_sections (bfd * output_bfd,
+-				     struct bfd_link_info * info)
++_bfd_cr16_elf_late_size_sections (bfd * output_bfd,
++				  struct bfd_link_info * info)
+ {
+   bfd * dynobj;
+   asection * s;
+   bool relocs;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -2826,8 +2827,8 @@ _bfd_cr16_elf_reloc_type_class (const st
+ 				  _bfd_cr16_elf_create_dynamic_sections
+ #define elf_backend_adjust_dynamic_symbol \
+ 				  _bfd_cr16_elf_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-				  _bfd_cr16_elf_size_dynamic_sections
++#define elf_backend_late_size_sections \
++				  _bfd_cr16_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_finish_dynamic_symbol \
+ 				   _bfd_cr16_elf_finish_dynamic_symbol
+--- a/bfd/elf32-cris.c
++++ b/bfd/elf32-cris.c
+@@ -2527,7 +2527,7 @@ cris_elf_plt_sym_val (bfd_vma i ATTRIBUT
+    entry but we found we will not create any.  Called when we find we will
+    not have any PLT for this symbol, by for example
+    elf_cris_adjust_dynamic_symbol when we're doing a proper dynamic link,
+-   or elf_cris_size_dynamic_sections if no dynamic sections will be
++   or elf_cris_late_size_sections if no dynamic sections will be
+    created (we're only linking static objects).  */
+ 
+ static bool
+@@ -3508,8 +3508,8 @@ cris_elf_check_relocs (bfd *abfd,
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_cris_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++elf_cris_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct elf_cris_link_hash_table * htab;
+   bfd *dynobj;
+@@ -3521,7 +3521,8 @@ elf_cris_size_dynamic_sections (bfd *out
+     return false;
+ 
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->root.dynamic_sections_created)
+     {
+@@ -4090,8 +4091,8 @@ elf_cris_got_elt_size (bfd *abfd ATTRIBU
+ 	elf_cris_adjust_dynamic_symbol
+ #define elf_backend_copy_indirect_symbol \
+ 	elf_cris_copy_indirect_symbol
+-#define elf_backend_size_dynamic_sections \
+-	elf_cris_size_dynamic_sections
++#define elf_backend_late_size_sections \
++	elf_cris_late_size_sections
+ #define elf_backend_init_index_section		_bfd_elf_init_1_index_section
+ #define elf_backend_finish_dynamic_symbol \
+ 	elf_cris_finish_dynamic_symbol
+--- a/bfd/elf32-csky.c
++++ b/bfd/elf32-csky.c
+@@ -1893,8 +1893,8 @@ csky_allocate_dynrelocs (struct elf_link
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-csky_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++csky_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct csky_elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1907,7 +1907,7 @@ csky_elf_size_dynamic_sections (bfd *out
+     return false;
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    return false;
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+@@ -5344,7 +5344,7 @@ elf32_csky_obj_attrs_handle_unknown (bfd
+ /* Dynamic relocate related API.  */
+ #define elf_backend_create_dynamic_sections   _bfd_elf_create_dynamic_sections
+ #define elf_backend_adjust_dynamic_symbol     csky_elf_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections     csky_elf_size_dynamic_sections
++#define elf_backend_late_size_sections        csky_elf_late_size_sections
+ #define elf_backend_finish_dynamic_symbol     csky_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections   csky_elf_finish_dynamic_sections
+ #define elf_backend_rela_normal               1
+--- a/bfd/elf32-frv.c
++++ b/bfd/elf32-frv.c
+@@ -5423,15 +5423,16 @@ _frvfdpic_size_got_plt (bfd *output_bfd,
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf32_frvfdpic_size_dynamic_sections (bfd *output_bfd,
+-				      struct bfd_link_info *info)
++elf32_frvfdpic_late_size_sections (bfd *output_bfd,
++				   struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   struct _frvfdpic_dynamic_got_plt_info gpinfo;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -5472,8 +5473,8 @@ elf32_frvfdpic_size_dynamic_sections (bf
+ }
+ 
+ static bool
+-elf32_frvfdpic_always_size_sections (bfd *output_bfd,
+-				     struct bfd_link_info *info)
++elf32_frvfdpic_early_size_sections (bfd *output_bfd,
++				    struct bfd_link_info *info)
+ {
+   if (!bfd_link_relocatable (info)
+       && !bfd_elf_stack_segment_size (output_bfd, info,
+@@ -6817,9 +6818,9 @@ elf32_frv_grok_psinfo (bfd *abfd, Elf_In
+ #undef bfd_elf32_bfd_link_hash_table_create
+ #define bfd_elf32_bfd_link_hash_table_create \
+ 		frvfdpic_elf_link_hash_table_create
+-#undef elf_backend_always_size_sections
+-#define elf_backend_always_size_sections \
+-		elf32_frvfdpic_always_size_sections
++#undef elf_backend_early_size_sections
++#define elf_backend_early_size_sections \
++		elf32_frvfdpic_early_size_sections
+ 
+ #undef elf_backend_create_dynamic_sections
+ #define elf_backend_create_dynamic_sections \
+@@ -6827,9 +6828,9 @@ elf32_frv_grok_psinfo (bfd *abfd, Elf_In
+ #undef elf_backend_adjust_dynamic_symbol
+ #define elf_backend_adjust_dynamic_symbol \
+ 		elf32_frvfdpic_adjust_dynamic_symbol
+-#undef elf_backend_size_dynamic_sections
+-#define elf_backend_size_dynamic_sections \
+-		elf32_frvfdpic_size_dynamic_sections
++#undef elf_backend_late_size_sections
++#define elf_backend_late_size_sections \
++		elf32_frvfdpic_late_size_sections
+ #undef bfd_elf32_bfd_relax_section
+ #define bfd_elf32_bfd_relax_section \
+   elf32_frvfdpic_relax_section
+--- a/bfd/elf32-hppa.c
++++ b/bfd/elf32-hppa.c
+@@ -2042,8 +2042,8 @@ clobber_millicode_symbols (struct elf_li
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf32_hppa_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++elf32_hppa_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			       struct bfd_link_info *info)
+ {
+   struct elf32_hppa_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2057,7 +2057,7 @@ elf32_hppa_size_dynamic_sections (bfd *o
+ 
+   dynobj = htab->etab.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->etab.dynamic_sections_created)
+     {
+@@ -4450,7 +4450,7 @@ elf32_hppa_elf_get_symbol_type (Elf_Inte
+ #define elf_backend_hide_symbol		     elf32_hppa_hide_symbol
+ #define elf_backend_finish_dynamic_symbol    elf32_hppa_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections  elf32_hppa_finish_dynamic_sections
+-#define elf_backend_size_dynamic_sections    elf32_hppa_size_dynamic_sections
++#define elf_backend_late_size_sections	     elf32_hppa_late_size_sections
+ #define elf_backend_init_index_section	     _bfd_elf_init_1_index_section
+ #define elf_backend_gc_mark_hook	     elf32_hppa_gc_mark_hook
+ #define elf_backend_grok_prstatus	     elf32_hppa_grok_prstatus
+--- a/bfd/elf32-i386.c
++++ b/bfd/elf32-i386.c
+@@ -1905,8 +1905,7 @@ elf_i386_scan_relocs (bfd *abfd,
+ }
+ 
+ static bool
+-elf_i386_always_size_sections (bfd *output_bfd,
+-			       struct bfd_link_info *info)
++elf_i386_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   bfd *abfd;
+ 
+@@ -1919,7 +1918,7 @@ elf_i386_always_size_sections (bfd *outp
+ 					     elf_i386_scan_relocs))
+       return false;
+ 
+-  return _bfd_x86_elf_always_size_sections (output_bfd, info);
++  return _bfd_x86_elf_early_size_sections (output_bfd, info);
+ }
+ 
+ /* Set the correct type for an x86 ELF section.  We do this by the
+@@ -4412,7 +4411,7 @@ elf_i386_link_setup_gnu_properties (stru
+ #define bfd_elf32_get_synthetic_symtab	      elf_i386_get_synthetic_symtab
+ 
+ #define elf_backend_relocs_compatible	      _bfd_elf_relocs_compatible
+-#define elf_backend_always_size_sections      elf_i386_always_size_sections
++#define elf_backend_early_size_sections	      elf_i386_early_size_sections
+ #define elf_backend_create_dynamic_sections   _bfd_elf_create_dynamic_sections
+ #define elf_backend_fake_sections	      elf_i386_fake_sections
+ #define elf_backend_finish_dynamic_sections   elf_i386_finish_dynamic_sections
+--- a/bfd/elf32-lm32.c
++++ b/bfd/elf32-lm32.c
+@@ -1906,8 +1906,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-lm32_elf_size_dynamic_sections (bfd *output_bfd,
+-				struct bfd_link_info *info)
++lm32_elf_late_size_sections (bfd *output_bfd,
++			     struct bfd_link_info *info)
+ {
+   struct elf_lm32_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1920,7 +1920,8 @@ lm32_elf_size_dynamic_sections (bfd *out
+     return false;
+ 
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->root.dynamic_sections_created)
+     {
+@@ -2309,7 +2310,7 @@ lm32_elf_create_dynamic_sections (bfd *a
+ }
+ 
+ static bool
+-lm32_elf_always_size_sections (bfd *output_bfd, struct bfd_link_info *info)
++lm32_elf_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   if (!bfd_link_relocatable (info))
+     {
+@@ -2395,7 +2396,7 @@ lm32_elf_fdpic_copy_private_bfd_data (bf
+ #define bfd_elf32_bfd_link_hash_table_create	lm32_elf_link_hash_table_create
+ #define elf_backend_check_relocs		lm32_elf_check_relocs
+ #define elf_backend_reloc_type_class		lm32_elf_reloc_type_class
+-#define elf_backend_size_dynamic_sections	lm32_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		lm32_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym		_bfd_elf_omit_section_dynsym_all
+ #define elf_backend_create_dynamic_sections	lm32_elf_create_dynamic_sections
+ #define elf_backend_finish_dynamic_sections	lm32_elf_finish_dynamic_sections
+@@ -2416,8 +2417,8 @@ lm32_elf_fdpic_copy_private_bfd_data (bf
+ #undef	elf32_bed
+ #define	elf32_bed		elf32_lm32fdpic_bed
+ 
+-#undef	elf_backend_always_size_sections
+-#define elf_backend_always_size_sections	lm32_elf_always_size_sections
++#undef	elf_backend_early_size_sections
++#define elf_backend_early_size_sections		lm32_elf_early_size_sections
+ #undef	bfd_elf32_bfd_copy_private_bfd_data
+ #define bfd_elf32_bfd_copy_private_bfd_data	lm32_elf_fdpic_copy_private_bfd_data
+ 
+--- a/bfd/elf32-m32c.c
++++ b/bfd/elf32-m32c.c
+@@ -773,8 +773,8 @@ m32c_elf_finish_dynamic_sections (bfd *a
+ }
+ 
+ static bool
+-m32c_elf_always_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-			       struct bfd_link_info *info)
++m32c_elf_early_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			      struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *splt;
+@@ -2131,8 +2131,8 @@ _bfd_m32c_elf_eh_frame_address_size (bfd
+ #define elf_backend_check_relocs		m32c_elf_check_relocs
+ #define elf_backend_object_p			m32c_elf_object_p
+ #define elf_symbol_leading_char			('_')
+-#define elf_backend_always_size_sections \
+-  m32c_elf_always_size_sections
++#define elf_backend_early_size_sections \
++  m32c_elf_early_size_sections
+ #define elf_backend_finish_dynamic_sections \
+   m32c_elf_finish_dynamic_sections
+ 
+--- a/bfd/elf32-m32r.c
++++ b/bfd/elf32-m32r.c
+@@ -1958,8 +1958,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-m32r_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++m32r_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1968,7 +1968,7 @@ m32r_elf_size_dynamic_sections (bfd *out
+   bfd *ibfd;
+ 
+ #ifdef DEBUG_PIC
+-  printf ("m32r_elf_size_dynamic_sections()\n");
++  printf ("m32r_elf_late_size_sections()\n");
+ #endif
+ 
+   htab = m32r_elf_hash_table (info);
+@@ -1976,7 +1976,8 @@ m32r_elf_size_dynamic_sections (bfd *out
+     return false;
+ 
+   dynobj = htab->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->dynamic_sections_created)
+     {
+@@ -3658,7 +3659,7 @@ m32r_elf_reloc_type_class (const struct
+ 
+ #define elf_backend_create_dynamic_sections	m32r_elf_create_dynamic_sections
+ #define bfd_elf32_bfd_link_hash_table_create	m32r_elf_link_hash_table_create
+-#define elf_backend_size_dynamic_sections	m32r_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		m32r_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym		_bfd_elf_omit_section_dynsym_all
+ #define elf_backend_finish_dynamic_sections	m32r_elf_finish_dynamic_sections
+ #define elf_backend_adjust_dynamic_symbol	m32r_elf_adjust_dynamic_symbol
+--- a/bfd/elf32-m68k.c
++++ b/bfd/elf32-m68k.c
+@@ -2934,7 +2934,7 @@ elf_m68k_get_plt_info (bfd *output_bfd)
+    It's a convenient place to determine the PLT style.  */
+ 
+ static bool
+-elf_m68k_always_size_sections (bfd *output_bfd, struct bfd_link_info *info)
++elf_m68k_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   /* Bind input BFDs to GOTs and calculate sizes of .got and .rela.got
+      sections.  */
+@@ -3107,15 +3107,16 @@ elf_m68k_adjust_dynamic_symbol (struct b
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_m68k_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++elf_m68k_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   bool relocs;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -4628,12 +4629,11 @@ elf_m68k_grok_psinfo (bfd *abfd, Elf_Int
+ #define bfd_elf32_bfd_final_link	bfd_elf_final_link
+ 
+ #define elf_backend_check_relocs	elf_m68k_check_relocs
+-#define elf_backend_always_size_sections \
+-					elf_m68k_always_size_sections
++#define elf_backend_early_size_sections \
++					elf_m68k_early_size_sections
+ #define elf_backend_adjust_dynamic_symbol \
+ 					elf_m68k_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-					elf_m68k_size_dynamic_sections
++#define elf_backend_late_size_sections	elf_m68k_late_size_sections
+ #define elf_backend_final_write_processing	elf_m68k_final_write_processing
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	elf_m68k_relocate_section
+--- a/bfd/elf32-metag.c
++++ b/bfd/elf32-metag.c
+@@ -2717,8 +2717,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_metag_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				 struct bfd_link_info *info)
++elf_metag_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			      struct bfd_link_info *info)
+ {
+   struct elf_metag_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2729,7 +2729,7 @@ elf_metag_size_dynamic_sections (bfd *ou
+   htab = metag_link_hash_table (info);
+   dynobj = htab->etab.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->etab.dynamic_sections_created)
+     {
+@@ -4019,7 +4019,7 @@ elf_metag_plt_sym_val (bfd_vma i, const
+ #define elf_backend_adjust_dynamic_symbol	elf_metag_adjust_dynamic_symbol
+ #define elf_backend_finish_dynamic_symbol	elf_metag_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections	elf_metag_finish_dynamic_sections
+-#define elf_backend_size_dynamic_sections	elf_metag_size_dynamic_sections
++#define elf_backend_late_size_sections		elf_metag_late_size_sections
+ #define elf_backend_omit_section_dynsym \
+ 	_bfd_elf_omit_section_dynsym_all
+ #define elf_backend_init_file_header		elf_metag_init_file_header
+--- a/bfd/elf32-microblaze.c
++++ b/bfd/elf32-microblaze.c
+@@ -2901,8 +2901,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-microblaze_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				      struct bfd_link_info *info)
++microblaze_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				   struct bfd_link_info *info)
+ {
+   struct elf32_mb_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2914,7 +2914,8 @@ microblaze_elf_size_dynamic_sections (bf
+     return false;
+ 
+   dynobj = htab->elf.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   /* Set up .got offsets for local syms, and space for local dynamic
+      relocs.  */
+@@ -3431,7 +3432,7 @@ microblaze_elf_add_symbol_hook (bfd *abf
+ #define elf_backend_create_dynamic_sections	_bfd_elf_create_dynamic_sections
+ #define elf_backend_finish_dynamic_sections	microblaze_elf_finish_dynamic_sections
+ #define elf_backend_finish_dynamic_symbol	microblaze_elf_finish_dynamic_symbol
+-#define elf_backend_size_dynamic_sections	microblaze_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		microblaze_elf_late_size_sections
+ #define elf_backend_add_symbol_hook		microblaze_elf_add_symbol_hook
+ 
+ #include "elf32-target.h"
+--- a/bfd/elf32-mips.c
++++ b/bfd/elf32-mips.c
+@@ -2526,10 +2526,8 @@ static const struct ecoff_debug_swap mip
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 					_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-					_bfd_mips_elf_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-					_bfd_mips_elf_size_dynamic_sections
++#define elf_backend_early_size_sections	_bfd_mips_elf_early_size_sections
++#define elf_backend_late_size_sections	_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	_bfd_mips_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+--- a/bfd/elf32-nds32.c
++++ b/bfd/elf32-nds32.c
+@@ -4248,8 +4248,8 @@ elf32_nds32_add_dynreloc (bfd *output_bf
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-nds32_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				 struct bfd_link_info *info)
++nds32_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			      struct bfd_link_info *info)
+ {
+   struct elf_nds32_link_hash_table *htab;
+   bfd *dynobj;
+@@ -4262,7 +4262,8 @@ nds32_elf_size_dynamic_sections (bfd *ou
+     return false;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -13930,7 +13931,7 @@ nds32_elf_unify_tls_model (bfd *inbfd, a
+ #define elf_backend_create_dynamic_sections	nds32_elf_create_dynamic_sections
+ #define elf_backend_finish_dynamic_sections	nds32_elf_finish_dynamic_sections
+ #define elf_backend_finish_dynamic_symbol	nds32_elf_finish_dynamic_symbol
+-#define elf_backend_size_dynamic_sections	nds32_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		nds32_elf_late_size_sections
+ #define elf_backend_relocate_section		nds32_elf_relocate_section
+ #define elf_backend_gc_mark_hook		nds32_elf_gc_mark_hook
+ #define elf_backend_grok_prstatus		nds32_elf_grok_prstatus
+--- a/bfd/elf32-nios2.c
++++ b/bfd/elf32-nios2.c
+@@ -5411,7 +5411,7 @@ nios2_elf32_adjust_dynamic_symbol (struc
+   return true;
+ }
+ 
+-/* Worker function for nios2_elf32_size_dynamic_sections.  */
++/* Worker function for nios2_elf32_late_size_sections.  */
+ static bool
+ adjust_dynrelocs (struct elf_link_hash_entry *h, PTR inf)
+ {
+@@ -5438,7 +5438,7 @@ adjust_dynrelocs (struct elf_link_hash_e
+   return true;
+ }
+ 
+-/* Another worker function for nios2_elf32_size_dynamic_sections.
++/* Another worker function for nios2_elf32_late_size_sections.
+    Allocate space in .plt, .got and associated reloc sections for
+    dynamic relocs.  */
+ static bool
+@@ -5673,11 +5673,11 @@ allocate_dynrelocs (struct elf_link_hash
+   return true;
+ }
+ 
+-/* Implement elf_backend_size_dynamic_sections:
++/* Implement elf_backend_late_size_sections:
+    Set the sizes of the dynamic sections.  */
+ static bool
+-nios2_elf32_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				   struct bfd_link_info *info)
++nios2_elf32_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -5687,7 +5687,8 @@ nios2_elf32_size_dynamic_sections (bfd *
+ 
+   htab = elf32_nios2_hash_table (info);
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   htab->res_n_size = 0;
+   if (htab->root.dynamic_sections_created)
+@@ -6058,7 +6059,7 @@ const struct bfd_elf_special_section elf
+ 					  nios2_elf32_finish_dynamic_sections
+ #define elf_backend_adjust_dynamic_symbol nios2_elf32_adjust_dynamic_symbol
+ #define elf_backend_reloc_type_class	  nios2_elf32_reloc_type_class
+-#define elf_backend_size_dynamic_sections nios2_elf32_size_dynamic_sections
++#define elf_backend_late_size_sections	  nios2_elf32_late_size_sections
+ #define elf_backend_add_symbol_hook	  nios2_elf_add_symbol_hook
+ #define elf_backend_copy_indirect_symbol  nios2_elf32_copy_indirect_symbol
+ #define elf_backend_object_p		  nios2_elf32_object_p
+--- a/bfd/elf32-or1k.c
++++ b/bfd/elf32-or1k.c
+@@ -3023,8 +3023,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-or1k_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++or1k_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct elf_or1k_link_hash_table *htab;
+   bfd *dynobj;
+@@ -3037,7 +3037,8 @@ or1k_elf_size_dynamic_sections (bfd *out
+     return false;
+ 
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->root.dynamic_sections_created)
+     {
+@@ -3390,7 +3391,7 @@ or1k_grok_psinfo (bfd *abfd, Elf_Interna
+ #define elf_backend_copy_indirect_symbol	or1k_elf_copy_indirect_symbol
+ #define elf_backend_create_dynamic_sections	_bfd_elf_create_dynamic_sections
+ #define elf_backend_finish_dynamic_sections	or1k_elf_finish_dynamic_sections
+-#define elf_backend_size_dynamic_sections	or1k_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		or1k_elf_late_size_sections
+ #define elf_backend_adjust_dynamic_symbol	or1k_elf_adjust_dynamic_symbol
+ #define elf_backend_finish_dynamic_symbol	or1k_elf_finish_dynamic_symbol
+ 
+--- a/bfd/elf32-ppc.c
++++ b/bfd/elf32-ppc.c
+@@ -5497,8 +5497,8 @@ static const unsigned char glink_eh_fram
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-ppc_elf_size_dynamic_sections (bfd *output_bfd,
+-			       struct bfd_link_info *info)
++ppc_elf_late_size_sections (bfd *output_bfd,
++			    struct bfd_link_info *info)
+ {
+   struct ppc_elf_link_hash_table *htab;
+   asection *s;
+@@ -5506,11 +5506,12 @@ ppc_elf_size_dynamic_sections (bfd *outp
+   bfd *ibfd;
+ 
+ #ifdef DEBUG
+-  fprintf (stderr, "ppc_elf_size_dynamic_sections called\n");
++  fprintf (stderr, "ppc_elf_late_size_sections called\n");
+ #endif
+ 
+   htab = ppc_elf_hash_table (info);
+-  BFD_ASSERT (htab->elf.dynobj != NULL);
++  if (htab->elf.dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -10410,7 +10411,7 @@ ppc_elf_finish_dynamic_sections (bfd *ou
+ #define elf_backend_copy_indirect_symbol	ppc_elf_copy_indirect_symbol
+ #define elf_backend_adjust_dynamic_symbol	ppc_elf_adjust_dynamic_symbol
+ #define elf_backend_add_symbol_hook		ppc_elf_add_symbol_hook
+-#define elf_backend_size_dynamic_sections	ppc_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		ppc_elf_late_size_sections
+ #define elf_backend_hash_symbol			ppc_elf_hash_symbol
+ #define elf_backend_finish_dynamic_symbol	ppc_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections	ppc_elf_finish_dynamic_sections
+--- a/bfd/elf32-rl78.c
++++ b/bfd/elf32-rl78.c
+@@ -1440,8 +1440,8 @@ rl78_elf_finish_dynamic_sections (bfd *a
+ }
+ 
+ static bool
+-rl78_elf_always_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-			       struct bfd_link_info *info)
++rl78_elf_early_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			      struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *splt;
+@@ -2609,8 +2609,8 @@ rl78_elf_relax_section (bfd *abfd,
+ 
+ #define bfd_elf32_bfd_relax_section		rl78_elf_relax_section
+ #define elf_backend_check_relocs		rl78_elf_check_relocs
+-#define elf_backend_always_size_sections \
+-  rl78_elf_always_size_sections
++#define elf_backend_early_size_sections \
++  rl78_elf_early_size_sections
+ #define elf_backend_finish_dynamic_sections \
+   rl78_elf_finish_dynamic_sections
+ 
+--- a/bfd/elf32-s390.c
++++ b/bfd/elf32-s390.c
+@@ -1366,7 +1366,7 @@ elf_s390_gc_mark_hook (asection *sec,
+    entry but we found we will not create any.  Called when we find we will
+    not have any PLT for this symbol, by for example
+    elf_s390_adjust_dynamic_symbol when we're doing a proper dynamic link,
+-   or elf_s390_size_dynamic_sections if no dynamic sections will be
++   or elf_s390_late_size_sections if no dynamic sections will be
+    created (we're only linking static objects).  */
+ 
+ static void
+@@ -1778,8 +1778,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_s390_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++elf_s390_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct elf_s390_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1790,7 +1790,7 @@ elf_s390_size_dynamic_sections (bfd *out
+   htab = elf_s390_hash_table (info);
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+@@ -3926,7 +3926,7 @@ elf32_s390_merge_private_bfd_data (bfd *
+ #define elf_backend_gc_mark_hook	      elf_s390_gc_mark_hook
+ #define elf_backend_reloc_type_class	      elf_s390_reloc_type_class
+ #define elf_backend_relocate_section	      elf_s390_relocate_section
+-#define elf_backend_size_dynamic_sections     elf_s390_size_dynamic_sections
++#define elf_backend_late_size_sections	      elf_s390_late_size_sections
+ #define elf_backend_init_index_section	      _bfd_elf_init_1_index_section
+ #define elf_backend_grok_prstatus	      elf_s390_grok_prstatus
+ #define elf_backend_grok_psinfo		      elf_s390_grok_psinfo
+--- a/bfd/elf32-score.c
++++ b/bfd/elf32-score.c
+@@ -1089,7 +1089,7 @@ score_elf_got_info (bfd *abfd, asection
+    appear towards the end.  This reduces the amount of GOT space
+    required.  MAX_LOCAL is used to set the number of local symbols
+    known to be in the dynamic symbol table.  During
+-   s3_bfd_score_elf_size_dynamic_sections, this value is 1.  Afterward, the
++   s3_bfd_score_elf_late_size_sections, this value is 1.  Afterward, the
+    section symbols are added and the count is higher.  */
+ static bool
+ score_elf_sort_hash_table (struct bfd_link_info *info,
+@@ -3160,8 +3160,8 @@ s3_bfd_score_elf_adjust_dynamic_symbol (
+ /* This function is called after all the input files have been read,
+    and the input sections have been assigned to output sections.  */
+ static bool
+-s3_bfd_score_elf_always_size_sections (bfd *output_bfd,
+-				       struct bfd_link_info *info)
++s3_bfd_score_elf_early_size_sections (bfd *output_bfd,
++				      struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -3237,14 +3237,15 @@ s3_bfd_score_elf_always_size_sections (b
+ 
+ /* Set the sizes of the dynamic sections.  */
+ static bool
+-s3_bfd_score_elf_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++s3_bfd_score_elf_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   bool reltext;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -3313,7 +3314,7 @@ s3_bfd_score_elf_size_dynamic_sections (
+ 	}
+       else if (startswith (name, ".got"))
+ 	{
+-	  /* s3_bfd_score_elf_always_size_sections() has already done
++	  /* s3_bfd_score_elf_early_size_sections() has already done
+ 	     most of the work, but some symbols may have been mapped
+ 	     to versions that we must now resolve in the got_entries
+ 	     hash tables.  */
+@@ -4177,22 +4178,22 @@ _bfd_score_elf_adjust_dynamic_symbol (st
+ }
+ 
+ static bool
+-_bfd_score_elf_always_size_sections (bfd *output_bfd,
+-				     struct bfd_link_info *info)
++_bfd_score_elf_early_size_sections (bfd *output_bfd,
++				    struct bfd_link_info *info)
+ {
+   if (bfd_get_mach (output_bfd) == bfd_mach_score3)
+-    return s3_bfd_score_elf_always_size_sections (output_bfd, info);
++    return s3_bfd_score_elf_early_size_sections (output_bfd, info);
+   else
+-    return s7_bfd_score_elf_always_size_sections (output_bfd, info);
++    return s7_bfd_score_elf_early_size_sections (output_bfd, info);
+ }
+ 
+ static bool
+-_bfd_score_elf_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++_bfd_score_elf_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   if (bfd_get_mach (output_bfd) == bfd_mach_score3)
+-    return s3_bfd_score_elf_size_dynamic_sections (output_bfd, info);
++    return s3_bfd_score_elf_late_size_sections (output_bfd, info);
+   else
+-    return s7_bfd_score_elf_size_dynamic_sections (output_bfd, info);
++    return s7_bfd_score_elf_late_size_sections (output_bfd, info);
+ }
+ 
+ static bool
+@@ -4455,10 +4456,10 @@ _bfd_score_elf_common_definition (Elf_In
+   _bfd_score_elf_section_from_bfd_section
+ #define elf_backend_adjust_dynamic_symbol \
+   _bfd_score_elf_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-  _bfd_score_elf_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-  _bfd_score_elf_size_dynamic_sections
++#define elf_backend_early_size_sections \
++  _bfd_score_elf_early_size_sections
++#define elf_backend_late_size_sections \
++  _bfd_score_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym   _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_create_dynamic_sections \
+   _bfd_score_elf_create_dynamic_sections
+--- a/bfd/elf32-score.h
++++ b/bfd/elf32-score.h
+@@ -78,10 +78,10 @@ s7_bfd_score_elf_adjust_dynamic_symbol (
+ 					struct elf_link_hash_entry *);
+ 
+ extern bool
+-s7_bfd_score_elf_always_size_sections (bfd *, struct bfd_link_info *);
++s7_bfd_score_elf_early_size_sections (bfd *, struct bfd_link_info *);
+ 
+ extern bool
+-s7_bfd_score_elf_size_dynamic_sections (bfd *, struct bfd_link_info *);
++s7_bfd_score_elf_late_size_sections (bfd *, struct bfd_link_info *);
+ 
+ extern bool
+ s7_bfd_score_elf_create_dynamic_sections (bfd *, struct bfd_link_info *);
+--- a/bfd/elf32-score7.c
++++ b/bfd/elf32-score7.c
+@@ -975,7 +975,7 @@ score_elf_got_info (bfd *abfd, asection
+    appear towards the end.  This reduces the amount of GOT space
+    required.  MAX_LOCAL is used to set the number of local symbols
+    known to be in the dynamic symbol table.  During
+-   s7_bfd_score_elf_size_dynamic_sections, this value is 1.  Afterward, the
++   s7_bfd_score_elf_late_size_sections, this value is 1.  Afterward, the
+    section symbols are added and the count is higher.  */
+ 
+ static bool
+@@ -2969,8 +2969,8 @@ s7_bfd_score_elf_adjust_dynamic_symbol (
+    and the input sections have been assigned to output sections.  */
+ 
+ bool
+-s7_bfd_score_elf_always_size_sections (bfd *output_bfd,
+-				       struct bfd_link_info *info)
++s7_bfd_score_elf_early_size_sections (bfd *output_bfd,
++				      struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -3047,14 +3047,15 @@ s7_bfd_score_elf_always_size_sections (b
+ /* Set the sizes of the dynamic sections.  */
+ 
+ bool
+-s7_bfd_score_elf_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++s7_bfd_score_elf_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   bool reltext;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -3123,7 +3124,7 @@ s7_bfd_score_elf_size_dynamic_sections (
+ 	}
+       else if (startswith (name, ".got"))
+ 	{
+-	  /* s7_bfd_score_elf_always_size_sections() has already done
++	  /* s7_bfd_score_elf_early_size_sections() has already done
+ 	     most of the work, but some symbols may have been mapped
+ 	     to versions that we must now resolve in the got_entries
+ 	     hash tables.  */
+--- a/bfd/elf32-sh.c
++++ b/bfd/elf32-sh.c
+@@ -2925,7 +2925,7 @@ allocate_dynrelocs (struct elf_link_hash
+    It's a convenient place to determine the PLT style.  */
+ 
+ static bool
+-sh_elf_always_size_sections (bfd *output_bfd, struct bfd_link_info *info)
++sh_elf_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   sh_elf_hash_table (info)->plt_info = get_plt_info (output_bfd,
+ 						     bfd_link_pic (info));
+@@ -2940,8 +2940,8 @@ sh_elf_always_size_sections (bfd *output
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-sh_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-			      struct bfd_link_info *info)
++sh_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			   struct bfd_link_info *info)
+ {
+   struct elf_sh_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2954,7 +2954,8 @@ sh_elf_size_dynamic_sections (bfd *outpu
+     return false;
+ 
+   dynobj = htab->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->root.dynamic_sections_created)
+     {
+@@ -6589,10 +6590,8 @@ sh_elf_encode_eh_address (bfd *abfd,
+ 					sh_elf_link_hash_table_create
+ #define elf_backend_adjust_dynamic_symbol \
+ 					sh_elf_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-					sh_elf_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-					sh_elf_size_dynamic_sections
++#define elf_backend_early_size_sections	sh_elf_early_size_sections
++#define elf_backend_late_size_sections	sh_elf_late_size_sections
+ #define elf_backend_omit_section_dynsym	sh_elf_omit_section_dynsym
+ #define elf_backend_finish_dynamic_symbol \
+ 					sh_elf_finish_dynamic_symbol
+--- a/bfd/elf32-sparc.c
++++ b/bfd/elf32-sparc.c
+@@ -248,8 +248,7 @@ elf32_sparc_reloc_type_class (const stru
+ #define elf_backend_adjust_dynamic_symbol \
+ 					_bfd_sparc_elf_adjust_dynamic_symbol
+ #define elf_backend_omit_section_dynsym	_bfd_sparc_elf_omit_section_dynsym
+-#define elf_backend_size_dynamic_sections \
+-					_bfd_sparc_elf_size_dynamic_sections
++#define elf_backend_late_size_sections	_bfd_sparc_elf_late_size_sections
+ #define elf_backend_relocate_section	_bfd_sparc_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+ 					_bfd_sparc_elf_finish_dynamic_symbol
+--- a/bfd/elf32-tic6x.c
++++ b/bfd/elf32-tic6x.c
+@@ -3160,7 +3160,7 @@ elf32_tic6x_allocate_dynrelocs (struct e
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf32_tic6x_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++elf32_tic6x_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   struct elf32_tic6x_link_hash_table *htab;
+   bfd *dynobj;
+@@ -3171,7 +3171,7 @@ elf32_tic6x_size_dynamic_sections (bfd *
+   htab = elf32_tic6x_hash_table (info);
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+@@ -3358,7 +3358,7 @@ elf32_tic6x_size_dynamic_sections (bfd *
+    and the input sections have been assigned to output sections.  */
+ 
+ static bool
+-elf32_tic6x_always_size_sections (bfd *output_bfd, struct bfd_link_info *info)
++elf32_tic6x_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   if (elf32_tic6x_using_dsbt (output_bfd) && !bfd_link_relocatable (info)
+       && !bfd_elf_stack_segment_size (output_bfd, info,
+@@ -4261,10 +4261,10 @@ elf32_tic6x_write_section (bfd *output_b
+ #define elf_backend_relocs_compatible	_bfd_elf_relocs_compatible
+ #define elf_backend_finish_dynamic_symbol \
+   elf32_tic6x_finish_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-  elf32_tic6x_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-  elf32_tic6x_size_dynamic_sections
++#define elf_backend_early_size_sections \
++  elf32_tic6x_early_size_sections
++#define elf_backend_late_size_sections \
++  elf32_tic6x_late_size_sections
+ #define elf_backend_finish_dynamic_sections \
+   elf32_tic6x_finish_dynamic_sections
+ #define bfd_elf32_bfd_final_link \
+--- a/bfd/elf32-tilegx.c
++++ b/bfd/elf32-tilegx.c
+@@ -105,7 +105,7 @@ tilegx_elf_grok_psinfo (bfd *abfd, Elf_I
+ #define elf_backend_check_relocs	     tilegx_elf_check_relocs
+ #define elf_backend_adjust_dynamic_symbol    tilegx_elf_adjust_dynamic_symbol
+ #define elf_backend_omit_section_dynsym	     tilegx_elf_omit_section_dynsym
+-#define elf_backend_size_dynamic_sections    tilegx_elf_size_dynamic_sections
++#define elf_backend_late_size_sections	     tilegx_elf_late_size_sections
+ #define elf_backend_relocate_section	     tilegx_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol    tilegx_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections  tilegx_elf_finish_dynamic_sections
+--- a/bfd/elf32-tilepro.c
++++ b/bfd/elf32-tilepro.c
+@@ -2182,11 +2182,9 @@ tilepro_elf_omit_section_dynsym (bfd *ou
+ #define ELF32_DYNAMIC_INTERPRETER "/lib/ld.so.1"
+ 
+ static bool
+-tilepro_elf_size_dynamic_sections (bfd *output_bfd,
+-				      struct bfd_link_info *info)
++tilepro_elf_late_size_sections (bfd *output_bfd,
++				struct bfd_link_info *info)
+ {
+-  (void)output_bfd;
+-
+   struct elf_link_hash_table *htab;
+   bfd *dynobj;
+   asection *s;
+@@ -2195,7 +2193,8 @@ tilepro_elf_size_dynamic_sections (bfd *
+   htab = tilepro_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = htab->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -3739,7 +3738,7 @@ tilepro_additional_program_headers (bfd
+ #define elf_backend_check_relocs	     tilepro_elf_check_relocs
+ #define elf_backend_adjust_dynamic_symbol    tilepro_elf_adjust_dynamic_symbol
+ #define elf_backend_omit_section_dynsym	     tilepro_elf_omit_section_dynsym
+-#define elf_backend_size_dynamic_sections    tilepro_elf_size_dynamic_sections
++#define elf_backend_late_size_sections	     tilepro_elf_late_size_sections
+ #define elf_backend_relocate_section	     tilepro_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol    tilepro_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections  tilepro_elf_finish_dynamic_sections
+--- a/bfd/elf32-vax.c
++++ b/bfd/elf32-vax.c
+@@ -36,7 +36,6 @@ static bool elf_vax_check_relocs (bfd *,
+ 				  asection *, const Elf_Internal_Rela *);
+ static bool elf_vax_adjust_dynamic_symbol (struct bfd_link_info *,
+ 					   struct elf_link_hash_entry *);
+-static bool elf_vax_size_dynamic_sections (bfd *, struct bfd_link_info *);
+ static int elf_vax_relocate_section (bfd *, struct bfd_link_info *,
+ 				     bfd *, asection *, bfd_byte *,
+ 				     Elf_Internal_Rela *,
+@@ -985,8 +984,8 @@ elf_vax_discard_got_entries (struct elf_
+ /* Discard unused dynamic data if this is a static link.  */
+ 
+ static bool
+-elf_vax_always_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-			      struct bfd_link_info *info)
++elf_vax_early_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -1024,14 +1023,15 @@ elf_vax_always_size_sections (bfd *outpu
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_vax_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++elf_vax_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+   bool relocs;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -1861,10 +1861,8 @@ elf_vax_plt_sym_val (bfd_vma i, const as
+ #define elf_backend_check_relocs	elf_vax_check_relocs
+ #define elf_backend_adjust_dynamic_symbol \
+ 					elf_vax_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-					elf_vax_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-					elf_vax_size_dynamic_sections
++#define elf_backend_early_size_sections	elf_vax_early_size_sections
++#define elf_backend_late_size_sections	elf_vax_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	elf_vax_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+--- a/bfd/elf32-xstormy16.c
++++ b/bfd/elf32-xstormy16.c
+@@ -706,8 +706,8 @@ xstormy16_elf_relax_section (bfd *dynobj
+ }
+ 
+ static bool
+-xstormy16_elf_always_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				    struct bfd_link_info *info)
++xstormy16_elf_early_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				   struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *splt;
+@@ -1013,8 +1013,8 @@ xstormy16_elf_gc_mark_hook (asection *se
+ #define elf_backend_relocate_section		xstormy16_elf_relocate_section
+ #define elf_backend_gc_mark_hook		xstormy16_elf_gc_mark_hook
+ #define elf_backend_check_relocs		xstormy16_elf_check_relocs
+-#define elf_backend_always_size_sections \
+-  xstormy16_elf_always_size_sections
++#define elf_backend_early_size_sections \
++  xstormy16_elf_early_size_sections
+ #define elf_backend_omit_section_dynsym \
+   _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_finish_dynamic_sections \
+--- a/bfd/elf32-xtensa.c
++++ b/bfd/elf32-xtensa.c
+@@ -1568,8 +1568,8 @@ elf_xtensa_allocate_local_got_size (stru
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_xtensa_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++elf_xtensa_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			       struct bfd_link_info *info)
+ {
+   struct elf_xtensa_link_hash_table *htab;
+   bfd *dynobj, *abfd;
+@@ -1586,7 +1586,7 @@ elf_xtensa_size_dynamic_sections (bfd *o
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+   srelgot = htab->elf.srelgot;
+   srelplt = htab->elf.srelplt;
+ 
+@@ -1791,8 +1791,7 @@ elf_xtensa_size_dynamic_sections (bfd *o
+ }
+ 
+ static bool
+-elf_xtensa_always_size_sections (bfd *output_bfd,
+-				 struct bfd_link_info *info)
++elf_xtensa_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   struct elf_xtensa_link_hash_table *htab;
+   asection *tls_sec;
+@@ -11551,8 +11550,8 @@ static const struct bfd_elf_special_sect
+ #define elf_backend_object_p		     elf_xtensa_object_p
+ #define elf_backend_reloc_type_class	     elf_xtensa_reloc_type_class
+ #define elf_backend_relocate_section	     elf_xtensa_relocate_section
+-#define elf_backend_size_dynamic_sections    elf_xtensa_size_dynamic_sections
+-#define elf_backend_always_size_sections     elf_xtensa_always_size_sections
++#define elf_backend_late_size_sections	     elf_xtensa_late_size_sections
++#define elf_backend_early_size_sections	     elf_xtensa_early_size_sections
+ #define elf_backend_omit_section_dynsym      _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_special_sections	     elf_xtensa_special_sections
+ #define elf_backend_action_discarded	     elf_xtensa_action_discarded
+--- a/bfd/elf64-alpha.c
++++ b/bfd/elf64-alpha.c
+@@ -2579,8 +2579,8 @@ elf64_alpha_size_plt_section (struct bfd
+ }
+ 
+ static bool
+-elf64_alpha_always_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++elf64_alpha_early_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				 struct bfd_link_info *info)
+ {
+   bfd *i;
+   struct alpha_elf_link_hash_table * htab;
+@@ -2806,8 +2806,8 @@ elf64_alpha_size_rela_got_section (struc
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf64_alpha_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				   struct bfd_link_info *info)
++elf64_alpha_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s;
+@@ -2819,7 +2819,8 @@ elf64_alpha_size_dynamic_sections (bfd *
+     return false;
+ 
+   dynobj = elf_hash_table(info)->dynobj;
+-  BFD_ASSERT(dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -5465,10 +5466,10 @@ static const struct elf_size_info alpha_
+   elf64_alpha_merge_symbol_attribute
+ #define elf_backend_copy_indirect_symbol \
+   elf64_alpha_copy_indirect_symbol
+-#define elf_backend_always_size_sections \
+-  elf64_alpha_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-  elf64_alpha_size_dynamic_sections
++#define elf_backend_early_size_sections \
++  elf64_alpha_early_size_sections
++#define elf_backend_late_size_sections \
++  elf64_alpha_late_size_sections
+ #define elf_backend_omit_section_dynsym \
+   _bfd_elf_omit_section_dynsym_all
+ #define elf_backend_relocate_section \
+--- a/bfd/elf64-hppa.c
++++ b/bfd/elf64-hppa.c
+@@ -176,9 +176,6 @@ static bool elf64_hppa_adjust_dynamic_sy
+ static bool elf64_hppa_mark_milli_and_exported_functions
+   (struct elf_link_hash_entry *, void *);
+ 
+-static bool elf64_hppa_size_dynamic_sections
+-  (bfd *, struct bfd_link_info *);
+-
+ static int elf64_hppa_link_output_symbol_hook
+   (struct bfd_link_info *, const char *, Elf_Internal_Sym *,
+    asection *, struct elf_link_hash_entry *);
+@@ -1520,7 +1517,7 @@ elf64_hppa_mark_milli_and_exported_funct
+    the contents of our special sections.  */
+ 
+ static bool
+-elf64_hppa_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++elf64_hppa_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   struct elf64_hppa_link_hash_table *hppa_info;
+   struct elf64_hppa_allocate_data data;
+@@ -1534,7 +1531,8 @@ elf64_hppa_size_dynamic_sections (bfd *o
+     return false;
+ 
+   dynobj = hppa_info->root.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   /* Mark each function this program exports so that we will allocate
+      space in the .opd section for each function's FPTR.  If we are
+@@ -3984,8 +3982,7 @@ const struct elf_size_info hppa64_elf_si
+ #define elf_backend_adjust_dynamic_symbol \
+ 					elf64_hppa_adjust_dynamic_symbol
+ 
+-#define elf_backend_size_dynamic_sections \
+-					elf64_hppa_size_dynamic_sections
++#define elf_backend_late_size_sections	elf64_hppa_late_size_sections
+ 
+ #define elf_backend_finish_dynamic_symbol \
+ 					elf64_hppa_finish_dynamic_symbol
+--- a/bfd/elf64-ia64-vms.c
++++ b/bfd/elf64-ia64-vms.c
+@@ -2590,8 +2590,8 @@ elf64_ia64_adjust_dynamic_symbol (struct
+ }
+ 
+ static bool
+-elf64_ia64_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++elf64_ia64_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			       struct bfd_link_info *info)
+ {
+   struct elf64_ia64_allocate_data data;
+   struct elf64_ia64_link_hash_table *ia64_info;
+@@ -2600,11 +2600,12 @@ elf64_ia64_size_dynamic_sections (bfd *o
+   struct elf_link_hash_table *hash_table;
+ 
+   hash_table = elf_hash_table (info);
+-  dynobj = hash_table->dynobj;
+   ia64_info = elf64_ia64_hash_table (info);
+   if (ia64_info == NULL)
+     return false;
+-  BFD_ASSERT(dynobj != NULL);
++  dynobj = hash_table->dynobj;
++  if (dynobj == NULL)
++    return true;
+   data.info = info;
+ 
+   /* Allocate the GOT entries.  */
+@@ -5484,8 +5485,8 @@ static const struct elf_size_info elf64_
+ 	elf64_ia64_check_relocs
+ #define elf_backend_adjust_dynamic_symbol \
+ 	elf64_ia64_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-	elf64_ia64_size_dynamic_sections
++#define elf_backend_late_size_sections \
++	elf64_ia64_late_size_sections
+ #define elf_backend_omit_section_dynsym \
+ 	_bfd_elf_omit_section_dynsym_all
+ #define elf_backend_relocate_section \
+--- a/bfd/elf64-mips.c
++++ b/bfd/elf64-mips.c
+@@ -4741,10 +4741,10 @@ const struct elf_size_info mips_elf64_si
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 				_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-				_bfd_mips_elf_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-				_bfd_mips_elf_size_dynamic_sections
++#define elf_backend_early_size_sections \
++				_bfd_mips_elf_early_size_sections
++#define elf_backend_late_size_sections \
++				_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section    _bfd_mips_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+--- a/bfd/elf64-ppc.c
++++ b/bfd/elf64-ppc.c
+@@ -119,8 +119,8 @@ static bfd_vma opd_entry_value
+ #define elf_backend_adjust_dynamic_symbol     ppc64_elf_adjust_dynamic_symbol
+ #define elf_backend_hide_symbol		      ppc64_elf_hide_symbol
+ #define elf_backend_maybe_function_sym	      ppc64_elf_maybe_function_sym
+-#define elf_backend_always_size_sections      ppc64_elf_edit
+-#define elf_backend_size_dynamic_sections     ppc64_elf_size_dynamic_sections
++#define elf_backend_early_size_sections	      ppc64_elf_edit
++#define elf_backend_late_size_sections	      ppc64_elf_late_size_sections
+ #define elf_backend_hash_symbol		      ppc64_elf_hash_symbol
+ #define elf_backend_init_index_section	      _bfd_elf_init_2_index_sections
+ #define elf_backend_action_discarded	      ppc64_elf_action_discarded
+@@ -10121,7 +10121,7 @@ allocate_dynrelocs (struct elf_link_hash
+   ((((v) & 0x3ffff0000ULL) << 16) | (v & 0xffff))
+ #define HA34(v) ((v + (1ULL << 33)) >> 34)
+ 
+-/* Called via elf_link_hash_traverse from ppc64_elf_size_dynamic_sections
++/* Called via elf_link_hash_traverse from ppc64_elf_late_size_sections
+    to set up space for global entry stubs.  These are put in glink,
+    after the branch table.  */
+ 
+@@ -10198,8 +10198,8 @@ size_global_entry_stubs (struct elf_link
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-ppc64_elf_size_dynamic_sections (bfd *output_bfd,
+-				 struct bfd_link_info *info)
++ppc64_elf_late_size_sections (bfd *output_bfd,
++			      struct bfd_link_info *info)
+ {
+   struct ppc_link_hash_table *htab;
+   bfd *dynobj;
+@@ -10214,7 +10214,7 @@ ppc64_elf_size_dynamic_sections (bfd *ou
+ 
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+--- a/bfd/elf64-s390.c
++++ b/bfd/elf64-s390.c
+@@ -1301,7 +1301,7 @@ elf_s390_gc_mark_hook (asection *sec,
+    entry but we found we will not create any.  Called when we find we will
+    not have any PLT for this symbol, by for example
+    elf_s390_adjust_dynamic_symbol when we're doing a proper dynamic link,
+-   or elf_s390_size_dynamic_sections if no dynamic sections will be
++   or elf_s390_late_size_sections if no dynamic sections will be
+    created (we're only linking static objects).  */
+ 
+ static void
+@@ -1714,8 +1714,8 @@ allocate_dynrelocs (struct elf_link_hash
+ /* Set the sizes of the dynamic sections.  */
+ 
+ static bool
+-elf_s390_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				struct bfd_link_info *info)
++elf_s390_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			     struct bfd_link_info *info)
+ {
+   struct elf_s390_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1729,7 +1729,7 @@ elf_s390_size_dynamic_sections (bfd *out
+ 
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+@@ -3881,7 +3881,7 @@ const struct elf_size_info s390_elf64_si
+ #define elf_backend_gc_mark_hook	      elf_s390_gc_mark_hook
+ #define elf_backend_reloc_type_class	      elf_s390_reloc_type_class
+ #define elf_backend_relocate_section	      elf_s390_relocate_section
+-#define elf_backend_size_dynamic_sections     elf_s390_size_dynamic_sections
++#define elf_backend_late_size_sections	      elf_s390_late_size_sections
+ #define elf_backend_init_index_section	      _bfd_elf_init_1_index_section
+ #define elf_backend_grok_prstatus	      elf_s390_grok_prstatus
+ #define elf_backend_grok_psinfo		      elf_s390_grok_psinfo
+--- a/bfd/elf64-sparc.c
++++ b/bfd/elf64-sparc.c
+@@ -938,8 +938,8 @@ const struct elf_size_info elf64_sparc_s
+   _bfd_sparc_elf_adjust_dynamic_symbol
+ #define elf_backend_omit_section_dynsym \
+   _bfd_sparc_elf_omit_section_dynsym
+-#define elf_backend_size_dynamic_sections \
+-  _bfd_sparc_elf_size_dynamic_sections
++#define elf_backend_late_size_sections \
++  _bfd_sparc_elf_late_size_sections
+ #define elf_backend_relocate_section \
+   _bfd_sparc_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+--- a/bfd/elf64-tilegx.c
++++ b/bfd/elf64-tilegx.c
+@@ -106,7 +106,7 @@ tilegx_elf_grok_psinfo (bfd *abfd, Elf_I
+ #define elf_backend_check_relocs	     tilegx_elf_check_relocs
+ #define elf_backend_adjust_dynamic_symbol    tilegx_elf_adjust_dynamic_symbol
+ #define elf_backend_omit_section_dynsym	     tilegx_elf_omit_section_dynsym
+-#define elf_backend_size_dynamic_sections    tilegx_elf_size_dynamic_sections
++#define elf_backend_late_size_sections	     tilegx_elf_late_size_sections
+ #define elf_backend_relocate_section	     tilegx_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol    tilegx_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections  tilegx_elf_finish_dynamic_sections
+--- a/bfd/elf64-x86-64.c
++++ b/bfd/elf64-x86-64.c
+@@ -2351,8 +2351,7 @@ elf_x86_64_scan_relocs (bfd *abfd, struc
+ }
+ 
+ static bool
+-elf_x86_64_always_size_sections (bfd *output_bfd,
+-				 struct bfd_link_info *info)
++elf_x86_64_early_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   bfd *abfd;
+ 
+@@ -2365,7 +2364,7 @@ elf_x86_64_always_size_sections (bfd *ou
+ 					     elf_x86_64_scan_relocs))
+       return false;
+ 
+-  return _bfd_x86_elf_always_size_sections (output_bfd, info);
++  return _bfd_x86_elf_early_size_sections (output_bfd, info);
+ }
+ 
+ /* Return the relocation value for @tpoff relocation
+@@ -5262,7 +5261,7 @@ elf_x86_64_special_sections[]=
+   elf_x86_64_reloc_name_lookup
+ 
+ #define elf_backend_relocs_compatible	    elf_x86_64_relocs_compatible
+-#define elf_backend_always_size_sections    elf_x86_64_always_size_sections
++#define elf_backend_early_size_sections	    elf_x86_64_early_size_sections
+ #define elf_backend_create_dynamic_sections _bfd_elf_create_dynamic_sections
+ #define elf_backend_finish_dynamic_sections elf_x86_64_finish_dynamic_sections
+ #define elf_backend_finish_dynamic_symbol   elf_x86_64_finish_dynamic_symbol
+--- a/bfd/elflink.c
++++ b/bfd/elflink.c
+@@ -6623,8 +6623,8 @@ bfd_elf_size_dynamic_sections (bfd *outp
+ 
+   /* The backend may have to create some sections regardless of whether
+      we're dynamic or not.  */
+-  if (bed->elf_backend_always_size_sections
+-      && ! (*bed->elf_backend_always_size_sections) (output_bfd, info))
++  if (bed->elf_backend_early_size_sections
++      && !bed->elf_backend_early_size_sections (output_bfd, info))
+     return false;
+ 
+   dynobj = elf_hash_table (info)->dynobj;
+@@ -7360,9 +7360,8 @@ bfd_elf_size_dynamic_sections (bfd *outp
+ 
+   /* The backend must work out the sizes of all the other dynamic
+      sections.  */
+-  if (dynobj != NULL
+-      && bed->elf_backend_size_dynamic_sections != NULL
+-      && ! (*bed->elf_backend_size_dynamic_sections) (output_bfd, info))
++  if (bed->elf_backend_late_size_sections != NULL
++      && !bed->elf_backend_late_size_sections (output_bfd, info))
+     return false;
+ 
+   if (dynobj != NULL && elf_hash_table (info)->dynamic_sections_created)
+--- a/bfd/elfn32-mips.c
++++ b/bfd/elfn32-mips.c
+@@ -4127,10 +4127,8 @@ static const struct ecoff_debug_swap mip
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 					_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_always_size_sections \
+-					_bfd_mips_elf_always_size_sections
+-#define elf_backend_size_dynamic_sections \
+-					_bfd_mips_elf_size_dynamic_sections
++#define elf_backend_early_size_sections	_bfd_mips_elf_early_size_sections
++#define elf_backend_late_size_sections	_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	_bfd_mips_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol \
+--- a/bfd/elfnn-aarch64.c
++++ b/bfd/elfnn-aarch64.c
+@@ -112,7 +112,7 @@
+   allocate space for one relocation on the slot. Record the GOT offset
+   for this symbol.
+ 
+-  elfNN_aarch64_size_dynamic_sections ()
++  elfNN_aarch64_late_size_sections ()
+ 
+   Iterate all input BFDS, look for in the local symbol data structure
+   constructed earlier for local TLS symbols and allocate them double
+@@ -8859,8 +8859,8 @@ elfNN_aarch64_allocate_local_ifunc_dynre
+    though !  */
+ 
+ static bool
+-elfNN_aarch64_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				     struct bfd_link_info *info)
++elfNN_aarch64_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++				  struct bfd_link_info *info)
+ {
+   struct elf_aarch64_link_hash_table *htab;
+   bfd *dynobj;
+@@ -8871,7 +8871,8 @@ elfNN_aarch64_size_dynamic_sections (bfd
+   htab = elf_aarch64_hash_table ((info));
+   dynobj = htab->root.dynobj;
+ 
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->root.dynamic_sections_created)
+     {
+@@ -9273,8 +9274,8 @@ elfNN_aarch64_create_small_pltn_entry (s
+    _TLS_MODULE_BASE_, if needed.  */
+ 
+ static bool
+-elfNN_aarch64_always_size_sections (bfd *output_bfd,
+-				    struct bfd_link_info *info)
++elfNN_aarch64_early_size_sections (bfd *output_bfd,
++				   struct bfd_link_info *info)
+ {
+   asection *tls_sec;
+ 
+@@ -10009,8 +10010,8 @@ const struct elf_size_info elfNN_aarch64
+ #define elf_backend_adjust_dynamic_symbol	\
+   elfNN_aarch64_adjust_dynamic_symbol
+ 
+-#define elf_backend_always_size_sections	\
+-  elfNN_aarch64_always_size_sections
++#define elf_backend_early_size_sections		\
++  elfNN_aarch64_early_size_sections
+ 
+ #define elf_backend_check_relocs		\
+   elfNN_aarch64_check_relocs
+@@ -10059,8 +10060,8 @@ const struct elf_size_info elfNN_aarch64
+ #define elf_backend_section_from_shdr		\
+   elfNN_aarch64_section_from_shdr
+ 
+-#define elf_backend_size_dynamic_sections	\
+-  elfNN_aarch64_size_dynamic_sections
++#define elf_backend_late_size_sections		\
++  elfNN_aarch64_late_size_sections
+ 
+ #define elf_backend_size_info			\
+   elfNN_aarch64_size_info
+--- a/bfd/elfnn-ia64.c
++++ b/bfd/elfnn-ia64.c
+@@ -2986,8 +2986,8 @@ elfNN_ia64_adjust_dynamic_symbol (struct
+ }
+ 
+ static bool
+-elfNN_ia64_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++elfNN_ia64_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			       struct bfd_link_info *info)
+ {
+   struct elfNN_ia64_allocate_data data;
+   struct elfNN_ia64_link_hash_table *ia64_info;
+@@ -2998,8 +2998,9 @@ elfNN_ia64_size_dynamic_sections (bfd *o
+   if (ia64_info == NULL)
+     return false;
+   dynobj = ia64_info->root.dynobj;
++  if (dynobj == NULL)
++    return true;
+   ia64_info->self_dtpmod_offset = (bfd_vma) -1;
+-  BFD_ASSERT(dynobj != NULL);
+   data.info = info;
+ 
+   /* Set the contents of the .interp section to the interpreter.  */
+@@ -5035,8 +5036,8 @@ ignore_errors (const char *fmt ATTRIBUTE
+ 	elfNN_ia64_check_relocs
+ #define elf_backend_adjust_dynamic_symbol \
+ 	elfNN_ia64_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections \
+-	elfNN_ia64_size_dynamic_sections
++#define elf_backend_late_size_sections \
++	elfNN_ia64_late_size_sections
+ #define elf_backend_omit_section_dynsym \
+ 	_bfd_elf_omit_section_dynsym_all
+ #define elf_backend_relocate_section \
+--- a/bfd/elfnn-loongarch.c
++++ b/bfd/elfnn-loongarch.c
+@@ -1169,8 +1169,8 @@ maybe_set_textrel (struct elf_link_hash_
+ }
+ 
+ static bool
+-loongarch_elf_size_dynamic_sections (bfd *output_bfd,
+-				     struct bfd_link_info *info)
++loongarch_elf_late_size_sections (bfd *output_bfd,
++				  struct bfd_link_info *info)
+ {
+   struct loongarch_elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1180,7 +1180,8 @@ loongarch_elf_size_dynamic_sections (bfd
+   htab = loongarch_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = htab->elf.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (htab->elf.dynamic_sections_created)
+     {
+@@ -3251,7 +3252,7 @@ loongarch_elf_gc_mark_hook (asection *se
+   loongarch_elf_create_dynamic_sections
+ #define elf_backend_check_relocs loongarch_elf_check_relocs
+ #define elf_backend_adjust_dynamic_symbol loongarch_elf_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections loongarch_elf_size_dynamic_sections
++#define elf_backend_late_size_sections loongarch_elf_late_size_sections
+ #define elf_backend_relocate_section loongarch_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol loongarch_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections				   \
+--- a/bfd/elfnn-riscv.c
++++ b/bfd/elfnn-riscv.c
+@@ -1376,7 +1376,7 @@ allocate_local_ifunc_dynrelocs (void **s
+ }
+ 
+ static bool
+-riscv_elf_size_dynamic_sections (bfd *output_bfd, struct bfd_link_info *info)
++riscv_elf_late_size_sections (bfd *output_bfd, struct bfd_link_info *info)
+ {
+   struct riscv_elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -1386,7 +1386,8 @@ riscv_elf_size_dynamic_sections (bfd *ou
+   htab = riscv_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = htab->elf.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -5256,7 +5257,7 @@ riscv_elf_merge_symbol_attribute (struct
+ #define elf_backend_create_dynamic_sections	riscv_elf_create_dynamic_sections
+ #define elf_backend_check_relocs		riscv_elf_check_relocs
+ #define elf_backend_adjust_dynamic_symbol	riscv_elf_adjust_dynamic_symbol
+-#define elf_backend_size_dynamic_sections	riscv_elf_size_dynamic_sections
++#define elf_backend_late_size_sections		riscv_elf_late_size_sections
+ #define elf_backend_relocate_section		riscv_elf_relocate_section
+ #define elf_backend_finish_dynamic_symbol	riscv_elf_finish_dynamic_symbol
+ #define elf_backend_finish_dynamic_sections	riscv_elf_finish_dynamic_sections
+--- a/bfd/elfxx-mips.c
++++ b/bfd/elfxx-mips.c
+@@ -9550,8 +9550,8 @@ _bfd_mips_elf_adjust_dynamic_symbol (str
+    check for any mips16 stub sections that we can discard.  */
+ 
+ bool
+-_bfd_mips_elf_always_size_sections (bfd *output_bfd,
+-				    struct bfd_link_info *info)
++_bfd_mips_elf_early_size_sections (bfd *output_bfd,
++				   struct bfd_link_info *info)
+ {
+   asection *sect;
+   struct mips_elf_link_hash_table *htab;
+@@ -9894,8 +9894,8 @@ mips_elf_set_plt_sym_value (struct mips_
+ /* Set the sizes of the dynamic sections.  */
+ 
+ bool
+-_bfd_mips_elf_size_dynamic_sections (bfd *output_bfd,
+-				     struct bfd_link_info *info)
++_bfd_mips_elf_late_size_sections (bfd *output_bfd,
++				  struct bfd_link_info *info)
+ {
+   bfd *dynobj;
+   asection *s, *sreldyn;
+@@ -9905,7 +9905,8 @@ _bfd_mips_elf_size_dynamic_sections (bfd
+   htab = mips_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = elf_hash_table (info)->dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+@@ -14824,7 +14825,7 @@ _bfd_mips_elf_final_link (bfd *abfd, str
+ 	      input_section->flags &= ~SEC_HAS_CONTENTS;
+ 	    }
+ 
+-	  /* Size has been set in _bfd_mips_elf_always_size_sections.  */
++	  /* Size has been set in _bfd_mips_elf_early_size_sections.  */
+ 	  BFD_ASSERT(o->size == sizeof (Elf_External_ABIFlags_v0));
+ 
+ 	  /* Skip this section later on (I don't think this currently
+@@ -14883,7 +14884,7 @@ _bfd_mips_elf_final_link (bfd *abfd, str
+ 	      input_section->flags &= ~SEC_HAS_CONTENTS;
+ 	    }
+ 
+-	  /* Size has been set in _bfd_mips_elf_always_size_sections.  */
++	  /* Size has been set in _bfd_mips_elf_early_size_sections.  */
+ 	  BFD_ASSERT(o->size == sizeof (Elf32_External_RegInfo));
+ 
+ 	  /* Skip this section later on (I don't think this currently
+--- a/bfd/elfxx-mips.h
++++ b/bfd/elfxx-mips.h
+@@ -52,9 +52,9 @@ extern bool _bfd_mips_elf_check_relocs
+   (bfd *, struct bfd_link_info *, asection *, const Elf_Internal_Rela *);
+ extern bool _bfd_mips_elf_adjust_dynamic_symbol
+   (struct bfd_link_info *, struct elf_link_hash_entry *);
+-extern bool _bfd_mips_elf_always_size_sections
++extern bool _bfd_mips_elf_early_size_sections
+   (bfd *, struct bfd_link_info *);
+-extern bool _bfd_mips_elf_size_dynamic_sections
++extern bool _bfd_mips_elf_late_size_sections
+   (bfd *, struct bfd_link_info *);
+ extern int _bfd_mips_elf_relocate_section
+   (bfd *, struct bfd_link_info *, bfd *, asection *, bfd_byte *,
+--- a/bfd/elfxx-sparc.c
++++ b/bfd/elfxx-sparc.c
+@@ -2381,8 +2381,8 @@ _bfd_sparc_elf_omit_section_dynsym (bfd
+ /* Set the sizes of the dynamic sections.  */
+ 
+ bool
+-_bfd_sparc_elf_size_dynamic_sections (bfd *output_bfd,
+-				      struct bfd_link_info *info)
++_bfd_sparc_elf_late_size_sections (bfd *output_bfd,
++				   struct bfd_link_info *info)
+ {
+   struct _bfd_sparc_elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2392,7 +2392,8 @@ _bfd_sparc_elf_size_dynamic_sections (bf
+   htab = _bfd_sparc_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = htab->elf.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+--- a/bfd/elfxx-sparc.h
++++ b/bfd/elfxx-sparc.h
+@@ -117,7 +117,7 @@ extern bool _bfd_sparc_elf_adjust_dynami
+   (struct bfd_link_info *, struct elf_link_hash_entry *);
+ extern bool _bfd_sparc_elf_omit_section_dynsym
+   (bfd *, struct bfd_link_info *, asection *);
+-extern bool _bfd_sparc_elf_size_dynamic_sections
++extern bool _bfd_sparc_elf_late_size_sections
+   (bfd *, struct bfd_link_info *);
+ extern bool _bfd_sparc_elf_new_section_hook
+   (bfd *, asection *);
+--- a/bfd/elfxx-target.h
++++ b/bfd/elfxx-target.h
+@@ -493,11 +493,11 @@
+ #ifndef elf_backend_adjust_dynamic_symbol
+ #define elf_backend_adjust_dynamic_symbol 0
+ #endif
+-#ifndef elf_backend_always_size_sections
+-#define elf_backend_always_size_sections 0
++#ifndef elf_backend_early_size_sections
++#define elf_backend_early_size_sections 0
+ #endif
+-#ifndef elf_backend_size_dynamic_sections
+-#define elf_backend_size_dynamic_sections 0
++#ifndef elf_backend_late_size_sections
++#define elf_backend_late_size_sections 0
+ #endif
+ #ifndef elf_backend_strip_zero_sized_dynamic_sections
+ #define elf_backend_strip_zero_sized_dynamic_sections 0
+@@ -853,8 +853,8 @@ static const struct elf_backend_data elf
+   elf_backend_check_directives,
+   elf_backend_notice_as_needed,
+   elf_backend_adjust_dynamic_symbol,
+-  elf_backend_always_size_sections,
+-  elf_backend_size_dynamic_sections,
++  elf_backend_early_size_sections,
++  elf_backend_late_size_sections,
+   elf_backend_strip_zero_sized_dynamic_sections,
+   elf_backend_init_index_section,
+   elf_backend_relocate_section,
+--- a/bfd/elfxx-tilegx.c
++++ b/bfd/elfxx-tilegx.c
+@@ -2430,8 +2430,8 @@ tilegx_elf_omit_section_dynsym (bfd *out
+ }
+ 
+ bool
+-tilegx_elf_size_dynamic_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
+-				  struct bfd_link_info *info)
++tilegx_elf_late_size_sections (bfd *output_bfd ATTRIBUTE_UNUSED,
++			       struct bfd_link_info *info)
+ {
+   struct tilegx_elf_link_hash_table *htab;
+   bfd *dynobj;
+@@ -2441,7 +2441,8 @@ tilegx_elf_size_dynamic_sections (bfd *o
+   htab = tilegx_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+   dynobj = htab->elf.dynobj;
+-  BFD_ASSERT (dynobj != NULL);
++  if (dynobj == NULL)
++    return true;
+ 
+   if (elf_hash_table (info)->dynamic_sections_created)
+     {
+--- a/bfd/elfxx-tilegx.h
++++ b/bfd/elfxx-tilegx.h
+@@ -57,7 +57,7 @@ tilegx_elf_omit_section_dynsym (bfd *,
+ 				asection *);
+ 
+ extern bool
+-tilegx_elf_size_dynamic_sections (bfd *, struct bfd_link_info *);
++tilegx_elf_late_size_sections (bfd *, struct bfd_link_info *);
+ 
+ extern int
+ tilegx_elf_relocate_section (bfd *, struct bfd_link_info *,
+--- a/bfd/elfxx-x86.c
++++ b/bfd/elfxx-x86.c
+@@ -2002,7 +2002,7 @@ _bfd_elf_x86_valid_reloc_p (asection *in
+ /* Set the sizes of the dynamic sections.  */
+ 
+ bool
+-_bfd_x86_elf_size_dynamic_sections (bfd *output_bfd,
++_bfd_x86_elf_late_size_sections (bfd *output_bfd,
+ 				    struct bfd_link_info *info)
+ {
+   struct elf_x86_link_hash_table *htab;
+@@ -2018,7 +2018,7 @@ _bfd_x86_elf_size_dynamic_sections (bfd
+     return false;
+   dynobj = htab->elf.dynobj;
+   if (dynobj == NULL)
+-    abort ();
++    return true;
+ 
+   /* Set up .got offsets for local syms, and space for local dynamic
+      relocs.  */
+@@ -2599,8 +2599,8 @@ _bfd_x86_elf_finish_dynamic_sections (bf
+ 
+ 
+ bool
+-_bfd_x86_elf_always_size_sections (bfd *output_bfd,
+-				   struct bfd_link_info *info)
++_bfd_x86_elf_early_size_sections (bfd *output_bfd,
++				  struct bfd_link_info *info)
+ {
+   asection *tls_sec = elf_hash_table (info)->tls_sec;
+ 
+--- a/bfd/elfxx-x86.h
++++ b/bfd/elfxx-x86.h
+@@ -807,13 +807,13 @@ extern bool _bfd_elf_x86_valid_reloc_p
+    const Elf_Internal_Rela *, struct elf_link_hash_entry *,
+    Elf_Internal_Sym *, Elf_Internal_Shdr *, bool *);
+ 
+-extern bool _bfd_x86_elf_size_dynamic_sections
++extern bool _bfd_x86_elf_late_size_sections
+   (bfd *, struct bfd_link_info *);
+ 
+ extern struct elf_x86_link_hash_table *_bfd_x86_elf_finish_dynamic_sections
+   (bfd *, struct bfd_link_info *);
+ 
+-extern bool _bfd_x86_elf_always_size_sections
++extern bool _bfd_x86_elf_early_size_sections
+   (bfd *, struct bfd_link_info *);
+ 
+ extern void _bfd_x86_elf_merge_symbol_attribute
+@@ -885,8 +885,8 @@ extern void _bfd_x86_elf_link_report_rel
+ 
+ #define elf_backend_check_relocs \
+   _bfd_x86_elf_check_relocs
+-#define elf_backend_size_dynamic_sections \
+-  _bfd_x86_elf_size_dynamic_sections
++#define elf_backend_late_size_sections \
++  _bfd_x86_elf_late_size_sections
+ #define elf_backend_merge_symbol_attribute \
+   _bfd_x86_elf_merge_symbol_attribute
+ #define elf_backend_copy_indirect_symbol \
+--- a/ld/emultempl/vms.em
++++ b/ld/emultempl/vms.em
+@@ -196,10 +196,9 @@ gld${EMULATION_NAME}_before_allocation (
+ 
+   /* The backend must work out the sizes of all the other dynamic
+      sections.  */
+-  if (elf_hash_table (&link_info)->dynamic_sections_created
+-      && bed->elf_backend_size_dynamic_sections
+-      && ! (*bed->elf_backend_size_dynamic_sections) (link_info.output_bfd,
+-						      &link_info))
++  if (bed->elf_backend_late_size_sections
++      && !bed->elf_backend_late_size_sections (link_info.output_bfd,
++					       &link_info))
+     einfo (_("%F%P: failed to set dynamic section sizes: %E\n"));
+ 
+   before_allocation_default ();

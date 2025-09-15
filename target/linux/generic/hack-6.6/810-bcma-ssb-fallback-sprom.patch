@@ -1,0 +1,187 @@
+From e4d708702e6c98f2111e33201a264d6788564cb2 Mon Sep 17 00:00:00 2001
+From: OpenWrt community <openwrt-devel@lists.openwrt.org>
+Date: Fri, 12 May 2023 11:08:43 +0200
+Subject: [PATCH] ssb_sprom: add generic kernel support for Broadcom  Fallback SPROMs
+
+---
+ drivers/bcma/Kconfig        |  4 ++++
+ drivers/bcma/Makefile       |  1 +
+ drivers/bcma/bcma_private.h |  4 ++++
+ drivers/bcma/main.c         |  8 ++++++++
+ drivers/bcma/sprom.c        | 23 ++++++++++++++---------
+ drivers/ssb/Kconfig         |  5 +++++
+ drivers/ssb/Makefile        |  1 +
+ drivers/ssb/main.c          |  8 ++++++++
+ drivers/ssb/sprom.c         | 12 +++++++++++-
+ drivers/ssb/ssb_private.h   |  4 ++++
+ 10 files changed, 60 insertions(+), 10 deletions(-)
+
+--- a/drivers/bcma/Kconfig
++++ b/drivers/bcma/Kconfig
+@@ -18,6 +18,10 @@ config BCMA_BLOCKIO
+ 	bool
+ 	default y
+ 
++config BCMA_FALLBACK_SPROM
++	bool
++	default y
++
+ config BCMA_HOST_PCI_POSSIBLE
+ 	bool
+ 	depends on PCI = y
+--- a/drivers/bcma/Makefile
++++ b/drivers/bcma/Makefile
+@@ -11,6 +11,7 @@ bcma-$(CONFIG_BCMA_DRIVER_PCI_HOSTMODE)
+ bcma-$(CONFIG_BCMA_DRIVER_MIPS)		+= driver_mips.o
+ bcma-$(CONFIG_BCMA_DRIVER_GMAC_CMN)	+= driver_gmac_cmn.o
+ bcma-$(CONFIG_BCMA_DRIVER_GPIO)		+= driver_gpio.o
++bcma-$(CONFIG_BCMA_FALLBACK_SPROM)	+= fallback-sprom.o
+ bcma-$(CONFIG_BCMA_HOST_PCI)		+= host_pci.o
+ bcma-$(CONFIG_BCMA_HOST_SOC)		+= host_soc.o
+ obj-$(CONFIG_BCMA)			+= bcma.o
+--- a/drivers/bcma/bcma_private.h
++++ b/drivers/bcma/bcma_private.h
+@@ -38,6 +38,10 @@ int bcma_bus_resume(struct bcma_bus *bus
+ void bcma_detect_chip(struct bcma_bus *bus);
+ int bcma_bus_scan(struct bcma_bus *bus);
+ 
++/* fallback-sprom.c */
++int __init bcma_fbs_register(void);
++int bcma_get_fallback_sprom(struct bcma_bus *dev, struct ssb_sprom *out);
++
+ /* sprom.c */
+ int bcma_sprom_get(struct bcma_bus *bus);
+ 
+--- a/drivers/bcma/main.c
++++ b/drivers/bcma/main.c
+@@ -671,6 +671,14 @@ static int __init bcma_modinit(void)
+ {
+ 	int err;
+ 
++#ifdef CONFIG_BCMA_FALLBACK_SPROM
++	err = bcma_fbs_register();
++	if (err) {
++		pr_err("Fallback SPROM initialization failed\n");
++		err = 0;
++	}
++#endif /* CONFIG_BCMA_FALLBACK_SPROM */
++
+ 	err = bcma_init_bus_register();
+ 	if (err)
+ 		return err;
+--- a/drivers/bcma/sprom.c
++++ b/drivers/bcma/sprom.c
+@@ -51,21 +51,26 @@ static int bcma_fill_sprom_with_fallback
+ {
+ 	int err;
+ 
+-	if (!get_fallback_sprom) {
++	if (get_fallback_sprom)
++		err = get_fallback_sprom(bus, out);
++
++#ifdef CONFIG_BCMA_FALLBACK_SPROM
++	if (!get_fallback_sprom || err)
++		err = bcma_get_fallback_sprom(bus, out);
++#else
++	if (!get_fallback_sprom)
+ 		err = -ENOENT;
+-		goto fail;
+-	}
++#endif /* CONFIG_BCMA_FALLBACK_SPROM */
+ 
+-	err = get_fallback_sprom(bus, out);
+-	if (err)
+-		goto fail;
++	if (err) {
++		bcma_warn(bus, "Using fallback SPROM failed (err %d)\n", err);
++		return err;
++	}
+ 
+ 	bcma_debug(bus, "Using SPROM revision %d provided by platform.\n",
+ 		   bus->sprom.revision);
++
+ 	return 0;
+-fail:
+-	bcma_warn(bus, "Using fallback SPROM failed (err %d)\n", err);
+-	return err;
+ }
+ 
+ /**************************************************
+--- a/drivers/ssb/Kconfig
++++ b/drivers/ssb/Kconfig
+@@ -25,6 +25,11 @@ if SSB
+ config SSB_SPROM
+ 	bool
+ 
++config SSB_FALLBACK_SPROM
++	bool
++	depends on SSB_PCIHOST
++	default y
++
+ # Support for Block-I/O. SELECT this from the driver that needs it.
+ config SSB_BLOCKIO
+ 	bool
+--- a/drivers/ssb/Makefile
++++ b/drivers/ssb/Makefile
+@@ -2,6 +2,7 @@
+ # core
+ ssb-y					+= main.o scan.o
+ ssb-$(CONFIG_SSB_EMBEDDED)		+= embedded.o
++ssb-$(CONFIG_SSB_FALLBACK_SPROM)	+= fallback-sprom.o
+ ssb-$(CONFIG_SSB_SPROM)			+= sprom.o
+ 
+ # host support
+--- a/drivers/ssb/main.c
++++ b/drivers/ssb/main.c
+@@ -1289,6 +1289,14 @@ static int __init ssb_modinit(void)
+ {
+ 	int err;
+ 
++#ifdef CONFIG_SSB_FALLBACK_SPROM
++	err = ssb_fbs_register();
++	if (err) {
++		pr_err("Fallback SPROM initialization failed\n");
++		err = 0;
++	}
++#endif /* CONFIG_SSB_FALLBACK_SPROM */
++
+ 	/* See the comment at the ssb_is_early_boot definition */
+ 	ssb_is_early_boot = 0;
+ 	err = bus_register(&ssb_bustype);
+--- a/drivers/ssb/sprom.c
++++ b/drivers/ssb/sprom.c
+@@ -180,10 +180,20 @@ int ssb_arch_register_fallback_sprom(int
+ 
+ int ssb_fill_sprom_with_fallback(struct ssb_bus *bus, struct ssb_sprom *out)
+ {
++	int err;
++
++	if (get_fallback_sprom)
++		err = get_fallback_sprom(bus, out);
++
++#ifdef CONFIG_SSB_FALLBACK_SPROM
++	if (!get_fallback_sprom || err)
++		err = ssb_get_fallback_sprom(bus, out);
++#else
+ 	if (!get_fallback_sprom)
+ 		return -ENOENT;
++#endif /* CONFIG_SSB_FALLBACK_SPROM */
+ 
+-	return get_fallback_sprom(bus, out);
++	return err;
+ }
+ 
+ /* https://bcm-v4.sipsolutions.net/802.11/IsSpromAvailable */
+--- a/drivers/ssb/ssb_private.h
++++ b/drivers/ssb/ssb_private.h
+@@ -143,6 +143,10 @@ extern int ssb_bus_scan(struct ssb_bus *
+ extern void ssb_iounmap(struct ssb_bus *ssb);
+ 
+ 
++/* fallback-sprom.c */
++int __init ssb_fbs_register(void);
++int ssb_get_fallback_sprom(struct ssb_bus *dev, struct ssb_sprom *out);
++
+ /* sprom.c */
+ extern
+ ssize_t ssb_attr_sprom_show(struct ssb_bus *bus, char *buf,

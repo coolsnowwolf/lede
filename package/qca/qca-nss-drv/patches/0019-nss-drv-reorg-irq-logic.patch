@@ -1,0 +1,353 @@
+--- a/nss_hal/ipq807x/nss_hal_pvt.c
++++ b/nss_hal/ipq807x/nss_hal_pvt.c
+@@ -67,6 +67,20 @@
+ #define NSS_NC_AXI_CLK "nss-nc-axi-clk"
+ 
+ /*
++ * N2H interrupts
++ */
++#define NSS_IRQ_NAME_EMPTY_BUF_SOS "nss_empty_buf_sos"
++#define NSS_IRQ_NAME_EMPTY_BUF_QUEUE "nss_empty_buf_queue"
++#define NSS_IRQ_NAME_TX_UNBLOCK "nss-tx-unblock"
++#define NSS_IRQ_NAME_QUEUE0 "nss_queue0"
++#define NSS_IRQ_NAME_QUEUE1 "nss_queue1"
++#define NSS_IRQ_NAME_QUEUE2 "nss_queue2"
++#define NSS_IRQ_NAME_QUEUE3 "nss_queue3"
++#define NSS_IRQ_NAME_COREDUMP_COMPLETE "nss_coredump_complete"
++#define NSS_IRQ_NAME_PAGED_EMPTY_BUF_SOS "nss_paged_empty_buf_sos"
++#define NSS_IRQ_NAME_PROFILE_DMA "nss_profile_dma"
++
++/*
+  * Voltage values
+  */
+ #define NOMINAL_VOLTAGE 1
+@@ -654,74 +668,96 @@ static void __nss_hal_send_interrupt(str
+ static int __nss_hal_request_irq(struct nss_ctx_instance *nss_ctx, struct nss_platform_data *npd, int irq_num)
+ {
+ 	struct int_ctx_instance *int_ctx = &nss_ctx->int_ctx[irq_num];
++	uint32_t cause, napi_wgt;
+ 	int err = -1, irq = npd->irq[irq_num];
++	int (*napi_poll_cb)(struct napi_struct *, int) = NULL;
++	const char *irq_name;
+ 
+ 	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
+ 
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_SOS) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_EMPTY_BUFFERS_SOS;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_empty_buf_sos", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_QUEUE) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_EMPTY_BUFFER_RETURN_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_EMPTY_BUFFER_QUEUE;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_empty_buf_queue", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_TX_UNBLOCKED) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_TX_UNBLOCKED_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_TX_UNBLOCKED;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss-tx-unblock", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_0) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_0;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue0", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_1) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_1;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue1", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_2) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_2;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue2", int_ctx);
+-	}
++	switch (irq_num) {
++	case NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_SOS:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_EMPTY_BUFFERS_SOS;
++		irq_name = NSS_IRQ_NAME_EMPTY_BUF_SOS;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_QUEUE:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_RETURN_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_EMPTY_BUFFER_QUEUE;
++		irq_name = NSS_IRQ_NAME_EMPTY_BUF_QUEUE;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_TX_UNBLOCKED:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_TX_UNBLOCKED_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_TX_UNBLOCKED;
++		irq_name = NSS_IRQ_NAME_TX_UNBLOCK;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_0:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_0;
++		irq_name = NSS_IRQ_NAME_QUEUE0;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_1:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_1;
++		irq_name = NSS_IRQ_NAME_QUEUE1;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_2:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_2;
++		irq_name = NSS_IRQ_NAME_QUEUE2;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_3:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_3;
++		irq_name = NSS_IRQ_NAME_QUEUE3;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_COREDUMP_COMPLETE:
++		napi_poll_cb = nss_core_handle_napi_emergency;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_COREDUMP_COMPLETE;
++		irq_name = NSS_IRQ_NAME_COREDUMP_COMPLETE;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_PAGED_EMPTY_BUFFER_SOS:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_PAGED_EMPTY_BUFFERS_SOS;
++		irq_name = NSS_IRQ_NAME_PAGED_EMPTY_BUF_SOS;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_PROFILE_DMA:
++		napi_poll_cb = nss_core_handle_napi_sdma;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_PROFILE_DMA;
++		irq_name = NSS_IRQ_NAME_PROFILE_DMA;
++		break;
+ 
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_3) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_3;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue3", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_COREDUMP_COMPLETE) {
+-		int_ctx->cause = NSS_N2H_INTR_COREDUMP_COMPLETE;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_emergency, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_coredump_complete", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_PAGED_EMPTY_BUFFER_SOS) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_PAGED_EMPTY_BUFFERS_SOS;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_paged_empty_buf_sos", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_PROFILE_DMA) {
+-		int_ctx->cause = NSS_N2H_INTR_PROFILE_DMA;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_sdma, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_profile_dma", int_ctx);
++	default:
++		nss_warning("%px: nss%d: unsupported irq# %d\n", nss_ctx, nss_ctx->id, irq_num);
++		return err;
+ 	}
+ 
++	netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, napi_poll_cb, napi_wgt);
++	int_ctx->cause = cause;
++	err = request_irq(irq, nss_hal_handle_irq, 0, irq_name, int_ctx);
+ 	if (err) {
++		nss_warning("%px: nss%d: request_irq failed for irq# %d\n", nss_ctx, nss_ctx->id, irq_num);
+ 		return err;
+ 	}
+-
+ 	int_ctx->irq = irq;
+ 	return 0;
+ }
+--- a/nss_hal/ipq60xx/nss_hal_pvt.c
++++ b/nss_hal/ipq60xx/nss_hal_pvt.c
+@@ -64,6 +64,20 @@
+ #define NSS_UTCM_CLK "nss-utcm-clk"
+ 
+ /*
++ * N2H interrupts
++ */
++#define NSS_IRQ_NAME_EMPTY_BUF_SOS "nss_empty_buf_sos"
++#define NSS_IRQ_NAME_EMPTY_BUF_QUEUE "nss_empty_buf_queue"
++#define NSS_IRQ_NAME_TX_UNBLOCK "nss-tx-unblock"
++#define NSS_IRQ_NAME_QUEUE0 "nss_queue0"
++#define NSS_IRQ_NAME_QUEUE1 "nss_queue1"
++#define NSS_IRQ_NAME_QUEUE2 "nss_queue2"
++#define NSS_IRQ_NAME_QUEUE3 "nss_queue3"
++#define NSS_IRQ_NAME_COREDUMP_COMPLETE "nss_coredump_complete"
++#define NSS_IRQ_NAME_PAGED_EMPTY_BUF_SOS "nss_paged_empty_buf_sos"
++#define NSS_IRQ_NAME_PROFILE_DMA "nss_profile_dma"
++
++/*
+  * Voltage values
+  */
+ #define NOMINAL_VOLTAGE 1
+@@ -610,71 +624,94 @@ static void __nss_hal_send_interrupt(str
+ static int __nss_hal_request_irq(struct nss_ctx_instance *nss_ctx, struct nss_platform_data *npd, int irq_num)
+ {
+ 	struct int_ctx_instance *int_ctx = &nss_ctx->int_ctx[irq_num];
++	uint32_t cause, napi_wgt;
+ 	int err = -1, irq = npd->irq[irq_num];
++	int (*napi_poll_cb)(struct napi_struct *, int) = NULL;
++	const char *irq_name;
+ 
+ 	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
+ 
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_SOS) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_EMPTY_BUFFERS_SOS;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_empty_buf_sos", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_QUEUE) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_EMPTY_BUFFER_RETURN_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_EMPTY_BUFFER_QUEUE;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_empty_buf_queue", int_ctx);
+-	}
++	switch (irq_num) {
++	case NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_SOS:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_EMPTY_BUFFERS_SOS;
++		irq_name = NSS_IRQ_NAME_EMPTY_BUF_SOS;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_EMPTY_BUFFER_QUEUE:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_RETURN_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_EMPTY_BUFFER_QUEUE;
++		irq_name = NSS_IRQ_NAME_EMPTY_BUF_QUEUE;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_TX_UNBLOCKED:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_TX_UNBLOCKED_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_TX_UNBLOCKED;
++		irq_name = NSS_IRQ_NAME_TX_UNBLOCK;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_0:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_0;
++		irq_name = NSS_IRQ_NAME_QUEUE0;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_1:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_1;
++		irq_name = NSS_IRQ_NAME_QUEUE1;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_2:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_2;
++		irq_name = NSS_IRQ_NAME_QUEUE2;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_3:
++		napi_poll_cb = nss_core_handle_napi_queue;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_DATA_QUEUE_3;
++		irq_name = NSS_IRQ_NAME_QUEUE3;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_COREDUMP_COMPLETE:
++		napi_poll_cb = nss_core_handle_napi_emergency;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_COREDUMP_COMPLETE;
++		irq_name = NSS_IRQ_NAME_COREDUMP_COMPLETE;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_PAGED_EMPTY_BUFFER_SOS:
++		napi_poll_cb = nss_core_handle_napi_non_queue;
++		napi_wgt = NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_PAGED_EMPTY_BUFFERS_SOS;
++		irq_name = NSS_IRQ_NAME_PAGED_EMPTY_BUF_SOS;
++		break;
++
++	case NSS_HAL_N2H_INTR_PURPOSE_PROFILE_DMA:
++		napi_poll_cb = nss_core_handle_napi_sdma;
++		napi_wgt = NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT;
++		cause = NSS_N2H_INTR_PROFILE_DMA;
++		irq_name = NSS_IRQ_NAME_PROFILE_DMA;
++		break;
+ 
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_TX_UNBLOCKED) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_TX_UNBLOCKED_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_TX_UNBLOCKED;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss-tx-unblock", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_0) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_0;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue0", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_1) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_1;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue1", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_2) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_2;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue2", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_DATA_QUEUE_3) {
+-		int_ctx->cause = NSS_N2H_INTR_DATA_QUEUE_3;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_queue, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_queue3", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_COREDUMP_COMPLETE) {
+-		int_ctx->cause = NSS_N2H_INTR_COREDUMP_COMPLETE;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_emergency, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_coredump_complete", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_PAGED_EMPTY_BUFFER_SOS) {
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_non_queue, NSS_EMPTY_BUFFER_SOS_PROCESSING_WEIGHT);
+-		int_ctx->cause = NSS_N2H_INTR_PAGED_EMPTY_BUFFERS_SOS;
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_paged_empty_buf_sos", int_ctx);
+-	}
+-
+-	if (irq_num == NSS_HAL_N2H_INTR_PURPOSE_PROFILE_DMA) {
+-		int_ctx->cause = NSS_N2H_INTR_PROFILE_DMA;
+-		netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, nss_core_handle_napi_sdma, NSS_DATA_COMMAND_BUFFER_PROCESSING_WEIGHT);
+-		err = request_irq(irq, nss_hal_handle_irq, 0, "nss_profile_dma", int_ctx);
++	default:
++		nss_warning("%px: nss%d: unsupported irq# %d\n", nss_ctx, nss_ctx->id, irq_num);
++		return err;
+ 	}
+ 
++	netif_napi_add_weight(&nss_ctx->napi_ndev, &int_ctx->napi, napi_poll_cb, napi_wgt);
++	int_ctx->cause = cause;
++	err = request_irq(irq, nss_hal_handle_irq, 0, irq_name, int_ctx);
+ 	if (err) {
++		nss_warning("%px: nss%d: request_irq failed for irq# %d\n", nss_ctx, nss_ctx->id, irq_num);
+ 		return err;
+ 	}
+ 

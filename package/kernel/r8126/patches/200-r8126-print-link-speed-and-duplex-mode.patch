@@ -1,0 +1,103 @@
+From 5ca1d47e065c0318774a946ffdf76010c78cc164 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Sat, 10 Aug 2024 20:16:32 +0800
+Subject: [PATCH] r8126: print link speed and duplex mode
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Like other Ethernet drivers, print link speed and duplex mode
+when the interface is up. Formatting output at the same time.
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+---
+ src/r8126.h   |  2 ++
+ src/r8126_n.c | 48 +++++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 47 insertions(+), 3 deletions(-)
+
+--- a/src/r8126.h
++++ b/src/r8126.h
+@@ -1756,6 +1756,10 @@ enum RTL8126_register_content {
+         LinkStatus = 0x02,
+         FullDup = 0x01,
+ 
++#define RTL8126_FULL_DUPLEX_MASK (_5000bpsF | _2500bpsF | _1000bpsF | FullDup)
++#define RTL8126_SPEED_1000_MASK (_1000bpsF | _1000bpsL | _2500bpsL)
++#define RTL8126_SPEED_2500_MASK (_2500bpsF | _5000bpsL)
++
+         /* DBG_reg */
+         Fix_Nak_1 = (1 << 4),
+         Fix_Nak_2 = (1 << 3),
+--- a/src/r8126_n.c
++++ b/src/r8126_n.c
+@@ -39,6 +39,7 @@
+ #include <linux/module.h>
+ #include <linux/version.h>
+ #include <linux/pci.h>
++#include <linux/phy.h>
+ #include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+ #include <linux/delay.h>
+@@ -4661,6 +4662,40 @@ rtl8126_link_down_patch(struct net_devic
+ #endif
+ }
+ 
++static unsigned int rtl8126_phy_duplex(u32 status)
++{
++        unsigned int duplex = DUPLEX_UNKNOWN;
++
++        if (status & LinkStatus) {
++                if (status & RTL8126_FULL_DUPLEX_MASK)
++                        duplex = DUPLEX_FULL;
++                else
++                        duplex = DUPLEX_HALF;
++        }
++
++        return duplex;
++}
++
++static int rtl8126_phy_speed(u32 status)
++{
++        int speed = SPEED_UNKNOWN;
++
++        if (status & LinkStatus) {
++                if (status & _5000bpsF)
++                        speed = SPEED_5000;
++                else if (status & RTL8126_SPEED_2500_MASK)
++                        speed = SPEED_2500;
++                else if (status & RTL8126_SPEED_1000_MASK)
++                        speed = SPEED_1000;
++                else if (status & _100bps)
++                        speed = SPEED_100;
++                else if (status & _10bps)
++                        speed = SPEED_10;
++        }
++
++        return speed;
++}
++
+ static void
+ _rtl8126_check_link_status(struct net_device *dev, unsigned int link_state)
+ {
+@@ -4673,11 +4708,18 @@ _rtl8126_check_link_status(struct net_de
+         if (link_state == R8126_LINK_STATE_ON) {
+                 rtl8126_link_on_patch(dev);
+ 
+-                if (netif_msg_ifup(tp))
+-                        printk(KERN_INFO PFX "%s: link up\n", dev->name);
++                if (netif_msg_ifup(tp)) {
++                        const u32 phy_status = RTL_R32(tp, PHYstatus);
++                        const unsigned int phy_duplex = rtl8126_phy_duplex(phy_status);
++                        const int phy_speed = rtl8126_phy_speed(phy_status);
++                        printk(KERN_INFO PFX "%s: Link is Up - %s/%s\n",
++                                dev->name,
++                                phy_speed_to_str(phy_speed),
++                                phy_duplex_to_str(phy_duplex));
++                }
+         } else {
+                 if (netif_msg_ifdown(tp))
+-                        printk(KERN_INFO PFX "%s: link down\n", dev->name);
++                        printk(KERN_INFO PFX "%s: Link is Down\n", dev->name);
+ 
+                 rtl8126_link_down_patch(dev);
+         }

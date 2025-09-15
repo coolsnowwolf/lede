@@ -1,0 +1,197 @@
+From eb9d4fdf1846e688d51d86a9a50f0312aca2af25 Mon Sep 17 00:00:00 2001
+From: Glenn Strauss <gstrauss@gluelogic.com>
+Date: Sun, 23 Oct 2022 19:48:18 -0400
+Subject: [PATCH] x509 crt verify SAN iPAddress
+
+Signed-off-by: Glenn Strauss <gstrauss@gluelogic.com>
+---
+ include/mbedtls/x509_crt.h |   2 +-
+ library/x509_crt.c         | 126 ++++++++++++++++++++++++++++++-------
+ 2 files changed, 103 insertions(+), 25 deletions(-)
+
+--- a/include/mbedtls/x509_crt.h
++++ b/include/mbedtls/x509_crt.h
+@@ -608,7 +608,7 @@ int mbedtls_x509_crt_verify_info(char *b
+  * \param cn       The expected Common Name. This will be checked to be
+  *                 present in the certificate's subjectAltNames extension or,
+  *                 if this extension is absent, as a CN component in its
+- *                 Subject name. Currently only DNS names are supported. This
++ *                 Subject name. DNS names and IP addresses are supported. This
+  *                 may be \c NULL if the CN need not be verified.
+  * \param flags    The address at which to store the result of the verification.
+  *                 If the verification couldn't be completed, the flag value is
+--- a/library/x509_crt.c
++++ b/library/x509_crt.c
+@@ -57,6 +57,10 @@
+ 
+ #if defined(MBEDTLS_HAVE_TIME)
+ #if defined(_WIN32) && !defined(EFIX64) && !defined(EFI32)
++#define WIN32_LEAN_AND_MEAN
++#ifndef _WIN32_WINNT
++#define _WIN32_WINNT 0x0600
++#endif
+ #include <windows.h>
+ #else
+ #include <time.h>
+@@ -3002,6 +3006,61 @@ find_parent:
+     }
+ }
+ 
++#ifdef _WIN32
++#ifdef _MSC_VER
++#pragma comment(lib, "ws2_32.lib")
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#elif (defined(__MINGW32__) || defined(__MINGW64__)) && _WIN32_WINNT >= 0x0600
++#include <winsock2.h>
++#include <ws2tcpip.h>
++#endif
++#elif defined(__sun)
++/* Solaris requires -lsocket -lnsl for inet_pton() */
++#elif defined(__has_include)
++#if __has_include(<sys/socket.h>)
++#include <sys/socket.h>
++#endif
++#if __has_include(<arpa/inet.h>)
++#include <arpa/inet.h>
++#endif
++#endif
++
++/* Use whether or not AF_INET6 is defined to indicate whether or not to use
++ * the platform inet_pton() or a local implementation (below).  The local
++ * implementation may be used even in cases where the platform provides
++ * inet_pton(), e.g. when there are different includes required and/or the
++ * platform implementation requires dependencies on additional libraries.
++ * Specifically, Windows requires custom includes and additional link
++ * dependencies, and Solaris requires additional link dependencies.
++ * Also, as a coarse heuristic, use the local implementation if the compiler
++ * does not support __has_include(), or if the definition of AF_INET6 is not
++ * provided by headers included (or not) via __has_include() above. */
++#ifndef AF_INET6
++
++#define x509_cn_inet_pton(cn, dst) (0)
++
++#else
++
++static int x509_inet_pton_ipv6(const char *src, void *dst)
++{
++    return inet_pton(AF_INET6, src, dst) == 1 ? 0 : -1;
++}
++
++static int x509_inet_pton_ipv4(const char *src, void *dst)
++{
++    return inet_pton(AF_INET, src, dst) == 1 ? 0 : -1;
++}
++
++#endif /* AF_INET6 */
++
++static size_t x509_cn_inet_pton(const char *cn, void *dst)
++{
++    return strchr(cn, ':') == NULL
++            ? x509_inet_pton_ipv4(cn, dst) == 0 ? 4 : 0
++            : x509_inet_pton_ipv6(cn, dst) == 0 ? 16 : 0;
++}
++
+ /*
+  * Check for CN match
+  */
+@@ -3022,24 +3081,51 @@ static int x509_crt_check_cn(const mbedt
+     return -1;
+ }
+ 
++static int x509_crt_check_san_ip(const mbedtls_x509_sequence *san,
++                                 const char *cn, size_t cn_len)
++{
++    uint32_t ip[4];
++    cn_len = x509_cn_inet_pton(cn, ip);
++    if (cn_len == 0) {
++        return -1;
++    }
++
++    for (const mbedtls_x509_sequence *cur = san; cur != NULL; cur = cur->next) {
++        const unsigned char san_type = (unsigned char) cur->buf.tag &
++                                       MBEDTLS_ASN1_TAG_VALUE_MASK;
++        if (san_type == MBEDTLS_X509_SAN_IP_ADDRESS &&
++            cur->buf.len == cn_len && memcmp(cur->buf.p, ip, cn_len) == 0) {
++            return 0;
++        }
++    }
++
++    return -1;
++}
++
+ /*
+  * Check for SAN match, see RFC 5280 Section 4.2.1.6
+  */
+-static int x509_crt_check_san(const mbedtls_x509_buf *name,
++static int x509_crt_check_san(const mbedtls_x509_sequence *san,
+                               const char *cn, size_t cn_len)
+ {
+-    const unsigned char san_type = (unsigned char) name->tag &
+-                                   MBEDTLS_ASN1_TAG_VALUE_MASK;
+-
+-    /* dNSName */
+-    if (san_type == MBEDTLS_X509_SAN_DNS_NAME) {
+-        return x509_crt_check_cn(name, cn, cn_len);
++    int san_ip = 0;
++    for (const mbedtls_x509_sequence *cur = san; cur != NULL; cur = cur->next) {
++        switch ((unsigned char) cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK) {
++            case MBEDTLS_X509_SAN_DNS_NAME:                /* dNSName */
++                if (x509_crt_check_cn(&cur->buf, cn, cn_len) == 0) {
++                    return 0;
++                }
++                break;
++            case MBEDTLS_X509_SAN_IP_ADDRESS:              /* iPAddress */
++                san_ip = 1;
++                break;
++            /* (We may handle other types here later.) */
++            default: /* Unrecognized type */
++                break;
++        }
+     }
+ 
+-    /* (We may handle other types here later.) */
+-
+-    /* Unrecognized type */
+-    return -1;
++    return san_ip ? x509_crt_check_san_ip(san, cn, cn_len) : -1;
+ }
+ 
+ /*
+@@ -3050,31 +3136,23 @@ static void x509_crt_verify_name(const m
+                                  uint32_t *flags)
+ {
+     const mbedtls_x509_name *name;
+-    const mbedtls_x509_sequence *cur;
+     size_t cn_len = strlen(cn);
+ 
+     if (crt->ext_types & MBEDTLS_X509_EXT_SUBJECT_ALT_NAME) {
+-        for (cur = &crt->subject_alt_names; cur != NULL; cur = cur->next) {
+-            if (x509_crt_check_san(&cur->buf, cn, cn_len) == 0) {
+-                break;
+-            }
+-        }
+-
+-        if (cur == NULL) {
+-            *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
++        if (x509_crt_check_san(&crt->subject_alt_names, cn, cn_len) == 0) {
++            return;
+         }
+     } else {
+         for (name = &crt->subject; name != NULL; name = name->next) {
+             if (MBEDTLS_OID_CMP(MBEDTLS_OID_AT_CN, &name->oid) == 0 &&
+                 x509_crt_check_cn(&name->val, cn, cn_len) == 0) {
+-                break;
++                return;
+             }
+         }
+ 
+-        if (name == NULL) {
+-            *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+-        }
+     }
++
++    *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
+ }
+ 
+ /*

@@ -1,0 +1,123 @@
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 10 Oct 2023 21:06:43 +0200
+Subject: [PATCH net-next 2/2] net: ethernet: mediatek: use QDMA instead of
+ ADMAv2 on MT7981 and MT7986
+
+ADMA is plagued by RX hangs which can't easily detected and happen upon
+receival of a corrupted package.
+Use QDMA just like on netsys v1 which is also still present and usable, and
+doesn't suffer from that problem.
+
+Co-developed-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 46 ++++++++++-----------
+ 1 file changed, 23 insertions(+), 23 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -110,16 +110,16 @@ static const struct mtk_reg_map mt7986_r
+ 	.tx_irq_mask		= 0x461c,
+ 	.tx_irq_status		= 0x4618,
+ 	.pdma = {
+-		.rx_ptr		= 0x6100,
+-		.rx_cnt_cfg	= 0x6104,
+-		.pcrx_ptr	= 0x6108,
+-		.glo_cfg	= 0x6204,
+-		.rst_idx	= 0x6208,
+-		.delay_irq	= 0x620c,
+-		.irq_status	= 0x6220,
+-		.irq_mask	= 0x6228,
+-		.adma_rx_dbg0	= 0x6238,
+-		.int_grp	= 0x6250,
++		.rx_ptr		= 0x4100,
++		.rx_cnt_cfg	= 0x4104,
++		.pcrx_ptr	= 0x4108,
++		.glo_cfg	= 0x4204,
++		.rst_idx	= 0x4208,
++		.delay_irq	= 0x420c,
++		.irq_status	= 0x4220,
++		.irq_mask	= 0x4228,
++		.adma_rx_dbg0	= 0x4238,
++		.int_grp	= 0x4250,
+ 	},
+ 	.qdma = {
+ 		.qtx_cfg	= 0x4400,
+@@ -1232,7 +1232,7 @@ static bool mtk_rx_get_desc(struct mtk_e
+ 	rxd->rxd1 = READ_ONCE(dma_rxd->rxd1);
+ 	rxd->rxd3 = READ_ONCE(dma_rxd->rxd3);
+ 	rxd->rxd4 = READ_ONCE(dma_rxd->rxd4);
+-	if (mtk_is_netsys_v2_or_greater(eth)) {
++	if (mtk_is_netsys_v3_or_greater(eth)) {
+ 		rxd->rxd5 = READ_ONCE(dma_rxd->rxd5);
+ 		rxd->rxd6 = READ_ONCE(dma_rxd->rxd6);
+ 	}
+@@ -2184,7 +2184,7 @@ static int mtk_poll_rx(struct napi_struc
+ 			break;
+ 
+ 		/* find out which mac the packet come from. values start at 1 */
+-		if (mtk_is_netsys_v2_or_greater(eth)) {
++		if (mtk_is_netsys_v3_or_greater(eth)) {
+ 			u32 val = RX_DMA_GET_SPORT_V2(trxd.rxd5);
+ 
+ 			switch (val) {
+@@ -2296,7 +2296,7 @@ static int mtk_poll_rx(struct napi_struc
+ 		skb->dev = netdev;
+ 		bytes += skb->len;
+ 
+-		if (mtk_is_netsys_v2_or_greater(eth)) {
++		if (mtk_is_netsys_v3_or_greater(eth)) {
+ 			reason = FIELD_GET(MTK_RXD5_PPE_CPU_REASON, trxd.rxd5);
+ 			hash = trxd.rxd5 & MTK_RXD5_FOE_ENTRY;
+ 			if (hash != MTK_RXD5_FOE_ENTRY)
+@@ -2846,7 +2846,7 @@ static int mtk_rx_alloc(struct mtk_eth *
+ 
+ 		rxd->rxd3 = 0;
+ 		rxd->rxd4 = 0;
+-		if (mtk_is_netsys_v2_or_greater(eth)) {
++		if (mtk_is_netsys_v3_or_greater(eth)) {
+ 			rxd->rxd5 = 0;
+ 			rxd->rxd6 = 0;
+ 			rxd->rxd7 = 0;
+@@ -4053,7 +4053,7 @@ static int mtk_hw_init(struct mtk_eth *e
+ 	else
+ 		mtk_hw_reset(eth);
+ 
+-	if (mtk_is_netsys_v2_or_greater(eth)) {
++	if (mtk_is_netsys_v3_or_greater(eth)) {
+ 		/* Set FE to PDMAv2 if necessary */
+ 		val = mtk_r32(eth, MTK_FE_GLO_MISC);
+ 		mtk_w32(eth,  val | BIT(4), MTK_FE_GLO_MISC);
+@@ -5400,11 +5400,11 @@ static const struct mtk_soc_data mt7981_
+ 		.dma_len_offset = 8,
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma_v2),
+-		.irq_done_mask = MTK_RX_DONE_INT_V2,
++		.desc_size = sizeof(struct mtk_rx_dma),
++		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_V2,
+-		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+-		.dma_len_offset = 8,
++		.dma_max_len = MTK_TX_DMA_BUF_LEN,
++		.dma_len_offset = 16,
+ 	},
+ };
+ 
+@@ -5426,11 +5426,11 @@ static const struct mtk_soc_data mt7986_
+ 		.dma_len_offset = 8,
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma_v2),
+-		.irq_done_mask = MTK_RX_DONE_INT_V2,
++		.desc_size = sizeof(struct mtk_rx_dma),
++		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_V2,
+-		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+-		.dma_len_offset = 8,
++		.dma_max_len = MTK_TX_DMA_BUF_LEN,
++		.dma_len_offset = 16,
+ 	},
+ };
+ 

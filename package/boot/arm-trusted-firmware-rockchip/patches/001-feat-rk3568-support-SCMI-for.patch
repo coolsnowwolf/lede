@@ -1,0 +1,1477 @@
+From da1c5f6534eb6e125c25d517435022140c5696a7 Mon Sep 17 00:00:00 2001
+From: Shengfei Xu <xsf@rock-chips.com>
+Date: Sun, 29 Sep 2024 09:40:03 +0800
+Subject: [PATCH] feat(rk3568): support SCMI for clock/reset domain
+
+rockchip scmi clock controls clocks which only available in secure mode.
+
+Change-Id: Ide3a8dac72512ce79331592c3cbb86577de7df70
+Signed-off-by: Shengfei Xu <xsf@rock-chips.com>
+---
+ plat/rockchip/rk3568/drivers/otp/otp.c        | 368 +++++++++
+ plat/rockchip/rk3568/drivers/otp/otp.h        |  77 ++
+ plat/rockchip/rk3568/drivers/pmu/pmu.c        |   3 +
+ .../rockchip/rk3568/drivers/scmi/rk3568_clk.c | 753 ++++++++++++++++++
+ .../rockchip/rk3568/drivers/scmi/rk3568_clk.h |  70 ++
+ plat/rockchip/rk3568/drivers/soc/soc.c        |   6 +
+ plat/rockchip/rk3568/plat_sip_calls.c         |  13 +-
+ plat/rockchip/rk3568/platform.mk              |  14 +
+ plat/rockchip/rk3568/rk3568_def.h             |  18 +-
+ 9 files changed, 1317 insertions(+), 5 deletions(-)
+ create mode 100644 plat/rockchip/rk3568/drivers/otp/otp.c
+ create mode 100644 plat/rockchip/rk3568/drivers/otp/otp.h
+ create mode 100644 plat/rockchip/rk3568/drivers/scmi/rk3568_clk.c
+ create mode 100644 plat/rockchip/rk3568/drivers/scmi/rk3568_clk.h
+
+--- /dev/null
++++ b/plat/rockchip/rk3568/drivers/otp/otp.c
+@@ -0,0 +1,368 @@
++/*
++ * Copyright (c) 2024, Rockchip Electronics Co., Ltd. All rights reserved..
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <common/debug.h>
++#include <drivers/delay_timer.h>
++#include <platform_def.h>
++#include <plat_private.h>
++
++#include <otp.h>
++#include <rk3568_clk.h>
++#include <rk3568_def.h>
++#include <soc.h>
++
++/* default SBPI_READ mode */
++#define OTP_USER_READ		0
++#define USEC_PER_SEC		1000000
++
++enum clk_type {
++	PCLK_PHY = 0,
++	PCLK_NS,
++	PCLK_S,
++	CLK_NS_USER,
++	CLK_NS_SBPI,
++	CLK_S_USER,
++	CLK_S_SBPI
++};
++
++static uint8_t otp_ns_ecc_flag[OTP_NS_BYTE_SIZE / 2];
++
++static uint32_t enable_otp_clk(int clk)
++{
++	uint32_t reg = 0;
++
++	switch (clk) {
++	case CLK_NS_USER:
++		reg = mmio_read_32(CRU_BASE + CRU_CLKGATES_CON(26));
++		if (reg & CLK_NS_OTP_USER_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      CLK_NS_OTP_USER_EN << WRITE_MASK);
++
++		break;
++	case CLK_NS_SBPI:
++		reg = mmio_read_32(CRU_BASE + CRU_CLKGATES_CON(26));
++		if (reg & CLK_NS_OTP_SBPI_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      CLK_NS_OTP_SBPI_EN << WRITE_MASK);
++
++		break;
++	case PCLK_NS:
++		reg = mmio_read_32(CRU_BASE + CRU_CLKGATES_CON(26));
++		if (reg & PCLK_NS_OTP_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      PCLK_NS_OTP_EN << WRITE_MASK);
++
++		break;
++	case PCLK_PHY:
++		reg = mmio_read_32(CRU_BASE + CRU_CLKGATES_CON(34));
++		if (reg & PCLK_PHY_OTP_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(34),
++				      PCLK_PHY_OTP_EN << WRITE_MASK);
++
++		break;
++	case CLK_S_USER:
++		reg = mmio_read_32(SCRU_BASE + SCRU_GATE_CON01);
++		if (reg & CLK_S_OTP_USER_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      CLK_S_OTP_USER_EN << WRITE_MASK);
++
++		break;
++	case CLK_S_SBPI:
++		reg = mmio_read_32(SCRU_BASE + SCRU_GATE_CON01);
++		if (reg & CLK_S_OTP_SBPI_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      CLK_S_OTP_SBPI_EN << WRITE_MASK);
++
++		break;
++	case PCLK_S:
++		reg = mmio_read_32(SCRU_BASE + SCRU_GATE_CON01);
++		if (reg & PCLK_S_OTP_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      PCLK_S_OTP_EN << WRITE_MASK);
++
++		break;
++	default:
++		break;
++	}
++
++	return reg;
++}
++
++static void restore_otp_clk(int clk, uint32_t reg)
++{
++	switch (clk) {
++	case CLK_NS_USER:
++		if (reg & CLK_NS_OTP_USER_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      (CLK_NS_OTP_USER_EN << WRITE_MASK) | reg);
++		break;
++	case CLK_NS_SBPI:
++		if (reg & CLK_NS_OTP_SBPI_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      (CLK_NS_OTP_SBPI_EN << WRITE_MASK) | reg);
++		break;
++	case PCLK_NS:
++		if (reg & PCLK_NS_OTP_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(26),
++				      (PCLK_NS_OTP_EN << WRITE_MASK) | reg);
++		break;
++	case PCLK_PHY:
++		if (reg & PCLK_PHY_OTP_EN)
++			mmio_write_32(CRU_BASE + CRU_CLKGATES_CON(34),
++				      (PCLK_PHY_OTP_EN << WRITE_MASK) | reg);
++		break;
++	case CLK_S_USER:
++		if (reg & CLK_S_OTP_USER_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      (CLK_S_OTP_USER_EN << WRITE_MASK) | reg);
++		break;
++	case CLK_S_SBPI:
++		if (reg & CLK_S_OTP_SBPI_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      (CLK_S_OTP_SBPI_EN << WRITE_MASK) | reg);
++		break;
++	case PCLK_S:
++		if (reg & PCLK_S_OTP_EN)
++			mmio_write_32(SCRU_BASE + SCRU_GATE_CON01,
++				      (PCLK_S_OTP_EN << WRITE_MASK) | reg);
++		break;
++	default:
++		return;
++	}
++}
++
++static int check_sbpi_done_int(uint32_t otp_base)
++{
++	/* wait max 10ms */
++	uint32_t timeout = 10000;
++
++	while (1) {
++		/* check sbpi DONE INT */
++		if (((mmio_read_32(otp_base + REG_OTPC_INT_STATUS) >> 1) & 0x01) == 0x01) {
++			mmio_write_32(otp_base + REG_OTPC_INT_STATUS,
++				      0xffff0002); /* clear sbpi DONE INT */
++			break;
++		}
++
++		if (timeout == 0) {
++			WARN("---OTP---Check sbpi int done TIMEOUT");
++			return -1;
++		}
++
++		timeout--;
++		udelay(1);
++	}
++
++	return 0;
++}
++
++static uint32_t otp_select(uint32_t addr)
++{
++	uint32_t otp_base = 0;
++
++	if (addr < 0x1c0) {  /* 0-447 otp0 S */
++		otp_base = OTP_S_BASE;
++		mmio_write_32(SGRF_BASE + SGRF_SOC_CON2,
++			      (SGRF_CON_OTP_SECURE << WRITE_MASK) | SGRF_CON_OTP_SECURE); /* secure */
++	} else if (addr >= 0x1c0 && addr < 0x200) { /* 448-511 otp0 NS */
++		otp_base = OTP_NS_BASE;
++		mmio_write_32(SGRF_BASE + SGRF_SOC_CON2,
++			      SGRF_CON_OTP_SECURE << WRITE_MASK); /* non secure */
++	}
++
++	return otp_base;
++}
++
++static int rk_otp_ecc_enable(uint32_t otp_base, bool enable)
++{
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      BITS_WITH_WMASK(0x2, 0xffu, SBPI_DEV_ID_SHIFT)); /* device id */
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_VALID_PRE,
++		      0xffff0001); /* sbpi valid number */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x00, 0xfa); /* sbpi cmd */
++
++	if (enable)
++		mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x04,
++			      0x00); /* sbpi cmd enable ecc*/
++	else
++		mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x04,
++			      0x09); /* sbpi cmd disable ecc*/
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      (SBPI_ENABLE << WRITE_MASK) | SBPI_ENABLE); /* sbpi enable */
++
++	if (check_sbpi_done_int(otp_base))
++		return -1;
++
++	return 0;
++}
++
++static int rk_otp_sbpi_read(uint32_t addr, uint16_t *read_data, bool is_need_ecc)
++{
++	uint32_t otp_base = 0;
++	uint32_t otp_qp;
++
++	otp_base = otp_select(addr);
++
++	mmio_write_32(CRU_BASE + CRU_SOFTRSTS_CON(28),
++		      (OTP_PHY_SRSTN << WRITE_MASK) | OTP_PHY_SRSTN); /* reset otp phy */
++	udelay(2);
++	mmio_write_32(CRU_BASE + CRU_SOFTRSTS_CON(28),
++		      OTP_PHY_SRSTN << WRITE_MASK);
++	udelay(1);
++
++	mmio_write_32(SGRF_BASE + SGRF_SOC_CON2,
++		      (SGRF_CON_OTP_CKE << WRITE_MASK) | SGRF_CON_OTP_CKE); /* CKE = 1 */
++	udelay(2);
++	mmio_write_32(otp_base + REG_OTPC_USER_CTRL, USER_DCTRL << WRITE_MASK);
++	udelay(2);
++
++	rk_otp_ecc_enable(otp_base, is_need_ecc);
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      (SBPI_CS_AUTO << WRITE_MASK) | SBPI_CS_AUTO); /* cs auto */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CS_VALID_PRE,
++		      0xffff0000); /* cs valid number */
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      BITS_WITH_WMASK(0x2, 0xffu, SBPI_DEV_ID_SHIFT)); /* device id */
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_VALID_PRE,
++		      0xffff0002); /* sbpi valid number */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x00,
++		      0xfc); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x04,
++		      addr & 0xff); /* sbpi cmd 3c addr */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x08,
++		      (addr >> 8) & 0xff); /* sbpi cmd 3d addr */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      (SBPI_ENABLE << WRITE_MASK) | SBPI_ENABLE); /* sbpi enable */
++
++	if (check_sbpi_done_int(otp_base))
++		return -1;
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_VALID_PRE, 0xffff0007); /* sbpi valid number */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x00, 0x00); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x04, 0x00); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x08, 0x40); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x0C, 0x40); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x10, 0x00); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x14, 0x02); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x18, 0x80); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x1c, 0x81); /* sbpi cmd */
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      (SBPI_ENABLE << WRITE_MASK) | SBPI_ENABLE); /* sbpi enable */
++
++	if (check_sbpi_done_int(otp_base))
++		return -1;
++
++	if (is_need_ecc) {
++		otp_qp = mmio_read_32(otp_base + REG_OTPC_USER_QP);
++		VERBOSE("otp_addr:0x%x, otp_qp:0x%x\n", addr, otp_qp);
++		if (((otp_qp & 0xc0) == 0xc0) || (otp_qp & 0x20)) {
++			otp_ns_ecc_flag[addr - OTP_S_BYTE_SIZE / 2] = 1;
++			ERROR("ecc otp_addr:0x%x, otp_qp failed 0x%x\n", addr, otp_qp);
++		}
++	}
++
++	*read_data =
++		(uint16_t)mmio_read_32(otp_base + REG_OTPC_SBPI_READ_DATA_BASE + 0x20);
++	*read_data +=
++		(uint16_t)(mmio_read_32(otp_base + REG_OTPC_SBPI_READ_DATA_BASE + 0x24) << 8);
++
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_VALID_PRE, 0xffff0001);
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x00, 0xa0);
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CMD_BASE + 0x04, 0x0);
++	mmio_write_32(otp_base + REG_OTPC_SBPI_CTRL,
++		      (SBPI_ENABLE << WRITE_MASK) | SBPI_ENABLE);
++
++	if (check_sbpi_done_int(otp_base))
++		return -1;
++
++	mmio_write_32(otp_base + REG_OTPC_INT_STATUS, 0xffff0003); /* clear sbpi INT */
++
++	mmio_write_32(SGRF_BASE + SGRF_SOC_CON2,
++		      SGRF_CON_OTP_SECURE << WRITE_MASK); /* non secure */
++
++	return 0;
++}
++
++int rk_otp_read(uint32_t byte_addr, uint32_t byte_len, uint16_t *buf, bool is_need_ecc)
++{
++	int ret = 0;
++	uint32_t i = 0;
++	uint32_t clk_ns_user = 0, clk_ns_sbpi = 0, pclk_ns = 0, pclk_phy = 0;
++	uint32_t clk_s_user = 0, clk_s_sbpi = 0, pclk_s = 0;
++	uint32_t addr, length;
++
++	/*
++	 * RK3568 platform OTP R&W by halfword
++	 * Address and Length must be an integral multiple of 2
++	 */
++	if ((byte_addr % 2) != 0 || (byte_len % 2) != 0) {
++		ERROR("byte addr and byte length must be even numbers!");
++		return -1;
++	}
++
++	addr = byte_addr / 2;
++	length = byte_len / 2;
++
++	if (addr >= OTP_MAX_SIZE || length <= 0 || length > OTP_MAX_SIZE || !buf)
++		return -1;
++
++	if ((addr + length) > OTP_MAX_SIZE)
++		return -1;
++
++	if (addr < OTP_S_SIZE && (addr + length) > OTP_S_SIZE) {
++		ERROR("Both read secure and non secure otp are not supported!");
++		return -1;
++	}
++
++	/* enable otp clk if clk is disabled */
++	pclk_phy = enable_otp_clk(PCLK_PHY);
++	if (addr < 0x1C0) {  /* 0-447 otp0 S */
++		pclk_s = enable_otp_clk(PCLK_S);
++		clk_s_sbpi = enable_otp_clk(CLK_S_SBPI);
++		clk_s_user = enable_otp_clk(CLK_S_USER);
++	} else if (addr >= 0x1C0 && addr < 0x200) { /* 448-511 otp0 NS */
++		pclk_ns = enable_otp_clk(PCLK_NS);
++		clk_ns_sbpi = enable_otp_clk(CLK_NS_SBPI);
++		clk_ns_user = enable_otp_clk(CLK_NS_USER);
++	}
++
++	for (i = 0; i < length; i++) {
++
++		ret = rk_otp_sbpi_read(addr + i, buf + i, is_need_ecc);
++		if (ret) {
++			ERROR("---OTP---sbpi read otp failed! addr: 0x%x", addr + i);
++			goto out;
++		}
++	}
++
++out:
++	/* restore otp clk state */
++	restore_otp_clk(PCLK_PHY, pclk_phy);
++	if (addr < 0x1C0) {  /* 0-447 otp0 S */
++		restore_otp_clk(PCLK_S, pclk_s);
++		restore_otp_clk(CLK_S_SBPI, clk_s_sbpi);
++		restore_otp_clk(CLK_S_USER, clk_s_user);
++	} else if (addr >= 0x1C0 && addr < 0x200) { /* 448-511 otp0 NS */
++		restore_otp_clk(PCLK_NS, pclk_ns);
++		restore_otp_clk(CLK_NS_SBPI, clk_ns_sbpi);
++		restore_otp_clk(CLK_NS_USER, clk_ns_user);
++	}
++
++	return ret;
++}
++
++int rk_otp_ns_ecc_flag(uint32_t addr)
++{
++	if (addr >= OTP_NS_BYTE_SIZE)
++		return 0;
++
++	return otp_ns_ecc_flag[addr / 2];
++}
+--- /dev/null
++++ b/plat/rockchip/rk3568/drivers/otp/otp.h
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (c) 2024, Rockchip Electronics Co., Ltd. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef RK_OTP_H
++#define RK_OTP_H
++
++#define WRITE_MASK			(16)
++
++#define OTP_MAX_SIZE			512
++#define OTP_MAX_BYTE_SIZE		(OTP_MAX_SIZE * 2)
++#define OTP_S_SIZE			448
++#define OTP_S_BYTE_SIZE			(OTP_S_SIZE * 2)
++#define OTP_NS_SIZE			64
++#define OTP_NS_BYTE_SIZE		(OTP_NS_SIZE * 2)
++#define OTP_PROG_MASK			0
++#define OTP_PROG_MASK_NUM		32
++#define OTP_READ_MASK			0x0100
++#define OTP_READ_MASK_NUM		32
++#define IS_READ_MASK			0
++#define IS_WRITE_MASK			1
++#define IS_DISBALE_MASK			0
++#define IS_ENABLE_MASK			1
++#define OTP_MASK_BYPASS			0x200
++
++/* CRU controller register */
++#define CLK_NS_OTP_USER_EN		(1 << 11)
++#define CLK_NS_OTP_SBPI_EN		(1 << 10)
++#define PCLK_NS_OTP_EN			(1 << 9)
++#define PCLK_PHY_OTP_EN			(1 << 13)
++#define OTP_PHY_SRSTN			(1u << 15)
++
++/* SCRU controller register */
++#define CLK_S_OTP_USER_EN		(1 << 7)
++#define CLK_S_OTP_SBPI_EN		(1 << 6)
++#define PCLK_S_OTP_EN			(1 << 5)
++
++/* SGRF controller register */
++#define SGRF_CON_OTP_CKE		(1 << 2)
++#define SGRF_CON_OTP_SECURE		(1 << 1)
++
++/* OTP controller register */
++#define REG_OTPC_SBPI_CTRL		(0x0020)
++#define SBPI_DEV_ID_SHIFT		(8)
++#define SBPI_DEV_ID_MASK		(0xFF)
++#define SBPI_CS_DEASSERT		(1 << 3)
++#define SBPI_CS_AUTO			(1 << 2)
++#define SBPI_SP				(1 << 1)
++#define SBPI_ENABLE			(1 << 0)
++#define REG_OTPC_SBPI_CMD_VALID_PRE	(0x0024)
++#define REG_OTPC_SBPI_CS_VALID_PRE	(0x0028)
++#define REG_OTPC_SBPI_STATUS		(0x002C)
++#define REG_OTPC_USER_CTRL		(0x0100)
++#define USER_PD				(1 << 1)
++#define USER_DCTRL			(1 << 0)
++#define REG_OTPC_USER_ADDR		(0x0104)
++#define REG_OTPC_USER_ENABLE		(0x0108)
++#define USER_ENABLE			(1 << 0)
++#define REG_OTPC_USER_STATUS		(0x0110)
++#define REG_OTPC_USER_QP		(0x0120)
++#define REG_OTPC_USER_Q			(0x0124)
++#define REG_OTPC_USER_QSR		(0x0128)
++#define REG_OTPC_USER_QRR		(0x012C)
++#define REG_OTPC_SBPI_CMD_BASE		(0x1000)
++#define REG_OTPC_SBPI_READ_DATA_BASE	(0x2000)
++#define REG_OTPC_INT_CON		(0x0300)
++#define REG_OTPC_INT_STATUS		(0x0304)
++
++#define REG_KEY_READER_CONFIG		0x00
++#define OTP_KEY_ACCESS_START		(1 << 0)
++
++int rk_otp_read(uint32_t addr, uint32_t length,
++		    uint16_t *buf, bool is_need_ecc);
++int rk_otp_ns_ecc_flag(uint32_t addr);
++#endif /* RK_OTP_H */
+--- a/plat/rockchip/rk3568/drivers/pmu/pmu.c
++++ b/plat/rockchip/rk3568/drivers/pmu/pmu.c
+@@ -20,6 +20,7 @@
+ 
+ #include <cpus_on_fixed_addr.h>
+ #include <plat_private.h>
++#include <rk3568_clk.h>
+ #include <soc.h>
+ 
+ /*
+@@ -386,6 +387,7 @@ int rockchip_soc_cores_pwr_dm_resume(voi
+ 
+ int rockchip_soc_sys_pwr_dm_suspend(void)
+ {
++	pvtplls_suspend();
+ 	psram_sleep_cfg->pm_flag = 0;
+ 	flush_dcache_range((uintptr_t)&(psram_sleep_cfg->pm_flag),
+ 			   sizeof(uint32_t));
+@@ -396,6 +398,7 @@ int rockchip_soc_sys_pwr_dm_suspend(void
+ 
+ int rockchip_soc_sys_pwr_dm_resume(void)
+ {
++	pvtplls_resume();
+ 	pmu_reinit();
+ 	plat_rockchip_gic_cpuif_enable();
+ 	psram_sleep_cfg->pm_flag = PM_WARM_BOOT_BIT;
+--- /dev/null
++++ b/plat/rockchip/rk3568/drivers/scmi/rk3568_clk.c
+@@ -0,0 +1,753 @@
++/*
++ * Copyright (c) 2024, Rockchip Electronics Co., Ltd. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#include <platform_def.h>
++
++#include <drivers/delay_timer.h>
++#include <drivers/scmi.h>
++
++#include <plat_private.h>
++#include <scmi_clock.h>
++#include <rk3568_clk.h>
++#include <otp.h>
++
++enum pll_type_sel {
++	PLL_SEL_AUTO, /* all plls (normal pll or pvtpll) */
++	PLL_SEL_PVT,
++	PLL_SEL_NOR,
++	PLL_SEL_AUTO_NOR /* all normal plls (apll/gpll/npll) */
++};
++
++#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
++
++#define RK3568_CPU_PVTPLL_CON0	0x10
++#define RK3568_GPU_PVTPLL_CON0	0x700
++#define RK3568_NPU_PVTPLL_CON0	0x740
++
++#define GPLL_RATE		1188000000
++#define MAX_RATE_TABLE		16
++
++#define CLKDIV_5BITS_SHF0(div)	BITS_WITH_WMASK(div, 0x1f, 0)
++#define CLKDIV_5BITS_SHF8(div)	BITS_WITH_WMASK(div, 0x1f, 8)
++
++#define CLKDIV_4BITS_SHF0(div)	BITS_WITH_WMASK(div, 0xf, 0)
++#define CLKDIV_2BITS_SHF4(div)	BITS_WITH_WMASK(div, 0x3, 4)
++
++/* core_i: from gpll or apll */
++#define CLK_CORE_I_SEL_APLL	WMSK_BIT(6)
++#define CLK_CORE_I_SEL_GPLL	BIT_WITH_WMSK(6)
++
++/* clk_core:
++ * from normal pll(core_i: gpll or apll) path or direct pass from apll
++ */
++#define CLK_CORE_SEL_CORE_I	WMSK_BIT(7)
++#define CLK_CORE_SEL_APLL	BIT_WITH_WMSK(7)
++
++/* cpu clk: form clk_core or pvtpll */
++#define CLK_CORE_NDFT_CLK_CORE		WMSK_BIT(15)
++#define CLK_CORE_NDFT_CLK_PVTPLL	BIT_WITH_WMSK(15)
++
++/* clk_core_ndft path */
++#define CLK_CORE_PATH_NOR_GPLL	(CLK_CORE_I_SEL_GPLL | CLK_CORE_SEL_CORE_I)
++#define CLK_CORE_PATH_NOR_APLL	(CLK_CORE_I_SEL_APLL | CLK_CORE_SEL_CORE_I)
++#define CLK_CORE_PATH_DIR_APLL	(CLK_CORE_SEL_APLL) /* from apll directly*/
++
++/* cpu clk path */
++#define CPU_CLK_PATH_NOR_GPLL	(CLK_CORE_PATH_NOR_GPLL | \
++				 CLK_CORE_NDFT_CLK_CORE)
++#define CPU_CLK_PATH_NOR_APLL	(CLK_CORE_PATH_NOR_APLL | \
++				 CLK_CORE_NDFT_CLK_CORE)
++#define CPU_CLK_PATH_DIR_APLL	(CLK_CORE_PATH_DIR_APLL | \
++				 CLK_CORE_NDFT_CLK_CORE)
++#define CPU_CLK_PATH_PVTPLL	 CLK_CORE_NDFT_CLK_PVTPLL
++
++/* dsu clk path */
++#define SCLK_PATH_NOR_APLL	(BITS_WITH_WMASK(0, 0x3, 8) | WMSK_BIT(15))
++#define SCLK_PATH_NOR_GPLL	(BITS_WITH_WMASK(0x1, 0x3, 8) | WMSK_BIT(15))
++#define SCLK_PATH_NOR_NPLL	BITS_WITH_WMASK(0x2, 0x3, 8) | WMSK_BIT(15)
++#define SCLK_PATH_DIR_NPLL	BIT_WITH_WMSK(15)
++
++/* npu clk path */
++#define CLK_NPU_SRC_NPLL	WMSK_BIT(6)
++#define CLK_NPU_SRC_GPLL	BIT_WITH_WMSK(6)
++
++#define CLK_NPU_NP5_SRC_NPLL	WMSK_BIT(7)
++#define CLK_NPU_NP5_SRC_GPLL	BIT_WITH_WMSK(7)
++
++#define NPU_PRE_CLK_SEL_PLL_SRC	WMSK_BIT(8)
++#define NPU_PRE_CLK_SEL_NP5	BIT_WITH_WMSK(8)
++
++#define CLK_NPU_MUX_PLL_SRC	WMSK_BIT(15)
++#define CLK_NPU_MUX_PVTPLL	BIT_WITH_WMSK(15)
++
++#define NPU_PRE_CLK_PATH_NPLL	(CLK_NPU_SRC_NPLL | NPU_PRE_CLK_SEL_PLL_SRC)
++#define NPU_PRE_CLK_PATH_GPLL	(CLK_NPU_SRC_GPLL | NPU_PRE_CLK_SEL_PLL_SRC)
++#define NPU_PRE_CLK_PATH_NP5_NPLL	(CLK_NPU_NP5_SRC_NPLL | \
++					 NPU_PRE_CLK_SEL_NP5)
++#define NPU_PRE_CLK_PATH_NP5_GPLL	(CLK_NPU_NP5_SRC_GPLL | \
++					 NPU_PRE_CLK_SEL_NP5)
++
++#define NPU_CLK_PATH_NOR_NPLL	(NPU_PRE_CLK_PATH_NPLL | CLK_NPU_MUX_PLL_SRC)
++#define NPU_CLK_PATH_NOR_GPLL	(NPU_PRE_CLK_PATH_GPLL | CLK_NPU_MUX_PLL_SRC)
++#define NPU_CLK_PATH_NP5_NPLL	(NPU_PRE_CLK_PATH_NP5_NPLL | \
++				 CLK_NPU_MUX_PLL_SRC)
++#define NPU_CLK_PATH_NP5_GPLL	(NPU_PRE_CLK_PATH_NP5_GPLL | \
++				 CLK_NPU_MUX_PLL_SRC)
++#define NPU_CLK_PATH_PVTPLL	CLK_NPU_MUX_PVTPLL
++
++/* gpu clk path */
++#define GPU_CLK_PATH_NOR_MPLL	(WMSK_BIT(11) | BITS_WITH_WMASK(0, 0x3, 6))
++#define GPU_CLK_PATH_NOR_GPLL	(WMSK_BIT(11) | BITS_WITH_WMASK(0x1, 0x3, 6))
++#define GPU_CLK_PATH_NOR_CPLL	(WMSK_BIT(11) | BITS_WITH_WMASK(0x2, 0x3, 6))
++#define GPU_CLK_PATH_NOR_NPLL	(WMSK_BIT(11) | BITS_WITH_WMASK(0x3, 0x3, 6))
++#define GPU_CLK_PATH_PVTPLL		BIT_WITH_WMSK(11)
++
++#define PVTPLL_NEED(type, length)	(((type) == PLL_SEL_PVT || \
++					  (type) == PLL_SEL_AUTO) && \
++					 (length))
++
++#define RK3568_CPU_OPP_INFO_OFFSET	(OTP_S_BYTE_SIZE + 54)
++#define RK3568_GPU_OPP_INFO_OFFSET	(OTP_S_BYTE_SIZE + 60)
++#define RK3568_NPU_OPP_INFO_OFFSET	(OTP_S_BYTE_SIZE + 66)
++
++struct sys_clk_info_t {
++	unsigned long cpu_rate;
++	unsigned long gpu_rate;
++	unsigned long npu_rate;
++};
++
++struct otp_opp_info {
++	uint16_t min_freq;
++	uint16_t max_freq;
++	uint8_t volt;
++	uint8_t length;
++} __packed __aligned(2);
++
++struct pvtpll_table {
++	unsigned int rate;
++	uint32_t refdiv;
++	uint32_t fbdiv;
++	uint32_t postdiv1;
++	uint32_t postdiv2;
++	uint32_t dsmpd;
++	uint32_t frac;
++	uint32_t length;
++};
++
++#define ROCKCHIP_CPU_PVTPLL(_rate, _refdiv, _fbdiv, _postdiv1, _postdiv2, _dsmpd, _frac, _length )	\
++{							\
++	.rate	= _rate##U,				\
++	.refdiv = _refdiv,				\
++	.fbdiv = _fbdiv,				\
++	.postdiv1 = _postdiv1,				\
++	.postdiv2 = _postdiv2,				\
++	.dsmpd = _dsmpd,				\
++	.frac = _frac,					\
++	.length = _length,				\
++}
++
++#define ROCKCHIP_GPU_PVTPLL(_rate, _length)		\
++{							\
++	.rate = _rate##U,				\
++	.length = _length,				\
++}
++
++static struct pvtpll_table rk3568_cpu_pvtpll_table[] = {
++	ROCKCHIP_CPU_PVTPLL(1992000000, 1, 83, 1, 1, 1, 0, 0x33),
++	ROCKCHIP_CPU_PVTPLL(1800000000, 1, 75, 1, 1, 1, 0, 0x33),
++	ROCKCHIP_CPU_PVTPLL(1608000000, 1, 67, 1, 1, 1, 0, 0x3b),
++	ROCKCHIP_CPU_PVTPLL(1416000000, 1, 118, 2, 1, 1, 0, 0x43),
++	ROCKCHIP_CPU_PVTPLL(1200000000, 1, 100, 2, 1, 1, 0, 0x53),
++	ROCKCHIP_CPU_PVTPLL(1104000000, 1, 92, 2, 1, 1, 0, 0x53),
++	ROCKCHIP_CPU_PVTPLL(1008000000, 1, 84, 2, 1, 1, 0, 0x5b),
++	ROCKCHIP_CPU_PVTPLL(816000000, 1, 68, 2, 1, 1, 0, 0),
++	ROCKCHIP_CPU_PVTPLL(600000000, 1, 100, 4, 1, 1, 0, 0),
++	ROCKCHIP_CPU_PVTPLL(408000000, 1, 68, 2, 2, 1, 0, 0),
++	ROCKCHIP_CPU_PVTPLL(312000000, 1, 78, 6, 1, 1, 0, 0),
++	ROCKCHIP_CPU_PVTPLL(216000000, 1, 72, 4, 2, 1, 0, 0),
++	{ /* sentinel */ },
++};
++
++static struct pvtpll_table rk3568_gpu_pvtpll_table[] = {
++	/* rate_hz, length */
++	ROCKCHIP_GPU_PVTPLL(800000000, 0x1db),
++	ROCKCHIP_GPU_PVTPLL(700000000, 0x1db),
++	ROCKCHIP_GPU_PVTPLL(600000000, 0x1db),
++	ROCKCHIP_GPU_PVTPLL(400000000, 0),
++	ROCKCHIP_GPU_PVTPLL(300000000, 0),
++	ROCKCHIP_GPU_PVTPLL(200000000, 0),
++	{ /* sentinel */ },
++};
++
++static struct pvtpll_table rk3568_npu_pvtpll_table[] = {
++	/* rate_hz, length */
++	ROCKCHIP_GPU_PVTPLL(1000000000, 0xd3),
++	ROCKCHIP_GPU_PVTPLL(900000000, 0xd3),
++	ROCKCHIP_GPU_PVTPLL(800000000, 0xd3),
++	ROCKCHIP_GPU_PVTPLL(700000000, 0xdb),
++	ROCKCHIP_GPU_PVTPLL(600000000, 0xfb),
++	ROCKCHIP_GPU_PVTPLL(400000000, 0),
++	ROCKCHIP_GPU_PVTPLL(300000000, 0),
++	ROCKCHIP_GPU_PVTPLL(200000000, 0),
++	{ /* sentinel */ },
++};
++
++static unsigned long rk3568_cpu_rates[] = {
++	216000000, 312000000, 408000000, 816000000,
++	1008000000, 1200000000, 1416000000, 1608000000,
++	1800000000, 1992000000
++};
++
++static unsigned long rk3568_gpu_rates[] = {
++	100000000, 200000000, 300000000, 400000000,
++	500000000, 600000000, 700000000, 800000000,
++	900000000, 1000000000, 1100000000, 1200000000
++};
++
++static struct sys_clk_info_t sys_clk_info;
++
++static bool check_otp_ecc_ok(uint32_t addr)
++{
++	int i;
++
++	for (i = 0; i < sizeof(struct otp_opp_info); i++) {
++		if (rk_otp_ns_ecc_flag(addr + i))
++			return false;
++	}
++
++	return true;
++}
++
++static void rk3568_adjust_pvtpll_table(struct pvtpll_table *pvtpll,
++				       unsigned int count,
++				       uint16_t min_freq,
++				       uint16_t max_freq,
++				       uint8_t length)
++{
++	uint16_t freq;
++	uint8_t cur_length;
++	int i;
++
++	if (length > 31)
++		return;
++
++	for (i = 0; i < count; i++) {
++		if (!pvtpll[i].length)
++			continue;
++		cur_length = (pvtpll[i].length >> 3) & 0x1f;
++
++		/*
++		 * Max value of length is 31, so adjust length to
++		 * make sure (cur_length + length) <= 31.
++		 */
++		if ((cur_length + length) > 31)
++			length = 31 - cur_length;
++		freq = pvtpll[i].rate / 1000000;
++		if ((freq >= min_freq) && (freq <= max_freq))
++			pvtpll[i].length += (length << 3);
++	}
++}
++
++static unsigned int
++rockchip_get_pvtpll_length(struct pvtpll_table *table, int count,
++			   unsigned long rate)
++{
++	int i;
++
++	for (i = 0; i < count; i++) {
++		if (rate == table[i].rate)
++			return table[i].length;
++	}
++	return 0;
++}
++
++static struct pvtpll_table *rkclk_get_pll_config(unsigned int freq_hz)
++{
++	unsigned int rate_count = ARRAY_SIZE(rk3568_cpu_pvtpll_table);
++	int i;
++
++	for (i = 0; i < rate_count; i++) {
++		if (freq_hz == rk3568_cpu_pvtpll_table[i].rate)
++			return &rk3568_cpu_pvtpll_table[i];
++	}
++	return NULL;
++}
++
++static int rk3568_apll_set_rate(unsigned long rate, enum pll_type_sel type)
++{
++	struct pvtpll_table *div;
++	int delay = 2400;
++
++	div = rkclk_get_pll_config(rate);
++	if (div == NULL)
++		return SCMI_INVALID_PARAMETERS;
++
++	if (PVTPLL_NEED(type, div->length)) {
++		/* set pvtpll length */
++		mmio_write_32(CPUGRF_BASE + RK3568_CPU_PVTPLL_CON0,
++			      0xffff0000);
++		udelay(1);
++		mmio_write_32(CPUGRF_BASE + RK3568_CPU_PVTPLL_CON0,
++			      0xffff0000 | div->length);
++		udelay(1);
++		/* set core mux pvtpll */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(0),
++			      CPU_CLK_PATH_PVTPLL);
++	}
++
++	/* pll enter slow mode */
++	mmio_write_32(CRU_BASE + 0xc0,
++		      (RK3568_PLL_MODE_MASK <<
++		       (16 + RK3568_PLL_MODE_SHIFT)) |
++		      (RK3568_PLL_MODE_SLOWMODE << RK3568_PLL_MODE_SHIFT));
++	/* update pll values */
++	mmio_write_32(CRU_BASE + RK3568_PLLCON(0),
++		      (RK3568_PLLCON0_FBDIV_MASK <<
++		       (16 + RK3568_PLLCON0_FBDIV_SHIFT)) |
++		      (div->fbdiv << RK3568_PLLCON0_FBDIV_SHIFT));
++	mmio_write_32(CRU_BASE + RK3568_PLLCON(0),
++		      (RK3568_PLLCON0_POSTDIV1_MASK <<
++		       (16 + RK3568_PLLCON0_POSTDIV1_SHIFT)) |
++		      (div->postdiv1 << RK3568_PLLCON0_POSTDIV1_SHIFT));
++	mmio_write_32(CRU_BASE + RK3568_PLLCON(1),
++		      (RK3568_PLLCON1_REFDIV_MASK <<
++		       (16 + RK3568_PLLCON1_REFDIV_SHIFT)) |
++		      (div->refdiv << RK3568_PLLCON1_REFDIV_SHIFT));
++	mmio_write_32(CRU_BASE + RK3568_PLLCON(1),
++		      (RK3568_PLLCON1_POSTDIV2_MASK <<
++		       (16 + RK3568_PLLCON1_POSTDIV2_SHIFT)) |
++		      (div->postdiv2 << RK3568_PLLCON1_POSTDIV2_SHIFT));
++	mmio_write_32(CRU_BASE + RK3568_PLLCON(1),
++		      (RK3568_PLLCON1_DSMPD_MASK <<
++		       (16 + RK3568_PLLCON1_DSMPD_SHIFT)) |
++		      (div->dsmpd << RK3568_PLLCON1_DSMPD_SHIFT));
++
++	/* wait for the pll to lock */
++	while (delay > 0) {
++		if (mmio_read_32(CRU_BASE + RK3568_PLLCON(1)) &
++		    RK3568_PLLCON1_LOCK_STATUS)
++			break;
++		udelay(1);
++		delay--;
++	}
++	if (delay == 0)
++		INFO("%s:ERROR: PLL WAIT LOCK FAILED\n", __func__);
++
++	/* pll enter normal mode */
++	mmio_write_32(CRU_BASE + 0xc0,
++		      (RK3568_PLL_MODE_MASK << (16 + RK3568_PLL_MODE_SHIFT)) |
++		      (RK3568_PLL_MODE_NORMAL << RK3568_PLL_MODE_SHIFT));
++
++	return 0;
++}
++
++static unsigned long rk3568_apll_get_rate(void)
++{
++	unsigned int fbdiv, postdiv1, refdiv, postdiv2;
++	uint64_t rate64 = 24000000;
++	int mode;
++
++	mode = (mmio_read_32(CRU_BASE + 0xc0) >> RK3568_PLL_MODE_SHIFT) &
++	       RK3568_PLL_MODE_MASK;
++
++	if (mode == RK3568_PLL_MODE_SLOWMODE)
++		return rate64;
++
++	fbdiv = (mmio_read_32(CRU_BASE + RK3568_PLLCON(0)) >>
++		 RK3568_PLLCON0_FBDIV_SHIFT) &
++		RK3568_PLLCON0_FBDIV_MASK;
++	postdiv1 = (mmio_read_32(CRU_BASE + RK3568_PLLCON(0)) >>
++		    RK3568_PLLCON0_POSTDIV1_SHIFT) &
++		   RK3568_PLLCON0_POSTDIV1_MASK;
++	refdiv = (mmio_read_32(CRU_BASE + RK3568_PLLCON(1)) >>
++		  RK3568_PLLCON1_REFDIV_SHIFT) &
++		 RK3568_PLLCON1_REFDIV_MASK;
++	postdiv2 = (mmio_read_32(CRU_BASE + RK3568_PLLCON(1)) >>
++		    RK3568_PLLCON1_POSTDIV2_SHIFT) &
++		   RK3568_PLLCON1_POSTDIV2_MASK;
++
++	rate64 *= fbdiv;
++	rate64 = rate64 / refdiv;
++	rate64 = rate64 / postdiv1;
++	rate64 = rate64 / postdiv2;
++
++	return (unsigned long)rate64;
++}
++
++static int clk_cpu_set_rate(unsigned long rate, enum pll_type_sel type)
++{
++	int div = 0, ret = 0;
++
++	if (!rate)
++		return SCMI_INVALID_PARAMETERS;
++
++	/* set clk core div to 3 */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(0),
++		      CLKDIV_5BITS_SHF8(2) | CLKDIV_5BITS_SHF0(2));
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(1),
++		      CLKDIV_5BITS_SHF8(2) | CLKDIV_5BITS_SHF0(2));
++	/* set atcore/gicclk div */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(3),
++		      CLKDIV_5BITS_SHF8(7) | CLKDIV_5BITS_SHF0(7));
++	/* set pclk/periph div */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(4),
++		      CLKDIV_5BITS_SHF8(9) | CLKDIV_5BITS_SHF0(9));
++
++	/* set dsu div to 4 */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2), CLKDIV_4BITS_SHF0(3));
++
++	/* set core mux gpll */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(0), CPU_CLK_PATH_NOR_GPLL);
++	/* set dsu mux gpll */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2), SCLK_PATH_NOR_GPLL);
++
++	/* set apll */
++	ret = rk3568_apll_set_rate(rate, type);
++	if (ret < 0)
++		return ret;
++
++	/* set t core mux apll */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(0), CLK_CORE_PATH_DIR_APLL);
++
++	div = DIV_ROUND_UP(rate, 300000000);
++	div = div - 1;
++	/* set atcore/gicclk div */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(3),
++		      CLKDIV_5BITS_SHF8(div) | CLKDIV_5BITS_SHF0(div));
++	/* set pclk/periph div */
++	div = DIV_ROUND_UP(rate, 300000000);
++	div = div - 1;
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(4),
++		CLKDIV_5BITS_SHF8(div) | CLKDIV_5BITS_SHF0(div));
++
++	if (rate >= 1608000000) {
++		/* set dsu mux npll */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2),
++			      SCLK_PATH_DIR_NPLL);
++		/* set dsu div to 1 */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2),
++			      CLKDIV_4BITS_SHF0(0));
++	} else {
++		/* set dsu mux apll */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2),
++			      SCLK_PATH_NOR_APLL);
++		/* set dsu div to 2 */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(2),
++			      CLKDIV_4BITS_SHF0(1));
++	}
++
++	/* set clk core div to 1 */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(0),
++		      CLKDIV_5BITS_SHF8(0) | CLKDIV_5BITS_SHF0(0));
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(1),
++		      CLKDIV_5BITS_SHF8(0) | CLKDIV_5BITS_SHF0(0));
++	return ret;
++}
++
++static int clk_scmi_cpu_set_rate(struct rk_scmi_clock *clock, unsigned long rate)
++{
++	int ret;
++
++	ret = clk_cpu_set_rate(rate, PLL_SEL_AUTO);
++
++	if (!ret)
++		sys_clk_info.cpu_rate = rate;
++
++	return ret;
++}
++
++static unsigned long clk_scmi_cpu_get_rate(struct rk_scmi_clock *clock)
++{
++	return rk3568_apll_get_rate();
++}
++
++static int clk_scmi_cpu_set_status(struct rk_scmi_clock *clock, bool status)
++{
++	return 0;
++}
++
++static unsigned long clk_scmi_gpu_get_rate(struct rk_scmi_clock *clock)
++{
++	int div;
++
++	if (mmio_read_32(CRU_BASE + RK3568_CLK_SEL(6)) & 0x0800) {
++		return 0;
++	} else {
++		div = mmio_read_32(CRU_BASE + RK3568_CLK_SEL(6));
++		div = div & 0x000f;
++		return GPLL_RATE / (div + 1);
++	}
++}
++
++static int clk_gpu_set_rate(unsigned long rate, enum pll_type_sel type)
++{
++	unsigned int length;
++	int div;
++
++	if (!rate)
++		return SCMI_INVALID_PARAMETERS;
++
++	/* set gpu div 6 */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(6), CLKDIV_4BITS_SHF0(5));
++	/* set gpu mux gpll */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(6), GPU_CLK_PATH_NOR_GPLL);
++
++	/* set pvtpll ring */
++	length = rockchip_get_pvtpll_length(rk3568_gpu_pvtpll_table,
++					    ARRAY_SIZE(rk3568_gpu_pvtpll_table),
++					    rate);
++	if (PVTPLL_NEED(type, length)) {
++		mmio_write_32(GRF_BASE + RK3568_GPU_PVTPLL_CON0,
++			      0xffff0000);
++		udelay(1);
++		mmio_write_32(GRF_BASE + RK3568_GPU_PVTPLL_CON0,
++			      0xffff0000 | length);
++		udelay(1);
++		/* set gpu mux pvtpll */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(6),
++			      GPU_CLK_PATH_PVTPLL);
++	}
++
++	div = DIV_ROUND_UP(GPLL_RATE, rate);
++	/* set gpu div */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(6), CLKDIV_4BITS_SHF0((div - 1)));
++
++	return 0;
++}
++
++static int clk_scmi_gpu_set_rate(struct rk_scmi_clock *clock, unsigned long rate)
++{
++	int ret;
++
++	ret = clk_gpu_set_rate(rate, PLL_SEL_AUTO);
++
++	if (!ret)
++		sys_clk_info.gpu_rate = rate;
++	return ret;
++}
++
++static int clk_scmi_gpu_set_status(struct rk_scmi_clock *clock, bool status)
++{
++	return 0;
++}
++
++static unsigned long clk_scmi_npu_get_rate(struct rk_scmi_clock *clock)
++{
++	int div;
++
++	if (mmio_read_32(CRU_BASE + RK3568_CLK_SEL(7)) & 0x8000) {
++		return 0;
++	} else {
++		div = mmio_read_32(CRU_BASE + RK3568_CLK_SEL(7));
++		div = div & 0x000f;
++		return GPLL_RATE / (div + 1);
++	}
++}
++
++static int clk_npu_set_rate(unsigned long rate, enum pll_type_sel type)
++{
++	unsigned int length;
++	int div;
++
++	if (!rate)
++		return SCMI_INVALID_PARAMETERS;
++
++	/* set npu div 6 */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(7),
++		      CLKDIV_2BITS_SHF4(2) | CLKDIV_4BITS_SHF0(5));
++	/* set npu mux gpll */
++	mmio_write_32(CRU_BASE + RK3568_CLK_SEL(7),
++		      NPU_CLK_PATH_NOR_GPLL | CLK_NPU_NP5_SRC_GPLL);
++
++	/* set pvtpll ring */
++	length = rockchip_get_pvtpll_length(rk3568_npu_pvtpll_table,
++					    ARRAY_SIZE(rk3568_npu_pvtpll_table),
++					    rate);
++	if (PVTPLL_NEED(type, length)) {
++		mmio_write_32(GRF_BASE + RK3568_NPU_PVTPLL_CON0,
++			      0xffff0000);
++		udelay(1);
++		mmio_write_32(GRF_BASE + RK3568_NPU_PVTPLL_CON0,
++			      0xffff0000 | length);
++		udelay(1);
++		/* set npu mux pvtpll */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(7),
++			      NPU_CLK_PATH_PVTPLL);
++	} else {
++		div = DIV_ROUND_UP(GPLL_RATE, rate);
++		/* set gpu div */
++		mmio_write_32(CRU_BASE + RK3568_CLK_SEL(7),
++			      CLKDIV_4BITS_SHF0((div - 1)));
++	}
++
++	return 0;
++}
++
++static int clk_scmi_npu_set_rate(struct rk_scmi_clock *clock, unsigned long rate)
++{
++	int ret;
++
++	ret = clk_npu_set_rate(rate, PLL_SEL_AUTO);
++
++	if (!ret)
++		sys_clk_info.npu_rate = rate;
++
++	return ret;
++}
++
++static int clk_scmi_npu_set_status(struct rk_scmi_clock *clock, bool status)
++{
++	return 0;
++}
++
++static const struct rk_clk_ops clk_scmi_cpu_ops = {
++	.get_rate = clk_scmi_cpu_get_rate,
++	.set_rate = clk_scmi_cpu_set_rate,
++	.set_status = clk_scmi_cpu_set_status,
++};
++
++static const struct rk_clk_ops clk_scmi_gpu_ops = {
++	.get_rate = clk_scmi_gpu_get_rate,
++	.set_rate = clk_scmi_gpu_set_rate,
++	.set_status = clk_scmi_gpu_set_status,
++};
++
++static const struct rk_clk_ops clk_scmi_npu_ops = {
++	.get_rate = clk_scmi_npu_get_rate,
++	.set_rate = clk_scmi_npu_set_rate,
++	.set_status = clk_scmi_npu_set_status,
++};
++
++struct rk_scmi_clock clock_table[] = {
++	{
++		.id = 0,
++		.name = "clk_scmi_cpu",
++		.clk_ops = &clk_scmi_cpu_ops,
++		.rate_table = rk3568_cpu_rates,
++		.rate_cnt = ARRAY_SIZE(rk3568_cpu_rates),
++	},
++	{
++		.id = 1,
++		.name = "clk_scmi_gpu",
++		.clk_ops = &clk_scmi_gpu_ops,
++		.rate_table = rk3568_gpu_rates,
++		.rate_cnt = ARRAY_SIZE(rk3568_gpu_rates),
++	},
++	{
++		.id = 2,
++		.name = "clk_scmi_npu",
++		.clk_ops = &clk_scmi_npu_ops,
++		.rate_table = rk3568_gpu_rates,
++		.rate_cnt = ARRAY_SIZE(rk3568_gpu_rates),
++	},
++};
++
++size_t rockchip_scmi_clock_count(unsigned int agent_id __unused)
++{
++	return ARRAY_SIZE(clock_table);
++}
++
++rk_scmi_clock_t *rockchip_scmi_get_clock(uint32_t agent_id __unused,
++					 uint32_t clock_id)
++{
++	if (clock_id < ARRAY_SIZE(clock_table))
++		return &clock_table[clock_id];
++
++	return NULL;
++}
++
++void pvtplls_suspend(void)
++{
++	clk_gpu_set_rate(100000000, PLL_SEL_NOR);
++	clk_npu_set_rate(100000000, PLL_SEL_NOR);
++	clk_cpu_set_rate(408000000, PLL_SEL_NOR);
++}
++
++void pvtplls_resume(void)
++{
++	clk_cpu_set_rate(sys_clk_info.cpu_rate, PLL_SEL_AUTO);
++	clk_gpu_set_rate(sys_clk_info.gpu_rate, PLL_SEL_AUTO);
++	clk_npu_set_rate(sys_clk_info.npu_rate, PLL_SEL_AUTO);
++}
++
++void sys_reset_pvtplls_prepare(void)
++{
++	clk_gpu_set_rate(100000000, PLL_SEL_NOR);
++	clk_npu_set_rate(100000000, PLL_SEL_NOR);
++	clk_cpu_set_rate(408000000, PLL_SEL_NOR);
++}
++
++void rockchip_clock_init(void)
++{
++	struct otp_opp_info cpu_opp_info, gpu_opp_info, npu_opp_info;
++	int ret;
++
++	ret = rk_otp_read(RK3568_CPU_OPP_INFO_OFFSET,
++			  sizeof(cpu_opp_info),
++			  (uint16_t *)&cpu_opp_info,
++			  true);
++	if (ret || !check_otp_ecc_ok(RK3568_CPU_OPP_INFO_OFFSET)) {
++		INFO("get cpu_opp_info fail, use default config!\n");
++		cpu_opp_info.min_freq = 1008;
++		cpu_opp_info.max_freq = 1992;
++		cpu_opp_info.volt = 50;
++		cpu_opp_info.length = 4;
++	}
++	if (cpu_opp_info.length) {
++		INFO("adjust cpu pvtpll: min=%uM, max=%uM, length=%u\n",
++		     cpu_opp_info.min_freq, cpu_opp_info.max_freq, cpu_opp_info.length);
++
++		rk3568_adjust_pvtpll_table(rk3568_cpu_pvtpll_table,
++					   ARRAY_SIZE(rk3568_cpu_pvtpll_table),
++					   cpu_opp_info.min_freq,
++					   cpu_opp_info.max_freq,
++					   cpu_opp_info.length);
++	}
++
++	ret = rk_otp_read(RK3568_GPU_OPP_INFO_OFFSET,
++			  sizeof(gpu_opp_info),
++			  (uint16_t *)&gpu_opp_info,
++			  true);
++	if (ret || !check_otp_ecc_ok(RK3568_GPU_OPP_INFO_OFFSET)) {
++		INFO("get gpu_opp_info fail, use default config!\n");
++		gpu_opp_info.min_freq = 600;
++		gpu_opp_info.max_freq = 800;
++		gpu_opp_info.volt = 50;
++		gpu_opp_info.length = 6;
++	}
++	if (gpu_opp_info.length) {
++		INFO("adjust gpu pvtpll: min=%uM, max=%uM, length=%u\n",
++		     gpu_opp_info.min_freq, gpu_opp_info.max_freq, gpu_opp_info.length);
++
++		rk3568_adjust_pvtpll_table(rk3568_gpu_pvtpll_table,
++					   ARRAY_SIZE(rk3568_gpu_pvtpll_table),
++					   gpu_opp_info.min_freq,
++					   gpu_opp_info.max_freq,
++					   gpu_opp_info.length);
++	}
++
++	ret = rk_otp_read(RK3568_NPU_OPP_INFO_OFFSET,
++			  sizeof(npu_opp_info),
++			  (uint16_t *)&npu_opp_info,
++			  true);
++	if (ret || !check_otp_ecc_ok(RK3568_NPU_OPP_INFO_OFFSET)) {
++		INFO("get npu_opp_info fail, use default config!\n");
++		npu_opp_info.min_freq = 600;
++		npu_opp_info.max_freq = 1000;
++		npu_opp_info.volt = 50;
++		npu_opp_info.length = 6;
++	}
++	if (npu_opp_info.length) {
++		INFO("adjust npu pvtpll: min=%uM, max=%uM, length=%u\n",
++		     npu_opp_info.min_freq, npu_opp_info.max_freq, npu_opp_info.length);
++
++		rk3568_adjust_pvtpll_table(rk3568_npu_pvtpll_table,
++					   ARRAY_SIZE(rk3568_npu_pvtpll_table),
++					   npu_opp_info.min_freq,
++					   npu_opp_info.max_freq,
++					   npu_opp_info.length);
++	}
++}
+--- /dev/null
++++ b/plat/rockchip/rk3568/drivers/scmi/rk3568_clk.h
+@@ -0,0 +1,70 @@
++/*
++ * Copyright (c) 2024, Rockchip Electronics Co., Ltd. All rights reserved.
++ *
++ * SPDX-License-Identifier: BSD-3-Clause
++ */
++
++#ifndef __CLOCK_H__
++#define __CLOCK_H__
++
++#define CRU_CLKGATE_CON0		0x300
++#define CRU_CLKGATES_CON(i)		(CRU_CLKGATE_CON0 + (i) * 4)
++
++#define SCRU_GATE_CON00			0x0180
++#define SCRU_GATE_CON01			0x0184
++#define SCRU_GATE_CON02			0x0188
++
++#define SGRF_SOC_CON2			0x0008
++
++#define MPLL_HZ				(800 * MHz)
++#define MPLL_REFDIV			3
++#define MPLL_FBDIV			200
++#define MPLL_POSTDIV1			2
++#define MPLL_POSTDIV2			1
++#define MPLL_DSMPD			1
++#define MPLL_FRAC			0
++
++#define PPLL_HZ				(200 * MHz)
++#define GPLL_HZ				(1188 * MHz)
++#define ACLK_SECURE_FLASH_S_HZ		(297 * MHz)
++#define HCLK_SECURE_FLASH_S_HZ		(148500000)
++#define PCLK_SECURE_FLASH_S_HZ		(99 * MHz)
++#define PCLK_TOP_S_HZ			(99 * MHz)
++#define HCLK_VO_S_HZ			(99 * MHz)
++#define PCLK_DDR_HZ			(99 * MHz)
++#define PCLK_PDPMU_S_HZ			(100 * MHz)
++#define HCLK_PDPMU_S_HZ			(100 * MHz)
++
++#define RK3568_PLL_MODE_CON		0x20
++#define RK3568_PLL_MODE_SHIFT		0
++#define RK3568_PLL_MODE_MASK		(0x3 << RK3568_PLL_MODE_SHIFT)
++#define RK3568_PLL_MODE_SLOWMODE	0
++#define RK3568_PLL_MODE_NORMAL		1
++#define RK3568_PLLCON(i)		(i * 0x4)
++#define RK3568_PLLCON0_FBDIV_MASK	0xfff
++#define RK3568_PLLCON0_FBDIV_SHIFT	0
++#define RK3568_PLLCON0_POSTDIV1_MASK	0x7
++#define RK3568_PLLCON0_POSTDIV1_SHIFT	12
++#define RK3568_PLLCON1_REFDIV_MASK	0x3f
++#define RK3568_PLLCON1_REFDIV_SHIFT	0
++#define RK3568_PLLCON1_POSTDIV2_MASK	0x7
++#define RK3568_PLLCON1_POSTDIV2_SHIFT	6
++#define RK3568_PLLCON1_LOCK_STATUS	(1 << 10)
++#define RK3568_PLLCON1_DSMPD_MASK	0x1
++#define RK3568_PLLCON1_DSMPD_SHIFT	12
++#define RK3568_PLLCON1_PWRDOWN		(1 << 13)
++
++#define RK3568_CLK_SEL(x)		((x) * 0x4 + 0x100)
++#define RK3568_PMUCLK_SEL(x)		((x) * 0x4 + 0x100)
++
++#define PMUCRU_MODE_CON00		0x0080
++#define PMUCRU_PMUCLKSEL_CON00		0x0100
++#define PMUCRU_PMUCLKSEL_CON03		0x010c
++#define PMUCRU_PMUGATE_CON01		0x0184
++#define PMUCRU_CLKGATES_CON(i)		(0x180 + (i) * 4)
++#define PMUCRU_CLKGATES_CON_CNT		3
++
++void pvtplls_suspend(void);
++void pvtplls_resume(void);
++void rockchip_clock_init(void);
++#endif
+--- a/plat/rockchip/rk3568/drivers/soc/soc.c
++++ b/plat/rockchip/rk3568/drivers/soc/soc.c
+@@ -9,6 +9,8 @@
+ #include <mmio.h>
+ #include <platform_def.h>
+ 
++#include <plat_private.h>
++#include <rk3568_clk.h>
+ #include <soc.h>
+ 
+ const mmap_region_t plat_rk_mmap[] = {
+@@ -16,6 +18,8 @@ const mmap_region_t plat_rk_mmap[] = {
+ 			MT_DEVICE | MT_RW | MT_SECURE),
+ 	MAP_REGION_FLAT(PMUSRAM_BASE, PMUSRAM_SIZE,
+ 			MT_MEMORY | MT_RW | MT_SECURE),
++	MAP_REGION_FLAT(DDR_SHARE_MEM, DDR_SHARE_SIZE,
++			MT_DEVICE | MT_RW | MT_NS),
+ 
+ 	{ 0 }
+ };
+@@ -94,9 +98,11 @@ void __dead2 rockchip_soc_soft_reset(voi
+ 
+ void plat_rockchip_soc_init(void)
+ {
++	rockchip_clock_init();
+ 	secure_timer_init();
+ 	sgrf_init();
+ 	rockchip_system_reset_init();
++	rockchip_init_scmi_server();
+ 	NOTICE("BL31: Rockchip release version: v%d.%d\n",
+ 		MAJOR_VERSION, MINOR_VERSION);
+ }
+--- a/plat/rockchip/rk3568/plat_sip_calls.c
++++ b/plat/rockchip/rk3568/plat_sip_calls.c
+@@ -9,8 +9,7 @@
+ 
+ #include <common/debug.h>
+ #include <common/runtime_svc.h>
+-#include <lib/mmio.h>
+-#include <platform_def.h>
++#include <drivers/scmi-msg.h>
+ 
+ #include <plat_sip_calls.h>
+ #include <rockchip_sip_svc.h>
+@@ -24,6 +23,12 @@ uintptr_t rockchip_plat_sip_handler(uint
+ 				    void *handle,
+ 				    u_register_t flags)
+ {
+-	ERROR("%s: unhandled SMC (0x%x)\n", __func__, smc_fid);
+-	SMC_RET1(handle, SMC_UNK);
++	switch (smc_fid) {
++	case RK_SIP_SCMI_AGENT0:
++		scmi_smt_fastcall_smc_entry(0);
++		SMC_RET1(handle, 0);
++	default:
++		ERROR("%s: unhandled SMC (0x%x)\n", __func__, smc_fid);
++		SMC_RET1(handle, SMC_UNK);
++	}
+ }
+--- a/plat/rockchip/rk3568/platform.mk
++++ b/plat/rockchip/rk3568/platform.mk
+@@ -34,14 +34,18 @@ PLAT_INCLUDES		:=	-Iinclude/bl31					\
+ 				-Iinclude/services				\
+ 				-Iinclude/plat/common/				\
+ 				-Idrivers/arm/gic/v3/				\
++				-Idrivers/scmi-msg/				\
+ 				-I${RK_PLAT_COMMON}/				\
+ 				-I${RK_PLAT_COMMON}/pmusram/			\
+ 				-I${RK_PLAT_COMMON}/include/			\
+ 				-I${RK_PLAT_COMMON}/drivers/pmu/		\
+ 				-I${RK_PLAT_COMMON}/drivers/parameter/		\
++				-I${RK_PLAT_COMMON}/scmi/			\
+ 				-I${RK_PLAT_SOC}/				\
++				-I${RK_PLAT_SOC}/drivers/otp/			\
+ 				-I${RK_PLAT_SOC}/drivers/pmu/			\
+ 				-I${RK_PLAT_SOC}/drivers/soc/			\
++				-I${RK_PLAT_SOC}/drivers/scmi/			\
+ 				-I${RK_PLAT_SOC}/include/
+ 
+ RK_GIC_SOURCES		:=	${GICV3_SOURCES}				\
+@@ -64,6 +68,11 @@ BL31_SOURCES		+=	${RK_GIC_SOURCES}				\
+ 				drivers/ti/uart/aarch64/16550_console.S		\
+ 				drivers/delay_timer/delay_timer.c		\
+ 				drivers/delay_timer/generic_delay_timer.c	\
++				drivers/scmi-msg/base.c				\
++				drivers/scmi-msg/clock.c			\
++				drivers/scmi-msg/entry.c			\
++				drivers/scmi-msg/reset_domain.c			\
++				drivers/scmi-msg/smt.c				\
+ 				$(LIBFDT_SRCS)					\
+ 				${RK_PLAT_COMMON}/aarch64/plat_helpers.S	\
+ 				${RK_PLAT_COMMON}/bl31_plat_setup.c		\
+@@ -74,6 +83,11 @@ BL31_SOURCES		+=	${RK_GIC_SOURCES}				\
+ 				${RK_PLAT_COMMON}/pmusram/cpus_on_fixed_addr.S	\
+ 				${RK_PLAT_COMMON}/drivers/parameter/ddr_parameter.c	\
+ 				${RK_PLAT_COMMON}/aarch64/platform_common.c	\
++				${RK_PLAT_COMMON}/scmi/scmi.c			\
++				${RK_PLAT_COMMON}/scmi/scmi_clock.c		\
++				${RK_PLAT_COMMON}/scmi/scmi_rstd.c		\
++				${RK_PLAT_SOC}/drivers/scmi/rk3568_clk.c	\
++				${RK_PLAT_SOC}/drivers/otp/otp.c		\
+ 				${RK_PLAT_SOC}/drivers/soc/soc.c		\
+ 				${RK_PLAT_SOC}/drivers/pmu/pmu.c		\
+ 				${RK_PLAT_SOC}/plat_sip_calls.c
+--- a/plat/rockchip/rk3568/rk3568_def.h
++++ b/plat/rockchip/rk3568/rk3568_def.h
+@@ -52,6 +52,8 @@
+ #define PMUSRAM_RSIZE		SIZE_K(8)
+ 
+ #define DDRSGRF_BASE		0xfe200000
++#define OTP_NS_BASE		0xfe38c000
++#define OTP_S_BASE		0xfe3a0000
+ #define UART1_BASE		0xfe650000
+ #define UART2_BASE		0xfe660000
+ #define GPIO1_BASE		0xfe740000
+@@ -59,6 +61,8 @@
+ #define GPIO3_BASE		0xfe760000
+ #define GPIO4_BASE		0xfe770000
+ 
++#define OTP_PHY_BASE		0xfe880000
++
+ #define REMAP_BASE		0xffff0000
+ #define REMAP_SIZE		SIZE_K(64)
+ /**************************************************************************
+@@ -97,8 +101,20 @@
+ #define RK_IRQ_SEC_SGI_6	14
+ #define RK_IRQ_SEC_SGI_7	15
+ 
+-#define SHARE_MEM_BASE		0x100000/* [1MB, 1MB+60K]*/
++/**************************************************************************
++ * share mem region allocation: 1M~2M
++ **************************************************************************/
++#define DDR_SHARE_MEM		SIZE_K(1024)
++#define DDR_SHARE_SIZE		SIZE_K(64)
++
++#define SHARE_MEM_BASE		0x100000/* [1MB, 1MB+60K] */
+ #define SHARE_MEM_PAGE_NUM	15
+ #define SHARE_MEM_SIZE		SIZE_K(SHARE_MEM_PAGE_NUM * 4)
+ 
++#define SCMI_SHARE_MEM_BASE	(SHARE_MEM_BASE + SHARE_MEM_SIZE)
++#define SCMI_SHARE_MEM_SIZE	SIZE_K(4)
++
++#define SMT_BUFFER_BASE		SCMI_SHARE_MEM_BASE
++#define SMT_BUFFER0_BASE	SMT_BUFFER_BASE
++
+ #endif /* __PLAT_DEF_H__ */

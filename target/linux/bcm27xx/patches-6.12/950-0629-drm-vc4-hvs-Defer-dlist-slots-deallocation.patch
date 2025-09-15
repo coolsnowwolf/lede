@@ -1,0 +1,634 @@
+From 967315020de236cefec9248a0f4b58a29b045b68 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Thu, 16 Dec 2021 14:54:54 +0100
+Subject: [PATCH] drm/vc4: hvs: Defer dlist slots deallocation
+
+During normal operations, the cursor position update is done through an
+asynchronous plane update, which on the vc4 driver basically just
+modifies the right dlist word to move the plane to the new coordinates.
+
+However, when we have the overscan margins setup, we fall back to a
+regular commit when we are next to the edges. And since that commit
+happens to be on a cursor plane, it's considered a legacy cursor update
+by KMS.
+
+The main difference it makes is that it won't wait for its completion
+(ie, next vblank) before returning. This means if we have multiple
+commits happening in rapid succession, we can have several of them
+happening before the next vblank.
+
+In parallel, our dlist allocation is tied to a CRTC state, and each time
+we do a commit we end up with a new CRTC state, with the previous one
+being freed. This means that we free our previous dlist entry (but don't
+clear it though) every time a new one is being committed.
+
+Now, if we were to have two commits happening before the next vblank, we
+could end up freeing reusing the same dlist entries before the next
+vblank.
+
+Indeed, we would start from an initial state taking, for example, the
+dlist entries 10 to 20, then start a commit taking the entries 20 to 30
+and setting the dlist pointer to 20, and freeing the dlist entries 10 to
+20. However, since we haven't reach vblank yet, the HVS is still using
+the entries 10 to 20.
+
+If we were to make a new commit now, chances are the allocator are going
+to give the 10 to 20 entries back, and we would change their content to
+match the new state. If vblank hasn't happened yet, we just corrupted
+the active dlist entries.
+
+A first attempt to solve this was made by creating an intermediate dlist
+buffer to store the current (ie, as of the last commit) dlist content,
+that we would update each time the HVS is done with a frame. However, if
+the interrupt handler missed the vblank window, we would end up copying
+our intermediate dlist to the hardware one during the composition,
+essentially creating the same issue.
+
+Since making sure that our interrupt handler runs within a fixed,
+constrained, time window would require to make Linux a real-time kernel,
+this seems a bit out of scope.
+
+Instead, we can work around our original issue by keeping the dlist
+slots allocation longer. That way, we won't reuse a dlist slot while
+it's still in flight. In order to achieve this, instead of freeing the
+dlist slot when its associated CRTC state is destroyed, we'll queue it
+in a list.
+
+A naive implementation would free the buffers in that queue when we get
+our end of frame interrupt. However, there's still a race since, just
+like in the shadow dlist case, we don't control when the handler for
+that interrupt is going to run. Thus, we can end up with a commit adding
+an old dlist allocation to our queue during the window between our
+actual interrupt and when our handler will run. And since that buffer is
+still being used for the composition of the current frame, we can't free
+it right away, exposing us to the original bug.
+
+Fortunately for us, the hardware provides a frame counter that is
+increased each time the first line of a frame is being generated.
+Associating the frame counter the image is supposed to go away to the
+allocation, and then only deallocate buffers that have a counter below
+or equal to the one we see when the deallocation code should prevent the
+above race from occurring.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  12 +-
+ drivers/gpu/drm/vc4/vc4_drv.h  |  22 +-
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 369 +++++++++++++++++++++++++++++++--
+ 3 files changed, 376 insertions(+), 27 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -640,6 +640,8 @@ static void vc4_crtc_atomic_disable(stru
+ 
+ 	vc4_crtc_disable(crtc, encoder, state, old_vc4_state->assigned_channel);
+ 
++	vc4_hvs_atomic_disable(crtc, state);
++
+ 	/*
+ 	 * Make sure we issue a vblank event after disabling the CRTC if
+ 	 * someone was waiting it.
+@@ -1126,14 +1128,8 @@ void vc4_crtc_destroy_state(struct drm_c
+ 	struct vc4_dev *vc4 = to_vc4_dev(crtc->dev);
+ 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(state);
+ 
+-	if (drm_mm_node_allocated(&vc4_state->mm)) {
+-		unsigned long flags;
+-
+-		spin_lock_irqsave(&vc4->hvs->mm_lock, flags);
+-		drm_mm_remove_node(&vc4_state->mm);
+-		spin_unlock_irqrestore(&vc4->hvs->mm_lock, flags);
+-
+-	}
++	vc4_hvs_mark_dlist_entry_stale(vc4->hvs, vc4_state->mm);
++	vc4_state->mm = NULL;
+ 
+ 	drm_atomic_helper_crtc_destroy_state(crtc, state);
+ }
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -343,6 +343,11 @@ struct vc4_hvs {
+ 	struct clk *core_clk;
+ 	struct clk *disp_clk;
+ 
++	struct {
++		unsigned int desc;
++		unsigned int enabled: 1;
++	} eof_irq[HVS_NUM_CHANNELS];
++
+ 	unsigned long max_core_rate;
+ 
+ 	/* Memory manager for CRTCs to allocate space in the display
+@@ -360,6 +365,9 @@ struct vc4_hvs {
+ 
+ 	spinlock_t mm_lock;
+ 
++	struct list_head stale_dlist_entries;
++	struct work_struct free_dlist_work;
++
+ 	struct drm_mm_node mitchell_netravali_filter;
+ 
+ 	struct debugfs_regset32 regset;
+@@ -379,7 +387,6 @@ struct vc4_hvs {
+ 	bool vc5_hdmi_enable_4096by2160;
+ };
+ 
+-#define HVS_NUM_CHANNELS 3
+ #define HVS_UBM_WORD_SIZE 256
+ 
+ struct vc4_hvs_state {
+@@ -637,10 +644,17 @@ vc4_crtc_to_vc4_pv_data(const struct vc4
+ struct drm_encoder *vc4_get_crtc_encoder(struct drm_crtc *crtc,
+ 					 struct drm_crtc_state *state);
+ 
++struct vc4_hvs_dlist_allocation {
++	struct list_head node;
++	struct drm_mm_node mm_node;
++	unsigned int channel;
++	u8 target_frame_count;
++	bool dlist_programmed;
++};
++
+ struct vc4_crtc_state {
+ 	struct drm_crtc_state base;
+-	/* Dlist area for this CRTC configuration. */
+-	struct drm_mm_node mm;
++	struct vc4_hvs_dlist_allocation *mm;
+ 	bool txp_armed;
+ 	unsigned int assigned_channel;
+ 
+@@ -1055,6 +1069,8 @@ struct vc4_hvs *__vc4_hvs_alloc(struct v
+ void vc4_hvs_stop_channel(struct vc4_hvs *hvs, unsigned int output);
+ int vc4_hvs_get_fifo_from_output(struct vc4_hvs *hvs, unsigned int output);
+ u8 vc4_hvs_get_fifo_frame_count(struct vc4_hvs *hvs, unsigned int fifo);
++void vc4_hvs_mark_dlist_entry_stale(struct vc4_hvs *hvs,
++				    struct vc4_hvs_dlist_allocation *alloc);
+ int vc4_hvs_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state);
+ void vc4_hvs_atomic_begin(struct drm_crtc *crtc, struct drm_atomic_state *state);
+ void vc4_hvs_atomic_enable(struct drm_crtc *crtc, struct drm_atomic_state *state);
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -470,6 +470,273 @@ static void vc4_hvs_update_gamma_lut(str
+ 	vc4_hvs_lut_load(hvs, vc4_crtc);
+ }
+ 
++static void vc4_hvs_irq_enable_eof(struct vc4_hvs *hvs,
++				   unsigned int channel)
++{
++	struct vc4_dev *vc4 = hvs->vc4;
++
++	if (hvs->eof_irq[channel].enabled)
++		return;
++
++	switch (vc4->gen) {
++	case VC4_GEN_4:
++		HVS_WRITE(SCALER_DISPCTRL,
++			  HVS_READ(SCALER_DISPCTRL) |
++			  SCALER_DISPCTRL_DSPEIEOF(channel));
++		break;
++
++	case VC4_GEN_5:
++		HVS_WRITE(SCALER_DISPCTRL,
++			  HVS_READ(SCALER_DISPCTRL) |
++			  SCALER5_DISPCTRL_DSPEIEOF(channel));
++		break;
++
++	case VC4_GEN_6_C:
++	case VC4_GEN_6_D:
++		enable_irq(hvs->eof_irq[channel].desc);
++		break;
++
++	default:
++		break;
++	}
++
++	hvs->eof_irq[channel].enabled = true;
++}
++
++static void vc4_hvs_irq_clear_eof(struct vc4_hvs *hvs,
++				  unsigned int channel)
++{
++	struct vc4_dev *vc4 = hvs->vc4;
++
++	if (!hvs->eof_irq[channel].enabled)
++		return;
++
++	switch (vc4->gen) {
++	case VC4_GEN_4:
++		HVS_WRITE(SCALER_DISPCTRL,
++			  HVS_READ(SCALER_DISPCTRL) &
++			  ~SCALER_DISPCTRL_DSPEIEOF(channel));
++		break;
++
++	case VC4_GEN_5:
++		HVS_WRITE(SCALER_DISPCTRL,
++			  HVS_READ(SCALER_DISPCTRL) &
++			  ~SCALER5_DISPCTRL_DSPEIEOF(channel));
++		break;
++
++	case VC4_GEN_6_C:
++	case VC4_GEN_6_D:
++		disable_irq_nosync(hvs->eof_irq[channel].desc);
++		break;
++
++	default:
++		break;
++	}
++
++	hvs->eof_irq[channel].enabled = false;
++}
++
++static void vc4_hvs_free_dlist_entry_locked(struct vc4_hvs *hvs,
++					    struct vc4_hvs_dlist_allocation *alloc);
++
++static struct vc4_hvs_dlist_allocation *
++vc4_hvs_alloc_dlist_entry(struct vc4_hvs *hvs,
++			  unsigned int channel,
++			  size_t dlist_count)
++{
++	struct vc4_dev *vc4 = hvs->vc4;
++	struct drm_device *dev = &vc4->base;
++	struct vc4_hvs_dlist_allocation *alloc;
++	struct vc4_hvs_dlist_allocation *cur, *next;
++	unsigned long flags;
++	int ret;
++
++	if (channel == VC4_HVS_CHANNEL_DISABLED)
++		return NULL;
++
++	alloc = kzalloc(sizeof(*alloc), GFP_KERNEL);
++	if (!alloc)
++		return ERR_PTR(-ENOMEM);
++
++	INIT_LIST_HEAD(&alloc->node);
++
++	spin_lock_irqsave(&hvs->mm_lock, flags);
++	ret = drm_mm_insert_node(&hvs->dlist_mm, &alloc->mm_node,
++				 dlist_count);
++	spin_unlock_irqrestore(&hvs->mm_lock, flags);
++
++	if (ret) {
++		drm_err(dev, "Failed to allocate DLIST entry. Requested size=%zu. ret=%d. DISPCTRL is %08x\n",
++			dlist_count, ret, HVS_READ(SCALER_DISPCTRL));
++
++		/* This should never happen as stale entries should get released
++		 * as the frame counter interrupt triggers.
++		 * However we've seen this fail for reasons currently unknown.
++		 * Free all stale entries now so we should be able to complete
++		 * this allocation.
++		 */
++		spin_lock_irqsave(&hvs->mm_lock, flags);
++		list_for_each_entry_safe(cur, next, &hvs->stale_dlist_entries, node) {
++			vc4_hvs_free_dlist_entry_locked(hvs, cur);
++		}
++
++		ret = drm_mm_insert_node(&hvs->dlist_mm, &alloc->mm_node,
++					 dlist_count);
++		spin_unlock_irqrestore(&hvs->mm_lock, flags);
++
++		if (ret)
++			return ERR_PTR(ret);
++	}
++
++	alloc->channel = channel;
++
++	return alloc;
++}
++
++static void vc4_hvs_free_dlist_entry_locked(struct vc4_hvs *hvs,
++					    struct vc4_hvs_dlist_allocation *alloc)
++{
++	lockdep_assert_held(&hvs->mm_lock);
++
++	if (!list_empty(&alloc->node))
++		list_del(&alloc->node);
++
++	drm_mm_remove_node(&alloc->mm_node);
++	kfree(alloc);
++}
++
++void vc4_hvs_mark_dlist_entry_stale(struct vc4_hvs *hvs,
++				    struct vc4_hvs_dlist_allocation *alloc)
++{
++	unsigned long flags;
++	u8 frcnt;
++
++	if (!alloc)
++		return;
++
++	if (!drm_mm_node_allocated(&alloc->mm_node))
++		return;
++
++	/*
++	 * Kunit tests run with a mock device and we consider any hardware
++	 * access a test failure. Let's free the dlist allocation right away if
++	 * we're running under kunit, we won't risk a dlist corruption anyway.
++	 *
++	 * Likewise if the allocation was only checked and never programmed, we
++	 * can destroy the allocation immediately.
++	 */
++	if (kunit_get_current_test() || !alloc->dlist_programmed) {
++		spin_lock_irqsave(&hvs->mm_lock, flags);
++		vc4_hvs_free_dlist_entry_locked(hvs, alloc);
++		spin_unlock_irqrestore(&hvs->mm_lock, flags);
++		return;
++	}
++
++	frcnt = vc4_hvs_get_fifo_frame_count(hvs, alloc->channel);
++	alloc->target_frame_count = (frcnt + 1) & ((1 << 6) - 1);
++
++	spin_lock_irqsave(&hvs->mm_lock, flags);
++
++	list_add_tail(&alloc->node, &hvs->stale_dlist_entries);
++
++	HVS_WRITE(SCALER_DISPSTAT, SCALER_DISPSTAT_EOF(alloc->channel));
++	vc4_hvs_irq_enable_eof(hvs, alloc->channel);
++
++	spin_unlock_irqrestore(&hvs->mm_lock, flags);
++}
++
++static void vc4_hvs_schedule_dlist_sweep(struct vc4_hvs *hvs,
++					 unsigned int channel)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&hvs->mm_lock, flags);
++
++	if (!list_empty(&hvs->stale_dlist_entries))
++		queue_work(system_unbound_wq, &hvs->free_dlist_work);
++
++	if (list_empty(&hvs->stale_dlist_entries))
++		vc4_hvs_irq_clear_eof(hvs, channel);
++
++	spin_unlock_irqrestore(&hvs->mm_lock, flags);
++}
++
++/*
++ * Frame counts are essentially sequence numbers over 6 bits, and we
++ * thus can use sequence number arithmetic and follow the RFC1982 to
++ * implement proper comparison between them.
++ */
++static bool vc4_hvs_frcnt_lte(u8 cnt1, u8 cnt2)
++{
++	return (s8)((cnt1 << 2) - (cnt2 << 2)) <= 0;
++}
++
++static bool vc4_hvs_check_channel_active(struct vc4_hvs *hvs, unsigned int fifo)
++{
++	struct vc4_dev *vc4 = hvs->vc4;
++	struct drm_device *drm = &vc4->base;
++	bool enabled = false;
++	int idx;
++
++	if (!drm_dev_enter(drm, &idx))
++		return 0;
++
++	if (vc4->gen >= VC4_GEN_6_C)
++		enabled = HVS_READ(SCALER6_DISPX_CTRL0(fifo)) & SCALER6_DISPX_CTRL0_ENB;
++	else
++		enabled = HVS_READ(SCALER_DISPCTRLX(fifo)) & SCALER_DISPCTRLX_ENABLE;
++
++	drm_dev_exit(idx);
++	return enabled;
++}
++
++/*
++ * Some atomic commits (legacy cursor updates, mostly) will not wait for
++ * the next vblank and will just return once the commit has been pushed
++ * to the hardware.
++ *
++ * On the hardware side, our HVS stores the planes parameters in its
++ * context RAM, and will use part of the RAM to store data during the
++ * frame rendering.
++ *
++ * This interacts badly if we get multiple commits before the next
++ * vblank since we could end up overwriting the DLIST entries used by
++ * previous commits if our dlist allocation reuses that entry. In such a
++ * case, we would overwrite the data currently being used by the
++ * hardware, resulting in a corrupted frame.
++ *
++ * In order to work around this, we'll queue the dlist entries in a list
++ * once the associated CRTC state is destroyed. The HVS only allows us
++ * to know which entry is being active, but not which one are no longer
++ * being used, so in order to avoid freeing entries that are still used
++ * by the hardware we add a guesstimate of the frame count where our
++ * entry will no longer be used, and thus will only free those entries
++ * when we will have reached that frame count.
++ */
++static void vc4_hvs_dlist_free_work(struct work_struct *work)
++{
++	struct vc4_hvs *hvs = container_of(work, struct vc4_hvs, free_dlist_work);
++	struct vc4_hvs_dlist_allocation *cur, *next;
++	unsigned long flags;
++	bool active[3];
++	u8 frcnt[3];
++	int i;
++
++	spin_lock_irqsave(&hvs->mm_lock, flags);
++	for (i = 0; i < 3; i++) {
++		frcnt[i] = vc4_hvs_get_fifo_frame_count(hvs, i);
++		active[i] = vc4_hvs_check_channel_active(hvs, i);
++	}
++	list_for_each_entry_safe(cur, next, &hvs->stale_dlist_entries, node) {
++		if (active[cur->channel] &&
++		    !vc4_hvs_frcnt_lte(cur->target_frame_count, frcnt[cur->channel]))
++			continue;
++
++		vc4_hvs_free_dlist_entry_locked(hvs, cur);
++	}
++	spin_unlock_irqrestore(&hvs->mm_lock, flags);
++}
++
+ u8 vc4_hvs_get_fifo_frame_count(struct vc4_hvs *hvs, unsigned int fifo)
+ {
+ 	struct vc4_dev *vc4 = hvs->vc4;
+@@ -790,13 +1057,12 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ {
+ 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+ 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc_state);
++	struct vc4_hvs_dlist_allocation *alloc;
+ 	struct drm_device *dev = crtc->dev;
+ 	struct vc4_dev *vc4 = to_vc4_dev(dev);
+ 	struct drm_plane *plane;
+-	unsigned long flags;
+ 	const struct drm_plane_state *plane_state;
+ 	u32 dlist_count = 0;
+-	int ret;
+ 
+ 	/* The pixelvalve can only feed one encoder (and encoders are
+ 	 * 1:1 with connectors.)
+@@ -819,14 +1085,11 @@ int vc4_hvs_atomic_check(struct drm_crtc
+ 
+ 	drm_dbg_driver(dev, "[CRTC:%d:%s] Allocating DLIST block with size: %u\n",
+ 		       crtc->base.id, crtc->name, dlist_count);
+-	spin_lock_irqsave(&vc4->hvs->mm_lock, flags);
+-	ret = drm_mm_insert_node(&vc4->hvs->dlist_mm, &vc4_state->mm,
+-				 dlist_count);
+-	spin_unlock_irqrestore(&vc4->hvs->mm_lock, flags);
+-	if (ret) {
+-		drm_err(dev, "Failed to allocate DLIST entry: %d\n", ret);
+-		return ret;
+-	}
++	alloc = vc4_hvs_alloc_dlist_entry(vc4->hvs, vc4_state->assigned_channel, dlist_count);
++	if (IS_ERR(alloc))
++		return PTR_ERR(alloc);
++
++	vc4_state->mm = alloc;
+ 
+ 	return 0;
+ }
+@@ -842,13 +1105,17 @@ static void vc4_hvs_install_dlist(struct
+ 	if (!drm_dev_enter(dev, &idx))
+ 		return;
+ 
++	WARN_ON(!vc4_state->mm);
++
++	vc4_state->mm->dlist_programmed = true;
++
+ 	if (vc4->gen >= VC4_GEN_6_C)
+ 		HVS_WRITE(SCALER6_DISPX_LPTRS(vc4_state->assigned_channel),
+-			  VC4_SET_FIELD(vc4_state->mm.start,
++			  VC4_SET_FIELD(vc4_state->mm->mm_node.start,
+ 					SCALER6_DISPX_LPTRS_HEADE));
+ 	else
+ 		HVS_WRITE(SCALER_DISPLISTX(vc4_state->assigned_channel),
+-			  vc4_state->mm.start);
++			  vc4_state->mm->mm_node.start);
+ 
+ 	drm_dev_exit(idx);
+ }
+@@ -875,8 +1142,10 @@ static void vc4_hvs_update_dlist(struct
+ 		spin_unlock_irqrestore(&dev->event_lock, flags);
+ 	}
+ 
++	WARN_ON(!vc4_state->mm);
++
+ 	spin_lock_irqsave(&vc4_crtc->irq_lock, flags);
+-	vc4_crtc->current_dlist = vc4_state->mm.start;
++	vc4_crtc->current_dlist = vc4_state->mm->mm_node.start;
+ 	spin_unlock_irqrestore(&vc4_crtc->irq_lock, flags);
+ }
+ 
+@@ -937,8 +1206,7 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	struct vc4_plane_state *vc4_plane_state;
+ 	bool debug_dump_regs = false;
+ 	bool enable_bg_fill = true;
+-	u32 __iomem *dlist_start = vc4->hvs->dlist + vc4_state->mm.start;
+-	u32 __iomem *dlist_next = dlist_start;
++	u32 __iomem *dlist_start, *dlist_next;
+ 	unsigned int zpos = 0;
+ 	bool found = false;
+ 	int idx;
+@@ -958,6 +1226,9 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 		vc4_hvs_dump_state(hvs);
+ 	}
+ 
++	dlist_start = vc4->hvs->dlist + vc4_state->mm->mm_node.start;
++	dlist_next = dlist_start;
++
+ 	/* Copy all the active planes' dlist contents to the hardware dlist. */
+ 	do {
+ 		found = false;
+@@ -991,7 +1262,8 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	writel(SCALER_CTL0_END, dlist_next);
+ 	dlist_next++;
+ 
+-	WARN_ON_ONCE(dlist_next - dlist_start != vc4_state->mm.size);
++	WARN_ON(!vc4_state->mm);
++	WARN_ON_ONCE(dlist_next - dlist_start != vc4_state->mm->mm_node.size);
+ 
+ 	if (vc4->gen >= VC4_GEN_6_C) {
+ 		/* This sets a black background color fill, as is the case
+@@ -1147,6 +1419,11 @@ static irqreturn_t vc4_hvs_irq_handler(i
+ 
+ 			irqret = IRQ_HANDLED;
+ 		}
++
++		if (status & SCALER_DISPSTAT_EOF(channel)) {
++			vc4_hvs_schedule_dlist_sweep(hvs, channel);
++			irqret = IRQ_HANDLED;
++		}
+ 	}
+ 
+ 	/* Clear every per-channel interrupt flag. */
+@@ -1157,6 +1434,27 @@ static irqreturn_t vc4_hvs_irq_handler(i
+ 	return irqret;
+ }
+ 
++static irqreturn_t vc6_hvs_eof_irq_handler(int irq, void *data)
++{
++	struct drm_device *dev = data;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++	struct vc4_hvs *hvs = vc4->hvs;
++	unsigned int i;
++
++	for (i = 0; i < HVS_NUM_CHANNELS; i++) {
++		if (!hvs->eof_irq[i].enabled)
++			continue;
++
++		if (hvs->eof_irq[i].desc != irq)
++			continue;
++
++		vc4_hvs_schedule_dlist_sweep(hvs, i);
++		return IRQ_HANDLED;
++	}
++
++	return IRQ_NONE;
++}
++
+ int vc4_hvs_debugfs_init(struct drm_minor *minor)
+ {
+ 	struct drm_device *drm = minor->dev;
+@@ -1248,6 +1546,18 @@ struct vc4_hvs *__vc4_hvs_alloc(struct v
+ 
+ 	hvs->dlist_mem_size = dlist_size;
+ 
++	INIT_LIST_HEAD(&hvs->stale_dlist_entries);
++	INIT_WORK(&hvs->free_dlist_work, vc4_hvs_dlist_free_work);
++
++	/* Set up the HVS display list memory manager.  We never
++	 * overwrite the setup from the bootloader (just 128b out of
++	 * our 16K), since we don't want to scramble the screen when
++	 * transitioning from the firmware's boot setup to runtime.
++	 */
++	drm_mm_init(&hvs->dlist_mm,
++		    HVS_BOOTLOADER_DLIST_END,
++		    (SCALER_DLIST_SIZE >> 2) - HVS_BOOTLOADER_DLIST_END);
++
+ 	/* Set up the HVS LBM memory manager.  We could have some more
+ 	 * complicated data structure that allowed reuse of LBM areas
+ 	 * between planes when they don't overlap on the screen, but
+@@ -1743,6 +2053,33 @@ static int vc4_hvs_bind(struct device *d
+ 				       vc4_hvs_irq_handler, 0, "vc4 hvs", drm);
+ 		if (ret)
+ 			return ret;
++	} else {
++		unsigned int i;
++
++		for (i = 0; i < HVS_NUM_CHANNELS; i++) {
++			char irq_name[16];
++			int irq;
++
++			snprintf(irq_name, sizeof(irq_name), "ch%u-eof", i);
++
++			irq = platform_get_irq_byname(pdev, irq_name);
++			if (irq < 0) {
++				dev_err(&pdev->dev,
++					"Couldn't get %s interrupt: %d\n",
++					irq_name, irq);
++
++				return irq;
++			}
++
++			ret = devm_request_irq(&pdev->dev,
++					       irq,
++					       vc6_hvs_eof_irq_handler,
++					       IRQF_NO_AUTOEN,
++					       dev_name(&pdev->dev),
++					       drm);
++
++			hvs->eof_irq[i].desc = irq;
++		}
+ 	}
+ 
+ 	return 0;

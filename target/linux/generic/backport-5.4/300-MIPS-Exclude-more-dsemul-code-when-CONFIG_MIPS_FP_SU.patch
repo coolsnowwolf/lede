@@ -1,0 +1,134 @@
+From d96c3157f9ca177727fbad960fcf6f52f145f471 Mon Sep 17 00:00:00 2001
+From: Yousong Zhou <yszhou4tech@gmail.com>
+Date: Thu, 9 Jan 2020 11:33:19 +0800
+Subject: [PATCH] MIPS: Exclude more dsemul code when CONFIG_MIPS_FP_SUPPORT=n
+
+This furthers what commit 42b10815d559 ("MIPS: Don't compile math-emu
+when CONFIG_MIPS_FP_SUPPORT=n") has done
+
+Signed-off-by: Yousong Zhou <yszhou4tech@gmail.com>
+---
+ arch/mips/include/asm/processor.h | 12 ++++++------
+ arch/mips/kernel/process.c        | 10 ++++++++--
+ arch/mips/kernel/vdso.c           | 26 +++++++++++++++-----------
+ 3 files changed, 29 insertions(+), 19 deletions(-)
+
+--- a/arch/mips/include/asm/processor.h
++++ b/arch/mips/include/asm/processor.h
+@@ -253,13 +253,13 @@ struct thread_struct {
+ #ifdef CONFIG_MIPS_FP_SUPPORT
+ 	/* Saved fpu/fpu emulator stuff. */
+ 	struct mips_fpu_struct fpu FPU_ALIGN;
+-#endif
+ 	/* Assigned branch delay slot 'emulation' frame */
+ 	atomic_t bd_emu_frame;
+ 	/* PC of the branch from a branch delay slot 'emulation' */
+ 	unsigned long bd_emu_branch_pc;
+ 	/* PC to continue from following a branch delay slot 'emulation' */
+ 	unsigned long bd_emu_cont_pc;
++#endif
+ #ifdef CONFIG_MIPS_MT_FPAFF
+ 	/* Emulated instruction count */
+ 	unsigned long emulated_fp;
+@@ -302,7 +302,11 @@ struct thread_struct {
+ 		.fpr		= {{{0,},},},			\
+ 		.fcr31		= 0,				\
+ 		.msacsr		= 0,				\
+-	},
++	},							\
++	/* Delay slot emulation */				\
++	.bd_emu_frame = ATOMIC_INIT(BD_EMUFRAME_NONE),		\
++	.bd_emu_branch_pc = 0,					\
++	.bd_emu_cont_pc = 0,
+ #else
+ # define FPU_INIT
+ #endif
+@@ -334,10 +338,6 @@ struct thread_struct {
+ 	 * FPU affinity state (null if not FPAFF)		\
+ 	 */							\
+ 	FPAFF_INIT						\
+-	/* Delay slot emulation */				\
+-	.bd_emu_frame = ATOMIC_INIT(BD_EMUFRAME_NONE),		\
+-	.bd_emu_branch_pc = 0,					\
+-	.bd_emu_cont_pc = 0,					\
+ 	/*							\
+ 	 * Saved DSP stuff					\
+ 	 */							\
+--- a/arch/mips/kernel/process.c
++++ b/arch/mips/kernel/process.c
+@@ -75,7 +75,9 @@ void start_thread(struct pt_regs * regs,
+ 	lose_fpu(0);
+ 	clear_thread_flag(TIF_MSA_CTX_LIVE);
+ 	clear_used_math();
++#ifdef CONFIG_MIPS_FP_SUPPORT
+ 	atomic_set(&current->thread.bd_emu_frame, BD_EMUFRAME_NONE);
++#endif
+ 	init_dsp();
+ 	regs->cp0_epc = pc;
+ 	regs->regs[29] = sp;
+@@ -176,7 +178,9 @@ int copy_thread_tls(unsigned long clone_
+ 	clear_tsk_thread_flag(p, TIF_FPUBOUND);
+ #endif /* CONFIG_MIPS_MT_FPAFF */
+ 
++#ifdef CONFIG_MIPS_FP_SUPPORT
+ 	atomic_set(&p->thread.bd_emu_frame, BD_EMUFRAME_NONE);
++#endif
+ 
+ 	if (clone_flags & CLONE_SETTLS)
+ 		ti->tp_value = tls;
+@@ -650,8 +654,10 @@ unsigned long mips_stack_top(void)
+ {
+ 	unsigned long top = TASK_SIZE & PAGE_MASK;
+ 
+-	/* One page for branch delay slot "emulation" */
+-	top -= PAGE_SIZE;
++	if (IS_ENABLED(CONFIG_MIPS_FP_SUPPORT)) {
++		/* One page for branch delay slot "emulation" */
++		top -= PAGE_SIZE;
++	}
+ 
+ 	/* Space for the VDSO, data page & GIC user page */
+ 	top -= PAGE_ALIGN(current->thread.abi->vdso->size);
+--- a/arch/mips/kernel/vdso.c
++++ b/arch/mips/kernel/vdso.c
+@@ -71,10 +71,12 @@ subsys_initcall(init_vdso);
+ 
+ static unsigned long vdso_base(void)
+ {
+-	unsigned long base;
++	unsigned long base = STACK_TOP;
+ 
+-	/* Skip the delay slot emulation page */
+-	base = STACK_TOP + PAGE_SIZE;
++	if (IS_ENABLED(CONFIG_MIPS_FP_SUPPORT)) {
++		/* Skip the delay slot emulation page */
++		base += PAGE_SIZE;
++	}
+ 
+ 	if (current->flags & PF_RANDOMIZE) {
+ 		base += get_random_int() & (VDSO_RANDOMIZE_SIZE - 1);
+@@ -95,14 +97,16 @@ int arch_setup_additional_pages(struct l
+ 	if (down_write_killable(&mm->mmap_sem))
+ 		return -EINTR;
+ 
+-	/* Map delay slot emulation page */
+-	base = mmap_region(NULL, STACK_TOP, PAGE_SIZE,
+-			   VM_READ | VM_EXEC |
+-			   VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC,
+-			   0, NULL);
+-	if (IS_ERR_VALUE(base)) {
+-		ret = base;
+-		goto out;
++	if (IS_ENABLED(CONFIG_MIPS_FP_SUPPORT)) {
++		/* Map delay slot emulation page */
++		base = mmap_region(NULL, STACK_TOP, PAGE_SIZE,
++				VM_READ | VM_EXEC |
++				VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC,
++				0, NULL);
++		if (IS_ERR_VALUE(base)) {
++			ret = base;
++			goto out;
++		}
+ 	}
+ 
+ 	/*

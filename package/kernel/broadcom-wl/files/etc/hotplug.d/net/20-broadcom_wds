@@ -1,0 +1,61 @@
+include /lib/wifi
+
+setup_broadcom_wds() {
+	local iface="$1"
+	local remote="$(wlc ifname "$iface" wdsmac)"
+
+	[ -z "$remote" ] && return
+	
+	config_cb() {
+		[ -z "$CONFIG_SECTION" ] && return
+	
+		config_get type "$CONFIG_SECTION" TYPE
+		[ "$type" = "wifi-iface" ] || return
+		
+		config_get network "$CONFIG_SECTION" network
+		[ -z "$network" ] && return
+		
+		config_get addr "$CONFIG_SECTION" bssid
+		addr=$(echo "$addr" | tr 'A-F' 'a-f')
+		[ "$addr" = "$remote" ] && {
+			local cfg="$CONFIG_SECTION"
+			
+			include /lib/network
+			scan_interfaces
+
+			for network in $network; do
+				setup_interface "$iface" "$network"
+			done
+			
+			config_get encryption "$cfg" encryption
+			config_get key "$cfg" key
+			config_get ssid "$cfg" ssid
+		
+			[ "$encryption" != "none" ] && {
+				sleep 5
+				case "$encryption" in
+					psk|PSK)
+						nas4not "$network" "$iface" up auto tkip psk "$key" "$ssid"
+						;;
+					psk2|PSK2)
+						nas4not "$network" "$iface" up auto aes psk "$key" "$ssid"
+						;;
+					psk+psk2|psk2+psk|PSK+PSK2|PSK2+PSK)
+						nas4not "$network" "$iface" up auto aes+tkip psk "$key" "$ssid"
+						;;
+					*)
+						nas4not lan "$iface" up auto aes "$encryption" "$key" "$ssid"
+						;;
+					esac
+			}
+		}
+	}
+
+	config_load wireless
+}
+
+case "$ACTION" in
+	add|register)
+		[ "${INTERFACE%%[0-1]-*}" = wds ] && setup_broadcom_wds "$INTERFACE"
+	;;
+esac

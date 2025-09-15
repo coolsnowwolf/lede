@@ -1,0 +1,206 @@
+From 0fa7bdb855247b738d1d227d6f4b3417ebdf21a8 Mon Sep 17 00:00:00 2001
+From: Ziyang Huang <hzyitc@outlook.com>
+Date: Sun, 8 Sep 2024 16:40:12 +0800
+Subject: [PATCH 2/2] remoteproc: qcom_q6v5_mpd: fix incorrent use of
+ rproc->node
+
+    1.817524] list_add corruption. next->prev should be prev (ffffffc0814bbfc8), but was ffffffc0814bc358. (next=ffffff8003b56800).
+[    1.822435] WARNING: CPU: 1 PID: 24 at lib/list_debug.c:29 __list_add_valid_or_report+0x8c/0xdc
+[    1.833923] Modules linked in:
+[    1.842425] CPU: 1 PID: 24 Comm: kworker/u4:1 Not tainted 6.6.47 #0
+[    1.845552] Hardware name: Qualcomm MP03 (DT)
+[    1.851716] Workqueue: events_unbound deferred_probe_work_func
+[    1.856229] pstate: 60400005 (nZCv daif +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[    1.861959] pc : __list_add_valid_or_report+0x8c/0xdc
+[    1.868816] lr : __list_add_valid_or_report+0x8c/0xdc
+[    1.874022] sp : ffffffc081603a50
+[    1.879055] x29: ffffffc081603a50 x28: ffffff8000fa2810 x27: ffffff8003cba800
+[    1.882358] x26: ffffff8000fa2800 x25: ffffff8003cbac80 x24: 0000000000000000
+[    1.889476] x23: ffffffc08088b968 x22: ffffffc0814bb000 x21: ffffffc0814bbfc8
+[    1.896593] x20: ffffffc08088b8e8 x19: ffffff8003cba800 x18: 00000000000000b1
+[    1.903713] x17: 3863666262343138 x16: 3063666666666666 x15: ffffffc081416e20
+[    1.910830] x14: 0000000000000213 x13: 00000000000000b1 x12: 00000000ffffffea
+[    1.917948] x11: 00000000ffffefff x10: ffffffc08146ee20 x9 : ffffffc081416dc8
+[    1.925066] x8 : 0000000000017fe8 x7 : c0000000ffffefff x6 : 0000000000057fa8
+[    1.932184] x5 : 0000000000000fff x4 : 0000000000000000 x3 : ffffffc081603850
+[    1.939302] x2 : ffffffc081416d60 x1 : ffffffc081416d60 x0 : 0000000000000075
+[    1.946422] Call trace:
+[    1.953535]  __list_add_valid_or_report+0x8c/0xdc
+[    1.955793]  rproc_add+0x1f4/0x25c
+[    1.960653]  q6_wcss_probe+0x510/0x634
+[    1.963950]  platform_probe+0x68/0xc4
+[    1.967684]  really_probe+0x148/0x2b0
+[    1.971417]  __driver_probe_device+0x78/0x128
+[    1.975063]  driver_probe_device+0x40/0xdc
+[    1.979402]  __device_attach_driver+0xb8/0xf8
+[    1.983397]  bus_for_each_drv+0x70/0xb8
+[    1.987823]  __device_attach+0xa0/0x184
+[    1.991468]  device_initial_probe+0x14/0x20
+[    1.995289]  bus_probe_device+0xac/0xb0
+[    1.999455]  deferred_probe_work_func+0xa4/0xec
+[    2.003275]  process_one_work+0x178/0x2d4
+[    2.007788]  worker_thread+0x2ec/0x4d8
+[    2.011954]  kthread+0xdc/0xe0
+[    2.015600]  ret_from_fork+0x10/0x20
+
+Signed-off-by: Ziyang Huang <hzyitc@outlook.com>
+---
+ drivers/remoteproc/qcom_q6v5_mpd.c | 53 +++++++++++++++++-------------
+ 1 file changed, 30 insertions(+), 23 deletions(-)
+
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -33,6 +33,7 @@
+ 
+ #define BUF_SIZE			35
+ 
++#define MAX_UPD				3
+ #define MAX_FIRMWARE			3
+ 
+ #define RPD_SWID		MPD_WCNSS_PAS_ID
+@@ -43,8 +44,6 @@
+ #define UPD_BOOT_INFO_SMEM_ID		507
+ #define VERSION2			2
+ 
+-static LIST_HEAD(upd_rproc_list);
+-
+ /**
+  * struct userpd_boot_info_header - header of user pd bootinfo
+  * @type:		type of bootinfo passing over smem
+@@ -80,6 +79,7 @@ struct q6_wcss {
+ 	size_t mem_size;
+ 	const struct wcss_data *desc;
+ 	const char **firmware;
++	struct userpd *upd[MAX_UPD];
+ };
+ 
+ struct userpd {
+@@ -270,13 +270,12 @@ static void *q6_wcss_da_to_va(struct rpr
+  */
+ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ {
+-	int ret;
++	int i, ret;
+ 	size_t size;
+ 	u16 cnt = 0, version;
+ 	void *ptr;
+ 	struct q6_wcss *wcss = rproc->priv;
+ 	struct userpd *upd;
+-	struct rproc *upd_rproc;
+ 	struct userpd_boot_info upd_bootinfo = {0};
+ 	const struct firmware *fw;
+ 
+@@ -301,16 +300,19 @@ static int share_upd_bootinfo_to_q6(stru
+ 	memcpy_toio(ptr, &version, sizeof(version));
+ 	ptr += sizeof(version);
+ 
+-	list_for_each_entry(upd_rproc, &upd_rproc_list, node)
+-		cnt++;
++	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
++		if (wcss->upd[i])
++			cnt++;
+ 
+ 	/* No of elements */
+ 	cnt = (sizeof(upd_bootinfo) * cnt);
+ 	memcpy_toio(ptr, &cnt, sizeof(u16));
+ 	ptr += sizeof(u16);
+ 
+-	list_for_each_entry(upd_rproc, &upd_rproc_list, node) {
+-		upd = upd_rproc->priv;
++	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++) {
++		upd = wcss->upd[i];
++		if (!upd)
++			continue;
+ 
+ 		/* TYPE */
+ 		upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
+@@ -322,14 +324,14 @@ static int share_upd_bootinfo_to_q6(stru
+ 		/* Process ID */
+ 		upd_bootinfo.pid = upd->pd_asid + 1;
+ 
+-		ret = request_firmware(&fw, upd_rproc->firmware, upd->dev);
++		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
+ 		if (ret < 0) {
+ 			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
+ 			return ret;
+ 		}
+ 
+ 		/* Load address */
+-		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd_rproc, fw);
++		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
+ 
+ 		/* Firmware mem size */
+ 		upd_bootinfo.data_size = qcom_mdt_get_size(fw);
+@@ -597,18 +599,23 @@ static int init_irq(struct qcom_q6v5 *q6
+ 	return 0;
+ }
+ 
+-static void q6_release_resources(void)
++static void q6_release_resources(struct q6_wcss *wcss)
+ {
+-	struct rproc *upd_rproc;
++	struct userpd *upd;
++	int i;
+ 
+ 	/* Release userpd resources */
+-	list_for_each_entry(upd_rproc, &upd_rproc_list, node) {
+-		rproc_del(upd_rproc);
+-		rproc_free(upd_rproc);
++	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++) {
++		upd = wcss->upd[i];
++		if (!upd)
++			continue;
++
++		rproc_del(upd->q6.rproc);
++		rproc_free(upd->q6.rproc);
+ 	}
+ }
+ 
+-static int q6_register_userpd(struct platform_device *pdev,
++static int q6_register_userpd(struct q6_wcss *wcss,
+ 			      struct device_node *userpd_np)
+ {
+ 	struct userpd *upd;
+@@ -633,16 +640,16 @@ static int q6_register_userpd(struct pla
+ 		return ret;
+ 	}
+ 
+-	dev_info(&pdev->dev, "%s node found\n", userpd_np->name);
++	dev_info(wcss->dev, "%s node found\n", userpd_np->name);
+ 
+ 	userpd_pdev = of_platform_device_create(userpd_np, userpd_np->name,
+-						&pdev->dev);
++						wcss->dev);
+ 	if (!userpd_pdev)
+-		return dev_err_probe(&pdev->dev, -ENODEV,
++		return dev_err_probe(wcss->dev, -ENODEV,
+ 				     "failed to create %s platform device\n",
+ 				     userpd_np->name);
+ 
+-	userpd_pdev->dev.driver = pdev->dev.driver;
++	userpd_pdev->dev.driver = wcss->dev->driver;
+ 	rproc = rproc_alloc(&userpd_pdev->dev, userpd_pdev->name, &wcss_ops,
+ 			    firmware_name, sizeof(*upd));
+ 	if (!rproc) {
+@@ -663,7 +670,7 @@ static int q6_register_userpd(struct pla
+ 	if (ret)
+ 		goto free_rproc;
+ 
+-	list_add(&rproc->node, &upd_rproc_list);
++	wcss->upd[upd->pd_asid] = upd;
+ 	platform_set_drvdata(userpd_pdev, rproc);
+ 	qcom_add_ssr_subdev(rproc, &upd->ssr_subdev, userpd_pdev->name);
+ 	return 0;
+@@ -728,10 +735,10 @@ static int q6_wcss_probe(struct platform
+ 
+ 	/* Iterate over userpd child's and register with rproc */
+ 	for_each_available_child_of_node(pdev->dev.of_node, userpd_np) {
+-		ret = q6_register_userpd(pdev, userpd_np);
++		ret = q6_register_userpd(wcss, userpd_np);
+ 		if (ret) {
+ 			/* release resources of successfully allocated userpd rproc's */
+-			q6_release_resources();
++			q6_release_resources(wcss);
+ 			return dev_err_probe(&pdev->dev, ret,
+ 					     "Failed to register userpd(%s)\n",
+ 					     userpd_np->name);

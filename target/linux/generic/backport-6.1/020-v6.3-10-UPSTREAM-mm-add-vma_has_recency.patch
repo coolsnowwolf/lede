@@ -1,0 +1,191 @@
+From 70d216c71ff5c5b17dd1da6294f97b91fb6aba7a Mon Sep 17 00:00:00 2001
+From: Yu Zhao <yuzhao@google.com>
+Date: Fri, 30 Dec 2022 14:52:51 -0700
+Subject: [PATCH 10/19] UPSTREAM: mm: add vma_has_recency()
+
+Add vma_has_recency() to indicate whether a VMA may exhibit temporal
+locality that the LRU algorithm relies on.
+
+This function returns false for VMAs marked by VM_SEQ_READ or
+VM_RAND_READ.  While the former flag indicates linear access, i.e., a
+special case of spatial locality, both flags indicate a lack of temporal
+locality, i.e., the reuse of an area within a relatively small duration.
+
+"Recency" is chosen over "locality" to avoid confusion between temporal
+and spatial localities.
+
+Before this patch, the active/inactive LRU only ignored the accessed bit
+from VMAs marked by VM_SEQ_READ.  After this patch, the active/inactive
+LRU and MGLRU share the same logic: they both ignore the accessed bit if
+vma_has_recency() returns false.
+
+For the active/inactive LRU, the following fio test showed a [6, 8]%
+increase in IOPS when randomly accessing mapped files under memory
+pressure.
+
+  kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+  kb=$((kb - 8*1024*1024))
+
+  modprobe brd rd_nr=1 rd_size=$kb
+  dd if=/dev/zero of=/dev/ram0 bs=1M
+
+  mkfs.ext4 /dev/ram0
+  mount /dev/ram0 /mnt/
+  swapoff -a
+
+  fio --name=test --directory=/mnt/ --ioengine=mmap --numjobs=8 \
+      --size=8G --rw=randrw --time_based --runtime=10m \
+      --group_reporting
+
+The discussion that led to this patch is here [1].  Additional test
+results are available in that thread.
+
+[1] https://lore.kernel.org/r/Y31s%2FK8T85jh05wH@google.com/
+
+Link: https://lkml.kernel.org/r/20221230215252.2628425-1-yuzhao@google.com
+Change-Id: I291dcb795197659e40e46539cd32b857677c34ad
+Signed-off-by: Yu Zhao <yuzhao@google.com>
+Cc: Alexander Viro <viro@zeniv.linux.org.uk>
+Cc: Andrea Righi <andrea.righi@canonical.com>
+Cc: Johannes Weiner <hannes@cmpxchg.org>
+Cc: Michael Larabel <Michael@MichaelLarabel.com>
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+(cherry picked from commit 8788f6781486769d9598dcaedc3fe0eb12fc3e59)
+Bug: 274865848
+Signed-off-by: T.J. Mercier <tjmercier@google.com>
+---
+ include/linux/mm_inline.h |  8 ++++++++
+ mm/memory.c               |  7 +++----
+ mm/rmap.c                 | 42 +++++++++++++++++----------------------
+ mm/vmscan.c               |  5 ++++-
+ 4 files changed, 33 insertions(+), 29 deletions(-)
+
+--- a/include/linux/mm_inline.h
++++ b/include/linux/mm_inline.h
+@@ -600,4 +600,12 @@ pte_install_uffd_wp_if_needed(struct vm_
+ #endif
+ }
+ 
++static inline bool vma_has_recency(struct vm_area_struct *vma)
++{
++	if (vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))
++		return false;
++
++	return true;
++}
++
+ #endif
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1445,8 +1445,7 @@ again:
+ 					force_flush = 1;
+ 					set_page_dirty(page);
+ 				}
+-				if (pte_young(ptent) &&
+-				    likely(!(vma->vm_flags & VM_SEQ_READ)))
++				if (pte_young(ptent) && likely(vma_has_recency(vma)))
+ 					mark_page_accessed(page);
+ 			}
+ 			rss[mm_counter(page)]--;
+@@ -5235,8 +5234,8 @@ static inline void mm_account_fault(stru
+ #ifdef CONFIG_LRU_GEN
+ static void lru_gen_enter_fault(struct vm_area_struct *vma)
+ {
+-	/* the LRU algorithm doesn't apply to sequential or random reads */
+-	current->in_lru_fault = !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ));
++	/* the LRU algorithm only applies to accesses with recency */
++	current->in_lru_fault = vma_has_recency(vma);
+ }
+ 
+ static void lru_gen_exit_fault(void)
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -823,25 +823,14 @@ static bool folio_referenced_one(struct
+ 		}
+ 
+ 		if (pvmw.pte) {
+-			if (lru_gen_enabled() && pte_young(*pvmw.pte) &&
+-			    !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ))) {
++			if (lru_gen_enabled() && pte_young(*pvmw.pte)) {
+ 				lru_gen_look_around(&pvmw);
+ 				referenced++;
+ 			}
+ 
+ 			if (ptep_clear_flush_young_notify(vma, address,
+-						pvmw.pte)) {
+-				/*
+-				 * Don't treat a reference through
+-				 * a sequentially read mapping as such.
+-				 * If the folio has been used in another mapping,
+-				 * we will catch it; if this other mapping is
+-				 * already gone, the unmap path will have set
+-				 * the referenced flag or activated the folio.
+-				 */
+-				if (likely(!(vma->vm_flags & VM_SEQ_READ)))
+-					referenced++;
+-			}
++						pvmw.pte))
++				referenced++;
+ 		} else if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE)) {
+ 			if (pmdp_clear_flush_young_notify(vma, address,
+ 						pvmw.pmd))
+@@ -875,7 +864,20 @@ static bool invalid_folio_referenced_vma
+ 	struct folio_referenced_arg *pra = arg;
+ 	struct mem_cgroup *memcg = pra->memcg;
+ 
+-	if (!mm_match_cgroup(vma->vm_mm, memcg))
++	/*
++	 * Ignore references from this mapping if it has no recency. If the
++	 * folio has been used in another mapping, we will catch it; if this
++	 * other mapping is already gone, the unmap path will have set the
++	 * referenced flag or activated the folio in zap_pte_range().
++	 */
++	if (!vma_has_recency(vma))
++		return true;
++
++	/*
++	 * If we are reclaiming on behalf of a cgroup, skip counting on behalf
++	 * of references from different cgroups.
++	 */
++	if (memcg && !mm_match_cgroup(vma->vm_mm, memcg))
+ 		return true;
+ 
+ 	return false;
+@@ -906,6 +908,7 @@ int folio_referenced(struct folio *folio
+ 		.arg = (void *)&pra,
+ 		.anon_lock = folio_lock_anon_vma_read,
+ 		.try_lock = true,
++		.invalid_vma = invalid_folio_referenced_vma,
+ 	};
+ 
+ 	*vm_flags = 0;
+@@ -921,15 +924,6 @@ int folio_referenced(struct folio *folio
+ 			return 1;
+ 	}
+ 
+-	/*
+-	 * If we are reclaiming on behalf of a cgroup, skip
+-	 * counting on behalf of references from different
+-	 * cgroups
+-	 */
+-	if (memcg) {
+-		rwc.invalid_vma = invalid_folio_referenced_vma;
+-	}
+-
+ 	rmap_walk(folio, &rwc);
+ 	*vm_flags = pra.vm_flags;
+ 
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3778,7 +3778,10 @@ static int should_skip_vma(unsigned long
+ 	if (is_vm_hugetlb_page(vma))
+ 		return true;
+ 
+-	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL | VM_SEQ_READ | VM_RAND_READ))
++	if (!vma_has_recency(vma))
++		return true;
++
++	if (vma->vm_flags & (VM_LOCKED | VM_SPECIAL))
+ 		return true;
+ 
+ 	if (vma == get_gate_vma(vma->vm_mm))

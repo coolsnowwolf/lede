@@ -1,0 +1,668 @@
+--- a/drivers/net/bonding/bond_3ad.c
++++ b/drivers/net/bonding/bond_3ad.c
+@@ -114,7 +114,40 @@ static void ad_marker_info_received(stru
+ static void ad_marker_response_received(struct bond_marker *marker,
+ 					struct port *port);
+ static void ad_update_actor_keys(struct port *port, bool reset);
++/* QCA NSS ECM bonding support - Start */
++struct bond_cb __rcu *bond_cb;
+ 
++int bond_register_cb(struct bond_cb *cb)
++{
++	struct bond_cb *lag_cb;
++
++	lag_cb = kzalloc(sizeof(*lag_cb), GFP_ATOMIC | __GFP_NOWARN);
++	if (!lag_cb) {
++		return -1;
++	}
++
++	memcpy((void *)lag_cb, (void *)cb, sizeof(*cb));
++
++	rcu_read_lock();
++	rcu_assign_pointer(bond_cb, lag_cb);
++	rcu_read_unlock();
++	return 0;
++}
++EXPORT_SYMBOL(bond_register_cb);
++
++void bond_unregister_cb(void)
++{
++	struct bond_cb *lag_cb_main;
++
++	rcu_read_lock();
++	lag_cb_main = rcu_dereference(bond_cb);
++	rcu_assign_pointer(bond_cb, NULL);
++	rcu_read_unlock();
++
++	kfree(lag_cb_main);
++}
++EXPORT_SYMBOL(bond_unregister_cb);
++/* QCA NSS ECM bonding support - End */
+ 
+ /* ================= api to bonding and kernel code ================== */
+ 
+@@ -424,7 +457,6 @@ static u16 __ad_timer_to_ticks(u16 timer
+ 	return retval;
+ }
+ 
+-
+ /* ================= ad_rx_machine helper functions ================== */
+ 
+ /**
+@@ -1064,7 +1096,30 @@ static void ad_mux_machine(struct port *
+ 			ad_disable_collecting_distributing(port,
+ 							   update_slave_arr);
+ 			port->ntt = true;
+-			break;
++
++			/* QCA NSS ECM bonding support - Start */
++			/* Send a notificaton about change in state of this
++			* port. We only want to handle case where port moves
++			* from AD_MUX_COLLECTING_DISTRIBUTING ->
++			* AD_MUX_ATTACHED.
++			*/
++			if (bond_slave_is_up(port->slave) &&
++			    (last_state == AD_MUX_COLLECTING_DISTRIBUTING)) {
++				struct bond_cb *lag_cb_main;
++
++				rcu_read_lock();
++				lag_cb_main = rcu_dereference(bond_cb);
++				if (lag_cb_main &&
++				    lag_cb_main->bond_cb_link_down) {
++					struct net_device *dev;
++
++					dev = port->slave->dev;
++					lag_cb_main->bond_cb_link_down(dev);
++				}
++				rcu_read_unlock();
++			}
++
++			break; /* QCA NSS ECM bonding support - End */
+ 		case AD_MUX_COLLECTING_DISTRIBUTING:
+ 			port->actor_oper_port_state |= LACP_STATE_COLLECTING;
+ 			port->actor_oper_port_state |= LACP_STATE_DISTRIBUTING;
+@@ -1908,6 +1963,7 @@ static void ad_enable_collecting_distrib
+ 					      bool *update_slave_arr)
+ {
+ 	if (port->aggregator->is_active) {
++		struct bond_cb *lag_cb_main; /* QCA NSS ECM bonding support */
+ 		slave_dbg(port->slave->bond->dev, port->slave->dev,
+ 			  "Enabling port %d (LAG %d)\n",
+ 			  port->actor_port_number,
+@@ -1915,6 +1971,16 @@ static void ad_enable_collecting_distrib
+ 		__enable_port(port);
+ 		/* Slave array needs update */
+ 		*update_slave_arr = true;
++
++		/* QCA NSS ECM bonding support - Start */
++		rcu_read_lock();
++		lag_cb_main = rcu_dereference(bond_cb);
++
++		if (lag_cb_main && lag_cb_main->bond_cb_link_up)
++			lag_cb_main->bond_cb_link_up(port->slave->dev);
++
++		rcu_read_unlock();
++		/* QCA NSS ECM bonding support - End */
+ 	}
+ }
+ 
+@@ -2674,6 +2740,104 @@ int bond_3ad_get_active_agg_info(struct
+ 	return ret;
+ }
+ 
++/* QCA NSS ECM bonding support - Start */
++/* bond_3ad_get_tx_dev - Calculate egress interface for a given packet,
++ * for a LAG that is configured in 802.3AD mode
++ * @skb: pointer to skb to be egressed
++ * @src_mac: pointer to source L2 address
++ * @dst_mac: pointer to destination L2 address
++ * @src: pointer to source L3 address
++ * @dst: pointer to destination L3 address
++ * @protocol: L3 protocol id from L2 header
++ * @bond_dev: pointer to bond master device
++ *
++ * If @skb is NULL, bond_xmit_hash is used to calculate hash using L2/L3
++ * addresses.
++ *
++ * Returns: Either valid slave device, or NULL otherwise
++ */
++struct net_device *bond_3ad_get_tx_dev(struct sk_buff *skb, u8 *src_mac,
++				       u8 *dst_mac, void *src,
++				       void *dst, u16 protocol,
++				       struct net_device *bond_dev,
++				       __be16 *layer4hdr)
++{
++	struct bonding *bond = netdev_priv(bond_dev);
++	struct aggregator *agg;
++	struct ad_info ad_info;
++	struct list_head *iter;
++	struct slave *slave;
++	struct slave *first_ok_slave = NULL;
++	u32 hash = 0;
++	int slaves_in_agg;
++	int slave_agg_no = 0;
++	int agg_id;
++
++	if (__bond_3ad_get_active_agg_info(bond, &ad_info)) {
++		pr_debug("%s: Error: __bond_3ad_get_active_agg_info failed\n",
++			 bond_dev->name);
++		return NULL;
++	}
++
++	slaves_in_agg = ad_info.ports;
++	agg_id = ad_info.aggregator_id;
++
++	if (slaves_in_agg == 0) {
++		pr_debug("%s: Error: active aggregator is empty\n",
++			 bond_dev->name);
++		return NULL;
++	}
++
++	if (skb) {
++		hash = bond_xmit_hash(bond, skb);
++		slave_agg_no = hash % slaves_in_agg;
++	} else {
++		if (bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER23 &&
++		    bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER2 &&
++		    bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER34) {
++			pr_debug("%s: Error: Unsupported hash policy for 802.3AD fast path\n",
++				 bond_dev->name);
++			return NULL;
++		}
++
++		hash = bond_xmit_hash_without_skb(src_mac, dst_mac,
++						  src, dst, protocol,
++						  bond_dev, layer4hdr);
++		slave_agg_no = hash % slaves_in_agg;
++	}
++
++	bond_for_each_slave_rcu(bond, slave, iter) {
++		agg = SLAVE_AD_INFO(slave)->port.aggregator;
++		if (!agg || agg->aggregator_identifier != agg_id)
++			continue;
++
++		if (slave_agg_no >= 0) {
++			if (!first_ok_slave && bond_slave_can_tx(slave))
++				first_ok_slave = slave;
++			slave_agg_no--;
++			continue;
++		}
++
++		if (bond_slave_can_tx(slave))
++			return slave->dev;
++	}
++
++	if (slave_agg_no >= 0) {
++		pr_err("%s: Error: Couldn't find a slave to tx on for aggregator ID %d\n",
++		       bond_dev->name, agg_id);
++		return NULL;
++	}
++
++	/* we couldn't find any suitable slave after the agg_no, so use the
++	 * first suitable found, if found.
++	 */
++	if (first_ok_slave)
++		return first_ok_slave->dev;
++
++	return NULL;
++}
++/* QCA NSS ECM bonding support - End */
++
+ int bond_3ad_lacpdu_recv(const struct sk_buff *skb, struct bonding *bond,
+ 			 struct slave *slave)
+ {
+--- a/drivers/net/bonding/bond_main.c
++++ b/drivers/net/bonding/bond_main.c
+@@ -1218,6 +1218,23 @@ void bond_change_active_slave(struct bon
+ 			if (BOND_MODE(bond) == BOND_MODE_8023AD)
+ 				bond_3ad_handle_link_change(new_active, BOND_LINK_UP);
+ 
++ 			/* QCA NSS ECM bonding support - Start */
++			if (bond->params.mode == BOND_MODE_XOR) {
++				struct bond_cb *lag_cb_main;
++
++				rcu_read_lock();
++				lag_cb_main = rcu_dereference(bond_cb);
++				if (lag_cb_main &&
++				    lag_cb_main->bond_cb_link_up) {
++					struct net_device *dev;
++
++					dev = new_active->dev;
++					lag_cb_main->bond_cb_link_up(dev);
++				}
++				rcu_read_unlock();
++			}
++			/* QCA NSS ECM bonding support - End */
++
+ 			if (bond_is_lb(bond))
+ 				bond_alb_handle_link_change(bond, new_active, BOND_LINK_UP);
+ 		} else {
+@@ -1842,6 +1859,7 @@ int bond_enslave(struct net_device *bond
+ 	const struct net_device_ops *slave_ops = slave_dev->netdev_ops;
+ 	struct slave *new_slave = NULL, *prev_slave;
+ 	struct sockaddr_storage ss;
++	struct bond_cb *lag_cb_main; /* QCA NSS ECM bonding support */
+ 	int link_reporting;
+ 	int res = 0, i;
+ 
+@@ -2289,6 +2307,15 @@ int bond_enslave(struct net_device *bond
+ 		   bond_is_active_slave(new_slave) ? "an active" : "a backup",
+ 		   new_slave->link != BOND_LINK_DOWN ? "an up" : "a down");
+ 
++	/* QCA NSS ECM bonding support - Start */
++	rcu_read_lock();
++	lag_cb_main = rcu_dereference(bond_cb);
++	if (lag_cb_main && lag_cb_main->bond_cb_enslave)
++		lag_cb_main->bond_cb_enslave(slave_dev);
++
++	rcu_read_unlock();
++	/* QCA NSS ECM bonding support - End */
++
+ 	/* enslave is successful */
+ 	bond_queue_slave_event(new_slave);
+ 	return 0;
+@@ -2354,6 +2381,15 @@ err_undo_flags:
+ 		}
+ 	}
+ 
++	/* QCA NSS ECM bonding support - Start */
++	rcu_read_lock();
++	lag_cb_main = rcu_dereference(bond_cb);
++	if (lag_cb_main && lag_cb_main->bond_cb_enslave)
++		lag_cb_main->bond_cb_enslave(slave_dev);
++
++	rcu_read_unlock();
++	/* QCA NSS ECM bonding support - End */
++
+ 	return res;
+ }
+ 
+@@ -2376,6 +2412,7 @@ static int __bond_release_one(struct net
+ 	struct slave *slave, *oldcurrent;
+ 	struct sockaddr_storage ss;
+ 	int old_flags = bond_dev->flags;
++	struct bond_cb *lag_cb_main; /* QCA NSS ECM bonding support */
+ 	netdev_features_t old_features = bond_dev->features;
+ 
+ 	/* slave is not a slave or master is not master of this slave */
+@@ -2397,6 +2434,15 @@ static int __bond_release_one(struct net
+ 
+ 	bond_set_slave_inactive_flags(slave, BOND_SLAVE_NOTIFY_NOW);
+ 
++	/* QCA NSS ECM bonding support - Start */
++	rcu_read_lock();
++	lag_cb_main = rcu_dereference(bond_cb);
++	if (lag_cb_main && lag_cb_main->bond_cb_release)
++		lag_cb_main->bond_cb_release(slave_dev);
++
++	rcu_read_unlock();
++	/* QCA NSS ECM bonding support - End */
++
+ 	bond_sysfs_slave_del(slave);
+ 
+ 	/* recompute stats just before removing the slave */
+@@ -2722,6 +2768,8 @@ static void bond_miimon_commit(struct bo
+ 	struct slave *slave, *primary, *active;
+ 	bool do_failover = false;
+ 	struct list_head *iter;
++	struct net_device *slave_dev = NULL; /* QCA NSS ECM bonding support */
++	struct bond_cb *lag_cb_main; /* QCA NSS ECM bonding support */
+ 
+ 	ASSERT_RTNL();
+ 
+@@ -2761,6 +2809,12 @@ static void bond_miimon_commit(struct bo
+ 				bond_set_active_slave(slave);
+ 			}
+ 
++			/* QCA NSS ECM bonding support - Start */
++			if ((bond->params.mode == BOND_MODE_XOR) &&
++			    (!slave_dev))
++				slave_dev = slave->dev;
++			/* QCA NSS ECM bonding support - End */
++
+ 			slave_info(bond->dev, slave->dev, "link status definitely up, %u Mbps %s duplex\n",
+ 				   slave->speed == SPEED_UNKNOWN ? 0 : slave->speed,
+ 				   slave->duplex ? "full" : "half");
+@@ -2809,6 +2863,16 @@ static void bond_miimon_commit(struct bo
+ 		unblock_netpoll_tx();
+ 	}
+ 
++	/* QCA NSS ECM bonding support - Start */
++	rcu_read_lock();
++	lag_cb_main = rcu_dereference(bond_cb);
++
++	if (slave_dev && lag_cb_main && lag_cb_main->bond_cb_link_up)
++		lag_cb_main->bond_cb_link_up(slave_dev);
++
++	rcu_read_unlock();
++	/* QCA NSS ECM bonding support - End */
++
+ 	bond_set_carrier(bond);
+ }
+ 
+@@ -4056,9 +4120,220 @@ static inline u32 bond_eth_hash(struct s
+ 		return 0;
+ 
+ 	ep = (struct ethhdr *)(data + mhoff);
+-	return ep->h_dest[5] ^ ep->h_source[5] ^ be16_to_cpu(ep->h_proto);
++	return ep->h_dest[5] ^ ep->h_source[5]; /* QCA NSS ECM bonding support */
+ }
+ 
++/* QCA NSS ECM bonding support - Start */
++/* Extract the appropriate headers based on bond's xmit policy */
++static bool bond_flow_dissect_without_skb(struct bonding *bond,
++					  u8 *src_mac, u8 *dst_mac,
++					  void *psrc, void *pdst,
++					  u16 protocol, __be16 *layer4hdr,
++					  struct flow_keys *fk)
++{
++	u32 *src = NULL;
++	u32 *dst = NULL;
++
++	fk->ports.ports = 0;
++	src = (uint32_t *)psrc;
++	dst = (uint32_t *)pdst;
++
++	if (protocol == htons(ETH_P_IP)) {
++		/* V4 addresses and address type*/
++		fk->addrs.v4addrs.src = src[0];
++		fk->addrs.v4addrs.dst = dst[0];
++		fk->control.addr_type = FLOW_DISSECTOR_KEY_IPV4_ADDRS;
++	} else if (protocol == htons(ETH_P_IPV6)) {
++		/* V6 addresses and address type*/
++		memcpy(&fk->addrs.v6addrs.src, src, sizeof(struct in6_addr));
++		memcpy(&fk->addrs.v6addrs.dst, dst, sizeof(struct in6_addr));
++		fk->control.addr_type = FLOW_DISSECTOR_KEY_IPV6_ADDRS;
++	} else {
++		return false;
++	}
++	if ((bond->params.xmit_policy == BOND_XMIT_POLICY_LAYER34) &&
++	    (layer4hdr))
++		fk->ports.ports = *layer4hdr;
++
++	return true;
++}
++
++/* bond_xmit_hash_without_skb - Applies load balancing algorithm for a packet,
++ * to calculate hash for a given set of L2/L3 addresses. Does not
++ * calculate egress interface.
++ */
++uint32_t bond_xmit_hash_without_skb(u8 *src_mac, u8 *dst_mac,
++				    void *psrc, void *pdst, u16 protocol,
++				    struct net_device *bond_dev,
++				    __be16 *layer4hdr)
++{
++	struct bonding *bond = netdev_priv(bond_dev);
++	struct flow_keys flow;
++	u32 hash = 0;
++
++	if (bond->params.xmit_policy == BOND_XMIT_POLICY_LAYER2 ||
++	    !bond_flow_dissect_without_skb(bond, src_mac, dst_mac, psrc,
++					   pdst, protocol, layer4hdr, &flow))
++		return (dst_mac[5] ^ src_mac[5]);
++
++	if (bond->params.xmit_policy == BOND_XMIT_POLICY_LAYER23)
++		hash = dst_mac[5] ^ src_mac[5];
++	else if (layer4hdr)
++		hash = (__force u32)flow.ports.ports;
++
++	hash ^= (__force u32)flow_get_u32_dst(&flow) ^
++		(__force u32)flow_get_u32_src(&flow);
++	hash ^= (hash >> 16);
++	hash ^= (hash >> 8);
++
++	return hash;
++}
++
++/* bond_xor_get_tx_dev - Calculate egress interface for a given packet for a LAG
++ * that is configured in balance-xor mode
++ * @skb: pointer to skb to be egressed
++ * @src_mac: pointer to source L2 address
++ * @dst_mac: pointer to destination L2 address
++ * @src: pointer to source L3 address in network order
++ * @dst: pointer to destination L3 address in network order
++ * @protocol: L3 protocol
++ * @bond_dev: pointer to bond master device
++ *
++ * If @skb is NULL, bond_xmit_hash_without_skb is used to calculate hash using
++ * L2/L3 addresses.
++ *
++ * Returns: Either valid slave device, or NULL otherwise
++ */
++static struct net_device *bond_xor_get_tx_dev(struct sk_buff *skb,
++					      u8 *src_mac, u8 *dst_mac,
++					      void *src, void *dst,
++					      u16 protocol,
++					      struct net_device *bond_dev,
++					      __be16 *layer4hdr)
++{
++	struct bonding *bond = netdev_priv(bond_dev);
++	int slave_cnt = READ_ONCE(bond->slave_cnt);
++	int slave_id = 0, i = 0;
++	u32 hash;
++	struct list_head *iter;
++	struct slave *slave;
++
++	if (slave_cnt == 0) {
++		pr_debug("%s: Error: No slave is attached to the interface\n",
++			 bond_dev->name);
++		return NULL;
++	}
++
++	if (skb) {
++		hash = bond_xmit_hash(bond, skb);
++		slave_id = hash % slave_cnt;
++	} else {
++		if (bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER23 &&
++		    bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER2	&&
++		    bond->params.xmit_policy != BOND_XMIT_POLICY_LAYER34) {
++			pr_debug("%s: Error: Unsupported hash policy for balance-XOR fast path\n",
++				 bond_dev->name);
++			return NULL;
++		}
++
++		hash = bond_xmit_hash_without_skb(src_mac, dst_mac, src,
++						  dst, protocol, bond_dev,
++						  layer4hdr);
++		slave_id = hash % slave_cnt;
++	}
++
++	i = slave_id;
++
++	/* Here we start from the slave with slave_id */
++	bond_for_each_slave_rcu(bond, slave, iter) {
++		if (--i < 0) {
++			if (bond_slave_can_tx(slave))
++				return slave->dev;
++		}
++	}
++
++	/* Here we start from the first slave up to slave_id */
++	i = slave_id;
++	bond_for_each_slave_rcu(bond, slave, iter) {
++		if (--i < 0)
++			break;
++		if (bond_slave_can_tx(slave))
++			return slave->dev;
++	}
++
++	return NULL;
++}
++
++/* bond_get_tx_dev - Calculate egress interface for a given packet.
++ *
++ * Supports 802.3AD and balance-xor modes
++ *
++ * @skb: pointer to skb to be egressed, if valid
++ * @src_mac: pointer to source L2 address
++ * @dst_mac: pointer to destination L2 address
++ * @src: pointer to source L3 address in network order
++ * @dst: pointer to destination L3 address in network order
++ * @protocol: L3 protocol id from L2 header
++ * @bond_dev: pointer to bond master device
++ *
++ * Returns: Either valid slave device, or NULL for un-supported LAG modes
++ */
++struct net_device *bond_get_tx_dev(struct sk_buff *skb, uint8_t *src_mac,
++				   u8 *dst_mac, void *src,
++				   void *dst, u16 protocol,
++				   struct net_device *bond_dev,
++				   __be16 *layer4hdr)
++{
++	struct bonding *bond;
++
++	if (!bond_dev)
++		return NULL;
++
++	if (!((bond_dev->priv_flags & IFF_BONDING) &&
++	      (bond_dev->flags & IFF_MASTER)))
++		return NULL;
++
++	bond = netdev_priv(bond_dev);
++
++	switch (bond->params.mode) {
++	case BOND_MODE_XOR:
++		return bond_xor_get_tx_dev(skb, src_mac, dst_mac,
++					   src, dst, protocol,
++					   bond_dev, layer4hdr);
++	case BOND_MODE_8023AD:
++		return bond_3ad_get_tx_dev(skb, src_mac, dst_mac,
++					   src, dst, protocol,
++					   bond_dev, layer4hdr);
++	default:
++		return NULL;
++	}
++}
++EXPORT_SYMBOL(bond_get_tx_dev);
++
++/* In bond_xmit_xor() , we determine the output device by using a pre-
++ * determined xmit_hash_policy(), If the selected device is not enabled,
++ * find the next active slave.
++ */
++static int bond_xmit_xor(struct sk_buff *skb, struct net_device *dev)
++{
++	struct bonding *bond = netdev_priv(dev);
++	struct net_device *outdev;
++
++	outdev = bond_xor_get_tx_dev(skb, NULL, NULL, NULL,
++				     NULL, 0, dev, NULL);
++	if (!outdev)
++		goto out;
++
++	bond_dev_queue_xmit(bond, skb, outdev);
++	goto final;
++out:
++	/* no suitable interface, frame not sent */
++	dev_kfree_skb(skb);
++final:
++	return NETDEV_TX_OK;
++}
++/* QCA NSS ECM bonding support - End */
++
+ static bool bond_flow_ip(struct sk_buff *skb, struct flow_keys *fk, const void *data,
+ 			 int hlen, __be16 l2_proto, int *nhoff, int *ip_proto, bool l34)
+ {
+@@ -5254,15 +5529,23 @@ static netdev_tx_t bond_3ad_xor_xmit(str
+ 				     struct net_device *dev)
+ {
+ 	struct bonding *bond = netdev_priv(dev);
+-	struct bond_up_slave *slaves;
+-	struct slave *slave;
++	/* QCA NSS ECM bonding support - Start */
++	struct net_device *outdev = NULL;
++	outdev = bond_3ad_get_tx_dev(skb, NULL, NULL, NULL,
++				     NULL, 0, dev, NULL);
+ 
+-	slaves = rcu_dereference(bond->usable_slaves);
+-	slave = bond_xmit_3ad_xor_slave_get(bond, skb, slaves);
+-	if (likely(slave))
+-		return bond_dev_queue_xmit(bond, skb, slave->dev);
++	if (!outdev)
++		goto out;
+ 
+-	return bond_tx_drop(dev, skb);
++	bond_dev_queue_xmit(bond, skb, outdev);
++	goto final;
++
++out:
++	dev_kfree_skb(skb);
++
++final:
++   return NETDEV_TX_OK;
++/* QCA NSS ECM bonding support - End */
+ }
+ 
+ /* in broadcast mode, we send everything to all usable interfaces. */
+@@ -5512,8 +5795,9 @@ static netdev_tx_t __bond_start_xmit(str
+ 		return bond_xmit_roundrobin(skb, dev);
+ 	case BOND_MODE_ACTIVEBACKUP:
+ 		return bond_xmit_activebackup(skb, dev);
+-	case BOND_MODE_8023AD:
+ 	case BOND_MODE_XOR:
++		return bond_xmit_xor(skb, dev); /* QCA NSS ECM bonding support */
++	case BOND_MODE_8023AD:
+ 		return bond_3ad_xor_xmit(skb, dev);
+ 	case BOND_MODE_BROADCAST:
+ 		return bond_xmit_broadcast(skb, dev);
+--- a/include/net/bond_3ad.h
++++ b/include/net/bond_3ad.h
+@@ -303,8 +303,15 @@ int bond_3ad_lacpdu_recv(const struct sk
+ int bond_3ad_set_carrier(struct bonding *bond);
+ void bond_3ad_update_lacp_active(struct bonding *bond);
+ void bond_3ad_update_lacp_rate(struct bonding *bond);
++/* QCA NSS ECM bonding support */
++struct net_device *bond_3ad_get_tx_dev(struct sk_buff *skb, uint8_t *src_mac,
++				       uint8_t *dst_mac, void *src,
++				       void *dst, uint16_t protocol,
++				       struct net_device *bond_dev,
++				       __be16 *layer4hdr);
++/* QCA NSS ECM bonding support */
++
+ void bond_3ad_update_ad_actor_settings(struct bonding *bond);
+ int bond_3ad_stats_fill(struct sk_buff *skb, struct bond_3ad_stats *stats);
+ size_t bond_3ad_stats_size(void);
+ #endif /* _NET_BOND_3AD_H */
+-
+--- a/include/net/bonding.h
++++ b/include/net/bonding.h
+@@ -85,6 +85,8 @@
+ #define bond_for_each_slave(bond, pos, iter) \
+ 	netdev_for_each_lower_private((bond)->dev, pos, iter)
+ 
++extern struct bond_cb __rcu *bond_cb; /* QCA NSS ECM bonding support */
++
+ /* Caller must have rcu_read_lock */
+ #define bond_for_each_slave_rcu(bond, pos, iter) \
+ 	netdev_for_each_lower_private_rcu((bond)->dev, pos, iter)
+@@ -690,6 +692,12 @@ struct bond_vlan_tag *bond_verify_device
+ 					      int level);
+ int bond_update_slave_arr(struct bonding *bond, struct slave *skipslave);
+ void bond_slave_arr_work_rearm(struct bonding *bond, unsigned long delay);
++/* QCA NSS ECM bonding support - Start */
++uint32_t bond_xmit_hash_without_skb(uint8_t *src_mac, uint8_t *dst_mac,
++				    void *psrc, void *pdst, uint16_t protocol,
++				    struct net_device *bond_dev,
++				    __be16 *layer4hdr);
++/* QCA NSS ECM bonding support - End */
+ void bond_work_init_all(struct bonding *bond);
+ 
+ #ifdef CONFIG_PROC_FS
+@@ -794,4 +802,18 @@ static inline netdev_tx_t bond_tx_drop(s
+ 	return NET_XMIT_DROP;
+ }
+ 
++/* QCA NSS ECM bonding support - Start */
++struct bond_cb {
++	void (*bond_cb_link_up)(struct net_device *slave);
++	void (*bond_cb_link_down)(struct net_device *slave);
++	void (*bond_cb_enslave)(struct net_device *slave);
++	void (*bond_cb_release)(struct net_device *slave);
++	void (*bond_cb_delete_by_slave)(struct net_device *slave);
++	void (*bond_cb_delete_by_mac)(uint8_t *mac_addr);
++};
++
++extern int bond_register_cb(struct bond_cb *cb);
++extern void bond_unregister_cb(void);
++/* QCA NSS ECM bonding support - End */
++
+ #endif /* _NET_BONDING_H */

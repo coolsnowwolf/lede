@@ -1,0 +1,177 @@
+From f39ee05bedc68cf80e76c69692f87b96bf5a3b51 Mon Sep 17 00:00:00 2001
+From: Aviana Cruz <gwencroft@proton.me>
+Date: Tue, 21 Jun 2022 10:47:10 +0800
+Subject: [PATCH] crypto: use AES fallback for small requests
+
+Signed-off-by: Aviana Cruz <gwencroft@proton.me>
+---
+ crypto/mtk-eip93/eip93-aead.c   |  2 -
+ crypto/mtk-eip93/eip93-cipher.c | 66 ++++++++++++++++++++++++++++++---
+ crypto/mtk-eip93/eip93-cipher.h |  3 ++
+ 3 files changed, 63 insertions(+), 8 deletions(-)
+
+--- a/crypto/mtk-eip93/eip93-aead.c
++++ b/crypto/mtk-eip93/eip93-aead.c
+@@ -77,8 +77,6 @@ static int mtk_aead_cra_init(struct cryp
+ 	u32 flags = tmpl->flags;
+ 	char *alg_base;
+ 
+-	memset(ctx, 0, sizeof(*ctx));
+-
+ 	crypto_aead_set_reqsize(__crypto_aead_cast(tfm),
+ 			sizeof(struct mtk_cipher_reqctx));
+ 
+--- a/crypto/mtk-eip93/eip93-cipher.c
++++ b/crypto/mtk-eip93/eip93-cipher.c
+@@ -31,6 +31,13 @@ void mtk_skcipher_handle_result(struct c
+ 	skcipher_request_complete(req, err);
+ }
+ 
++static inline bool mtk_skcipher_is_fallback(const struct crypto_tfm *tfm,
++					    u32 flags)
++{
++	return (tfm->__crt_alg->cra_flags & CRYPTO_ALG_NEED_FALLBACK) &&
++	       !IS_RFC3686(flags);
++}
++
+ static int mtk_skcipher_send_req(struct crypto_async_request *async)
+ {
+ 	struct skcipher_request *req = skcipher_request_cast(async);
+@@ -53,11 +60,21 @@ static int mtk_skcipher_cra_init(struct
+ 	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(tfm);
+ 	struct mtk_alg_template *tmpl = container_of(tfm->__crt_alg,
+ 				struct mtk_alg_template, alg.skcipher.base);
++	bool fallback = mtk_skcipher_is_fallback(tfm, tmpl->flags);
++
++	if (fallback) {
++		ctx->fallback = crypto_alloc_skcipher(
++			crypto_tfm_alg_name(tfm), 0, CRYPTO_ALG_NEED_FALLBACK);
++		if (IS_ERR(ctx->fallback))
++			return PTR_ERR(ctx->fallback);
++	}
+ 
+-	crypto_skcipher_set_reqsize(__crypto_skcipher_cast(tfm),
+-					sizeof(struct mtk_cipher_reqctx));
++	crypto_skcipher_set_reqsize(
++		__crypto_skcipher_cast(tfm),
++		sizeof(struct mtk_cipher_reqctx) +
++			(fallback ? crypto_skcipher_reqsize(ctx->fallback) :
++					  0));
+ 
+-	memset(ctx, 0, sizeof(*ctx));
+ 	ctx->mtk = tmpl->mtk;
+ 
+ 	ctx->sa_in = kzalloc(sizeof(struct saRecord_s), GFP_KERNEL);
+@@ -86,6 +103,8 @@ static void mtk_skcipher_cra_exit(struct
+ 			sizeof(struct saRecord_s), DMA_TO_DEVICE);
+ 	kfree(ctx->sa_in);
+ 	kfree(ctx->sa_out);
++
++	crypto_free_skcipher(ctx->fallback);
+ }
+ 
+ static int mtk_skcipher_setkey(struct crypto_skcipher *ctfm, const u8 *key,
+@@ -105,6 +124,8 @@ static int mtk_skcipher_setkey(struct cr
+ 	if (!key || !keylen)
+ 		return err;
+ 
++	ctx->keylen = keylen;
++
+ #if IS_ENABLED(CONFIG_CRYPTO_DEV_EIP93_AES)
+ 	if (IS_RFC3686(flags)) {
+ 		if (len < CTR_RFC3686_NONCE_SIZE)
+@@ -128,6 +149,14 @@ static int mtk_skcipher_setkey(struct cr
+ #if IS_ENABLED(CONFIG_CRYPTO_DEV_EIP93_AES)
+ 	if (flags & MTK_ALG_AES) {
+ 		struct crypto_aes_ctx aes;
++		bool fallback = mtk_skcipher_is_fallback(tfm, flags);
++
++		if (fallback && !IS_RFC3686(flags)) {
++			err = crypto_skcipher_setkey(ctx->fallback, key,
++						     keylen);
++			if (err)
++				return err;
++		}
+ 
+ 		ctx->blksize = AES_BLOCK_SIZE;
+ 		err = aes_expandkey(&aes, key, keylen);
+@@ -160,16 +189,41 @@ static int mtk_skcipher_setkey(struct cr
+ 	return err;
+ }
+ 
+-static int mtk_skcipher_crypt(struct skcipher_request *req)
++static int mtk_skcipher_crypt(struct skcipher_request *req, bool encrypt)
+ {
+ 	struct mtk_cipher_reqctx *rctx = skcipher_request_ctx(req);
+ 	struct crypto_async_request *async = &req->base;
+ 	struct mtk_crypto_ctx *ctx = crypto_tfm_ctx(req->base.tfm);
+ 	struct crypto_skcipher *skcipher = crypto_skcipher_reqtfm(req);
++	bool fallback = mtk_skcipher_is_fallback(req->base.tfm, rctx->flags);
+ 
+ 	if (!req->cryptlen)
+ 		return 0;
+ 
++	/*
++	 * ECB and CBC algorithms require message lengths to be
++	 * multiples of block size.
++	 */
++	if (IS_ECB(rctx->flags) || IS_CBC(rctx->flags))
++		if (!IS_ALIGNED(req->cryptlen,
++				crypto_skcipher_blocksize(skcipher)))
++			return -EINVAL;
++
++	if (fallback &&
++	    req->cryptlen <= (AES_KEYSIZE_128 ?
++				      CONFIG_MTK_EIP93_AES_128_SW_MAX_LEN :
++				      CONFIG_MTK_EIP93_GENERIC_SW_MAX_LEN)) {
++		skcipher_request_set_tfm(&rctx->fallback_req, ctx->fallback);
++		skcipher_request_set_callback(&rctx->fallback_req,
++					      req->base.flags,
++					      req->base.complete,
++					      req->base.data);
++		skcipher_request_set_crypt(&rctx->fallback_req, req->src,
++					   req->dst, req->cryptlen, req->iv);
++		return encrypt ? crypto_skcipher_encrypt(&rctx->fallback_req) :
++				 crypto_skcipher_decrypt(&rctx->fallback_req);
++	}
++
+ 	rctx->assoclen = 0;
+ 	rctx->textsize = req->cryptlen;
+ 	rctx->authsize = 0;
+@@ -195,7 +249,7 @@ static int mtk_skcipher_encrypt(struct s
+ 	rctx->flags |= MTK_ENCRYPT;
+ 	rctx->saRecord_base = ctx->sa_base_out;
+ 
+-	return mtk_skcipher_crypt(req);
++	return mtk_skcipher_crypt(req, true);
+ }
+ 
+ static int mtk_skcipher_decrypt(struct skcipher_request *req)
+@@ -209,7 +263,7 @@ static int mtk_skcipher_decrypt(struct s
+ 	rctx->flags |= MTK_DECRYPT;
+ 	rctx->saRecord_base = ctx->sa_base_in;
+ 
+-	return mtk_skcipher_crypt(req);
++	return mtk_skcipher_crypt(req, false);
+ }
+ 
+ /* Available algorithms in this module */
+--- a/crypto/mtk-eip93/eip93-cipher.h
++++ b/crypto/mtk-eip93/eip93-cipher.h
+@@ -24,6 +24,8 @@ struct mtk_crypto_ctx {
+ 	bool				in_first;
+ 	bool				out_first;
+ 	struct crypto_shash		*shash;
++	unsigned int keylen;
++	struct crypto_skcipher *fallback;
+ };
+ 
+ struct mtk_cipher_reqctx {
+@@ -45,6 +47,7 @@ struct mtk_cipher_reqctx {
+ 	struct saState_s		*saState_ctr;
+ 	dma_addr_t			saState_base_ctr;
+ 	uint32_t			saState_ctr_idx;
++	struct skcipher_request fallback_req; // keep at the end
+ };
+ 
+ int check_valid_request(struct mtk_cipher_reqctx *rctx);

@@ -1,0 +1,207 @@
+From a64c3c1357275b1fd61bc9734f638cdb5d8a8bbb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marek=20Beh=C3=BAn?= <kabel@kernel.org>
+Date: Mon, 18 Sep 2023 18:11:02 +0200
+Subject: [PATCH 4/6] leds: turris-omnia: Make set_brightness() more efficient
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implement caching of the LED color and state values that are sent to MCU
+in order to make the set_brightness() operation more efficient by
+avoiding I2C transactions which are not needed.
+
+On Turris Omnia's MCU, which acts as the RGB LED controller, each LED
+has a RGB color, and a ON/OFF state, which are configurable via I2C
+commands CMD_LED_COLOR and CMD_LED_STATE.
+
+The CMD_LED_COLOR command sends 5 bytes and the CMD_LED_STATE command 2
+bytes over the I2C bus, which operates at 100 kHz. With I2C overhead
+this allows ~1670 color changing commands and ~3200 state changing
+commands per second (or around 1000 color + state changes per second).
+This may seem more than enough, but the issue is that the I2C bus is
+shared with another peripheral, the MCU. The MCU exposes an interrupt
+interface, and it can trigger hundreds of interrupts per second. Each
+time, we need to read the interrupt state register over this I2C bus.
+Whenever we are sending a LED color/state changing command, the
+interrupt reading is waiting.
+
+Currently, every time LED brightness or LED multi intensity is changed,
+we send a CMD_LED_STATE command, and if the computed color (brightness
+adjusted multi_intensity) is non-zero, we also send a CMD_LED_COLOR
+command.
+
+Consider for example the situation when we have a netdev trigger enabled
+for a LED. The netdev trigger does not change the LED color, only the
+brightness (either to 0 or to currently configured brightness), and so
+there is no need to send the CMD_LED_COLOR command. But each change of
+brightness to 0 sends one CMD_LED_STATE command, and each change of
+brightness to max_brightness sends one CMD_LED_STATE command and one
+CMD_LED_COLOR command:
+    set_brightness(0)   ->  CMD_LED_STATE
+    set_brightness(255) ->  CMD_LED_STATE + CMD_LED_COLOR
+                                            (unnecessary)
+
+We can avoid the unnecessary I2C transactions if we cache the values of
+state and color that are sent to the controller. If the color does not
+change from the one previously sent, there is no need to do the
+CMD_LED_COLOR I2C transaction, and if the state does not change, there
+is no need to do the CMD_LED_STATE transaction.
+
+Because we need to make sure that our cached values are consistent with
+the controller state, add explicit setting of the LED color to white at
+probe time (this is the default setting when MCU resets, but does not
+necessarily need to be the case, for example if U-Boot played with the
+LED colors).
+
+Signed-off-by: Marek Behún <kabel@kernel.org>
+Link: https://lore.kernel.org/r/20230918161104.20860-3-kabel@kernel.org
+Signed-off-by: Lee Jones <lee@kernel.org>
+---
+ drivers/leds/leds-turris-omnia.c | 96 ++++++++++++++++++++++++++------
+ 1 file changed, 78 insertions(+), 18 deletions(-)
+
+--- a/drivers/leds/leds-turris-omnia.c
++++ b/drivers/leds/leds-turris-omnia.c
+@@ -30,6 +30,8 @@
+ struct omnia_led {
+ 	struct led_classdev_mc mc_cdev;
+ 	struct mc_subled subled_info[OMNIA_LED_NUM_CHANNELS];
++	u8 cached_channels[OMNIA_LED_NUM_CHANNELS];
++	bool on;
+ 	int reg;
+ };
+ 
+@@ -72,36 +74,82 @@ static int omnia_cmd_read_u8(const struc
+ 		return -EIO;
+ }
+ 
++static int omnia_led_send_color_cmd(const struct i2c_client *client,
++				    struct omnia_led *led)
++{
++	char cmd[5];
++	int ret;
++
++	cmd[0] = CMD_LED_COLOR;
++	cmd[1] = led->reg;
++	cmd[2] = led->subled_info[0].brightness;
++	cmd[3] = led->subled_info[1].brightness;
++	cmd[4] = led->subled_info[2].brightness;
++
++	/* Send the color change command */
++	ret = i2c_master_send(client, cmd, 5);
++	if (ret < 0)
++		return ret;
++
++	/* Cache the RGB channel brightnesses */
++	for (int i = 0; i < OMNIA_LED_NUM_CHANNELS; ++i)
++		led->cached_channels[i] = led->subled_info[i].brightness;
++
++	return 0;
++}
++
++/* Determine if the computed RGB channels are different from the cached ones */
++static bool omnia_led_channels_changed(struct omnia_led *led)
++{
++	for (int i = 0; i < OMNIA_LED_NUM_CHANNELS; ++i)
++		if (led->subled_info[i].brightness != led->cached_channels[i])
++			return true;
++
++	return false;
++}
++
+ static int omnia_led_brightness_set_blocking(struct led_classdev *cdev,
+ 					     enum led_brightness brightness)
+ {
+ 	struct led_classdev_mc *mc_cdev = lcdev_to_mccdev(cdev);
+ 	struct omnia_leds *leds = dev_get_drvdata(cdev->dev->parent);
+ 	struct omnia_led *led = to_omnia_led(mc_cdev);
+-	u8 buf[5], state;
+-	int ret;
++	int err = 0;
+ 
+ 	mutex_lock(&leds->lock);
+ 
+-	led_mc_calc_color_components(&led->mc_cdev, brightness);
++	/*
++	 * Only recalculate RGB brightnesses from intensities if brightness is
++	 * non-zero. Otherwise we won't be using them and we can save ourselves
++	 * some software divisions (Omnia's CPU does not implement the division
++	 * instruction).
++	 */
++	if (brightness) {
++		led_mc_calc_color_components(mc_cdev, brightness);
++
++		/*
++		 * Send color command only if brightness is non-zero and the RGB
++		 * channel brightnesses changed.
++		 */
++		if (omnia_led_channels_changed(led))
++			err = omnia_led_send_color_cmd(leds->client, led);
++	}
+ 
+-	buf[0] = CMD_LED_COLOR;
+-	buf[1] = led->reg;
+-	buf[2] = mc_cdev->subled_info[0].brightness;
+-	buf[3] = mc_cdev->subled_info[1].brightness;
+-	buf[4] = mc_cdev->subled_info[2].brightness;
+-
+-	state = CMD_LED_STATE_LED(led->reg);
+-	if (buf[2] || buf[3] || buf[4])
+-		state |= CMD_LED_STATE_ON;
+-
+-	ret = omnia_cmd_write_u8(leds->client, CMD_LED_STATE, state);
+-	if (ret >= 0 && (state & CMD_LED_STATE_ON))
+-		ret = i2c_master_send(leds->client, buf, 5);
++	/* Send on/off state change only if (bool)brightness changed */
++	if (!err && !brightness != !led->on) {
++		u8 state = CMD_LED_STATE_LED(led->reg);
++
++		if (brightness)
++			state |= CMD_LED_STATE_ON;
++
++		err = omnia_cmd_write_u8(leds->client, CMD_LED_STATE, state);
++		if (!err)
++			led->on = !!brightness;
++	}
+ 
+ 	mutex_unlock(&leds->lock);
+ 
+-	return ret;
++	return err;
+ }
+ 
+ static int omnia_led_register(struct i2c_client *client, struct omnia_led *led,
+@@ -129,11 +177,15 @@ static int omnia_led_register(struct i2c
+ 	}
+ 
+ 	led->subled_info[0].color_index = LED_COLOR_ID_RED;
+-	led->subled_info[0].channel = 0;
+ 	led->subled_info[1].color_index = LED_COLOR_ID_GREEN;
+-	led->subled_info[1].channel = 1;
+ 	led->subled_info[2].color_index = LED_COLOR_ID_BLUE;
+-	led->subled_info[2].channel = 2;
++
++	/* Initial color is white */
++	for (int i = 0; i < OMNIA_LED_NUM_CHANNELS; ++i) {
++		led->subled_info[i].intensity = 255;
++		led->subled_info[i].brightness = 255;
++		led->subled_info[i].channel = i;
++	}
+ 
+ 	led->mc_cdev.subled_info = led->subled_info;
+ 	led->mc_cdev.num_colors = OMNIA_LED_NUM_CHANNELS;
+@@ -162,6 +214,14 @@ static int omnia_led_register(struct i2c
+ 		return ret;
+ 	}
+ 
++	/* Set initial color and cache it */
++	ret = omnia_led_send_color_cmd(client, led);
++	if (ret < 0) {
++		dev_err(dev, "Cannot set LED %pOF initial color: %i\n", np,
++			ret);
++		return ret;
++	}
++
+ 	ret = devm_led_classdev_multicolor_register_ext(dev, &led->mc_cdev,
+ 							&init_data);
+ 	if (ret < 0) {

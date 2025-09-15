@@ -1,0 +1,83 @@
+From: Gabor Juhos <j4g8y7@gmail.com>
+Subject: [PATCH] clk: qcom: apss-ipq-pll: use stromer ops for IPQ5018 to fix boot failure
+Date: Fri, 15 Mar 2024 17:16:41 +0100
+
+Booting v6.8 results in a hang on various IPQ5018 based boards.
+Investigating the problem showed that the hang happens when the
+clk_alpha_pll_stromer_plus_set_rate() function tries to write
+into the PLL_MODE register of the APSS PLL.
+
+Checking the downstream code revealed that it uses [1] stromer
+specific operations for IPQ5018, whereas in the current code
+the stromer plus specific operations are used.
+
+The ops in the 'ipq_pll_stromer_plus' clock definition can't be
+changed since that is needed for IPQ5332, so add a new alpha pll
+clock declaration which uses the correct stromer ops and use this
+new clock for IPQ5018 to avoid the boot failure.
+
+Also, change pll_type in 'ipq5018_pll_data' to
+CLK_ALPHA_PLL_TYPE_STROMER to better reflect that it is a Stromer
+PLL and change the apss_ipq_pll_probe() function accordingly.
+
+1. https://git.codelinaro.org/clo/qsdk/oss/kernel/linux-ipq-5.4/-/blob/NHSS.QSDK.12.4/drivers/clk/qcom/apss-ipq5018.c#L67
+
+Fixes: 50492f929486 ("clk: qcom: apss-ipq-pll: add support for IPQ5018")
+Signed-off-by: Gabor Juhos <j4g8y7@gmail.com>
+---
+ drivers/clk/qcom/apss-ipq-pll.c | 30 +++++++++++++++++++++++++++---
+ 1 file changed, 27 insertions(+), 3 deletions(-)
+
+--- a/drivers/clk/qcom/apss-ipq-pll.c
++++ b/drivers/clk/qcom/apss-ipq-pll.c
+@@ -55,6 +55,29 @@ static struct clk_alpha_pll ipq_pll_huay
+ 	},
+ };
+ 
++static struct clk_alpha_pll ipq_pll_stromer = {
++	.offset = 0x0,
++	/*
++	 * Reuse CLK_ALPHA_PLL_TYPE_STROMER_PLUS register offsets.
++	 * Although this is a bit confusing, but the offset values
++	 * are correct nevertheless.
++	 */
++	.regs = ipq_pll_offsets[CLK_ALPHA_PLL_TYPE_STROMER_PLUS],
++	.flags = SUPPORTS_DYNAMIC_UPDATE,
++	.clkr = {
++		.enable_reg = 0x0,
++		.enable_mask = BIT(0),
++		.hw.init = &(const struct clk_init_data) {
++			.name = "a53pll",
++			.parent_data = &(const struct clk_parent_data) {
++				.fw_name = "xo",
++			},
++			.num_parents = 1,
++			.ops = &clk_alpha_pll_stromer_ops,
++		},
++	},
++};
++
+ static struct clk_alpha_pll ipq_pll_stromer_plus = {
+ 	.offset = 0x0,
+ 	.regs = ipq_pll_offsets[CLK_ALPHA_PLL_TYPE_STROMER_PLUS],
+@@ -144,8 +167,8 @@ struct apss_pll_data {
+ };
+ 
+ static const struct apss_pll_data ipq5018_pll_data = {
+-	.pll_type = CLK_ALPHA_PLL_TYPE_STROMER_PLUS,
+-	.pll = &ipq_pll_stromer_plus,
++	.pll_type = CLK_ALPHA_PLL_TYPE_STROMER,
++	.pll = &ipq_pll_stromer,
+ 	.pll_config = &ipq5018_pll_config,
+ };
+ 
+@@ -203,7 +226,8 @@ static int apss_ipq_pll_probe(struct pla
+ 
+ 	if (data->pll_type == CLK_ALPHA_PLL_TYPE_HUAYRA)
+ 		clk_alpha_pll_configure(data->pll, regmap, data->pll_config);
+-	else if (data->pll_type == CLK_ALPHA_PLL_TYPE_STROMER_PLUS)
++	else if (data->pll_type == CLK_ALPHA_PLL_TYPE_STROMER ||
++		 data->pll_type == CLK_ALPHA_PLL_TYPE_STROMER_PLUS)
+ 		clk_stromer_pll_configure(data->pll, regmap, data->pll_config);
+ 
+ 	ret = devm_clk_register_regmap(dev, &data->pll->clkr);

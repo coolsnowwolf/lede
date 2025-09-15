@@ -1,0 +1,103 @@
+From 8deff65d2d7ffea00231ec592d956aebf7de0852 Mon Sep 17 00:00:00 2001
+From: Emil Renner Berthing <emil.renner.berthing@canonical.com>
+Date: Sat, 22 Jul 2023 18:50:49 +0200
+Subject: [PATCH 1020/1021] usb: cdns3: starfive: Initialize JH7100 host mode
+
+These settings are directly copied from StarFive's port of u-boot
+for the JH7100:
+
+  /* config strap */
+  _SET_SYSCON_REG_SCFG_usb0_mode_strap(0x2);
+  _SET_SYSCON_REG_SCFG_usb7_PLL_EN(0x1);
+  _SET_SYSCON_REG_SCFG_usb7_U3_EQ_EN(0x1);
+  _SET_SYSCON_REG_SCFG_usb7_U3_SSRX_SEL(0x1);
+  _SET_SYSCON_REG_SCFG_usb7_U3_SSTX_SEL(0x1);
+  _SET_SYSCON_REG_SCFG_usb3_utmi_iddig(0x1);
+
+Signed-off-by: Emil Renner Berthing <emil.renner.berthing@canonical.com>
+---
+ arch/riscv/boot/dts/starfive/jh7100.dtsi |  6 ++++
+ drivers/usb/cdns3/cdns3-starfive.c       | 43 ++++++++++++++++++++++++
+ 2 files changed, 49 insertions(+)
+
+--- a/arch/riscv/boot/dts/starfive/jh7100.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7100.dtsi
+@@ -255,6 +255,11 @@
+ 			#reset-cells = <1>;
+ 		};
+ 
++		sysaudio: syscon@104a0000 {
++			compatible = "starfive,jh7100-sysaudio", "syscon";
++			reg = <0x0 0x104a0000 0x0 0x10000>;
++		};
++
+ 		usb3: usb@104c0000 {
+ 			compatible = "starfive,jh7100-usb";
+ 			ranges = <0x0 0x0 0x104c0000 0x100000>;
+@@ -268,6 +273,7 @@
+ 			resets = <&rstgen JH7100_RSTN_USB_AXI>,
+ 			         <&rstgen JH7100_RSTN_USBNOC_AXI>;
+ 			reset-names = "axi", "nocaxi";
++			starfive,syscon = <&sysaudio>;
+ 			status = "disabled";
+ 
+ 			usb_cdns3: usb@0 {
+--- a/drivers/usb/cdns3/cdns3-starfive.c
++++ b/drivers/usb/cdns3/cdns3-starfive.c
+@@ -20,6 +20,19 @@
+ #include <linux/usb/otg.h>
+ #include "core.h"
+ 
++#define JH7100_USB0			0x20
++#define JH7100_USB0_MODE_STRAP_MASK	GENMASK(2, 0)
++#define JH7100_USB0_MODE_STRAP_HOST	2
++
++#define JH7100_USB3			0x2c
++#define JH7100_USB3_UTMI_IDDIG		BIT(21)
++
++#define JH7100_USB7			0x3c
++#define JH7100_USB7_SSRX_SEL		BIT(18)
++#define JH7100_USB7_SSTX_SEL		BIT(19)
++#define JH7100_USB7_PLL_EN		BIT(23)
++#define JH7100_USB7_EQ_EN		BIT(25)
++
+ #define JH7110_STRAP_HOST		BIT(17)
+ #define JH7110_STRAP_DEVICE		BIT(18)
+ #define JH7110_STRAP_MASK		GENMASK(18, 16)
+@@ -42,6 +55,36 @@ typedef int (cdns_starfive_mode_init_t)(
+ 
+ static int cdns_jh7100_mode_init(struct device *dev, struct cdns_starfive *data)
+ {
++	struct regmap *syscon;
++	enum usb_dr_mode mode;
++
++	syscon = syscon_regmap_lookup_by_phandle(dev->of_node, "starfive,syscon");
++	if (IS_ERR(syscon))
++		return dev_err_probe(dev, PTR_ERR(syscon),
++				     "failed to get starfive,syscon\n");
++
++	/* dr mode setting */
++	mode = usb_get_dr_mode(dev);
++
++	switch (mode) {
++	case USB_DR_MODE_HOST:
++		regmap_update_bits(syscon, JH7100_USB0,
++				   JH7100_USB0_MODE_STRAP_MASK, JH7100_USB0_MODE_STRAP_HOST);
++		regmap_update_bits(syscon, JH7100_USB7,
++				   JH7100_USB7_PLL_EN, JH7100_USB7_PLL_EN);
++		regmap_update_bits(syscon, JH7100_USB7,
++				   JH7100_USB7_EQ_EN, JH7100_USB7_EQ_EN);
++		regmap_update_bits(syscon, JH7100_USB7,
++				   JH7100_USB7_SSRX_SEL, JH7100_USB7_SSRX_SEL);
++		regmap_update_bits(syscon, JH7100_USB7,
++				   JH7100_USB7_SSTX_SEL, JH7100_USB7_SSTX_SEL);
++		regmap_update_bits(syscon, JH7100_USB3,
++				   JH7100_USB3_UTMI_IDDIG, JH7100_USB3_UTMI_IDDIG);
++		break;
++	default:
++		break;
++	}
++
+ 	return 0;
+ }
+ 

@@ -1,0 +1,169 @@
+#!/bin/sh /etc/rc.common
+
+#
+# Copyright (C) 2020-2025  sirpdboy  <herboy2008@gmail.com> https://github.com/sirpdboy/netspeedtest
+
+# This is free software, licensed under the Apache License, Version 2.0 .
+#
+
+START=99
+USE_PROCD=1
+
+PROG=/usr/bin/homebox
+EXTRA_COMMANDS="wantest"
+
+TMP_T=/var/netspeedtest_nstest.tmp
+BINSPEEDTEST='/usr/bin/speedtest'
+LOCK=/var/lock/netspeedtest_nstest.lock
+LOGD=/etc/netspeedtest
+LOG=/var/log/netspeedtest.log
+LOGE=$LOGD/netspeedtest.log
+LOGT=$LOGD/netspeedtestpos
+[ -d "$LOGD" ] || mkdir -p $LOGD
+[ -f "$LOGE" ] || echo "start" > $LOGE
+[ -f "$LOGT" ] || echo "start" > $LOGT
+[ -f "$LOG" ] || echo "start" > $LOG
+
+MAX_LOG=500
+limit_log() {
+	local logf=$1
+	local max=$2
+	[ ! -f "$logf" ] && return
+	sc=${max:-$MAX_LOG}
+	local count=$(grep -c "" $logf)
+	if [ $count -gt $sc ];then
+		let count=count-$sc
+		sed -i "1,$count d" $logf
+	fi
+}
+
+
+echone() {
+  echo -ne $* >> $LOG
+}
+
+
+wantest() {
+    [ -f $LOCK ] && exit
+    limit_log $LOG 500
+    touch $LOCK
+    TESTMODE=$1
+    BINTEMP=$(git_bin_handle $TESTMODE)
+    # read optional params from UCI
+    config_load netspeedtest
+    config_get server_id speedtestwan server_id
+    config_get single    speedtestwan single
+    # build args for clients
+    CLI_ARGS=""
+    [ -n "$server_id" ] && CLI_ARGS="$CLI_ARGS --server $server_id"
+    [ "x$single" = "x1" ] && CLI_ARGS="$CLI_ARGS --single"
+    case $TESTMODE in
+    0) 
+    echo -ne "\n   —————ookla-speedtest测速—————\n" | tee -a $LOG
+    $BINTEMP $CLI_ARGS | tee $TMP_T
+    RESULT=$(cat  $TMP_T | grep 'URL' | cut -c15-)
+    if [ -n "$RESULT" ] ;then
+    echo -ne "\n   测服信息:`cat  $TMP_T | grep 'Server'| cut -c10- | awk -F: '{printf $2$3}'`  线路:`cat  $TMP_T | grep 'ISP' | awk -F: '{printf $2}' `  延时：`cat  $TMP_T | grep 'Latency' | awk -F: '{printf $2}'  | awk -F '(' '{printf $1}'`"  >> $LOG
+    echo -ne "\n   下行速率:`cat  $TMP_T  | grep 'Download' |awk -F: '{printf $2}'  | awk -F '(' '{printf $1}'`  --"  >> $LOG
+    echo -ne  "--  上行速率:`cat  $TMP_T  | grep 'Upload' |awk -F: '{printf $2}' | awk -F '(' '{printf $1}'`"  >> $LOG
+    echo -ne "\n   测速结果图片链接:`cat  $TMP_T | grep 'URL' | cut -c15-`"  >> $LOG
+    else
+    echo -ne "\n  因客户端在LUCI下运行错误，测试失败！" | tee -a $LOG
+    echo -ne "\n  请SSH运行：/etc/init.d/netspeedtest wantest 0 测试,完成后，在日志中有测试结果！" | tee -a $LOG
+    fi
+    echo -ne "\n   测试时间: `date +%Y-%m-%d' '%H:%M:%S`"  | tee -a $LOG
+    echo -ne "\n   ————————————————————\n"  | tee -a $LOG
+     ;;
+    *)
+    echo -ne "\n  —————python3-speedtest测速—————\n"  | tee -a $LOG
+    $BINTEMP $CLI_ARGS | tee $TMP_T
+    echo -ne "\n   测服信息:$(cat  $TMP_T | grep 'Hosted by'| cut -c10- | awk -F: '{printf $1}')  延时：$(cat  $TMP_T | grep 'Hosted by' | awk -F: '{printf $2}')" >> $LOG
+    echo -ne "\n  下行速率:$(cat  $TMP_T  | grep 'Download:' |awk -F: '{printf $2}' )   --"   >> $LOG
+    echo -ne "--  上行速率:$(cat  $TMP_T  | grep 'Upload:' |awk -F: '{printf $2}' )"  >> $LOG
+    echo -ne "\n   测试结果图片链接:$(cat  $TMP_T  | grep 'results:' | cut -c16- )"  >> $LOG
+    echo -ne "\n   测试时间:`date +%Y-%m-%d" "%H:%M:%S`"  | tee -a $LOG
+    echo -ne "\n   ————————————————————\n"  | tee -a $LOG
+
+     ;;  
+    esac
+    rm -f $LOCK
+}
+getcpucore(){
+#i386, x86_64, arm32, arm32hf, and arm64.
+	cputype=$(uname -ms | tr ' ' '_' | tr '[A-Z]' '[a-z]')
+	[ -n "$(echo $cputype | grep -E "linux.*armv.*")" ] && cpucore="armel"
+	[ -n "$(echo $cputype | grep -E "linux.*armv7.*")" ] && [ -n "$(cat /proc/cpuinfo | grep vfp)" ] && [ ! -d /jffs/clash ] && cpucore="armhf"
+	[ -n "$(echo $cputype | grep -E "linux.*aarch64.*|linux.*armv8.*")" ] && cpucore="aarch64"
+	[ -n "$(echo $cputype | grep -E "linux.*86.*")" ] && cpucore="i386"
+	[ -n "$(echo $cputype | grep -E "linux.*86_64.*")" ] && cpucore="x86_64"
+echo $cpucore
+}
+
+git_bin_handle()
+{
+case $1 in
+ 
+    0)
+	TMPDIR=/var/netspeedtest
+	BINSPEEDTEST=$TMPDIR/speedtest
+	[ ! -d $TMPDIR ] && mkdir -p $TMPDIR 2>/dev/null
+	if [ -x "$BINSPEEDTEST" ]; then
+	    chmod 755 $BINSPEEDTEST  >/dev/null 2>&1
+	    echo "$BINSPEEDTEST --accept-gdpr --accept-license --progress=no"
+	else
+	    ooklaurl=`curl --connect-timeout 5 -m 60  -sSL  'https://www.speedtest.net/apps/cli' | grep 'Download for Linux' | sed 's|<|\n<|g' | sed -n '/Download for Linux/,/<\/div>/p' | sed -En "s|.*<a href=\"([^\"]+)\">$(getcpucore)|\1|p" `
+	    [ -n "$ooklaurl" ] && curl -sSL $ooklaurl | tar -xvz -C /tmp  >/dev/null 2>&1 || return
+	    mv /tmp/speedtest $BINSPEEDTEST >/dev/null 2>&1
+	    chmod 755 $BINSPEEDTEST  >/dev/null 2>&1
+	    [ -x "$BINSPEEDTEST" ] && echo "$BINSPEEDTEST --accept-gdpr --accept-license --progress=no"
+	fi
+	;;
+    *)
+	BINSPEEDTEST='/usr/bin/speedtest'
+	[ -x "$BINSPEEDTEST" ] && echo "$BINSPEEDTEST --share"
+	;; 
+    esac
+}
+
+speedtest_start(){
+case $1 in
+    0) 
+        speedtest_start_ookla $2 ;;  
+    *) 
+        speedtest_start_cli $2 ;;  
+    esac
+}
+
+tcptest(){
+    NDATA=`date +%Y-%m-%d' '%H:%M:%S`
+    echo -ne "\n  $NDATA  服务器：$1  ----  端口：$2  ----  TCP延时：$3 ms \n"  >> $LOG
+}
+
+get_config() {
+        config_get_bool enabled $1 enabled 1
+	config_get_bool logger $1 logger 1
+}
+
+homebox_prepare() {
+	pgrep -f homebox | xargs kill -9 >/dev/null 2>&1 
+	killall homebox
+	killall homebox
+}
+
+start_service() {
+	config_load netspeedtest
+        config_foreach get_config netspeedtest
+	[ "x$enabled" != "x1" ] && {
+	    homebox_prepare 
+	   exit 
+	}
+	procd_open_instance
+	procd_set_param command $PROG
+	[ "x$logger" == x1 ] && procd_set_param stderr 1
+	# procd_set_param respawn
+	procd_close_instance
+}
+
+service_triggers() {
+      procd_add_reload_trigger "netspeedtest"
+}

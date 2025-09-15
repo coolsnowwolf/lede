@@ -1,0 +1,102 @@
+From 6f8e5369ae054ec6c9265581d5a7e39738a5cd84 Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Tue, 30 Mar 2021 13:16:38 +0200
+Subject: [PATCH 1/2] NET: add mtd-mac-address support to of_get_mac_address()
+
+Many embedded devices have information such as mac addresses stored inside mtd
+devices. This patch allows us to add a property inside a node describing a
+network interface. The new property points at a mtd partition with an offset
+where the mac address can be found.
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+---
+ drivers/of/of_net.c | 75 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 74 insertions(+), 1 deletion(-)
+
+--- a/drivers/of/of_net.c
++++ b/drivers/of/of_net.c
+@@ -12,6 +12,7 @@
+ #include <linux/export.h>
+ #include <linux/device.h>
+ #include <linux/nvmem-consumer.h>
++#include <linux/mtd/mtd.h>
+ 
+ /**
+  * of_get_phy_mode - Get phy mode for given device_node
+@@ -89,6 +90,52 @@ static int of_get_mac_addr_nvmem(struct
+ 	return 0;
+ }
+ 
++static int of_get_mac_address_mtd(struct device_node *np, u8 *addr)
++{
++#ifdef CONFIG_MTD
++	struct platform_device *pdev = of_find_device_by_node(np);
++	struct device_node *mtd_np = NULL;
++	size_t retlen;
++	int size, ret;
++	struct mtd_info *mtd;
++	const char *part;
++	const __be32 *list;
++	phandle phandle;
++	u8 mac[ETH_ALEN];
++
++	list = of_get_property(np, "mtd-mac-address", &size);
++	if (!list || (size != (2 * sizeof(*list))))
++		return -ENODEV;
++
++	phandle = be32_to_cpup(list++);
++	if (phandle)
++		mtd_np = of_find_node_by_phandle(phandle);
++
++	if (!mtd_np)
++		return -ENODEV;
++
++	part = of_get_property(mtd_np, "label", NULL);
++	if (!part)
++		part = mtd_np->name;
++
++	mtd = get_mtd_device_nm(part);
++	if (IS_ERR(mtd))
++		return -ENODEV;
++
++	ret = mtd_read(mtd, be32_to_cpup(list), 6, &retlen, mac);
++	put_mtd_device(mtd);
++
++	if (!is_valid_ether_addr(mac))
++		return -EINVAL;
++
++	memcpy(addr, mac, ETH_ALEN);
++
++	return 0;
++#endif
++	return -EINVAL;
++}
++
++
+ /**
+  * Search the device tree for the best MAC address to use.  'mac-address' is
+  * checked first, because that is supposed to contain to "most recent" MAC
+@@ -109,6 +156,10 @@ static int of_get_mac_addr_nvmem(struct
+  * this case, the real MAC is in 'local-mac-address', and 'mac-address' exists
+  * but is all zeros.
+  *
++ *
++ * If a mtd-mac-address property exists, try to fetch the MAC address from the
++ * specified mtd device.
++ *
+  * Return: 0 on success and errno in case of error.
+ */
+ int of_get_mac_address(struct device_node *np, u8 *addr)
+@@ -130,6 +181,10 @@ int of_get_mac_address(struct device_nod
+ 	if (!ret)
+ 		return 0;
+ 
++	ret = of_get_mac_address_mtd(np, addr);
++	if (!ret)
++		return 0;
++
+ 	return of_get_mac_addr_nvmem(np, addr);
+ }
+ EXPORT_SYMBOL(of_get_mac_address);

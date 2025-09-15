@@ -1,0 +1,323 @@
+From 5a15437610e8e8c68dc347845a83d0cbad80ca08 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Tue, 19 Jan 2021 10:58:48 +0800
+Subject: [PATCH 51/71] cmd: bootmenu: add ability to select item by shortkey
+
+Add ability to use shortkey to select item for bootmenu command
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ cmd/bootmenu.c | 34 ++++++++++++++++++++++++-----
+ common/menu.c  | 58 ++++++++++++++++++++++++++++++++++++++++++++++++--
+ include/menu.h | 12 +++++++----
+ 3 files changed, 93 insertions(+), 11 deletions(-)
+
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -89,6 +89,7 @@ static char *bootmenu_choice_entry(void
+ 	struct bootmenu_data *menu = data;
+ 	struct bootmenu_entry *iter;
+ 	enum bootmenu_key key = BKEY_NONE;
++	int choice = -1;
+ 	int i;
+ 
+ 	cli_ch_init(cch);
+@@ -96,10 +97,10 @@ static char *bootmenu_choice_entry(void
+ 	while (1) {
+ 		if (menu->delay >= 0) {
+ 			/* Autoboot was not stopped */
+-			key = bootmenu_autoboot_loop(menu, cch);
++			key = bootmenu_autoboot_loop(menu, cch, &choice);
+ 		} else {
+ 			/* Some key was pressed, so autoboot was stopped */
+-			key = bootmenu_loop(menu, cch);
++			key = bootmenu_loop(menu, cch, &choice);
+ 		}
+ 
+ 		switch (key) {
+@@ -113,6 +114,12 @@ static char *bootmenu_choice_entry(void
+ 				++menu->active;
+ 			/* no menu key selected, regenerate menu */
+ 			return NULL;
++		case BKEY_CHOICE:
++			menu->active = choice;
++			if (!menu->last_choiced) {
++				menu->last_choiced = true;
++				return NULL;
++			}
+ 		case BKEY_SELECT:
+ 			iter = menu->first;
+ 			for (i = 0; i < menu->active; ++i)
+@@ -170,6 +177,9 @@ static int prepare_bootmenu_entry(struct
+ 	unsigned short int i = *index;
+ 	struct bootmenu_entry *entry = NULL;
+ 	struct bootmenu_entry *iter = *current;
++	char *choice_option;
++	char choice_char;
++	int len;
+ 
+ 	while ((option = bootmenu_getoption(i))) {
+ 
+@@ -184,11 +194,24 @@ static int prepare_bootmenu_entry(struct
+ 		if (!entry)
+ 			return -ENOMEM;
+ 
+-		entry->title = strndup(option, sep - option);
++		/* Add KEY_CHOICE support: '%d. %s\0' : len --> len + 4 */
++		len = sep - option + 4;
++		choice_option = malloc(len);
++		if (!choice_option) {
++			free(entry->title);
++			free(entry);
++			return -ENOMEM;
++		}
++		if (!get_choice_char(i, &choice_char))
++			len = snprintf(choice_option, len, "%c. %s", choice_char, option);
++		else
++			len = snprintf(choice_option, len, "   %s", option);
++		entry->title = strndup(choice_option, len);
+ 		if (!entry->title) {
+ 			free(entry);
+ 			return -ENOMEM;
+ 		}
++		free(choice_option);
+ 
+ 		entry->command = strdup(sep + 1);
+ 		if (!entry->command) {
+@@ -334,6 +357,7 @@ static struct bootmenu_data *bootmenu_cr
+ 	menu->delay = delay;
+ 	menu->active = 0;
+ 	menu->first = NULL;
++	menu->last_choiced = false;
+ 
+ 	default_str = env_get("bootmenu_default");
+ 	if (default_str)
+@@ -369,9 +393,9 @@ static struct bootmenu_data *bootmenu_cr
+ 
+ 		/* Add Quit entry if entering U-Boot console is disabled */
+ 		if (!IS_ENABLED(CONFIG_BOOTMENU_DISABLE_UBOOT_CONSOLE))
+-			entry->title = strdup("U-Boot console");
++			entry->title = strdup("0. U-Boot console");
+ 		else
+-			entry->title = strdup("Quit");
++			entry->title = strdup("0. Quit");
+ 
+ 		if (!entry->title) {
+ 			free(entry);
+--- a/common/menu.c
++++ b/common/menu.c
+@@ -49,6 +49,33 @@ struct menu {
+ 	int item_cnt;
+ };
+ 
++const char choice_chars[] = {
++	'1', '2', '3', '4', '5', '6', '7', '8', '9',
++	'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
++	'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
++	'u', 'v', 'w', 'x', 'y', 'z'
++};
++
++static int find_choice(char choice)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(choice_chars); i++)
++		if (tolower(choice) == choice_chars[i])
++			return i;
++
++	return -1;
++}
++
++int get_choice_char(int index, char *result)
++{
++	if (index < ARRAY_SIZE(choice_chars))
++		*result = choice_chars[index];
++	else
++		return -1;
++	return 0;
++}
++
+ /*
+  * An iterator function for menu items. callback will be called for each item
+  * in m, with m, a pointer to the item, and extra being passed to callback. If
+@@ -428,7 +455,7 @@ int menu_destroy(struct menu *m)
+ }
+ 
+ enum bootmenu_key bootmenu_autoboot_loop(struct bootmenu_data *menu,
+-					 struct cli_ch_state *cch)
++					 struct cli_ch_state *cch, int *choice)
+ {
+ 	enum bootmenu_key key = BKEY_NONE;
+ 	int i, c;
+@@ -463,6 +490,19 @@ enum bootmenu_key bootmenu_autoboot_loop
+ 				break;
+ 			default:
+ 				key = BKEY_NONE;
++				if (cch->esc_len || !choice)
++					break;
++
++				*choice = find_choice(c);
++				if ((*choice >= 0 &&
++				     *choice < menu->count - 1)) {
++					key = BKEY_CHOICE;
++				} else if (c == '0') {
++					*choice = menu->count - 1;
++					key = BKEY_CHOICE;
++				} else {
++					key = BKEY_NONE;
++				}
+ 				break;
+ 			}
+ 			break;
+@@ -483,7 +523,8 @@ enum bootmenu_key bootmenu_autoboot_loop
+ 	return key;
+ }
+ 
+-enum bootmenu_key bootmenu_conv_key(int ichar)
++enum bootmenu_key bootmenu_conv_key(struct bootmenu_data *menu, int ichar,
++				    int *choice)
+ {
+ 	enum bootmenu_key key;
+ 
+@@ -515,6 +556,20 @@ enum bootmenu_key bootmenu_conv_key(int
+ 	case ' ':
+ 		key = BKEY_SPACE;
+ 		break;
++	case '0' ... '9':
++	case 'a' ... 'z':
++		if (choice && menu) {
++			*choice = find_choice(ichar);
++			if ((*choice >= 0 && *choice < menu->count - 1)) {
++				key = BKEY_CHOICE;
++				break;
++			} else if (ichar == '0') {
++				*choice = menu->count - 1;
++				key = BKEY_CHOICE;
++				break;
++			}
++		}
++		fallthrough;
+ 	default:
+ 		key = BKEY_NONE;
+ 		break;
+@@ -524,11 +579,16 @@ enum bootmenu_key bootmenu_conv_key(int
+ }
+ 
+ enum bootmenu_key bootmenu_loop(struct bootmenu_data *menu,
+-				struct cli_ch_state *cch)
++				struct cli_ch_state *cch, int *choice)
+ {
+ 	enum bootmenu_key key;
+ 	int c;
+ 
++	if (menu->last_choiced) {
++		menu->last_choiced = false;
++		return BKEY_SELECT;
++	}
++
+ 	c = cli_ch_process(cch, 0);
+ 	if (!c) {
+ 		while (!c && !tstc()) {
+@@ -542,7 +602,7 @@ enum bootmenu_key bootmenu_loop(struct b
+ 		}
+ 	}
+ 
+-	key = bootmenu_conv_key(c);
++	key = bootmenu_conv_key(menu, c, choice);
+ 
+ 	return key;
+ }
+--- a/include/menu.h
++++ b/include/menu.h
+@@ -6,6 +6,8 @@
+ #ifndef __MENU_H__
+ #define __MENU_H__
+ 
++#include <linux/ctype.h>
++
+ struct cli_ch_state;
+ struct menu;
+ 
+@@ -19,6 +21,8 @@ int menu_get_choice(struct menu *m, void
+ int menu_item_add(struct menu *m, char *item_key, void *item_data);
+ int menu_destroy(struct menu *m);
+ int menu_default_choice(struct menu *m, void **choice);
++/* Add KEY_CHOICE support */
++int get_choice_char(int index, char *result);
+ 
+ /**
+  * menu_show() Show a boot menu
+@@ -41,6 +45,7 @@ struct bootmenu_data {
+ 	int active;			/* active menu entry */
+ 	int count;			/* total count of menu entries */
+ 	struct bootmenu_entry *first;	/* first menu entry */
++	bool last_choiced;
+ };
+ 
+ /** enum bootmenu_key - keys that can be returned by the bootmenu */
+@@ -51,6 +56,7 @@ enum bootmenu_key {
+ 	BKEY_SELECT,
+ 	BKEY_QUIT,
+ 	BKEY_SAVE,
++	BKEY_CHOICE,
+ 
+ 	/* 'extra' keys, which are used by menus but not cedit */
+ 	BKEY_PLUS,
+@@ -81,7 +87,7 @@ enum bootmenu_key {
+  *	anything else: KEY_NONE
+  */
+ enum bootmenu_key bootmenu_autoboot_loop(struct bootmenu_data *menu,
+-					 struct cli_ch_state *cch);
++					 struct cli_ch_state *cch, int *choice);
+ 
+ /**
+  * bootmenu_loop() - handle waiting for a keypress when autoboot is disabled
+@@ -107,7 +113,7 @@ enum bootmenu_key bootmenu_autoboot_loop
+  *	Space: BKEY_SPACE
+  */
+ enum bootmenu_key bootmenu_loop(struct bootmenu_data *menu,
+-				struct cli_ch_state *cch);
++				struct cli_ch_state *cch, int *choice);
+ 
+ /**
+  * bootmenu_conv_key() - Convert a U-Boot keypress into a menu key
+@@ -115,6 +121,7 @@ enum bootmenu_key bootmenu_loop(struct b
+  * @ichar: Keypress to convert (ASCII, including control characters)
+  * Returns: Menu key that corresponds to @ichar, or BKEY_NONE if none
+  */
+-enum bootmenu_key bootmenu_conv_key(int ichar);
++enum bootmenu_key bootmenu_conv_key(struct bootmenu_data *menu, int ichar,
++				    int *choice);
+ 
+ #endif /* __MENU_H__ */
+--- a/cmd/eficonfig.c
++++ b/cmd/eficonfig.c
+@@ -239,7 +239,7 @@ char *eficonfig_choice_entry(void *data)
+ 	cli_ch_init(cch);
+ 
+ 	while (1) {
+-		key = bootmenu_loop((struct bootmenu_data *)efi_menu, cch);
++		key = bootmenu_loop((struct bootmenu_data *)efi_menu, cch, NULL);
+ 
+ 		switch (key) {
+ 		case BKEY_UP:
+@@ -1838,7 +1838,7 @@ char *eficonfig_choice_change_boot_order
+ 
+ 	cli_ch_init(cch);
+ 	while (1) {
+-		key = bootmenu_loop(NULL, cch);
++		key = bootmenu_loop(NULL, cch, NULL);
+ 
+ 		switch (key) {
+ 		case BKEY_PLUS:
+--- a/boot/bootflow_menu.c
++++ b/boot/bootflow_menu.c
+@@ -235,7 +235,7 @@ int bootflow_menu_run(struct bootstd_pri
+ 
+ 		key = 0;
+ 		if (ichar) {
+-			key = bootmenu_conv_key(ichar);
++			key = bootmenu_conv_key(NULL, ichar, NULL);
+ 			if (key == BKEY_NONE)
+ 				key = ichar;
+ 		}

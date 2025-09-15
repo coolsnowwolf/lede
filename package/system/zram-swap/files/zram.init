@@ -1,0 +1,190 @@
+#!/bin/sh /etc/rc.common
+
+START=15
+
+extra_command "compact" "Trigger compaction for all zram swap devices"
+extra_command "status" "Print out information & statistics about zram swap devices"
+
+ram_getsize()
+{
+	local line
+
+	while read line; do case "$line" in MemTotal:*) set $line; echo "$2"; break ;; esac; done </proc/meminfo
+}
+
+zram_getsize()	# in megabytes
+{
+	local zram_size="$( uci -q get system.@system[0].zram_size_mb )"
+	local ram_size="$( ram_getsize )"
+
+	if [ -z "$zram_size" ]; then
+		# e.g. 6mb for 16mb-routers or 61mb for 128mb-routers
+		echo $(( ram_size / 2048 ))
+	else
+		echo "$zram_size"
+	fi
+}
+
+zram_dev()
+{
+	local idx="$1"
+	echo "/dev/zram${idx:-0}"
+}
+
+zram_reset()
+{
+	local dev="$1"
+	local message="$2"
+	local proc_entry="/sys/block/$( basename "$dev" )/reset"
+
+	logger -s -t zram_reset -p daemon.debug "$message via $proc_entry"
+	echo "1" >"$proc_entry"
+}
+
+zram_getdev()
+{
+	#get unallocated zram dev
+	local zdev=$( zram_dev )
+
+	if [ "$(mount | grep $zdev)" ]; then
+		local idx=$(cat /sys/class/zram-control/hot_add)
+		zdev="$( zram_dev $idx )"
+	fi
+
+	echo $zdev
+}
+
+zram_comp_algo()
+{
+	local dev="$1"
+	local zram_comp_algo="$( uci -q get system.@system[0].zram_comp_algo )"
+
+	if [ -z "$zram_comp_algo" ]; then
+		# default to lzo, which is always available
+		zram_comp_algo="lzo"
+	fi
+
+	if [ $(grep -c "$zram_comp_algo" /sys/block/$( basename $dev )/comp_algorithm) -ne 0 ]; then
+		logger -s -t zram_comp_algo -p daemon.debug "set compression algorithm '$zram_comp_algo' for zram '$dev'"
+		echo $zram_comp_algo > "/sys/block/$( basename $dev )/comp_algorithm"
+	else
+		logger -s -t zram_comp_algo -p daemon.debug "compression algorithm '$zram_comp_algo' is not supported for '$dev'"
+	fi
+}
+
+#print various stats info about zram swap device
+zram_stats()
+{
+	local zdev="/sys/block/$( basename "$1" )"
+
+	printf "\nGathering stats info for zram device \"$( basename "$1" )\"\n\n"
+
+	printf "ZRAM\n----\n"
+	printf "%-25s - %s\n" "Block device" $zdev
+	awk '{ printf "%-25s - %d MiB\n", "Device size", $1/1024/1024 }' <$zdev/disksize
+	printf "%-25s - %s\n" "Compression algo" "$(cat $zdev/comp_algorithm)"
+
+	awk 'BEGIN { fmt = "%-25s - %.2f %s\n"
+		fmt2 = "%-25s - %d\n"
+		print "\nDATA\n----" }
+		{ printf fmt, "Original data size", $1/1024/1024, "MiB"
+		printf fmt, "Compressed data size", $2/1024/1024, "MiB"
+		printf fmt, "Compress ratio", $1/$2, ""
+		print "\nMEMORY\n------"
+		printf fmt, "Memory used, total", $3/1024/1024, "MiB"
+		printf fmt, "Allocator overhead", ($3-$2)/1024/1024, "MiB"
+		printf fmt, "Allocator efficiency", $2/$3*100, "%"
+		printf fmt, "Maximum memory ever used", $5/1024/1024, "MiB"
+		printf fmt, "Memory limit", $4/1024/1024, "MiB"
+		print "\nPAGES\n-----"
+		printf fmt2, "Same pages count", $6
+		printf fmt2, "Pages compacted", $7 }' <$zdev/mm_stat
+
+	awk '{ printf "%-25s - %d\n", "Free pages discarded", $4 }' <$zdev/io_stat
+}
+
+zram_compact()
+{
+	# compact zram device (reduce memory allocation overhead)
+	local zdev="/sys/block/$( basename "$1" )"
+
+	local old_mem_used=$(awk '{print $3}' <$zdev/mm_stat)
+	local old_overhead=$(awk '{print $3-$2}' <$zdev/mm_stat)
+
+	echo 1 > $zdev/compact
+
+	# If not running interactively, than just return
+	[ -z "$PS1" ] && return 0
+
+	echo ""
+	echo "Compacting zram device $zdev"
+	awk -v old_mem="$old_mem_used" -v ovr="$old_overhead" 'BEGIN { fmt = "%-25s - %.1f %s\n" }
+		{ printf fmt, "Memory usage reduced by ", (old_mem-$3)/1024/1024, "MiB"
+		printf fmt, "Overhead reduced by", (ovr-($3-$2))/ovr*100, "%" }' <$zdev/mm_stat
+}
+
+start()
+{
+	[ -e /proc/swaps ] || {
+		logger -s -t zram_start -p daemon.crit "kernel doesn't support swap"
+		return 1
+	}
+
+	if [ $( grep -cs zram /proc/swaps ) -ne 0 ]; then
+		logger -s -t zram_start -p daemon.notice "zram swap is already mounted"
+		return 1
+	fi
+
+	local zram_dev="$( zram_getdev )"
+
+	[ -e "$zram_dev" ] || {
+		logger -s -t zram_start -p daemon.crit "[ERROR] device '$zram_dev' not found"
+		return 1
+	}
+
+	local zram_size="$( zram_getsize )"
+	local zram_priority="$( uci -q get system.@system[0].zram_priority )"
+
+	if [ -z "$zram_priority" ]; then
+		zram_priority="100"
+	fi
+
+	logger -s -t zram_start -p daemon.debug "activating '$zram_dev' for swapping ($zram_size MiB)"
+
+	zram_reset "$zram_dev" "enforcing defaults"
+	zram_comp_algo "$zram_dev"
+	echo $(( $zram_size * 1024 * 1024 )) >"/sys/block/$( basename "$zram_dev" )/disksize"
+	busybox mkswap "$zram_dev"
+	busybox swapon -d -p $zram_priority "$zram_dev"
+}
+
+stop()
+{
+	local zram_dev
+
+	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
+		logger -s -t zram_stop -p daemon.debug "deactivate swap $zram_dev"
+		busybox swapoff "$zram_dev" && zram_reset "$zram_dev" "claiming memory back"
+		local dev_index="$( echo $zram_dev | grep -o "[0-9]*$" )"
+		if [ $dev_index -ne 0 ]; then
+			logger -s -t zram_stop -p daemon.debug "removing zram $zram_dev"
+			echo $dev_index > /sys/class/zram-control/hot_remove
+		fi
+	} done
+}
+
+# show memory stats for all zram swaps
+status()
+{
+	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
+		zram_stats "$zram_dev"
+	} done
+}
+
+# trigger compaction for all zram swaps
+compact()
+{
+	for zram_dev in $( grep zram /proc/swaps |awk '{print $1}' ); do {
+		zram_compact "$zram_dev"
+	} done
+}

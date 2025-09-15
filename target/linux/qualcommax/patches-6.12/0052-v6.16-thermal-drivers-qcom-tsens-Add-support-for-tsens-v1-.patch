@@ -1,0 +1,121 @@
+From 19f9b02ebc8fe3babefbe76a37c74c5f4c174de1 Mon Sep 17 00:00:00 2001
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Fri, 28 Feb 2025 09:11:37 +0400
+Subject: [PATCH] thermal/drivers/qcom/tsens: Add support for tsens v1 without
+ RPM
+
+Adding generic support for SoCs with tsens v1.0 IP with no RPM.
+Due to lack of RPM, tsens has to be reset and enabled in the driver
+init. SoCs can have support for more sensors than those which will
+actually be enabled. As such, init will only enable those explicitly
+added to the hw_ids array.
+
+Co-developed-by: Sricharan Ramabadhran <quic_srichara@quicinc.com>
+Signed-off-by: Sricharan Ramabadhran <quic_srichara@quicinc.com>
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+Reviewed-by: Dmitry Baryshkov <dmitry.baryshkov@linaro.org>
+Link: https://lore.kernel.org/r/DS7PR19MB8883C5D7974C7735E23923769DCC2@DS7PR19MB8883.namprd19.prod.outlook.com
+Signed-off-by: Daniel Lezcano <daniel.lezcano@linaro.org>
+---
+ drivers/thermal/qcom/tsens-v1.c | 48 +++++++++++++++++++++++++++++++++
+ drivers/thermal/qcom/tsens.c    | 14 +++++++---
+ drivers/thermal/qcom/tsens.h    |  1 +
+ 3 files changed, 59 insertions(+), 4 deletions(-)
+
+--- a/drivers/thermal/qcom/tsens-v1.c
++++ b/drivers/thermal/qcom/tsens-v1.c
+@@ -79,6 +79,17 @@ static struct tsens_features tsens_v1_fe
+ 	.trip_max_temp	= 120000,
+ };
+ 
++static struct tsens_features tsens_v1_no_rpm_feat = {
++	.ver_major	= VER_1_X_NO_RPM,
++	.crit_int	= 0,
++	.combo_int	= 0,
++	.adc		= 1,
++	.srot_split	= 1,
++	.max_sensors	= 11,
++	.trip_min_temp	= -40000,
++	.trip_max_temp	= 120000,
++};
++
+ static const struct reg_field tsens_v1_regfields[MAX_REGFIELDS] = {
+ 	/* ----- SROT ------ */
+ 	/* VERSION */
+@@ -150,6 +161,43 @@ static int __init init_8956(struct tsens
+ 	return init_common(priv);
+ }
+ 
++static int __init init_tsens_v1_no_rpm(struct tsens_priv *priv)
++{
++	int i, ret;
++	u32 mask = 0;
++
++	ret = init_common(priv);
++	if (ret < 0) {
++		dev_err(priv->dev, "Init common failed %d\n", ret);
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 1);
++	if (ret) {
++		dev_err(priv->dev, "Reset failed\n");
++		return ret;
++	}
++
++	for (i = 0; i < priv->num_sensors; i++)
++		mask |= BIT(priv->sensor[i].hw_id);
++
++	ret = regmap_field_update_bits(priv->rf[SENSOR_EN], mask, mask);
++	if (ret) {
++		dev_err(priv->dev, "Sensor Enable failed\n");
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_EN], 1);
++	if (ret) {
++		dev_err(priv->dev, "Enable failed\n");
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 0);
++
++	return ret;
++}
++
+ static const struct tsens_ops ops_generic_v1 = {
+ 	.init		= init_common,
+ 	.calibrate	= calibrate_v1,
+--- a/drivers/thermal/qcom/tsens.c
++++ b/drivers/thermal/qcom/tsens.c
+@@ -975,10 +975,16 @@ int __init init_common(struct tsens_priv
+ 	ret = regmap_field_read(priv->rf[TSENS_EN], &enabled);
+ 	if (ret)
+ 		goto err_put_device;
+-	if (!enabled && (tsens_version(priv) != VER_2_X_NO_RPM)) {
+-		dev_err(dev, "%s: device not enabled\n", __func__);
+-		ret = -ENODEV;
+-		goto err_put_device;
++	if (!enabled) {
++		switch (tsens_version(priv)) {
++		case VER_1_X_NO_RPM:
++		case VER_2_X_NO_RPM:
++			break;
++		default:
++			dev_err(dev, "%s: device not enabled\n", __func__);
++			ret = -ENODEV;
++			goto err_put_device;
++		}
+ 	}
+ 
+ 	priv->rf[SENSOR_EN] = devm_regmap_field_alloc(dev, priv->srot_map,
+--- a/drivers/thermal/qcom/tsens.h
++++ b/drivers/thermal/qcom/tsens.h
+@@ -34,6 +34,7 @@ enum tsens_ver {
+ 	VER_0 = 0,
+ 	VER_0_1,
+ 	VER_1_X,
++	VER_1_X_NO_RPM,
+ 	VER_2_X,
+ 	VER_2_X_NO_RPM,
+ };

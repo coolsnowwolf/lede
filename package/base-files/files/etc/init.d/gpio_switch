@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2015 OpenWrt.org
+
+START=94
+STOP=10
+USE_PROCD=1
+
+
+load_gpio_switch()
+{
+	local name
+	local gpio_pin
+	local value
+
+	config_get gpio_pin "$1" gpio_pin
+	config_get name "$1" name
+	config_get value "$1" value 0
+
+	[ -z "$gpio_pin" ] && {
+		echo >&2 "Skipping gpio_switch '$name' due to missing gpio_pin"
+		return 1
+	}
+
+	local gpio_path
+	if [ -n "$(echo "$gpio_pin" | grep -E "^[0-9]+$")" ]; then
+		gpio_path="/sys/class/gpio/gpio${gpio_pin}"
+
+		# export GPIO pin for access
+		[ -d "$gpio_path" ] || {
+			echo "$gpio_pin" >/sys/class/gpio/export
+			# we need to wait a bit until the GPIO appears
+			[ -d "$gpio_path" ] || sleep 1
+		}
+
+		# direction attribute only exists if the kernel supports changing the
+		# direction of a GPIO
+		if [ -e "${gpio_path}/direction" ]; then
+			# set the pin to output with high or low pin value
+			{ [ "$value" = "0" ] && echo "low" || echo "high"; } \
+				>"$gpio_path/direction"
+		else
+			{ [ "$value" = "0" ] && echo "0" || echo "1"; } \
+				>"$gpio_path/value"
+		fi
+	else
+		gpio_path="/sys/class/gpio/${gpio_pin}"
+
+		[ -d "$gpio_path" ] && {
+			{ [ "$value" = "0" ] && echo "0" || echo "1"; } \
+				>"$gpio_path/value"
+		}
+	fi
+}
+
+service_triggers()
+{
+	procd_add_reload_trigger "system"
+}
+
+start_service()
+{
+	[ -e /sys/class/gpio/ ] && {
+		config_load system
+		config_foreach load_gpio_switch gpio_switch
+	}
+}

@@ -1,0 +1,113 @@
+From 46cbda7b65998a5af4493f745d94417af697bd68 Mon Sep 17 00:00:00 2001
+From: Juergen Gross <jgross@suse.com>
+Date: Wed, 23 Nov 2022 07:45:10 +0100
+Subject: [PATCH 18/29] mm: introduce arch_has_hw_nonleaf_pmd_young()
+
+When running as a Xen PV guests commit eed9a328aa1a ("mm: x86: add
+CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG") can cause a protection violation in
+pmdp_test_and_clear_young():
+
+ BUG: unable to handle page fault for address: ffff8880083374d0
+ #PF: supervisor write access in kernel mode
+ #PF: error_code(0x0003) - permissions violation
+ PGD 3026067 P4D 3026067 PUD 3027067 PMD 7fee5067 PTE 8010000008337065
+ Oops: 0003 [#1] PREEMPT SMP NOPTI
+ CPU: 7 PID: 158 Comm: kswapd0 Not tainted 6.1.0-rc5-20221118-doflr+ #1
+ RIP: e030:pmdp_test_and_clear_young+0x25/0x40
+
+This happens because the Xen hypervisor can't emulate direct writes to
+page table entries other than PTEs.
+
+This can easily be fixed by introducing arch_has_hw_nonleaf_pmd_young()
+similar to arch_has_hw_pte_young() and test that instead of
+CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG.
+
+Link: https://lkml.kernel.org/r/20221123064510.16225-1-jgross@suse.com
+Fixes: eed9a328aa1a ("mm: x86: add CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG")
+Signed-off-by: Juergen Gross <jgross@suse.com>
+Reported-by: Sander Eikelenboom <linux@eikelenboom.it>
+Acked-by: Yu Zhao <yuzhao@google.com>
+Tested-by: Sander Eikelenboom <linux@eikelenboom.it>
+Acked-by: David Hildenbrand <david@redhat.com>	[core changes]
+Signed-off-by: Andrew Morton <akpm@linux-foundation.org>
+---
+ arch/x86/include/asm/pgtable.h |  8 ++++++++
+ include/linux/pgtable.h        | 11 +++++++++++
+ mm/vmscan.c                    | 10 +++++-----
+ 3 files changed, 24 insertions(+), 5 deletions(-)
+
+--- a/arch/x86/include/asm/pgtable.h
++++ b/arch/x86/include/asm/pgtable.h
+@@ -1405,6 +1405,14 @@ static inline bool arch_has_hw_pte_young
+ 	return true;
+ }
+ 
++#ifdef CONFIG_XEN_PV
++#define arch_has_hw_nonleaf_pmd_young arch_has_hw_nonleaf_pmd_young
++static inline bool arch_has_hw_nonleaf_pmd_young(void)
++{
++	return !cpu_feature_enabled(X86_FEATURE_XENPV);
++}
++#endif
++
+ #endif	/* __ASSEMBLY__ */
+ 
+ #endif /* _ASM_X86_PGTABLE_H */
+--- a/include/linux/pgtable.h
++++ b/include/linux/pgtable.h
+@@ -266,6 +266,17 @@ static inline int pmdp_clear_flush_young
+ #endif /* CONFIG_TRANSPARENT_HUGEPAGE */
+ #endif
+ 
++#ifndef arch_has_hw_nonleaf_pmd_young
++/*
++ * Return whether the accessed bit in non-leaf PMD entries is supported on the
++ * local CPU.
++ */
++static inline bool arch_has_hw_nonleaf_pmd_young(void)
++{
++	return IS_ENABLED(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG);
++}
++#endif
++
+ #ifndef arch_has_hw_pte_young
+ /*
+  * Return whether the accessed bit is supported on the local CPU.
+--- a/mm/vmscan.c
++++ b/mm/vmscan.c
+@@ -3727,7 +3727,7 @@ static void walk_pmd_range_locked(pud_t
+ 			goto next;
+ 
+ 		if (!pmd_trans_huge(pmd[i])) {
+-			if (IS_ENABLED(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG) &&
++			if (arch_has_hw_nonleaf_pmd_young() &&
+ 			    get_cap(LRU_GEN_NONLEAF_YOUNG))
+ 				pmdp_test_and_clear_young(vma, addr, pmd + i);
+ 			goto next;
+@@ -3825,14 +3825,14 @@ restart:
+ #endif
+ 		walk->mm_stats[MM_NONLEAF_TOTAL]++;
+ 
+-#ifdef CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG
+-		if (get_cap(LRU_GEN_NONLEAF_YOUNG)) {
++		if (arch_has_hw_nonleaf_pmd_young() &&
++		    get_cap(LRU_GEN_NONLEAF_YOUNG)) {
+ 			if (!pmd_young(val))
+ 				continue;
+ 
+ 			walk_pmd_range_locked(pud, addr, vma, args, bitmap, &pos);
+ 		}
+-#endif
++
+ 		if (!walk->force_scan && !test_bloom_filter(walk->lruvec, walk->max_seq, pmd + i))
+ 			continue;
+ 
+@@ -5132,7 +5132,7 @@ static ssize_t show_enabled(struct kobje
+ 	if (arch_has_hw_pte_young() && get_cap(LRU_GEN_MM_WALK))
+ 		caps |= BIT(LRU_GEN_MM_WALK);
+ 
+-	if (IS_ENABLED(CONFIG_ARCH_HAS_NONLEAF_PMD_YOUNG) && get_cap(LRU_GEN_NONLEAF_YOUNG))
++	if (arch_has_hw_nonleaf_pmd_young() && get_cap(LRU_GEN_NONLEAF_YOUNG))
+ 		caps |= BIT(LRU_GEN_NONLEAF_YOUNG);
+ 
+ 	return snprintf(buf, PAGE_SIZE, "0x%04x\n", caps);

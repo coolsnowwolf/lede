@@ -1,0 +1,297 @@
+From e1ff91f9d2303cd4e706cc908bfca21cd17b9927 Mon Sep 17 00:00:00 2001
+From: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Date: Fri, 11 Nov 2022 10:41:06 +0100
+Subject: [PATCH] pinctrl: mediatek: Fix EINT pins input debounce time
+ configuration
+
+The External Interrupt Controller (EINTC) on all of the supported
+MediaTek SoCs does support input debouncing, but not all of them
+index the debounce time values (DBNC_SETTING registers) the same way.
+
+Before this change, in some cases, as an example, requesting a debounce
+time of 16 milliseconds would mistakenly set the relative DBNC_SETTING
+register to 0x2, resulting in a way shorter debounce time of 500uS.
+
+To fix the aforementioned issue, define three different debounce_time
+arrays, reflecting the correct register index for each value and for
+each register index variant, and make sure that each SoC pinctrl
+driver uses the right one.
+
+Signed-off-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Link: https://lore.kernel.org/r/20221111094106.18486-1-angelogioacchino.delregno@collabora.com
+Signed-off-by: Linus Walleij <linus.walleij@linaro.org>
+---
+ drivers/pinctrl/mediatek/mtk-eint.c       | 31 +++++++++++++++++++----
+ drivers/pinctrl/mediatek/mtk-eint.h       |  6 +++++
+ drivers/pinctrl/mediatek/pinctrl-mt2701.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt2712.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt6765.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt6779.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt7622.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt7623.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt7629.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8127.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8135.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8167.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8173.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8183.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8192.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8195.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8365.c |  1 +
+ drivers/pinctrl/mediatek/pinctrl-mt8516.c |  1 +
+ 22 files changed, 53 insertions(+), 5 deletions(-)
+
+--- a/drivers/pinctrl/mediatek/mtk-eint.c
++++ b/drivers/pinctrl/mediatek/mtk-eint.c
+@@ -24,6 +24,7 @@
+ #define MTK_EINT_EDGE_SENSITIVE           0
+ #define MTK_EINT_LEVEL_SENSITIVE          1
+ #define MTK_EINT_DBNC_SET_DBNC_BITS	  4
++#define MTK_EINT_DBNC_MAX		  16
+ #define MTK_EINT_DBNC_RST_BIT		  (0x1 << 1)
+ #define MTK_EINT_DBNC_SET_EN		  (0x1 << 0)
+ 
+@@ -48,6 +49,18 @@ static const struct mtk_eint_regs mtk_ge
+ 	.dbnc_clr  = 0x700,
+ };
+ 
++const unsigned int debounce_time_mt2701[] = {
++	500, 1000, 16000, 32000, 64000, 128000, 256000, 0
++};
++
++const unsigned int debounce_time_mt6765[] = {
++	125, 250, 500, 1000, 16000, 32000, 64000, 128000, 256000, 512000, 0
++};
++
++const unsigned int debounce_time_mt6795[] = {
++	500, 1000, 16000, 32000, 64000, 128000, 256000, 512000, 0
++};
++
+ static void __iomem *mtk_eint_get_offset(struct mtk_eint *eint,
+ 					 unsigned int eint_num,
+ 					 unsigned int offset)
+@@ -407,10 +420,11 @@ int mtk_eint_set_debounce(struct mtk_ein
+ 	int virq, eint_offset;
+ 	unsigned int set_offset, bit, clr_bit, clr_offset, rst, i, unmask,
+ 		     dbnc;
+-	static const unsigned int debounce_time[] = {500, 1000, 16000, 32000,
+-						     64000, 128000, 256000};
+ 	struct irq_data *d;
+ 
++	if (!eint->hw->db_time)
++		return -EOPNOTSUPP;
++
+ 	virq = irq_find_mapping(eint->domain, eint_num);
+ 	eint_offset = (eint_num % 4) * 8;
+ 	d = irq_get_irq_data(virq);
+@@ -421,9 +435,9 @@ int mtk_eint_set_debounce(struct mtk_ein
+ 	if (!mtk_eint_can_en_debounce(eint, eint_num))
+ 		return -EINVAL;
+ 
+-	dbnc = ARRAY_SIZE(debounce_time);
+-	for (i = 0; i < ARRAY_SIZE(debounce_time); i++) {
+-		if (debounce <= debounce_time[i]) {
++	dbnc = eint->num_db_time;
++	for (i = 0; i < eint->num_db_time; i++) {
++		if (debounce <= eint->hw->db_time[i]) {
+ 			dbnc = i;
+ 			break;
+ 		}
+@@ -497,6 +511,13 @@ int mtk_eint_do_init(struct mtk_eint *ei
+ 	if (!eint->domain)
+ 		return -ENOMEM;
+ 
++	if (eint->hw->db_time) {
++		for (i = 0; i < MTK_EINT_DBNC_MAX; i++)
++			if (eint->hw->db_time[i] == 0)
++				break;
++		eint->num_db_time = i;
++	}
++
+ 	mtk_eint_hw_init(eint);
+ 	for (i = 0; i < eint->hw->ap_num; i++) {
+ 		int virq = irq_create_mapping(eint->domain, i);
+--- a/drivers/pinctrl/mediatek/mtk-eint.h
++++ b/drivers/pinctrl/mediatek/mtk-eint.h
+@@ -37,8 +37,13 @@ struct mtk_eint_hw {
+ 	u8		ports;
+ 	unsigned int	ap_num;
+ 	unsigned int	db_cnt;
++	const unsigned int *db_time;
+ };
+ 
++extern const unsigned int debounce_time_mt2701[];
++extern const unsigned int debounce_time_mt6765[];
++extern const unsigned int debounce_time_mt6795[];
++
+ struct mtk_eint;
+ 
+ struct mtk_eint_xt {
+@@ -62,6 +67,7 @@ struct mtk_eint {
+ 	/* Used to fit into various EINT device */
+ 	const struct mtk_eint_hw *hw;
+ 	const struct mtk_eint_regs *regs;
++	u16 num_db_time;
+ 
+ 	/* Used to fit into various pinctrl device */
+ 	void *pctl;
+--- a/drivers/pinctrl/mediatek/pinctrl-mt2701.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt2701.c
+@@ -531,6 +531,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 169,
+ 		.db_cnt    = 16,
++		.db_time   = debounce_time_mt2701,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt2712.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt2712.c
+@@ -584,6 +584,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 8,
+ 		.ap_num    = 229,
+ 		.db_cnt    = 40,
++		.db_time   = debounce_time_mt2701,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt6765.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt6765.c
+@@ -1062,6 +1062,7 @@ static const struct mtk_eint_hw mt6765_e
+ 	.ports     = 6,
+ 	.ap_num    = 160,
+ 	.db_cnt    = 13,
++	.db_time   = debounce_time_mt6765,
+ };
+ 
+ static const struct mtk_pin_soc mt6765_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt6779.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt6779.c
+@@ -737,6 +737,7 @@ static const struct mtk_eint_hw mt6779_e
+ 	.ports     = 6,
+ 	.ap_num    = 195,
+ 	.db_cnt    = 13,
++	.db_time   = debounce_time_mt2701,
+ };
+ 
+ static const struct mtk_pin_soc mt6779_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt7622.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt7622.c
+@@ -846,6 +846,7 @@ static const struct mtk_eint_hw mt7622_e
+ 	.ports     = 7,
+ 	.ap_num    = ARRAY_SIZE(mt7622_pins),
+ 	.db_cnt    = 20,
++	.db_time   = debounce_time_mt6765,
+ };
+ 
+ static const struct mtk_pin_soc mt7622_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt7623.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt7623.c
+@@ -1369,6 +1369,7 @@ static const struct mtk_eint_hw mt7623_e
+ 	.ports     = 6,
+ 	.ap_num    = 169,
+ 	.db_cnt    = 20,
++	.db_time   = debounce_time_mt2701,
+ };
+ 
+ static struct mtk_pin_soc mt7623_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt7629.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt7629.c
+@@ -402,6 +402,7 @@ static const struct mtk_eint_hw mt7629_e
+ 	.ports     = 7,
+ 	.ap_num    = ARRAY_SIZE(mt7629_pins),
+ 	.db_cnt    = 16,
++	.db_time   = debounce_time_mt2701,
+ };
+ 
+ static struct mtk_pin_soc mt7629_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8127.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8127.c
+@@ -300,6 +300,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 143,
+ 		.db_cnt    = 16,
++		.db_time = debounce_time_mt2701,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8135.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8135.c
+@@ -313,6 +313,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 192,
+ 		.db_cnt    = 16,
++		.db_time = debounce_time_mt2701,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8167.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8167.c
+@@ -332,6 +332,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 169,
+ 		.db_cnt    = 64,
++		.db_time = debounce_time_mt6795,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8173.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8173.c
+@@ -340,6 +340,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 224,
+ 		.db_cnt    = 16,
++		.db_time   = debounce_time_mt2701,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8183.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8183.c
+@@ -545,6 +545,7 @@ static const struct mtk_eint_hw mt8183_e
+ 	.ports     = 6,
+ 	.ap_num    = 212,
+ 	.db_cnt    = 13,
++	.db_time   = debounce_time_mt6765,
+ };
+ 
+ static const struct mtk_pin_soc mt8183_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8192.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8192.c
+@@ -1339,6 +1339,7 @@ static const struct mtk_eint_hw mt8192_e
+ 	.ports     = 7,
+ 	.ap_num    = 224,
+ 	.db_cnt    = 32,
++	.db_time   = debounce_time_mt6765,
+ };
+ 
+ static const struct mtk_pin_reg_calc mt8192_reg_cals[PINCTRL_PIN_REG_MAX] = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8195.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8195.c
+@@ -805,6 +805,7 @@ static const struct mtk_eint_hw mt8195_e
+ 	.ports     = 7,
+ 	.ap_num    = 225,
+ 	.db_cnt    = 32,
++	.db_time   = debounce_time_mt6765,
+ };
+ 
+ static const struct mtk_pin_soc mt8195_data = {
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8365.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8365.c
+@@ -466,6 +466,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 5,
+ 		.ap_num = 160,
+ 		.db_cnt = 160,
++		.db_time   = debounce_time_mt6765,
+ 	},
+ };
+ 
+--- a/drivers/pinctrl/mediatek/pinctrl-mt8516.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt8516.c
+@@ -332,6 +332,7 @@ static const struct mtk_pinctrl_devdata
+ 		.ports     = 6,
+ 		.ap_num    = 169,
+ 		.db_cnt    = 64,
++		.db_time   = debounce_time_mt6795,
+ 	},
+ };
+ 

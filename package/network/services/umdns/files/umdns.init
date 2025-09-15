@@ -1,0 +1,52 @@
+#!/bin/sh /etc/rc.common
+# Copyright (c) 2014 OpenWrt.org
+
+START=80
+
+USE_PROCD=1
+PROG=/usr/sbin/umdns
+IFACES=""
+
+load_ifaces() {
+	local network="$(uci get umdns.@umdns[-1].network)"
+	for n in $network; do
+		local device
+		json_load "$(ifstatus $n)"
+		json_get_var device l3_device
+		echo -n "$device "
+	done
+}
+
+reload_service() {
+	json_init
+	json_add_array interfaces
+	for i in $(load_ifaces); do
+		json_add_string "" "$i"
+	done
+	json_close_array
+
+	ubus call umdns set_config "$(json_dump)"
+}
+
+start_service() {
+	local network="$(uci get umdns.@umdns[-1].network)"
+
+	procd_open_instance
+	procd_set_param command "$PROG"
+	[ -f /etc/seccomp/umdns.json ] && procd_set_param seccomp /etc/seccomp/umdns.json
+	procd_set_param respawn
+	procd_open_trigger
+	procd_add_config_trigger "config.change" "umdns" /etc/init.d/umdns reload
+	for n in $network; do
+		procd_add_interface_trigger "interface.*" $n /etc/init.d/umdns reload
+	done
+	procd_add_raw_trigger "instance.update" 5000 "/bin/ubus" "call" "umdns" "reload"
+	procd_close_trigger
+	[ "$(uci get umdns.@umdns[-1].jail)" = 1 ] && procd_add_jail umdns ubus log
+	procd_close_instance
+}
+
+service_started() {
+	ubus -t 10 wait_for umdns
+	[ $? = 0 ] && reload_service
+}

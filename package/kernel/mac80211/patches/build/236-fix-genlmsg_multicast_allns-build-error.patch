@@ -1,0 +1,169 @@
+From e0f83d268974dab0361d11904dfc9acec53f96a6 Mon Sep 17 00:00:00 2001
+From: Eric Dumazet <edumazet@google.com>
+Date: Fri, 11 Oct 2024 17:12:17 +0000
+Subject: [PATCH] genetlink: hold RCU in genlmsg_mcast()
+
+[ Upstream commit 56440d7ec28d60f8da3bfa09062b3368ff9b16db ]
+
+While running net selftests with CONFIG_PROVE_RCU_LIST=y I saw
+one lockdep splat [1].
+
+genlmsg_mcast() uses for_each_net_rcu(), and must therefore hold RCU.
+
+Instead of letting all callers guard genlmsg_multicast_allns()
+with a rcu_read_lock()/rcu_read_unlock() pair, do it in genlmsg_mcast().
+
+This also means the @flags parameter is useless, we need to always use
+GFP_ATOMIC.
+
+[1]
+[10882.424136] =============================
+[10882.424166] WARNING: suspicious RCU usage
+[10882.424309] 6.12.0-rc2-virtme #1156 Not tainted
+[10882.424400] -----------------------------
+[10882.424423] net/netlink/genetlink.c:1940 RCU-list traversed in non-reader section!!
+[10882.424469]
+other info that might help us debug this:
+
+[10882.424500]
+rcu_scheduler_active = 2, debug_locks = 1
+[10882.424744] 2 locks held by ip/15677:
+[10882.424791] #0: ffffffffb6b491b0 (cb_lock){++++}-{3:3}, at: genl_rcv (net/netlink/genetlink.c:1219)
+[10882.426334] #1: ffffffffb6b49248 (genl_mutex){+.+.}-{3:3}, at: genl_rcv_msg (net/netlink/genetlink.c:61 net/netlink/genetlink.c:57 net/netlink/genetlink.c:1209)
+[10882.426465]
+stack backtrace:
+[10882.426805] CPU: 14 UID: 0 PID: 15677 Comm: ip Not tainted 6.12.0-rc2-virtme #1156
+[10882.426919] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.16.3-debian-1.16.3-2 04/01/2014
+[10882.427046] Call Trace:
+[10882.427131]  <TASK>
+[10882.427244] dump_stack_lvl (lib/dump_stack.c:123)
+[10882.427335] lockdep_rcu_suspicious (kernel/locking/lockdep.c:6822)
+[10882.427387] genlmsg_multicast_allns (net/netlink/genetlink.c:1940 (discriminator 7) net/netlink/genetlink.c:1977 (discriminator 7))
+[10882.427436] l2tp_tunnel_notify.constprop.0 (net/l2tp/l2tp_netlink.c:119) l2tp_netlink
+[10882.427683] l2tp_nl_cmd_tunnel_create (net/l2tp/l2tp_netlink.c:253) l2tp_netlink
+[10882.427748] genl_family_rcv_msg_doit (net/netlink/genetlink.c:1115)
+[10882.427834] genl_rcv_msg (net/netlink/genetlink.c:1195 net/netlink/genetlink.c:1210)
+[10882.427877] ? __pfx_l2tp_nl_cmd_tunnel_create (net/l2tp/l2tp_netlink.c:186) l2tp_netlink
+[10882.427927] ? __pfx_genl_rcv_msg (net/netlink/genetlink.c:1201)
+[10882.427959] netlink_rcv_skb (net/netlink/af_netlink.c:2551)
+[10882.428069] genl_rcv (net/netlink/genetlink.c:1220)
+[10882.428095] netlink_unicast (net/netlink/af_netlink.c:1332 net/netlink/af_netlink.c:1357)
+[10882.428140] netlink_sendmsg (net/netlink/af_netlink.c:1901)
+[10882.428210] ____sys_sendmsg (net/socket.c:729 (discriminator 1) net/socket.c:744 (discriminator 1) net/socket.c:2607 (discriminator 1))
+
+Fixes: 33f72e6f0c67 ("l2tp : multicast notification to the registered listeners")
+Signed-off-by: Eric Dumazet <edumazet@google.com>
+Cc: James Chapman <jchapman@katalix.com>
+Cc: Tom Parkin <tparkin@katalix.com>
+Cc: Johannes Berg <johannes.berg@intel.com>
+Link: https://patch.msgid.link/20241011171217.3166614-1-edumazet@google.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+Signed-off-by: Sasha Levin <sashal@kernel.org>
+---
+ drivers/target/target_core_user.c |  2 +-
+ include/net/genetlink.h           |  3 +--
+ net/l2tp/l2tp_netlink.c           |  4 ++--
+ net/netlink/genetlink.c           | 28 ++++++++++++++--------------
+ net/wireless/nl80211.c            |  8 ++------
+ 5 files changed, 20 insertions(+), 25 deletions(-)
+
+--- a/backport-include/net/genetlink.h
++++ b/backport-include/net/genetlink.h
+@@ -201,7 +201,7 @@ int genlmsg_multicast(const struct genl_
+ #define genlmsg_multicast_allns LINUX_BACKPORT(genlmsg_multicast_allns)
+ int backport_genlmsg_multicast_allns(const struct genl_family *family,
+ 				     struct sk_buff *skb, u32 portid,
+-				     unsigned int group, gfp_t flags);
++				     unsigned int group);
+ 
+ #define genl_family_attrbuf LINUX_BACKPORT(genl_family_attrbuf)
+ static inline struct nlattr **genl_family_attrbuf(struct genl_family *family)
+--- a/compat/backport-genetlink.c
++++ b/compat/backport-genetlink.c
+@@ -364,23 +364,23 @@ int genlmsg_multicast(const struct genl_
+ }
+ EXPORT_SYMBOL_GPL(genlmsg_multicast);
+ 
+-static int genlmsg_mcast(struct sk_buff *skb, u32 portid, unsigned long group,
+-			 gfp_t flags)
++static int genlmsg_mcast(struct sk_buff *skb, u32 portid, unsigned long group)
+ {
+ 	struct sk_buff *tmp;
+ 	struct net *net, *prev = NULL;
+ 	bool delivered = false;
+ 	int err;
+ 
++	rcu_read_lock();
+ 	for_each_net_rcu(net) {
+ 		if (prev) {
+-			tmp = skb_clone(skb, flags);
++			tmp = skb_clone(skb, GFP_ATOMIC);
+ 			if (!tmp) {
+ 				err = -ENOMEM;
+ 				goto error;
+ 			}
+ 			err = nlmsg_multicast(prev->genl_sock, tmp,
+-					      portid, group, flags);
++					      portid, group, GFP_ATOMIC);
+ 			if (!err)
+ 				delivered = true;
+ 			else if (err != -ESRCH)
+@@ -389,25 +389,29 @@ static int genlmsg_mcast(struct sk_buff
+ 
+ 		prev = net;
+ 	}
++	err = nlmsg_multicast(prev->genl_sock, skb, portid, group, GFP_ATOMIC);
++
++	rcu_read_unlock();
+ 
+-	err = nlmsg_multicast(prev->genl_sock, skb, portid, group, flags);
+ 	if (!err)
+ 		delivered = true;
+ 	else if (err != -ESRCH)
+ 		return err;
+ 	return delivered ? 0 : -ESRCH;
+  error:
++	rcu_read_unlock();
++
+ 	kfree_skb(skb);
+ 	return err;
+ }
+ 
+ int backport_genlmsg_multicast_allns(const struct genl_family *family,
+ 				     struct sk_buff *skb, u32 portid,
+-				     unsigned int group, gfp_t flags)
++				     unsigned int group)
+ {
+ 	group = __backport_genl_group(family, group);
+ 	if (group == INVALID_GROUP)
+ 		return -EINVAL;
+-	return genlmsg_mcast(skb, portid, group, flags);
++	return genlmsg_mcast(skb, portid, group);
+ }
+ EXPORT_SYMBOL_GPL(backport_genlmsg_multicast_allns);
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -17883,10 +17883,8 @@ void nl80211_common_reg_change_event(enu
+ 
+ 	genlmsg_end(msg, hdr);
+ 
+-	rcu_read_lock();
+ 	genlmsg_multicast_allns(&nl80211_fam, msg, 0,
+-				NL80211_MCGRP_REGULATORY, GFP_ATOMIC);
+-	rcu_read_unlock();
++				NL80211_MCGRP_REGULATORY);
+ 
+ 	return;
+ 
+@@ -18583,10 +18581,8 @@ void nl80211_send_beacon_hint_event(stru
+ 
+ 	genlmsg_end(msg, hdr);
+ 
+-	rcu_read_lock();
+ 	genlmsg_multicast_allns(&nl80211_fam, msg, 0,
+-				NL80211_MCGRP_REGULATORY, GFP_ATOMIC);
+-	rcu_read_unlock();
++				NL80211_MCGRP_REGULATORY);
+ 
+ 	return;
+ 

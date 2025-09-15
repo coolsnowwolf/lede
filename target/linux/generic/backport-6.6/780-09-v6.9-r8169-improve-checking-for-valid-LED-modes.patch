@@ -1,0 +1,81 @@
+From 4c49b6824a607af4760fac4f5c0b9954ab902cef Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 7 Feb 2024 08:16:40 +0100
+Subject: [PATCH] r8169: improve checking for valid LED modes
+
+After 3a2746320403 ("leds: trigger: netdev: Display only supported link
+speed attribute") the check for valid link modes can be simplified.
+In addition factor it out, so that it can be re-used by the upcoming
+LED support for RTL8125.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://lore.kernel.org/r/8876a9f4-7a2d-48c3-8eae-0d834f5c27c5@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_leds.c | 38 ++++++++++++-----------
+ 1 file changed, 20 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_leds.c
++++ b/drivers/net/ethernet/realtek/r8169_leds.c
+@@ -20,11 +20,6 @@
+ 
+ #define RTL8168_NUM_LEDS		3
+ 
+-#define RTL8168_SUPPORTED_MODES \
+-	(BIT(TRIGGER_NETDEV_LINK_1000) | BIT(TRIGGER_NETDEV_LINK_100) | \
+-	 BIT(TRIGGER_NETDEV_LINK_10) | BIT(TRIGGER_NETDEV_RX) | \
+-	 BIT(TRIGGER_NETDEV_TX))
+-
+ struct r8169_led_classdev {
+ 	struct led_classdev led;
+ 	struct net_device *ndev;
+@@ -33,28 +28,35 @@ struct r8169_led_classdev {
+ 
+ #define lcdev_to_r8169_ldev(lcdev) container_of(lcdev, struct r8169_led_classdev, led)
+ 
++static bool r8169_trigger_mode_is_valid(unsigned long flags)
++{
++	bool rx, tx;
++
++	if (flags & BIT(TRIGGER_NETDEV_HALF_DUPLEX))
++		return false;
++	if (flags & BIT(TRIGGER_NETDEV_FULL_DUPLEX))
++		return false;
++
++	rx = flags & BIT(TRIGGER_NETDEV_RX);
++	tx = flags & BIT(TRIGGER_NETDEV_TX);
++
++	return rx == tx;
++}
++
+ static int rtl8168_led_hw_control_is_supported(struct led_classdev *led_cdev,
+ 					       unsigned long flags)
+ {
+ 	struct r8169_led_classdev *ldev = lcdev_to_r8169_ldev(led_cdev);
+ 	struct rtl8169_private *tp = netdev_priv(ldev->ndev);
+ 	int shift = ldev->index * 4;
+-	bool rx, tx;
+ 
+-	if (flags & ~RTL8168_SUPPORTED_MODES)
+-		goto nosupp;
+-
+-	rx = flags & BIT(TRIGGER_NETDEV_RX);
+-	tx = flags & BIT(TRIGGER_NETDEV_TX);
+-	if (rx != tx)
+-		goto nosupp;
++	if (!r8169_trigger_mode_is_valid(flags)) {
++		/* Switch LED off to indicate that mode isn't supported */
++		rtl8168_led_mod_ctrl(tp, 0x000f << shift, 0);
++		return -EOPNOTSUPP;
++	}
+ 
+ 	return 0;
+-
+-nosupp:
+-	/* Switch LED off to indicate that mode isn't supported */
+-	rtl8168_led_mod_ctrl(tp, 0x000f << shift, 0);
+-	return -EOPNOTSUPP;
+ }
+ 
+ static int rtl8168_led_hw_control_set(struct led_classdev *led_cdev,

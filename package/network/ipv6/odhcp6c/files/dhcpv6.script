@@ -1,0 +1,244 @@
+#!/bin/sh
+[ -z "$2" ] && echo "Error: should be run by odhcpc6c" && exit 1
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+
+setup_interface () {
+	local device="$1"
+	local prefsig=""
+	local addrsig=""
+
+	# Apply IPv6 / ND configuration
+	HOPLIMIT=$(cat /proc/sys/net/ipv6/conf/$device/hop_limit)
+	[ -n "$RA_HOPLIMIT" -a -n "$HOPLIMIT" ] && [ "$RA_HOPLIMIT" -gt "$HOPLIMIT" ] && echo "$RA_HOPLIMIT" > /proc/sys/net/ipv6/conf/$device/hop_limit
+	[ -n "$RA_MTU" ] && [ "$RA_MTU" -ge 1280 ] && echo "$RA_MTU" > /proc/sys/net/ipv6/conf/$device/mtu 2>/dev/null
+	[ -n "$RA_REACHABLE" ] && [ "$RA_REACHABLE" -gt 0 ] && echo "$RA_REACHABLE" > /proc/sys/net/ipv6/neigh/$device/base_reachable_time_ms
+	[ -n "$RA_RETRANSMIT" ] && [ "$RA_RETRANSMIT" -gt 0 ] && echo "$RA_RETRANSMIT" > /proc/sys/net/ipv6/neigh/$device/retrans_time_ms
+
+	proto_init_update "*" 1
+
+	# Merge RA-DNS
+	for radns in $RA_DNS; do
+		local duplicate=0
+		for dns in $RDNSS; do
+			[ "$radns" = "$dns" ] && duplicate=1
+		done
+		[ "$duplicate" = 0 ] && RDNSS="$RDNSS $radns"
+	done
+
+	for dns in $RDNSS; do
+		proto_add_dns_server "$dns"
+	done
+
+	for radomain in $RA_DOMAINS; do
+		local duplicate=0
+		for domain in $DOMAINS; do
+			[ "$radomain" = "$domain" ] && duplicate=1
+		done
+		[ "$duplicate" = 0 ] && DOMAINS="$DOMAINS $radomain"
+	done
+
+	for domain in $DOMAINS; do
+		proto_add_dns_search "$domain"
+	done
+
+	for prefix in $PREFIXES; do
+		proto_add_ipv6_prefix "$prefix"
+		prefsig="$prefsig ${prefix%%,*}"
+		local entry="${prefix#*/}"
+		entry="${entry#*,}"
+		entry="${entry#*,}"
+		local valid="${entry%%,*}"
+
+		if [ -z "$RA_ADDRESSES" -a -z "$RA_ROUTES" -a \
+				-z "$RA_DNS" -a "$FAKE_ROUTES" = 1 ]; then
+			RA_ROUTES="::/0,$SERVER,$valid,4096"
+		fi
+	done
+
+	for prefix in $USERPREFIX; do
+		proto_add_ipv6_prefix "$prefix"
+	done
+
+	# Merge addresses
+	for entry in $RA_ADDRESSES; do
+		local duplicate=0
+		local addr="${entry%%/*}"
+		for dentry in $ADDRESSES; do
+			local daddr="${dentry%%/*}"
+			[ "$addr" = "$daddr" ] && duplicate=1
+		done
+		[ "$duplicate" = "0" ] && ADDRESSES="$ADDRESSES $entry"
+	done
+
+	for entry in $ADDRESSES; do
+		local addr="${entry%%/*}"
+		entry="${entry#*/}"
+		local mask="${entry%%,*}"
+		entry="${entry#*,}"
+		local preferred="${entry%%,*}"
+		entry="${entry#*,}"
+		local valid="${entry%%,*}"
+
+		proto_add_ipv6_address "$addr" "$mask" "$preferred" "$valid" 1
+		addrsig="$addrsig $addr/$mask"
+
+		if [ -z "$RA_ADDRESSES" -a -z "$RA_ROUTES" -a \
+				-z "$RA_DNS" -a "$FAKE_ROUTES" = 1 ]; then
+			RA_ROUTES="::/0,$SERVER,$valid,4096"
+		fi
+
+		# RFC 7278
+		if [ "$mask" -eq 64 -a -z "$PREFIXES" -a -n "$EXTENDPREFIX" ]; then
+			proto_add_ipv6_prefix "$addr/$mask,$preferred,$valid"
+
+			local raroutes=""
+			for route in $RA_ROUTES; do
+				local prefix="${route%%/*}"
+				local entry="${route#*/}"
+				local pmask="${entry%%,*}"
+				entry="${entry#*,}"
+				local gw="${entry%%,*}"
+
+				[ -z "$gw" -a "$mask" = "$pmask" ] && {
+					case "$addr" in
+						"${prefix%*::}"*) continue;;
+					esac
+				}
+				raroutes="$raroutes $route"
+			done
+			RA_ROUTES="$raroutes"
+		fi
+	done
+
+	for entry in $RA_ROUTES; do
+		local duplicate=$NOSOURCEFILTER
+		local addr="${entry%%/*}"
+		entry="${entry#*/}"
+		local mask="${entry%%,*}"
+		entry="${entry#*,}"
+		local gw="${entry%%,*}"
+		entry="${entry#*,}"
+		local valid="${entry%%,*}"
+		entry="${entry#*,}"
+		local metric="${entry%%,*}"
+
+		for xentry in $RA_ROUTES; do
+			local xprefix="${xentry%%,*}"
+			xentry="${xentry#*,}"
+			local xgw="${xentry%%,*}"
+
+			[ -n "$gw" -a -z "$xgw" -a "$addr/$mask" = "$xprefix" ] && duplicate=1
+		done
+
+		if [ -z "$gw" -o "$duplicate" = 1 ]; then
+			proto_add_ipv6_route "$addr" "$mask" "$gw" "$metric" "$valid"
+		else
+			for prefix in $PREFIXES $ADDRESSES; do
+				local paddr="${prefix%%,*}"
+				proto_add_ipv6_route "$addr" "$mask" "$gw" "$metric" "$valid" "$paddr"
+			done
+		fi
+	done
+
+	proto_add_data
+	[ -n "$CER" ] && json_add_string cer "$CER"
+	[ -n "$PASSTHRU" ] && json_add_string passthru "$PASSTHRU"
+	[ -n "$ZONE" ] && json_add_string zone "$ZONE"
+	proto_close_data
+
+	proto_send_update "$INTERFACE"
+
+	MAPTYPE=""
+	MAPRULE=""
+
+	if [ -n "$MAPE" -a -f /lib/netifd/proto/map.sh ]; then
+		MAPTYPE="map-e"
+		MAPRULE="$MAPE"
+	elif [ -n "$MAPT" -a -f /lib/netifd/proto/map.sh -a -f /proc/net/nat46/control ]; then
+		MAPTYPE="map-t"
+		MAPRULE="$MAPT"
+	elif [ -n "$LW4O6" -a -f /lib/netifd/proto/map.sh ]; then
+		MAPTYPE="lw4o6"
+		MAPRULE="$LW4O6"
+	fi
+
+	[ -n "$ZONE" ] || ZONE=$(fw3 -q network $INTERFACE 2>/dev/null)
+
+	if [ "$IFACE_MAP" != 0 -a -n "$MAPTYPE" -a -n "$MAPRULE" ]; then
+		[ -z "$IFACE_MAP" -o "$IFACE_MAP" = 1 ] && IFACE_MAP=${INTERFACE}_4
+		json_init
+		json_add_string name "$IFACE_MAP"
+		json_add_string ifname "@$INTERFACE"
+		json_add_string proto map
+		json_add_string type "$MAPTYPE"
+		json_add_string _prefsig "$prefsig"
+		[ "$MAPTYPE" = lw4o6 ] && json_add_string _addrsig "$addrsig"
+		json_add_string rule "$MAPRULE"
+		json_add_string tunlink "$INTERFACE"
+		[ -n "$ZONE_MAP" ] || ZONE_MAP=$ZONE
+		[ -n "$ZONE_MAP" ] && json_add_string zone "$ZONE_MAP"
+		[ -n "$ENCAPLIMIT_MAP" ] && json_add_string encaplimit "$ENCAPLIMIT_MAP"
+		[ -n "$IFACE_MAP_DELEGATE" ] && json_add_boolean delegate "$IFACE_MAP_DELEGATE"
+		json_close_object
+		ubus call network add_dynamic "$(json_dump)"
+	elif [ -n "$AFTR" -a "$IFACE_DSLITE" != 0 -a -f /lib/netifd/proto/dslite.sh ]; then
+		[ -z "$IFACE_DSLITE" -o "$IFACE_DSLITE" = 1 ] && IFACE_DSLITE=${INTERFACE}_4
+		json_init
+		json_add_string name "$IFACE_DSLITE"
+		json_add_string ifname "@$INTERFACE"
+		json_add_string proto "dslite"
+		json_add_string peeraddr "$AFTR"
+		json_add_string tunlink "$INTERFACE"
+		[ -n "$ZONE_DSLITE" ] || ZONE_DSLITE=$ZONE
+		[ -n "$ZONE_DSLITE" ] && json_add_string zone "$ZONE_DSLITE"
+		[ -n "$ENCAPLIMIT_DSLITE" ] && json_add_string encaplimit "$ENCAPLIMIT_DSLITE"
+		[ -n "$IFACE_DSLITE_DELEGATE" ] && json_add_boolean delegate "$IFACE_DSLITE_DELEGATE"
+		json_close_object
+		ubus call network add_dynamic "$(json_dump)"
+	elif [ "$IFACE_464XLAT" != 0 -a -f /lib/netifd/proto/464xlat.sh ]; then
+		[ -z "$IFACE_464XLAT" -o "$IFACE_464XLAT" = 1 ] && IFACE_464XLAT=${INTERFACE}_4
+		json_init
+		json_add_string name "$IFACE_464XLAT"
+		json_add_string ifname "@$INTERFACE"
+		json_add_string proto "464xlat"
+		json_add_string tunlink "$INTERFACE"
+		json_add_string _addrsig "$addrsig"
+		[ -n "$ZONE_464XLAT" ] || ZONE_464XLAT=$ZONE
+		[ -n "$ZONE_464XLAT" ] && json_add_string zone "$ZONE_464XLAT"
+		[ -n "$IFACE_464XLAT_DELEGATE" ] && json_add_boolean delegate "$IFACE_464XLAT_DELEGATE"
+		json_close_object
+		ubus call network add_dynamic "$(json_dump)"
+	fi
+
+	# TODO: $SNTP_IP $SIP_IP $SNTP_FQDN $SIP_DOMAIN
+}
+
+teardown_interface() {
+	proto_init_update "*" 0
+	proto_send_update "$INTERFACE"
+}
+
+case "$2" in
+	bound)
+		teardown_interface "$1"
+		setup_interface "$1"
+	;;
+	informed|updated|rebound)
+		setup_interface "$1"
+	;;
+	ra-updated)
+		[ -n "$ADDRESSES$RA_ADDRESSES$PREFIXES$USERPREFIX" ] && setup_interface "$1"
+	;;
+	started|stopped|unbound)
+		teardown_interface "$1"
+	;;
+esac
+
+# user rules
+[ -f /etc/odhcp6c.user ] && . /etc/odhcp6c.user "$@"
+for f in /etc/odhcp6c.user.d/*; do
+  [ -f "$f" ] && (. "$f" "$@")
+done
+
+exit 0

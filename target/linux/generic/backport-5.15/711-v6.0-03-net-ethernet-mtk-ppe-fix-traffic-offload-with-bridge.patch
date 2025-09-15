@@ -1,0 +1,64 @@
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 22 Jul 2022 09:06:19 +0200
+Subject: [PATCH] net: ethernet: mtk-ppe: fix traffic offload with bridged wlan
+
+A typical flow offload scenario for OpenWrt users is routed traffic
+received by the wan interface that is redirected to a wlan device
+belonging to the lan bridge. Current implementation fails to
+fill wdma offload info in mtk_flow_get_wdma_info() since odev device is
+the local bridge. Fix the issue running dev_fill_forward_path routine in
+mtk_flow_get_wdma_info in order to identify the wlan device.
+
+Tested-by: Paolo Valerio <pvalerio@redhat.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -88,32 +88,28 @@ mtk_flow_offload_mangle_eth(const struct
+ static int
+ mtk_flow_get_wdma_info(struct net_device *dev, const u8 *addr, struct mtk_wdma_info *info)
+ {
+-	struct net_device_path_ctx ctx = {
+-		.dev = dev,
+-	};
+-	struct net_device_path path = {};
++	struct net_device_path_stack stack;
++	struct net_device_path *path;
++	int err;
+ 
+-	if (!ctx.dev)
++	if (!dev)
+ 		return -ENODEV;
+ 
+-	memcpy(ctx.daddr, addr, sizeof(ctx.daddr));
+-
+ 	if (!IS_ENABLED(CONFIG_NET_MEDIATEK_SOC_WED))
+ 		return -1;
+ 
+-	if (!dev->netdev_ops->ndo_fill_forward_path)
+-		return -1;
+-
+-	if (dev->netdev_ops->ndo_fill_forward_path(&ctx, &path))
+-		return -1;
++	err = dev_fill_forward_path(dev, addr, &stack);
++	if (err)
++		return err;
+ 
+-	if (path.type != DEV_PATH_MTK_WDMA)
++	path = &stack.path[stack.num_paths - 1];
++	if (path->type != DEV_PATH_MTK_WDMA)
+ 		return -1;
+ 
+-	info->wdma_idx = path.mtk_wdma.wdma_idx;
+-	info->queue = path.mtk_wdma.queue;
+-	info->bss = path.mtk_wdma.bss;
+-	info->wcid = path.mtk_wdma.wcid;
++	info->wdma_idx = path->mtk_wdma.wdma_idx;
++	info->queue = path->mtk_wdma.queue;
++	info->bss = path->mtk_wdma.bss;
++	info->wcid = path->mtk_wdma.wcid;
+ 
+ 	return 0;
+ }

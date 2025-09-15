@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+BASEDIR="$PWD"
+ENVDIR="$PWD/env"
+export GREP_OPTIONS=
+
+usage() {
+	cat <<EOF
+Usage: $0 [options] <command> [arguments]
+Commands:
+	help              This help text
+	list              List environments
+	clear             Delete all environment and revert to flat config/files
+	new <name>        Create a new environment
+	switch <name>     Switch to a different environment
+	delete <name>     Delete an environment
+	rename <newname>  Rename the current environment
+	diff              Show differences between current state and environment
+	save [message]    Save your changes to the environment, optionally using
+	                  the given commit message
+	revert            Revert your changes since last save
+
+Options:
+
+EOF
+	exit "${1:-1}"
+}
+
+error() {
+	echo "$0: $*"
+	exit 1
+}
+
+ask_bool() {
+	local DEFAULT="$1"; shift
+	local def defstr val
+	case "$DEFAULT" in
+		1) def=0; defstr="Y/n";;
+		0) def=1; defstr="y/N";;
+		*) def=;  defstr="y/n";;
+	esac
+	while [ -z "$val" ]; do
+		local VAL
+
+		echo -n "$* ($defstr): "
+		read -r VAL
+		case "$VAL" in
+			y*|Y*) val=0;;
+			n*|N*) val=1;;
+			*) val="$def";;
+		esac
+	done
+	return "$val"
+}
+
+env_init() {
+	local CREATE="$1"
+	if [ -z "$CREATE" ]; then
+		[ -d "$ENVDIR" ] || exit 0
+	fi
+	command -v git >/dev/null || error "Git is not installed"
+	mkdir -p "$ENVDIR" || error "Failed to create the environment directory"
+	cd "$ENVDIR" || error "Failed to switch to the environment directory"
+	[ -d .git ] || { 
+		git init -b master &&
+		touch .config &&
+		mkdir files &&
+		git add . && 
+		git commit -q -m "Initial import"
+	} || {
+		rm -rf .git
+		error "Failed to initialize the environment directory"
+	}
+}
+
+env_sync_data() {
+	[ ! -L "$BASEDIR/.config" ] && [ -f "$BASEDIR/.config" ] && mv "$BASEDIR/.config" "$ENVDIR"
+	git add .
+	git add -u
+}
+
+env_sync() {
+	local STR="$1"
+	env_sync_data
+	git commit -m "${STR:-Update} at $(date)"
+}
+
+env_link_config() {
+	rm -f "$BASEDIR/.config"
+	ln -s env/.config "$BASEDIR/.config"
+	mkdir -p "$ENVDIR/files"
+	[ -L "$BASEDIR/files" ] || ln -s env/files "$BASEDIR/files"
+}
+
+env_do_reset() {
+	git reset --hard HEAD
+	git clean -d -f
+}
+
+env_list() {
+	env_init
+	git branch --color | grep -vE '^. master$'
+}
+
+env_diff() {
+	env_init
+	env_sync_data
+	git diff --cached --color=auto
+	env_link_config
+}
+
+env_save() {
+	env_init
+	env_sync "$@"
+	env_link_config
+}
+
+env_revert() {
+	env_init
+	env_do_reset
+	env_link_config
+}
+
+env_ask_sync() {
+	env_sync_data
+	LINES="$(env_diff | wc -l)" # implies env_init
+	[ "$LINES" -gt 0 ] && {
+		if ask_bool 1 "Do you want to save your changes"; then
+			env_sync
+		else
+			env_do_reset
+		fi
+	}
+}
+
+env_clear() {
+	env_init
+	[ -L "$BASEDIR/.config" ] && rm -f "$BASEDIR/.config"
+	[ -L "$BASEDIR/files" ] && rm -f "$BASEDIR/files"
+	[ -f "$ENVDIR/.config" ] || ( cd "$ENVDIR/files" && find . | grep -vE '^\.$' > /dev/null )
+	env_sync_data
+	if ask_bool 1 "Do you want to keep your current config and files"; then
+		mkdir -p "$BASEDIR/files"
+		shopt -s dotglob
+		cp -a "$ENVDIR/files/"* "$BASEDIR/files" 2>/dev/null >/dev/null
+		shopt -u dotglob
+		cp "$ENVDIR/.config" "$BASEDIR/"
+	else
+		rm -rf "$BASEDIR/files" "$BASEDIR/.config"
+	fi
+	cd "$BASEDIR" || exit 1
+	rm -rf "$ENVDIR"
+}
+
+env_delete() {
+	local name="${1##*/}"
+	env_init
+	[ -z "$name" ] && usage
+	branch="$(git branch | grep '^\* ' | awk '{print $2}')"
+	[ "$name" = "$branch" ] && error "cannot delete the currently selected environment"
+	git branch -D "$name"
+}
+
+env_switch() {
+	local name="${1##*/}"
+	[ -z "$name" ] && usage
+
+	env_init
+	env_ask_sync
+	git checkout "$name" || error "environment '$name' not found"
+	env_link_config
+}
+
+env_rename() {
+	local NAME="${1##*/}"
+	env_init
+	git branch -m "$NAME"
+}
+
+env_new() {
+	local NAME="$1"
+	local branch
+	local from="master"
+
+	[ -z "$NAME" ] && usage
+	env_init 1
+	
+	branch="$(git branch | grep '^\* ' | awk '{print $2}')"
+	if [ -n "$branch" ] && [ "$branch" != "master" ]; then
+		env_ask_sync
+		if ask_bool 0 "Do you want to clone the current environment?"; then
+			from="$branch"
+		fi
+		rm -f "$BASEDIR/.config" "$BASEDIR/files"
+	fi
+	git checkout -b "$1" "$from"
+	if [ -f "$BASEDIR/.config" ] || [ -d "$BASEDIR/files" ]; then
+		if ask_bool 1 "Do you want to start your configuration repository with the current configuration?"; then
+			if [ -d "$BASEDIR/files" ] && [ ! -L "$BASEDIR/files" ]; then
+				mkdir -p "$ENVDIR/files"
+				shopt -s dotglob
+				mv "$BASEDIR/files/"* "$ENVDIR/files/" 2>/dev/null
+				shopt -u dotglob
+				rmdir "$BASEDIR/files"
+			fi
+			env_sync
+		else
+			rm -rf "$BASEDIR/.config" "$BASEDIR/files"
+		fi
+	fi
+	env_link_config
+}
+
+COMMAND="$1"; shift
+case "$COMMAND" in
+	help) usage 0;;
+	new) env_new "$@";;
+	list) env_list "$@";;
+	clear) env_clear "$@";;
+	switch) env_switch "$@";;
+	delete) env_delete "$@";;
+	rename) env_rename "$@";;
+	diff) env_diff "$@";;
+	save) env_save "$@";;
+	revert) env_revert "$@";;
+	*) usage;;
+esac

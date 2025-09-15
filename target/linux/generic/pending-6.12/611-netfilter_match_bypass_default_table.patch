@@ -1,0 +1,106 @@
+From: Felix Fietkau <nbd@nbd.name>
+Subject: netfilter: match bypass default table
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+ net/ipv4/netfilter/ip_tables.c | 79 +++++++++++++++++++++++++++++++-----------
+ 1 file changed, 58 insertions(+), 21 deletions(-)
+
+--- a/net/ipv4/netfilter/ip_tables.c
++++ b/net/ipv4/netfilter/ip_tables.c
+@@ -244,6 +244,33 @@ struct ipt_entry *ipt_next_entry(const s
+ 	return (void *)entry + entry->next_offset;
+ }
+ 
++static bool
++ipt_handle_default_rule(struct ipt_entry *e, unsigned int *verdict)
++{
++	struct xt_entry_target *t;
++	struct xt_standard_target *st;
++
++	if (e->target_offset != sizeof(struct ipt_entry))
++		return false;
++
++	if (!(e->ip.flags & IPT_F_NO_DEF_MATCH))
++		return false;
++
++	t = ipt_get_target(e);
++	if (t->u.kernel.target->target)
++		return false;
++
++	st = (struct xt_standard_target *) t;
++	if (st->verdict == XT_RETURN)
++		return false;
++
++	if (st->verdict >= 0)
++		return false;
++
++	*verdict = (unsigned)(-st->verdict) - 1;
++	return true;
++}
++
+ /* Returns one of the generic firewall policies, like NF_ACCEPT. */
+ unsigned int
+ ipt_do_table(void *priv,
+@@ -265,27 +292,28 @@ ipt_do_table(void *priv,
+ 	unsigned int addend;
+ 
+ 	/* Initialization */
++	WARN_ON(!(table->valid_hooks & (1 << hook)));
++	local_bh_disable();
++	private = READ_ONCE(table->private); /* Address dependency. */
++	cpu        = smp_processor_id();
++	table_base = private->entries;
++
++	e = get_entry(table_base, private->hook_entry[hook]);
++	if (ipt_handle_default_rule(e, &verdict)) {
++		struct xt_counters *counter;
++
++		counter = xt_get_this_cpu_counter(&e->counters);
++		ADD_COUNTER(*counter, skb->len, 1);
++		local_bh_enable();
++		return verdict;
++	}
++
+ 	stackidx = 0;
+ 	ip = ip_hdr(skb);
+ 	indev = state->in ? state->in->name : nulldevname;
+ 	outdev = state->out ? state->out->name : nulldevname;
+-	/* We handle fragments by dealing with the first fragment as
+-	 * if it was a normal packet.  All other fragments are treated
+-	 * normally, except that they will NEVER match rules that ask
+-	 * things we don't know, ie. tcp syn flag or ports).  If the
+-	 * rule is also a fragment-specific rule, non-fragments won't
+-	 * match it. */
+-	acpar.fragoff = ntohs(ip->frag_off) & IP_OFFSET;
+-	acpar.thoff   = ip_hdrlen(skb);
+-	acpar.hotdrop = false;
+-	acpar.state   = state;
+ 
+-	WARN_ON(!(table->valid_hooks & (1 << hook)));
+-	local_bh_disable();
+ 	addend = xt_write_recseq_begin();
+-	private = READ_ONCE(table->private); /* Address dependency. */
+-	cpu        = smp_processor_id();
+-	table_base = private->entries;
+ 	jumpstack  = (struct ipt_entry **)private->jumpstack[cpu];
+ 
+ 	/* Switch to alternate jumpstack if we're being invoked via TEE.
+@@ -298,7 +326,16 @@ ipt_do_table(void *priv,
+ 	if (static_key_false(&xt_tee_enabled))
+ 		jumpstack += private->stacksize * __this_cpu_read(nf_skb_duplicated);
+ 
+-	e = get_entry(table_base, private->hook_entry[hook]);
++	/* We handle fragments by dealing with the first fragment as
++	 * if it was a normal packet.  All other fragments are treated
++	 * normally, except that they will NEVER match rules that ask
++	 * things we don't know, ie. tcp syn flag or ports).  If the
++	 * rule is also a fragment-specific rule, non-fragments won't
++	 * match it. */
++	acpar.fragoff = ntohs(ip->frag_off) & IP_OFFSET;
++	acpar.thoff   = ip_hdrlen(skb);
++	acpar.hotdrop = false;
++	acpar.state   = state;
+ 
+ 	do {
+ 		const struct xt_entry_target *t;

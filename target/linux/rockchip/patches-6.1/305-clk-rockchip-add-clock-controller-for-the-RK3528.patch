@@ -1,0 +1,177 @@
+From 16f512f1e10375dc48aa6c26cedeb7079aba01de Mon Sep 17 00:00:00 2001
+From: Joseph Chen <chenjh@rock-chips.com>
+Date: Sat, 13 Aug 2022 01:15:20 +0000
+Subject: [PATCH] clk: rockchip: Add clock controller for the RK3528
+
+Add the clock tree definition for the new RK3528 SoC.
+
+gmac1 clocks are all controlled by GRF, but CRU helps to abstract
+these two clocks for gmac1 since the clock source is from CRU.
+
+The io-in clocks are module phy output clock, gating child
+clocks by disabling phy output but not CRU gate.
+
+Add gmac0 clocks.
+They are all orphans if clk_gmac0_io_i is not registered by
+GMAC driver. But it's fine that GMAC driver only get it but
+not to set/get rate.
+
+Add CLK_SET_RATE_PARENT for mclk_sai_i2s0/1.
+Allowed to change parent rate.
+
+Add CLK_SET_RATE_NO_REPARENT for dclk_vop0.
+dclk_vop0 is often used for HDMI, it prefers parent clock from
+clk_hdmiphy_pixel_io for better clock quality and any rate.
+It assigns clk_hdmiphy_pixel_io as parent in dts and hope not to
+change parent any more.
+
+Add CLK_SET_RATE_PARENT for aclk_gpu.
+Allow aclk_gpu and aclk_gpu_mali to change parent rate.
+
+Add CLK_SET_RATE_PARENT for aclk_rkvdec_pvtmux_root.
+Allow aclk_rkvdec_pvtmux_root and aclk_rkvdec to change parent rate.
+
+set aclk_m_core = core_clk/2.
+aclk_m_core signoff is 550M, but we set div=2 for better
+performance.
+
+Add CLK_IS_CRITICAL for clk_32k.
+Mainly for pvtpll during reboot stage.
+
+Add CLK_IS_CRITICAL for all IOC clocks.
+IOC doesn't share clock with GRF. The iomux can't be changed if they
+are disabled.
+
+Disable aclk_{vpu,vpu_l,vo}_root rate change
+They are all shared by multiple modules, disable rate change
+by modules.
+
+Don't register clk_uart_jtag
+It's for force jtag uart delay counter. It must be open
+for box product without tf card but with uart0.
+
+Signed-off-by: Joseph Chen <chenjh@rock-chips.com>
+Signed-off-by: Elaine Zhang <zhangqing@rock-chips.com>
+Change-Id: I09745b6a31484d6a27f04e608268d9738c1fe224
+---
+ drivers/clk/rockchip/Kconfig      |    7 +
+ drivers/clk/rockchip/Makefile     |    1 +
+ drivers/clk/rockchip/clk-rk3528.c | 1187 +++++++++++++++++++++++++++++
+ drivers/clk/rockchip/clk.h        |   28 +
+ 4 files changed, 1223 insertions(+)
+ create mode 100644 drivers/clk/rockchip/clk-rk3528.c
+
+--- a/drivers/clk/rockchip/Kconfig
++++ b/drivers/clk/rockchip/Kconfig
+@@ -93,6 +93,13 @@ config CLK_RK3399
+ 	help
+ 	  Build the driver for RK3399 Clock Driver.
+ 
++config CLK_RK3528
++	bool "Rockchip RK3528 clock controller support"
++	depends on ARM64 || COMPILE_TEST
++	default y
++	help
++	  Build the driver for RK3528 Clock Driver.
++
+ config CLK_RK3568
+ 	bool "Rockchip RK3568 clock controller support"
+ 	depends on ARM64 || COMPILE_TEST
+--- a/drivers/clk/rockchip/Makefile
++++ b/drivers/clk/rockchip/Makefile
+@@ -27,4 +27,5 @@ obj-$(CONFIG_CLK_RK3308)        += clk-r
+ obj-$(CONFIG_CLK_RK3328)        += clk-rk3328.o
+ obj-$(CONFIG_CLK_RK3368)        += clk-rk3368.o
+ obj-$(CONFIG_CLK_RK3399)        += clk-rk3399.o
++obj-$(CONFIG_CLK_RK3528)        += clk-rk3528.o
+ obj-$(CONFIG_CLK_RK3568)	+= clk-rk3568.o
+--- a/drivers/clk/rockchip/clk.c
++++ b/drivers/clk/rockchip/clk.c
+@@ -515,6 +515,14 @@ void rockchip_clk_register_branches(stru
+ 				ctx->reg_base + list->gate_offset,
+ 				list->gate_shift, list->gate_flags, &ctx->lock);
+ 			break;
++		case branch_gate_no_set_rate:
++			flags &= ~CLK_SET_RATE_PARENT;
++
++			clk = clk_register_gate(NULL, list->name,
++				list->parent_names[0], flags,
++				ctx->reg_base + list->gate_offset,
++				list->gate_shift, list->gate_flags, &ctx->lock);
++			break;
+ 		case branch_composite:
+ 			clk = rockchip_clk_register_branch(list->name,
+ 				list->parent_names, list->num_parents,
+--- a/drivers/clk/rockchip/clk.h
++++ b/drivers/clk/rockchip/clk.h
+@@ -207,6 +207,34 @@ struct clk;
+ #define RK3399_PMU_CLKGATE_CON(x)	((x) * 0x4 + 0x100)
+ #define RK3399_PMU_SOFTRST_CON(x)	((x) * 0x4 + 0x110)
+ 
++#define RK3528_PMU_CRU_BASE		0x10000
++#define RK3528_PCIE_CRU_BASE		0x20000
++#define RK3528_DDRPHY_CRU_BASE		0x28000
++#define RK3528_VPU_GRF_BASE		0x40000
++#define RK3528_VO_GRF_BASE		0x60000
++#define RK3528_SDMMC_CON0		(RK3528_VO_GRF_BASE + 0x24)
++#define RK3528_SDMMC_CON1		(RK3528_VO_GRF_BASE + 0x28)
++#define RK3528_SDIO0_CON0		(RK3528_VPU_GRF_BASE + 0x4)
++#define RK3528_SDIO0_CON1		(RK3528_VPU_GRF_BASE + 0x8)
++#define RK3528_SDIO1_CON0		(RK3528_VPU_GRF_BASE + 0xc)
++#define RK3528_SDIO1_CON1		(RK3528_VPU_GRF_BASE + 0x10)
++#define RK3528_PLL_CON(x)		RK2928_PLL_CON(x)
++#define RK3528_PCIE_PLL_CON(x)		((x) * 0x4 + RK3528_PCIE_CRU_BASE)
++#define RK3528_DDRPHY_PLL_CON(x)	((x) * 0x4 + RK3528_DDRPHY_CRU_BASE)
++#define RK3528_MODE_CON			0x280
++#define RK3528_CLKSEL_CON(x)		((x) * 0x4 + 0x300)
++#define RK3528_CLKGATE_CON(x)		((x) * 0x4 + 0x800)
++#define RK3528_SOFTRST_CON(x)		((x) * 0x4 + 0xa00)
++#define RK3528_PMU_CLKSEL_CON(x)	((x) * 0x4 + 0x300 + RK3528_PMU_CRU_BASE)
++#define RK3528_PMU_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_PMU_CRU_BASE)
++#define RK3528_PCIE_CLKSEL_CON(x)	((x) * 0x4 + 0x300 + RK3528_PCIE_CRU_BASE)
++#define RK3528_PCIE_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_PCIE_CRU_BASE)
++#define RK3528_DDRPHY_CLKGATE_CON(x)	((x) * 0x4 + 0x800 + RK3528_DDRPHY_CRU_BASE)
++#define RK3528_DDRPHY_MODE_CON		(0x280 + RK3528_DDRPHY_CRU_BASE)
++#define RK3528_GLB_CNT_TH		0xc00
++#define RK3528_GLB_SRST_FST		0xc08
++#define RK3528_GLB_SRST_SND		0xc0c
++
+ #define RK3568_PLL_CON(x)		RK2928_PLL_CON(x)
+ #define RK3568_MODE_CON0		0xc0
+ #define RK3568_MISC_CON0		0xc4
+@@ -345,6 +373,7 @@ struct rockchip_pll_clock {
+ };
+ 
+ #define ROCKCHIP_PLL_SYNC_RATE		BIT(0)
++#define ROCKCHIP_PLL_FIXED_MODE		BIT(1)
+ 
+ #define PLL(_type, _id, _name, _pnames, _flags, _con, _mode, _mshift,	\
+ 		_lshift, _pflags, _rtable)				\
+@@ -448,6 +477,7 @@ enum rockchip_clk_branch_type {
+ 	branch_muxgrf,
+ 	branch_divider,
+ 	branch_fraction_divider,
++	branch_gate_no_set_rate,
+ 	branch_gate,
+ 	branch_mmc,
+ 	branch_inverter,
+@@ -768,6 +798,19 @@ struct rockchip_clk_branch {
+ 		.name		= cname,			\
+ 		.parent_names	= (const char *[]){ pname },	\
+ 		.num_parents	= 1,				\
++		.flags		= f,				\
++		.gate_offset	= o,				\
++		.gate_shift	= b,				\
++		.gate_flags	= gf,				\
++	}
++
++#define GATE_NO_SET_RATE(_id, cname, pname, f, o, b, gf)	\
++	{							\
++		.id		= _id,				\
++		.branch_type	= branch_gate_no_set_rate,	\
++		.name		= cname,			\
++		.parent_names	= (const char *[]){ pname },	\
++		.num_parents	= 1,				\
+ 		.flags		= f,				\
+ 		.gate_offset	= o,				\
+ 		.gate_shift	= b,				\

@@ -1,0 +1,247 @@
+From 7fa63fdde703aaabaa7199ae879219737a98a3f3 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 6 Jan 2012 12:24:18 +0100
+Subject: [PATCH] NET: bcm63xx_enet: move phy_(dis)connect into probe/remove
+
+Only connect/disconnect the phy during probe and remove, not during any
+open/close. The phy seldom changes during the runtime, and disconnecting
+the phy during close will prevent it from keeping any configuration over
+a down/up cycle.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+---
+ drivers/net/ethernet/broadcom/bcm63xx_enet.c | 158 +++++++++++++--------------
+ 1 file changed, 78 insertions(+), 80 deletions(-)
+
+--- a/drivers/net/ethernet/broadcom/bcm63xx_enet.c
++++ b/drivers/net/ethernet/broadcom/bcm63xx_enet.c
+@@ -893,10 +893,8 @@ static int bcm_enet_open(struct net_devi
+ 	struct bcm_enet_priv *priv;
+ 	struct sockaddr addr;
+ 	struct device *kdev;
+-	struct phy_device *phydev;
+ 	int i, ret;
+ 	unsigned int size;
+-	char phy_id[MII_BUS_ID_SIZE + 3];
+ 	void *p;
+ 	u32 val;
+ 
+@@ -904,31 +902,10 @@ static int bcm_enet_open(struct net_devi
+ 	kdev = &priv->pdev->dev;
+ 
+ 	if (priv->has_phy) {
+-		/* connect to PHY */
+-		snprintf(phy_id, sizeof(phy_id), PHY_ID_FMT,
+-			 priv->mii_bus->id, priv->phy_id);
+-
+-		phydev = phy_connect(dev, phy_id, bcm_enet_adjust_phy_link,
+-				     PHY_INTERFACE_MODE_MII);
+-
+-		if (IS_ERR(phydev)) {
+-			dev_err(kdev, "could not attach to PHY\n");
+-			return PTR_ERR(phydev);
+-		}
+-
+-		/* mask with MAC supported features */
+-		phy_support_sym_pause(phydev);
+-		phy_set_max_speed(phydev, SPEED_100);
+-		phy_set_sym_pause(phydev, priv->pause_rx, priv->pause_rx,
+-				  priv->pause_auto);
+-
+-		phy_attached_info(phydev);
+-
++		/* Reset state */
+ 		priv->old_link = 0;
+ 		priv->old_duplex = -1;
+ 		priv->old_pause = -1;
+-	} else {
+-		phydev = NULL;
+ 	}
+ 
+ 	/* mask all interrupts and request them */
+@@ -938,7 +915,7 @@ static int bcm_enet_open(struct net_devi
+ 
+ 	ret = request_irq(dev->irq, bcm_enet_isr_mac, 0, dev->name, dev);
+ 	if (ret)
+-		goto out_phy_disconnect;
++		return ret;
+ 
+ 	ret = request_irq(priv->irq_rx, bcm_enet_isr_dma, 0,
+ 			  dev->name, dev);
+@@ -1100,8 +1077,8 @@ static int bcm_enet_open(struct net_devi
+ 	enet_dmac_writel(priv, priv->dma_chan_int_mask,
+ 			 ENETDMAC_IRMASK, priv->tx_chan);
+ 
+-	if (phydev)
+-		phy_start(phydev);
++	if (priv->has_phy)
++		phy_start(dev->phydev);
+ 	else
+ 		bcm_enet_adjust_link(dev);
+ 
+@@ -1131,10 +1108,6 @@ out_freeirq_rx:
+ out_freeirq:
+ 	free_irq(dev->irq, dev);
+ 
+-out_phy_disconnect:
+-	if (phydev)
+-		phy_disconnect(phydev);
+-
+ 	return ret;
+ }
+ 
+@@ -1227,10 +1200,6 @@ static int bcm_enet_stop(struct net_devi
+ 	free_irq(priv->irq_rx, dev);
+ 	free_irq(dev->irq, dev);
+ 
+-	/* release phy */
+-	if (priv->has_phy)
+-		phy_disconnect(dev->phydev);
+-
+ 	/* reset BQL after forced tx reclaim to not kernel panic */
+ 	netdev_reset_queue(dev);
+ 
+@@ -1802,14 +1771,47 @@ static int bcm_enet_probe(struct platfor
+ 
+ 	/* do minimal hardware init to be able to probe mii bus */
+ 	bcm_enet_hw_preinit(priv);
++	spin_lock_init(&priv->rx_lock);
++
++	/* init rx timeout (used for oom) */
++	timer_setup(&priv->rx_timeout, bcm_enet_refill_rx_timer, 0);
++
++	/* init the mib update lock&work */
++	mutex_init(&priv->mib_update_lock);
++	INIT_WORK(&priv->mib_update_task, bcm_enet_update_mib_counters_defer);
++
++	/* zero mib counters */
++	for (i = 0; i < ENET_MIB_REG_COUNT; i++)
++		enet_writel(priv, 0, ENET_MIB_REG(i));
++
++	/* register netdevice */
++	dev->netdev_ops = &bcm_enet_ops;
++	netif_napi_add(dev, &priv->napi, bcm_enet_poll, 16);
++
++	dev->ethtool_ops = &bcm_enet_ethtool_ops;
++	/* MTU range: 46 - 2028 */
++	dev->min_mtu = ETH_ZLEN - ETH_HLEN;
++	dev->max_mtu = BCMENET_MAX_MTU - VLAN_ETH_HLEN;
++	SET_NETDEV_DEV(dev, &pdev->dev);
++
++	ret = register_netdev(dev);
++	if (ret)
++		goto out_uninit_hw;
++
++	netif_carrier_off(dev);
++	platform_set_drvdata(pdev, dev);
++	priv->pdev = pdev;
++	priv->net_dev = dev;
+ 
+ 	/* MII bus registration */
+ 	if (priv->has_phy) {
++		struct phy_device *phydev;
++		char phy_id[MII_BUS_ID_SIZE + 3];
+ 
+ 		priv->mii_bus = mdiobus_alloc();
+ 		if (!priv->mii_bus) {
+ 			ret = -ENOMEM;
+-			goto out_uninit_hw;
++			goto out_unregister_netdev;
+ 		}
+ 
+ 		bus = priv->mii_bus;
+@@ -1833,6 +1835,26 @@ static int bcm_enet_probe(struct platfor
+ 			dev_err(&pdev->dev, "unable to register mdio bus\n");
+ 			goto out_free_mdio;
+ 		}
++
++		/* connect to PHY */
++		snprintf(phy_id, sizeof(phy_id), PHY_ID_FMT,
++			 priv->mii_bus->id, priv->phy_id);
++
++		phydev = phy_connect(dev, phy_id, bcm_enet_adjust_phy_link,
++				     PHY_INTERFACE_MODE_MII);
++
++		if (IS_ERR(phydev)) {
++			dev_err(&pdev->dev, "could not attach to PHY\n");
++			goto out_unregister_mdio;
++		}
++
++		/* mask with MAC supported features */
++		phy_support_sym_pause(phydev);
++		phy_set_max_speed(phydev, SPEED_100);
++		phy_set_sym_pause(phydev, priv->pause_rx, priv->pause_rx,
++				  priv->pause_auto);
++
++		phy_attached_info(phydev);
+ 	} else {
+ 
+ 		/* run platform code to initialize PHY device */
+@@ -1840,45 +1862,16 @@ static int bcm_enet_probe(struct platfor
+ 		    pd->mii_config(dev, 1, bcm_enet_mdio_read_mii,
+ 				   bcm_enet_mdio_write_mii)) {
+ 			dev_err(&pdev->dev, "unable to configure mdio bus\n");
+-			goto out_uninit_hw;
++			goto out_unregister_netdev;
+ 		}
+ 	}
+ 
+-	spin_lock_init(&priv->rx_lock);
+-
+-	/* init rx timeout (used for oom) */
+-	timer_setup(&priv->rx_timeout, bcm_enet_refill_rx_timer, 0);
+-
+-	/* init the mib update lock&work */
+-	mutex_init(&priv->mib_update_lock);
+-	INIT_WORK(&priv->mib_update_task, bcm_enet_update_mib_counters_defer);
+-
+-	/* zero mib counters */
+-	for (i = 0; i < ENET_MIB_REG_COUNT; i++)
+-		enet_writel(priv, 0, ENET_MIB_REG(i));
+-
+-	/* register netdevice */
+-	dev->netdev_ops = &bcm_enet_ops;
+-	netif_napi_add(dev, &priv->napi, bcm_enet_poll, 16);
+-
+-	dev->ethtool_ops = &bcm_enet_ethtool_ops;
+-	/* MTU range: 46 - 2028 */
+-	dev->min_mtu = ETH_ZLEN - ETH_HLEN;
+-	dev->max_mtu = BCMENET_MAX_MTU - VLAN_ETH_HLEN;
+-	SET_NETDEV_DEV(dev, &pdev->dev);
+-
+-	ret = register_netdev(dev);
+-	if (ret)
+-		goto out_unregister_mdio;
+-
+-	netif_carrier_off(dev);
+-	platform_set_drvdata(pdev, dev);
+-	priv->pdev = pdev;
+-	priv->net_dev = dev;
+-
+ 	return 0;
+ 
+ out_unregister_mdio:
++	if (dev->phydev)
++		phy_disconnect(dev->phydev);
++
+ 	if (priv->mii_bus)
+ 		mdiobus_unregister(priv->mii_bus);
+ 
+@@ -1886,6 +1879,9 @@ out_free_mdio:
+ 	if (priv->mii_bus)
+ 		mdiobus_free(priv->mii_bus);
+ 
++out_unregister_netdev:
++	unregister_netdev(dev);
++
+ out_uninit_hw:
+ 	/* turn off mdc clock */
+ 	enet_writel(priv, 0, ENET_MIISC_REG);
+@@ -1916,6 +1912,7 @@ static int bcm_enet_remove(struct platfo
+ 	enet_writel(priv, 0, ENET_MIISC_REG);
+ 
+ 	if (priv->has_phy) {
++		phy_disconnect(dev->phydev);
+ 		mdiobus_unregister(priv->mii_bus);
+ 		mdiobus_free(priv->mii_bus);
+ 	} else {

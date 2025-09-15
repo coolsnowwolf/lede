@@ -1,0 +1,452 @@
+From 74267bacce0c43e5038b0377cb7c08f1ad9d50a3 Mon Sep 17 00:00:00 2001
+From: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+Date: Sat, 23 Mar 2019 10:21:03 +0000
+Subject: [PATCH] iptables: connmark - add set-dscpmark option for openwrt
+
+Naive user space front end to xt_connmark 'setdscp' option.
+
+iptables -A QOS_MARK_eth0 -t mangle -j CONNMARK --set-dscpmark 0xfc000000/0x01000000
+
+This version has a hack to support a backport to 4.14
+
+Signed-off-by: Kevin Darbyshire-Bryant <ldir@darbyshire-bryant.me.uk>
+---
+ extensions/libxt_CONNMARK.c           | 315 +++++++++++++++++++++++++-
+ include/linux/netfilter/xt_connmark.h |  10 +
+ 2 files changed, 324 insertions(+), 1 deletion(-)
+
+--- a/extensions/libxt_CONNMARK.c
++++ b/extensions/libxt_CONNMARK.c
+@@ -22,6 +22,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <strings.h>
+ #include <xtables.h>
+ #include <linux/netfilter/xt_CONNMARK.h>
+ 
+@@ -49,6 +50,7 @@ enum {
+ 	O_CTMASK,
+ 	O_NFMASK,
+ 	O_MASK,
++	O_DSCP_MARK,
+ 	F_SET_MARK         = 1 << O_SET_MARK,
+ 	F_SAVE_MARK        = 1 << O_SAVE_MARK,
+ 	F_RESTORE_MARK     = 1 << O_RESTORE_MARK,
+@@ -61,8 +63,10 @@ enum {
+ 	F_CTMASK           = 1 << O_CTMASK,
+ 	F_NFMASK           = 1 << O_NFMASK,
+ 	F_MASK             = 1 << O_MASK,
++	F_DSCP_MARK	   = 1 << O_DSCP_MARK,
+ 	F_OP_ANY           = F_SET_MARK | F_SAVE_MARK | F_RESTORE_MARK |
+-	                     F_AND_MARK | F_OR_MARK | F_XOR_MARK | F_SET_XMARK,
++	                     F_AND_MARK | F_OR_MARK | F_XOR_MARK | F_SET_XMARK |
++			     F_DSCP_MARK,
+ };
+ 
+ static const char *const xt_connmark_shift_ops[] = {
+@@ -114,6 +118,8 @@ static const struct xt_option_entry conn
+ 	 .excl = F_MASK, .flags = XTOPT_PUT, XTOPT_POINTER(s, nfmask)},
+ 	{.name = "mask", .id = O_MASK, .type = XTTYPE_UINT32,
+ 	 .excl = F_CTMASK | F_NFMASK},
++	{.name = "set-dscpmark", .id = O_DSCP_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
+ 	XTOPT_TABLEEND,
+ };
+ #undef s
+@@ -148,6 +154,38 @@ static const struct xt_option_entry conn
+ };
+ #undef s
+ 
++#define s struct xt_connmark_tginfo3
++static const struct xt_option_entry connmark_tg_opts_v3[] = {
++	{.name = "set-xmark", .id = O_SET_XMARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	{.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	{.name = "and-mark", .id = O_AND_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "or-mark", .id = O_OR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "xor-mark", .id = O_XOR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "save-mark", .id = O_SAVE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "restore-mark", .id = O_RESTORE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "left-shift-mark", .id = O_LEFT_SHIFT_MARK, .type = XTTYPE_UINT8,
++	 .min = 0, .max = 32},
++	{.name = "right-shift-mark", .id = O_RIGHT_SHIFT_MARK, .type = XTTYPE_UINT8,
++	 .min = 0, .max = 32},
++	{.name = "ctmask", .id = O_CTMASK, .type = XTTYPE_UINT32,
++	 .excl = F_MASK, .flags = XTOPT_PUT, XTOPT_POINTER(s, ctmask)},
++	{.name = "nfmask", .id = O_NFMASK, .type = XTTYPE_UINT32,
++	 .excl = F_MASK, .flags = XTOPT_PUT, XTOPT_POINTER(s, nfmask)},
++	{.name = "mask", .id = O_MASK, .type = XTTYPE_UINT32,
++	 .excl = F_CTMASK | F_NFMASK},
++	{.name = "set-dscpmark", .id = O_DSCP_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	XTOPT_TABLEEND,
++};
++#undef s
++
+ static void connmark_tg_help(void)
+ {
+ 	printf(
+@@ -175,6 +213,15 @@ static void connmark_tg_help_v2(void)
+ );
+ }
+ 
++static void connmark_tg_help_v3(void)
++{
++	connmark_tg_help_v2();
++	printf(
++"  --set-dscpmark value/mask        Save DSCP to conntrack mark value\n"
++);
++}
++
++
+ static void connmark_tg_init(struct xt_entry_target *target)
+ {
+ 	struct xt_connmark_tginfo1 *info = (void *)target->data;
+@@ -199,6 +246,16 @@ static void connmark_tg_init_v2(struct x
+ 	info->shift_bits = 0;
+ }
+ 
++static void connmark_tg_init_v3(struct xt_entry_target *target)
++{
++	struct xt_connmark_tginfo3 *info;
++
++	connmark_tg_init_v2(target);
++	info = (void *)target->data;
++
++	info->func = 0;
++}
++
+ static void CONNMARK_parse(struct xt_option_call *cb)
+ {
+ 	struct xt_connmark_target_info *markinfo = cb->data;
+@@ -253,6 +310,23 @@ static void connmark_tg_parse(struct xt_
+ 		info->ctmark = cb->val.u32;
+ 		info->ctmask = 0;
+ 		break;
++	case O_DSCP_MARK:
++/* we sneaky sneaky this.  nfmask isn't used by the set mark functionality
++ * and by default is set to uint32max.  We can use the top bit as a flag
++ * that we're in DSCP_MARK submode of SET_MARK, if set then it's normal
++ * if unset then we're in DSCP_MARK
++ */
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mask;
++		info->nfmask = info->ctmark ? ffs(info->ctmark) - 1 : 0;
++		/* need 6 contiguous bits */
++		if ((~0 & (info->ctmark >> info->nfmask)) != 0x3f)
++			xtables_error(PARAMETER_PROBLEM,
++				"CONNMARK set-dscpmark: need 6 contiguous dscpmask bits");
++		if (info->ctmark & info->ctmask)
++			xtables_error(PARAMETER_PROBLEM,
++				"CONNMARK set-dscpmark: dscpmask/statemask bits overlap");
+ 	case O_SAVE_MARK:
+ 		info->mode = XT_CONNMARK_SAVE;
+ 		break;
+@@ -320,6 +394,78 @@ static void connmark_tg_parse_v2(struct
+ 	}
+ }
+ 
++static void connmark_tg_parse_v3(struct xt_option_call *cb)
++{
++	struct xt_connmark_tginfo3 *info = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_XMARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_VALUE;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mask;
++		break;
++	case O_SET_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_VALUE;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mark | cb->val.mask;
++		break;
++	case O_AND_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_VALUE;
++		info->ctmark = 0;
++		info->ctmask = ~cb->val.u32;
++		break;
++	case O_OR_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_VALUE;
++		info->ctmark = cb->val.u32;
++		info->ctmask = cb->val.u32;
++		break;
++	case O_XOR_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_VALUE;
++		info->ctmark = cb->val.u32;
++		info->ctmask = 0;
++		break;
++	case O_DSCP_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->func   = XT_CONNMARK_DSCP;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mask;
++		info->shift_bits = info->ctmark ? ffs(info->ctmark) - 1 : 0;
++		/* need 6 contiguous bits */
++		if ((~0 & (info->ctmark >> info->shift_bits)) != 0x3f)
++			xtables_error(PARAMETER_PROBLEM,
++				"CONNMARK set-dscpmark: need 6 contiguous dscpmask bits");
++		if (info->ctmark & info->ctmask)
++			xtables_error(PARAMETER_PROBLEM,
++				"CONNMARK set-dscpmark: dscpmask/statemask bits overlap");
++		break;
++	case O_SAVE_MARK:
++		info->mode = XT_CONNMARK_SAVE;
++		break;
++	case O_RESTORE_MARK:
++		info->mode = XT_CONNMARK_RESTORE;
++		break;
++	case O_MASK:
++		info->nfmask = info->ctmask = cb->val.u32;
++		break;
++	case O_LEFT_SHIFT_MARK:
++		info->shift_dir = D_SHIFT_LEFT;
++		info->shift_bits = cb->val.u8;
++		break;
++	case O_RIGHT_SHIFT_MARK:
++		info->shift_dir = D_SHIFT_RIGHT;
++		info->shift_bits = cb->val.u8;
++		break;
++	default:
++		break;
++	}
++}
++
+ static void connmark_tg_check(struct xt_fcheck_call *cb)
+ {
+ 	if (!(cb->xflags & F_OP_ANY))
+@@ -463,6 +609,65 @@ connmark_tg_print_v2(const void *ip, con
+ 	}
+ }
+ 
++static void
++connmark_tg_print_v3(const void *ip, const struct xt_entry_target *target,
++                  int numeric)
++{
++	const struct xt_connmark_tginfo3 *info = (const void *)target->data;
++	const char *shift_op = xt_connmark_shift_ops[info->shift_dir];
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		if (info->func & XT_CONNMARK_DSCP) {
++			printf(" CONNMARK DSCP 0x%x/0x%x",
++			       info->ctmark, info->ctmask);
++		}
++		if (info->func & XT_CONNMARK_VALUE) {
++			if (info->ctmark == 0)
++				printf(" CONNMARK and 0x%x",
++				       (unsigned int)(uint32_t)~info->ctmask);
++			else if (info->ctmark == info->ctmask)
++				printf(" CONNMARK or 0x%x", info->ctmark);
++			else if (info->ctmask == 0)
++				printf(" CONNMARK xor 0x%x", info->ctmark);
++			else if (info->ctmask == 0xFFFFFFFFU)
++				printf(" CONNMARK set 0x%x", info->ctmark);
++			else
++				printf(" CONNMARK xset 0x%x/0x%x",
++				       info->ctmark, info->ctmask);
++		}
++		break;
++	case XT_CONNMARK_SAVE:
++		if (info->nfmask == UINT32_MAX && info->ctmask == UINT32_MAX)
++			printf(" CONNMARK save");
++		else if (info->nfmask == info->ctmask)
++			printf(" CONNMARK save mask 0x%x", info->nfmask);
++		else
++			printf(" CONNMARK save nfmask 0x%x ctmask ~0x%x",
++			       info->nfmask, info->ctmask);
++		break;
++	case XT_CONNMARK_RESTORE:
++		if (info->ctmask == UINT32_MAX && info->nfmask == UINT32_MAX)
++			printf(" CONNMARK restore");
++		else if (info->ctmask == info->nfmask)
++			printf(" CONNMARK restore mask 0x%x", info->ctmask);
++		else
++			printf(" CONNMARK restore ctmask 0x%x nfmask ~0x%x",
++			       info->ctmask, info->nfmask);
++		break;
++
++	default:
++		printf(" ERROR: UNKNOWN CONNMARK MODE");
++		break;
++	}
++
++	if (info->mode <= XT_CONNMARK_RESTORE &&
++	    !(info->mode == XT_CONNMARK_SET && info->func == XT_CONNMARK_DSCP) &&
++	    info->shift_bits != 0) {
++		printf(" %s %u", shift_op, info->shift_bits);
++	}
++}
++
+ static void CONNMARK_save(const void *ip, const struct xt_entry_target *target)
+ {
+ 	const struct xt_connmark_target_info *markinfo =
+@@ -548,6 +753,38 @@ connmark_tg_save_v2(const void *ip, cons
+ 	}
+ }
+ 
++static void
++connmark_tg_save_v3(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_connmark_tginfo3 *info = (const void *)target->data;
++	const char *shift_op = xt_connmark_shift_ops[info->shift_dir];
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		if (info->func & XT_CONNMARK_VALUE)
++			printf(" --set-xmark 0x%x/0x%x", info->ctmark, info->ctmask);
++		if (info->func & XT_CONNMARK_DSCP)
++			printf(" --set-dscpmark 0x%x/0x%x", info->ctmark, info->ctmask);
++		break;
++	case XT_CONNMARK_SAVE:
++		printf(" --save-mark --nfmask 0x%x --ctmask 0x%x",
++		       info->nfmask, info->ctmask);
++		break;
++	case XT_CONNMARK_RESTORE:
++		printf(" --restore-mark --nfmask 0x%x --ctmask 0x%x",
++		       info->nfmask, info->ctmask);
++		break;
++	default:
++		printf(" ERROR: UNKNOWN CONNMARK MODE");
++		break;
++	}
++	if (info->mode <= XT_CONNMARK_RESTORE &&
++	    !(info->mode == XT_CONNMARK_SET && info->func == XT_CONNMARK_DSCP) &&
++	    info->shift_bits != 0) {
++		printf(" --%s %u", shift_op, info->shift_bits);
++	}
++}
++
+ static int connmark_tg_xlate(struct xt_xlate *xl,
+ 			     const struct xt_xlate_tg_params *params)
+ {
+@@ -639,6 +876,66 @@ static int connmark_tg_xlate_v2(struct x
+ 
+ 	return 1;
+ }
++
++static int connmark_tg_xlate_v3(struct xt_xlate *xl,
++			     const struct xt_xlate_tg_params *params)
++{
++	const struct xt_connmark_tginfo3 *info =
++		(const void *)params->target->data;
++	const char *shift_op = xt_connmark_shift_ops[info->shift_dir];
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		xt_xlate_add(xl, "ct mark set ");
++		if (info->func & XT_CONNMARK_VALUE) {
++			if (info->ctmask == 0xFFFFFFFFU)
++				xt_xlate_add(xl, "0x%x ", info->ctmark);
++			else if (info->ctmark == 0)
++				xt_xlate_add(xl, "ct mark and 0x%x", ~info->ctmask);
++			else if (info->ctmark == info->ctmask)
++				xt_xlate_add(xl, "ct mark or 0x%x",
++					     info->ctmark);
++			else if (info->ctmask == 0)
++				xt_xlate_add(xl, "ct mark xor 0x%x",
++					     info->ctmark);
++			else
++				xt_xlate_add(xl, "ct mark xor 0x%x and 0x%x",
++					     info->ctmark, ~info->ctmask);
++		}
++		if (info->func & XT_CONNMARK_DSCP) {
++/* FIXME the nftables syntax would go here if only we knew what it was */
++			xt_xlate_add(xl, "ct mark set typeof(ct mark) ip dscp "
++					 "<< %u or 0x%x", info->shift_bits,
++					     info->ctmask);
++		}
++		break;
++	case XT_CONNMARK_SAVE:
++		xt_xlate_add(xl, "ct mark set mark");
++		if (!(info->nfmask == UINT32_MAX &&
++		    info->ctmask == UINT32_MAX)) {
++			if (info->nfmask == info->ctmask)
++				xt_xlate_add(xl, " and 0x%x", info->nfmask);
++		}
++		break;
++	case XT_CONNMARK_RESTORE:
++		xt_xlate_add(xl, "meta mark set ct mark");
++		if (!(info->nfmask == UINT32_MAX &&
++		    info->ctmask == UINT32_MAX)) {
++			if (info->nfmask == info->ctmask)
++				xt_xlate_add(xl, " and 0x%x", info->nfmask);
++		}
++		break;
++	}
++
++	if (info->mode <= XT_CONNMARK_RESTORE &&
++	    !(info->mode == XT_CONNMARK_SET && info->func == XT_CONNMARK_DSCP) &&
++	    info->shift_bits != 0) {
++		xt_xlate_add(xl, " %s %u", shift_op, info->shift_bits);
++	}
++
++	return 1;
++}
++
+ static struct xtables_target connmark_tg_reg[] = {
+ 	{
+ 		.family        = NFPROTO_UNSPEC,
+@@ -687,6 +984,22 @@ static struct xtables_target connmark_tg
+ 		.x6_options    = connmark_tg_opts_v2,
+ 		.xlate         = connmark_tg_xlate_v2,
+ 	},
++	{
++		.version       = XTABLES_VERSION,
++		.name          = "CONNMARK",
++		.revision      = 3,
++		.family        = NFPROTO_UNSPEC,
++		.size          = XT_ALIGN(sizeof(struct xt_connmark_tginfo3)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_connmark_tginfo3)),
++		.help          = connmark_tg_help_v3,
++		.init          = connmark_tg_init_v3,
++		.print         = connmark_tg_print_v3,
++		.save          = connmark_tg_save_v3,
++		.x6_parse      = connmark_tg_parse_v3,
++		.x6_fcheck     = connmark_tg_check,
++		.x6_options    = connmark_tg_opts_v3,
++		.xlate         = connmark_tg_xlate_v3,
++	},
+ };
+ 
+ void _init(void)
+--- a/include/linux/netfilter/xt_connmark.h
++++ b/include/linux/netfilter/xt_connmark.h
+@@ -18,6 +18,11 @@ enum {
+ 	XT_CONNMARK_RESTORE
+ };
+ 
++enum {
++	XT_CONNMARK_VALUE	= (1 << 0),
++	XT_CONNMARK_DSCP	= (1 << 1)
++};
++
+ struct xt_connmark_tginfo1 {
+ 	__u32 ctmark, ctmask, nfmask;
+ 	__u8 mode;
+@@ -28,6 +33,11 @@ struct xt_connmark_tginfo2 {
+ 	__u8 shift_dir, shift_bits, mode;
+ };
+ 
++struct xt_connmark_tginfo3 {
++	__u32 ctmark, ctmask, nfmask;
++	__u8 shift_dir, shift_bits, mode, func;
++};
++
+ struct xt_connmark_mtinfo1 {
+ 	__u32 mark, mask;
+ 	__u8 invert;

@@ -1,0 +1,578 @@
+--- /dev/null
++++ b/drivers/mtd/nand/airoha_bmt.c
+@@ -0,0 +1,575 @@
++
++/*
++ * Airoha BMT algorithm
++ */
++
++#include <linux/kernel.h>
++#include <linux/slab.h>
++#include <linux/types.h> 
++#include <linux/module.h> 
++#include <linux/moduleparam.h>  
++#include "mtk_bmt.h"
++
++#define MAX_BMT_SIZE        	(250) 
++#define MAX_RAW_BAD_BLOCK_SIZE  (250)
++#define POOL_GOOD_BLOCK_PERCENT 8/100
++#define MAX_BMT_PERCENT         1/8
++
++typedef struct {
++    char signature[3];
++    u8 version;
++    u8 bad_count;  // this field is useless 
++    u8 size; 
++    u8 checksum;
++    u8 reseverd[13];
++} bmt_table_header;
++
++typedef struct {
++    u16 from;      
++    u16 to; 
++} bmt_entry;
++
++typedef struct {
++    bmt_table_header header;
++    bmt_entry table[MAX_BMT_SIZE];
++} bmt_table;
++
++typedef struct {
++    char signature[4];
++    u32 checksum;
++    u8 version;
++    u8 size;
++    u8 reserved[2]; 
++} bbt_table_header;
++
++typedef struct {
++    bbt_table_header header;
++    u16 	     table[MAX_RAW_BAD_BLOCK_SIZE];
++} bbt_table;
++
++bbt_table bbt; 
++bmt_table bmt;
++ 
++int bmt_index=0xffff; 
++int bbt_index=0xffff; 
++unsigned int total_blks  , system_blks , bmt_blks, _to, _to2, val;
++
++module_param(bmt_index,    int,  S_IRUSR  |  S_IWUSR);
++module_param(bbt_index,    int,  S_IRUSR  |  S_IWUSR);
++module_param(total_blks,   int,  S_IRUSR  |  S_IWUSR);
++module_param(system_blks,  int,  S_IRUSR  |  S_IWUSR);
++module_param(bmt_blks,     int,  S_IRUSR  |  S_IWUSR);
++module_param(_to,          int,  S_IRUSR  |  S_IWUSR);
++module_param(_to2,         int,  S_IRUSR  |  S_IWUSR);
++module_param(val,          int,  S_IRUSR  |  S_IWUSR);
++
++
++static bool is_bad_raw(int block) { 
++	u8 fdm[4];
++	int ret;
++	ret = bbt_nand_read(blk_pg(block), bmtd.data_buf, bmtd.pg_size,
++			    fdm, sizeof(fdm));
++	if (ret || fdm[0] != 0xff ){
++		return true; 
++	}
++	return false;
++}
++
++static bool is_bad( int block) { 
++	u8 fdm[4];
++	int ret;
++	ret = bbt_nand_read(blk_pg(block), bmtd.data_buf, bmtd.pg_size,
++			    fdm, sizeof(fdm));
++	//printk("%x %x %x %x\n", fdm[0],  fdm[1],  fdm[2],  fdm[3]);
++	if (ret || fdm[0] != 0xff || fdm[1] != 0xff ){
++		return true; 
++	}
++	return false;
++}
++
++
++static bool is_mapped( int block) {
++	u16 mapped_block;
++	u8 fdm[4];
++	int ret;
++
++	ret = bbt_nand_read(blk_pg(block), bmtd.data_buf, bmtd.pg_size,
++			    fdm, sizeof(fdm));
++	mapped_block = (fdm[2] << 8) |  fdm[3];
++	//printk("%u is mapped to %d\n", mapped_block);
++	if (mapped_block == 0xffff) 
++		return false;
++	else return true;
++}
++
++static void mark_bad(int block) { 
++	u8 fdm[4] = {0xff, 0xff, 0xff, 0xff};
++	struct mtd_oob_ops ops = { 
++		.mode = MTD_OPS_PLACE_OOB,
++		.ooboffs = 0,
++		.ooblen = 4, 
++		.oobbuf = fdm,
++		.datbuf = NULL,
++		.len = 0,
++	};
++	int retlen;
++
++	printk("marking bad :%d\n", block);
++	if (block < system_blks) 
++		fdm[0] = 0x00;
++	else fdm[1] = 0x00;
++
++	retlen = bmtd._write_oob(bmtd.mtd, block << bmtd.blk_shift , &ops) ;
++	if (retlen < 0) {
++		printk("marking bad block failed \n");
++	}
++}
++
++
++static void mark_good(int block) { 
++	u8 fdm[4] = {0xff, 0xff, 0xff, 0xff};
++	struct mtd_oob_ops ops = { 
++		.mode = MTD_OPS_PLACE_OOB,
++		.ooboffs = 0,
++		.ooblen = 4, 
++		.oobbuf = fdm,
++		.datbuf = NULL,
++		.len = 0,
++	};
++	int retlen; 
++	retlen = bmtd._write_oob(bmtd.mtd, block << bmtd.blk_shift , &ops) ;
++	if (retlen < 0) { 
++		printk("marking bad block failed \n");
++	}
++}
++
++static void make_mapping(u16 from , u16 to) { 
++	u8 fdm[4] = {0xff, 0xff, 0xff , 0xff};
++	struct mtd_oob_ops ops = { 
++		.mode = MTD_OPS_PLACE_OOB,
++		.ooboffs = 0,
++		.ooblen = 4, 
++		.oobbuf = fdm,
++		.datbuf = NULL,
++		.len = 0,
++	};
++	int retlen; 
++
++	memcpy(fdm + 2, &to, sizeof(to)); // this has to be exactly like this .
++	retlen = bmtd._write_oob(bmtd.mtd, from << bmtd.blk_shift , &ops) ;
++	if (retlen < 0) { 
++		printk("marking bad block failed \n");
++	}
++}
++
++static u16 bbt_checksum(void) { 
++	int i=0;
++	u16 checksum =0;
++	u8 *data = (u8*) &bbt; 
++	checksum += bbt.header.version; 
++	checksum += bbt.header.size;
++	data += sizeof(bbt_table_header);
++	for (; i < sizeof(bbt.table); i++)
++		checksum += data[i];
++	return checksum; 
++}
++
++static bool parse_bbt(void) { 
++	int i = system_blks;
++	u8 fdm[4];
++	for (; i < total_blks; i++)  { 
++		if( !is_bad(i)
++		   && !bbt_nand_read(blk_pg(i),(unsigned char *)&bbt, sizeof(bbt), fdm, sizeof(fdm))
++		   && (strncmp(bbt.header.signature , "RAWB", 4)==0)
++		   && (bbt.header.checksum == bbt_checksum())
++		  ) { 
++			  bbt_index = i; 
++			  return true; 
++		  } 
++	}
++	return false; 
++}
++
++static u8  bmt_checksum(void) { 
++	int i; 
++	u8 checksum = 0;
++	u8* data = (u8*)&bmt;
++	checksum += bmt.header.version; 
++	checksum += bmt.header.size;
++	data += sizeof(bmt_table_header);
++	for (i=0;i<bmt_blks*sizeof(bmt_entry);i++)
++		checksum += data[i];
++	return checksum;
++}
++
++static bool parse_bmt(void) { 
++	int i = total_blks-1 ; 
++	u8 fdm[4];
++	for (; i> system_blks;i--) { 
++		if ( !is_bad(i)
++			 && !bbt_nand_read(blk_pg(i),(unsigned char *)&bmt, sizeof(bmt), fdm, sizeof(fdm))
++			 && (strncmp(bmt.header.signature , "BMT", 3)==0)
++			 && (bmt.header.checksum == bmt_checksum())
++		) { 
++			bmt_index = i ; 
++			return true;
++		}
++	}
++	return false; 
++}
++
++static void variable_setup(void) { 
++	unsigned int need_valid_block_num;
++	int valid_blks = 0;
++	int last_blk;
++
++	total_blks = bmtd.total_blks;
++	last_blk = total_blks - 1;
++	need_valid_block_num = total_blks * POOL_GOOD_BLOCK_PERCENT;
++
++	for (; last_blk > 0 ;last_blk--) { 
++		if (is_bad_raw(last_blk)) { 
++			continue; 
++		} 
++		valid_blks++; 
++		if (valid_blks == need_valid_block_num) { 
++			break;
++		}
++	}
++	bmt_blks = total_blks - last_blk; 
++	system_blks = total_blks - bmt_blks;
++	bmtd.mtd->size = (total_blks -  total_blks * MAX_BMT_PERCENT) * bmtd.mtd->erasesize;
++}
++
++
++static int find_available_block(bool start_from_end) { 
++	int i=system_blks,d=1;
++	int count = 0;
++	if (start_from_end)
++		i=total_blks-1,d=-1;
++	for (; count < (total_blks - system_blks); count++, i+=d) { 
++		if(bmt_index == i || bbt_index == i || is_bad(i) || is_mapped(i)) 
++			continue;
++		return i ;
++	}
++	//TODO: handle OOM
++	return -1;
++}
++
++static void update_bmt_bbt( void ) {
++	int retlen  = 0;
++	struct mtd_oob_ops  ops , ops1;
++
++	bbt.header.checksum = bbt_checksum();
++	bmt.header.checksum = bmt_checksum();
++	
++	if(bbt_index ==0xffff) bbt_index = find_available_block(false);
++	if(bmt_index ==0xffff) bmt_index = find_available_block(true);
++
++	bbt_nand_erase(bmt_index);
++	bbt_nand_erase(bbt_index);
++	printk("putting back in bbt_index: %d, bmt_index: %d\n" , bbt_index, bmt_index);
++
++	ops = (struct mtd_oob_ops) { 
++		.mode = MTD_OPS_PLACE_OOB,
++		.ooboffs = 0,
++		.ooblen = 0,
++		.oobbuf = NULL,
++		.len = sizeof(bmt),
++		.datbuf = (u8 *)&bmt,
++	};
++
++retry_bmt:
++	retlen  = bmtd._write_oob(bmtd.mtd, bmt_index << bmtd.blk_shift, &ops);
++	if (retlen) { 
++		printk("error while write");
++		mark_bad(bmt_index);
++		if (bmt_index > system_blks) { 
++			bmt_index--; 
++			goto retry_bmt;
++		}
++		return;
++	}
++	ops1 = (struct mtd_oob_ops) { 
++		.mode = MTD_OPS_PLACE_OOB,
++		.ooboffs = 0,
++		.ooblen = 0,
++		.oobbuf = NULL,
++		.len = sizeof(bbt),
++		.datbuf = (u8 *)&bbt,
++	};
++
++retry_bbt:
++	retlen  = bmtd._write_oob(bmtd.mtd, bbt_index << bmtd.blk_shift, &ops1);
++	if (retlen) { 
++		printk("error while write");
++		mark_bad(bbt_index);
++		if (bbt_index < total_blks) { 
++			bbt_index++;
++			goto retry_bbt;
++		}
++		return;
++	}
++}
++
++static bool is_in_bmt(int block) { 
++	int i;
++	for (i=0;i<bmt.header.size;i++) 
++		if (bmt.table[i].from == block)
++			return true;
++	return false; 
++}
++
++static void reconstruct_from_oob(void) { 
++	int i;
++
++	memset(&bmt,0x00,sizeof(bmt));
++	memcpy(&bmt.header.signature, "BMT",3);
++	bmt.header.version = 1; 
++	bmt.header.size = 0;
++	for ( i = total_blks -1 ; i >= system_blks ;i--) { 
++		unsigned short mapped_block;
++		u8 fdm[4];
++		int ret;
++
++		if (is_bad(i)) continue;
++		ret = bbt_nand_read(blk_pg(i), bmtd.data_buf, bmtd.pg_size,
++				    fdm, sizeof(fdm));
++		if (ret < 0)
++			mark_bad(i);
++
++		memcpy(&mapped_block,fdm+2,2); // need to be this way
++		if (mapped_block >= system_blks) continue; 
++		printk("block %X was mapped to :%X\n", mapped_block, i);
++		bmt.table[bmt.header.size++] = (bmt_entry){.from = mapped_block , .to = i};
++	}
++	memset(&bbt,0x00,sizeof(bbt));
++	memcpy(&bbt.header.signature , "RAWB", 4);
++	bbt.header.version  = 1;
++	bbt.header.size = 0;
++	for ( i = 0 ; i < system_blks; i++) { 
++		if (is_bad_raw(i) && !is_in_bmt(i))
++			bbt.table[bbt.header.size++] = (u16)i;
++	}
++	bmt.header.checksum = bmt_checksum();
++	bbt.header.checksum = bbt_checksum();
++	update_bmt_bbt();
++	printk("bbt and bmt reconstructed successfully\n");
++}
++
++
++static bool remap_block(u16 block , u16 mapped_block, int copy_len) { 
++	bool mapped_already_in_bbt = false;
++	bool mapped_already_in_bmt = false;
++	bool block_already_in_bbt = false;
++	u16 new_block = find_available_block(false);
++	int i; 
++	// TODO check for -1
++
++	bbt_nand_erase(new_block);
++	if (copy_len)
++		bbt_nand_copy(new_block , mapped_block , copy_len);
++
++	for (i=0; i < bmt.header.size; i++)
++		if (bmt.table[i].from == block) { 
++			bmt.table[i].to = new_block;
++			mapped_already_in_bmt = true;
++			break;
++		}
++
++	if (!mapped_already_in_bmt)
++		bmt.table[bmt.header.size++] = (bmt_entry){ .from = block, .to = new_block};
++
++	for (i=0;i<bbt.header.size;i++) 
++		if (bbt.table[i] == mapped_block) { 
++			mapped_already_in_bbt = true; 
++			break;
++		} else if (bbt.table[i] == block) { 
++			block_already_in_bbt = true;
++			break;
++		}
++	
++	if (!mapped_already_in_bbt) 
++		bbt.table[bbt.header.size++] = mapped_block;
++	if (mapped_block != block && !block_already_in_bbt) 
++		bbt.table[bbt.header.size++] = block;
++
++	if (mapped_block != block) mark_bad(mapped_block);
++	mark_bad(block);
++	make_mapping(new_block, block);
++
++	update_bmt_bbt();
++	return false; 
++}
++
++static int init(struct device_node *np) {
++	variable_setup();
++	if (!(parse_bbt() && parse_bmt()))  { 
++		reconstruct_from_oob();
++	} else { 
++		printk("bmt/bbt found\n");
++	}
++	return 0;
++}
++
++static  int get_mapping_block( int block) { 
++	int i;
++
++	if (block > system_blks) 
++		return block;
++	for (i = 0; i < bmt.header.size; i++)
++		if (bmt.table[i].from == block) 
++			return bmt.table[i].to;
++	return block;
++}
++
++static void unmap_block( u16 block) {  // not required 
++	printk("unmapping is called on block : %d\n", block);	
++}
++
++
++static int  debug( void* data , u64 cmd) { 
++	int i;
++	printk("val: %d\n", val);
++	printk("_to: %d\n", _to);
++	if (val == 0 ) { 
++		printk("fixing all\n");
++		for (i=0;i<total_blks;i++) { 
++			mark_good(i);
++		}
++	} else if(val ==1 ) { 
++		int mapped_block;
++		printk("remapping: %d\n", _to);
++		mapped_block = get_mapping_block(_to);
++		printk("before mapped to: %d\n", mapped_block);
++		remap_block(_to , mapped_block, bmtd.mtd->erasesize);
++		mapped_block = get_mapping_block(_to);
++		printk("after mapped to: %d\n", mapped_block);
++	} else if(val ==2 ) { 
++		printk("bmt table: \n");
++		for (i = 0 ; i < bmt.header.size;i++) { 
++			printk("%d->%d\n", bmt.table[i].from , bmt.table[i].to);
++		}
++		printk("bbt table\n");
++		for (i =0;i< bbt.header.size;i++) { 
++			printk("%d ", bbt.table[i]);
++		}
++		printk("\n");
++	} else if(val == 3) { 
++		printk("reconstruct from oob\n");
++		reconstruct_from_oob();
++	} else if (val == 4) { 
++		printk("showing the oobreconstruct_from_oob of %d\n", _to);
++		printk("%d\n",is_bad(_to));
++	} else if (val == 5 ) {
++		printk("trying to parse_bmt again %d\n", parse_bmt());
++	} else if (val == 6 ) {
++		printk("marking bad : %d", _to);
++		mark_bad(_to);
++	} else if ( val == 7) { 
++		struct mtd_oob_ops opsk = { 
++			.mode = MTD_OPS_PLACE_OOB, 
++			.ooboffs = 0, 
++			.ooblen = 0, 
++			.oobbuf = NULL,
++			.len = sizeof(bmt),
++			.datbuf = (u8 *)&bmt,
++		};
++		int retlen;
++		printk("parse bmt from the %d block \n", _to);
++		retlen = bmtd._read_oob(bmtd.mtd, _to << bmtd.blk_shift , &opsk);
++
++		printk("status : %d\n", retlen);
++	} else if (val == 8) {
++		u8 *data;
++		int j;
++		printk("dump bmt hex\n");
++		data = (u8 *)&bmt;
++		for (j =0;j < 50;j++) { 
++			if(j%20==0) printk("\n");
++			printk("%X ", data[j]);
++		}
++		printk("bbt table\n");
++		data = (u8 *)&bbt;
++		for (j =0;j < 50;j++) { 
++			if(j%20==0) printk("\n");
++			printk("%X ", data[j]);
++		}
++	} else if (val == 9) { 
++		struct mtd_oob_ops ops = { 
++			.mode = MTD_OPS_PLACE_OOB,
++			.ooboffs = 0,
++			.ooblen = 0,
++			.oobbuf = NULL,
++			.len = sizeof(bmt),
++			.datbuf = (u8 *)&bmt,
++		};
++		int retlen;
++		printk("put bmt at index\n");
++		retlen  = bmtd._write_oob(bmtd.mtd, _to << bmtd.blk_shift, &ops);
++		bmt.header.checksum = bmt_checksum();
++		if (retlen < 0) { 
++			printk("error while write");
++		}
++	} else if (val == 10) { 
++		printk("erase block %d\n", _to);
++		bbt_nand_erase(_to);
++	} else if (val == 11) {
++		char *buf1, *buf2;
++		struct mtd_oob_ops ops = { 
++			.mode = MTD_OPS_PLACE_OOB,
++			.ooboffs = 0,
++			.ooblen = 0,
++			.oobbuf = NULL,
++		};
++		struct mtd_oob_ops ops1 = { 
++			.mode = MTD_OPS_PLACE_OOB,
++			.ooboffs = 0,
++			.ooblen = 0,
++			.oobbuf = NULL,
++		};
++		int retlen;
++		int j;
++
++		printk("tranfering content from block :%d to %d\n", _to , _to2);
++		bbt_nand_copy(_to2, _to, bmtd.mtd->erasesize);
++		printk("now we check size\n");
++
++		buf1 = (char*) kzalloc(sizeof(char) * bmtd.mtd->erasesize , GFP_KERNEL);
++		buf2 = (char*) kzalloc(sizeof(char) * bmtd.mtd->erasesize , GFP_KERNEL);
++
++		ops.len = sizeof(char) * bmtd.mtd->erasesize;
++		ops.datbuf = buf1;
++		retlen  = bmtd._read_oob(bmtd.mtd, _to << bmtd.blk_shift, &ops);
++		if (retlen < 0) { 
++			printk("error while write\n");
++		}
++
++		ops1.len = sizeof(char) * bmtd.mtd->erasesize;
++		ops1.datbuf = buf2;
++		retlen  = bmtd._read_oob(bmtd.mtd, _to << bmtd.blk_shift, &ops1);
++		if (retlen < 0) { 
++			printk("error while write");
++		}
++		for (j = 0 ; j < bmtd.mtd->erasesize ;j++) { 
++			if (j%20==0) { 
++				printk("\n");
++			}
++			printk("%X %X ", buf1[j], buf2[j]);
++		}
++		printk("\n");
++
++	}
++	return 0;
++}
++
++
++const struct mtk_bmt_ops airoha_bmt_ops = {
++	.sig = "bmt",
++	.sig_len = 3,
++	.init = init,
++	.remap_block = remap_block,
++	.unmap_block = unmap_block,
++	.get_mapping_block = get_mapping_block,
++	.debug = debug,
++};

@@ -1,0 +1,68 @@
+From 16b1c4e01c89ba07367461e0bc4cb84993c2d027 Mon Sep 17 00:00:00 2001
+From: Jacky Chou <jackychou@asix.com.tw>
+Date: Mon, 15 Nov 2021 11:49:41 +0800
+Subject: [PATCH] net: usb: ax88179_178a: add TSO feature
+
+On low-effciency embedded platforms, transmission performance is poor
+due to on Bulk-out with single packet.
+Adding TSO feature improves the transmission performance and reduces
+the number of interrupt caused by Bulk-out complete.
+
+Reference to module, net: usb: aqc111.
+
+Signed-off-by: Jacky Chou <jackychou@asix.com.tw>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/usb/ax88179_178a.c | 17 +++++++++++------
+ 1 file changed, 11 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/usb/ax88179_178a.c
++++ b/drivers/net/usb/ax88179_178a.c
+@@ -1334,11 +1334,12 @@ static int ax88179_bind(struct usbnet *d
+ 	dev->mii.phy_id = 0x03;
+ 	dev->mii.supports_gmii = 1;
+ 
+-	dev->net->features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+-			      NETIF_F_RXCSUM;
++	dev->net->features |= NETIF_F_SG | NETIF_F_IP_CSUM |
++			      NETIF_F_IPV6_CSUM | NETIF_F_RXCSUM | NETIF_F_TSO;
+ 
+-	dev->net->hw_features |= NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM |
+-				 NETIF_F_RXCSUM;
++	dev->net->hw_features |= dev->net->features;
++
++	netif_set_gso_max_size(dev->net, 16384);
+ 
+ 	ax88179_reset(dev);
+ 
+@@ -1503,17 +1504,19 @@ ax88179_tx_fixup(struct usbnet *dev, str
+ {
+ 	u32 tx_hdr1, tx_hdr2;
+ 	int frame_size = dev->maxpacket;
+-	int mss = skb_shinfo(skb)->gso_size;
+ 	int headroom;
+ 	void *ptr;
+ 
+ 	tx_hdr1 = skb->len;
+-	tx_hdr2 = mss;
++	tx_hdr2 = skb_shinfo(skb)->gso_size; /* Set TSO mss */
+ 	if (((skb->len + 8) % frame_size) == 0)
+ 		tx_hdr2 |= 0x80008000;	/* Enable padding */
+ 
+ 	headroom = skb_headroom(skb) - 8;
+ 
++	if ((dev->net->features & NETIF_F_SG) && skb_linearize(skb))
++		return NULL;
++
+ 	if ((skb_header_cloned(skb) || headroom < 0) &&
+ 	    pskb_expand_head(skb, headroom < 0 ? 8 : 0, 0, GFP_ATOMIC)) {
+ 		dev_kfree_skb_any(skb);
+@@ -1524,6 +1527,8 @@ ax88179_tx_fixup(struct usbnet *dev, str
+ 	put_unaligned_le32(tx_hdr1, ptr);
+ 	put_unaligned_le32(tx_hdr2, ptr + 4);
+ 
++	usbnet_set_skb_tx_stats(skb, (skb_shinfo(skb)->gso_segs ?: 1), 0);
++
+ 	return skb;
+ }
+ 

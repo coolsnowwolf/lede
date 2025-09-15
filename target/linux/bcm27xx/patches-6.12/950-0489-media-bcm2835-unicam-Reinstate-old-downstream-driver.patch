@@ -1,0 +1,150 @@
+From fc6285b82925400b2bb733acac0ce4a97e3f80b2 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 15 Jul 2024 15:27:12 +0100
+Subject: [PATCH] media: bcm2835-unicam: Reinstate old downstream driver as
+ legacy
+
+Whilst the Unicam driver has now been upstreamed it only supports
+configuration via Media Controller (not driven from the /dev/videoN
+node), which makes life significantly harder for simple devices such
+as mono sensors, and HDMI or analogue video to CSI2 bridge chips
+(eg TC358743 and ADV7282M).
+
+Fix up the downstream driver so that it builds, reinstate the links
+from Kconfig and Makefile to it, and give it a new Kconfig name
+(VIDEO_BCM2835_UNICAM_LEGACY).
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/platform/Kconfig                  |  1 +
+ drivers/media/platform/Makefile                 |  1 +
+ drivers/media/platform/bcm2835/Kconfig          |  7 +++++--
+ drivers/media/platform/bcm2835/Makefile         |  3 ++-
+ drivers/media/platform/bcm2835/bcm2835-unicam.c | 17 +++++++----------
+ 5 files changed, 16 insertions(+), 13 deletions(-)
+
+--- a/drivers/media/platform/Kconfig
++++ b/drivers/media/platform/Kconfig
+@@ -67,6 +67,7 @@ source "drivers/media/platform/amlogic/K
+ source "drivers/media/platform/amphion/Kconfig"
+ source "drivers/media/platform/aspeed/Kconfig"
+ source "drivers/media/platform/atmel/Kconfig"
++source "drivers/media/platform/bcm2835/Kconfig"
+ source "drivers/media/platform/broadcom/Kconfig"
+ source "drivers/media/platform/cadence/Kconfig"
+ source "drivers/media/platform/chips-media/Kconfig"
+--- a/drivers/media/platform/Makefile
++++ b/drivers/media/platform/Makefile
+@@ -10,6 +10,7 @@ obj-y += amlogic/
+ obj-y += amphion/
+ obj-y += aspeed/
+ obj-y += atmel/
++obj-y += bcm2835/
+ obj-y += broadcom/
+ obj-y += cadence/
+ obj-y += chips-media/
+--- a/drivers/media/platform/bcm2835/Kconfig
++++ b/drivers/media/platform/bcm2835/Kconfig
+@@ -1,7 +1,7 @@
+ # Broadcom VideoCore4 V4L2 camera support
+ 
+-config VIDEO_BCM2835_UNICAM
+-	tristate "Broadcom BCM283x/BCM271x Unicam video capture driver"
++config VIDEO_BCM2835_UNICAM_LEGACY
++	tristate "Broadcom BCM283x/BCM271x Unicam video capture driver - no MC"
+ 	depends on VIDEO_DEV
+ 	depends on ARCH_BCM2835 || COMPILE_TEST
+ 	select VIDEO_V4L2_SUBDEV_API
+@@ -12,6 +12,9 @@ config VIDEO_BCM2835_UNICAM
+ 	  Say Y here to enable support for the BCM283x/BCM271x CSI-2 receiver.
+ 	  This is a V4L2 driver that controls the CSI-2 receiver directly,
+ 	  independently from the VC4 firmware.
++	  This is the downstream version of this driver that still supports
++	  being driven from the video node for simple devices. The mainline
++	  driver only supports using Media Controller.
+ 	  This driver is mutually exclusive with the use of bcm2835-camera. The
+ 	  firmware will disable all access to the peripheral from within the
+ 	  firmware if it finds a DT node using it, and bcm2835-camera will
+--- a/drivers/media/platform/bcm2835/Makefile
++++ b/drivers/media/platform/bcm2835/Makefile
+@@ -1,3 +1,4 @@
+ # Makefile for BCM2835 Unicam driver
+ 
+-obj-$(CONFIG_VIDEO_BCM2835_UNICAM) += bcm2835-unicam.o
++bcm2835-unicam-legacy-y := bcm2835-unicam.o
++obj-$(CONFIG_VIDEO_BCM2835_UNICAM_LEGACY) += bcm2835-unicam-legacy.o
+--- a/drivers/media/platform/bcm2835/bcm2835-unicam.c
++++ b/drivers/media/platform/bcm2835/bcm2835-unicam.c
+@@ -1474,7 +1474,7 @@ static int unicam_enum_input(struct file
+ 		return -EINVAL;
+ 
+ 	inp->type = V4L2_INPUT_TYPE_CAMERA;
+-	if (v4l2_subdev_has_op(dev->sensor, video, s_dv_timings)) {
++	if (v4l2_subdev_has_op(dev->sensor, pad, s_dv_timings)) {
+ 		inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
+ 		inp->std = 0;
+ 	} else if (v4l2_subdev_has_op(dev->sensor, video, s_std)) {
+@@ -1709,7 +1709,7 @@ static int unicam_g_dv_timings(struct fi
+ 	struct unicam_node *node = video_drvdata(file);
+ 	struct unicam_device *dev = node->dev;
+ 
+-	return v4l2_subdev_call(dev->sensor, video, g_dv_timings, timings);
++	return v4l2_subdev_call(dev->sensor, pad, g_dv_timings, 0, timings);
+ }
+ 
+ static int unicam_s_dv_timings(struct file *file, void *priv,
+@@ -1720,7 +1720,7 @@ static int unicam_s_dv_timings(struct fi
+ 	struct v4l2_dv_timings current_timings;
+ 	int ret;
+ 
+-	ret = v4l2_subdev_call(dev->sensor, video, g_dv_timings,
++	ret = v4l2_subdev_call(dev->sensor, pad, g_dv_timings, 0,
+ 			       &current_timings);
+ 
+ 	if (ret < 0)
+@@ -1732,7 +1732,7 @@ static int unicam_s_dv_timings(struct fi
+ 	if (vb2_is_busy(&node->buffer_queue))
+ 		return -EBUSY;
+ 
+-	ret = v4l2_subdev_call(dev->sensor, video, s_dv_timings, timings);
++	ret = v4l2_subdev_call(dev->sensor, pad, s_dv_timings, 0, timings);
+ 
+ 	/* Force recomputation of bytesperline */
+ 	node->v_fmt.fmt.pix.bytesperline = 0;
+@@ -1748,7 +1748,7 @@ static int unicam_query_dv_timings(struc
+ 	struct unicam_node *node = video_drvdata(file);
+ 	struct unicam_device *dev = node->dev;
+ 
+-	return v4l2_subdev_call(dev->sensor, video, query_dv_timings, timings);
++	return v4l2_subdev_call(dev->sensor, pad, query_dv_timings, 0, timings);
+ }
+ 
+ static int unicam_enum_dv_timings(struct file *file, void *priv,
+@@ -2196,9 +2196,6 @@ static int unicam_queue_setup(struct vb2
+ 				    node->v_fmt.fmt.pix.sizeimage :
+ 				    node->v_fmt.fmt.meta.buffersize;
+ 
+-	if (vq->num_buffers + *nbuffers < 3)
+-		*nbuffers = 3 - vq->num_buffers;
+-
+ 	if (*nplanes) {
+ 		if (sizes[0] < size) {
+ 			unicam_err(dev, "sizes[0] %i < size %u\n", sizes[0],
+@@ -3074,7 +3071,7 @@ static int register_node(struct unicam_d
+ 		    !v4l2_subdev_has_op(unicam->sensor, video, querystd))
+ 			v4l2_disable_ioctl(&node->video_dev, VIDIOC_QUERYSTD);
+ 		if (pad_id == METADATA_PAD ||
+-		    !v4l2_subdev_has_op(unicam->sensor, video, s_dv_timings)) {
++		    !v4l2_subdev_has_op(unicam->sensor, pad, s_dv_timings)) {
+ 			v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_EDID);
+ 			v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_EDID);
+ 			v4l2_disable_ioctl(&node->video_dev,
+@@ -3503,7 +3500,7 @@ static void unicam_remove(struct platfor
+ }
+ 
+ static const struct of_device_id unicam_of_match[] = {
+-	{ .compatible = "brcm,bcm2835-unicam", },
++	{ .compatible = "brcm,bcm2835-unicam-legacy", },
+ 	{ /* sentinel */ },
+ };
+ MODULE_DEVICE_TABLE(of, unicam_of_match);

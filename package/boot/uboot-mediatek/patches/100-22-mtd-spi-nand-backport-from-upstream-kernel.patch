@@ -1,0 +1,549 @@
+From 8d0665327819c41fce2c8d50f19c967b22eae564 Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 27 Jul 2022 16:36:13 +0800
+Subject: [PATCH 57/71] mtd: spi-nand: backport from upstream kernel
+
+Backport new features from upstream kernel
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/mtd/nand/spi/Kconfig      |   1 +
+ drivers/mtd/nand/spi/Makefile     |   2 +-
+ drivers/mtd/nand/spi/core.c       | 102 ++++++----
+ drivers/mtd/nand/spi/etron.c      | 181 +++++++++++++++++
+ drivers/mtd/nand/spi/gigadevice.c | 322 ++++++++++++++++++++++++++----
+ drivers/mtd/nand/spi/macronix.c   | 173 +++++++++++++---
+ drivers/mtd/nand/spi/micron.c     |  50 ++---
+ drivers/mtd/nand/spi/toshiba.c    |  66 +++---
+ drivers/mtd/nand/spi/winbond.c    | 164 ++++++++++++---
+ include/linux/mtd/spinand.h       |  87 +++++---
+ 10 files changed, 923 insertions(+), 225 deletions(-)
+ create mode 100644 drivers/mtd/nand/spi/etron.c
+
+--- a/drivers/mtd/nand/spi/Makefile
++++ b/drivers/mtd/nand/spi/Makefile
+@@ -1,4 +1,4 @@
+ # SPDX-License-Identifier: GPL-2.0
+ 
+-spinand-objs := core.o gigadevice.o macronix.o micron.o paragon.o toshiba.o winbond.o
++spinand-objs := core.o etron.o gigadevice.o macronix.o micron.o paragon.o toshiba.o winbond.o
+ obj-$(CONFIG_MTD_SPI_NAND) += spinand.o
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -822,6 +822,7 @@ static const struct nand_ops spinand_ops
+ };
+ 
+ static const struct spinand_manufacturer *spinand_manufacturers[] = {
++	&etron_spinand_manufacturer,
+ 	&gigadevice_spinand_manufacturer,
+ 	&macronix_spinand_manufacturer,
+ 	&micron_spinand_manufacturer,
+--- /dev/null
++++ b/drivers/mtd/nand/spi/etron.c
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2020 Etron Technology, Inc.
++ *
++ */
++#ifndef __UBOOT__
++#include <malloc.h>
++#include <linux/device.h>
++#include <linux/kernel.h>
++#endif
++#include <linux/bug.h>
++#include <linux/mtd/spinand.h>
++
++#define SPINAND_MFR_ETRON		0xD5
++
++#define STATUS_ECC_LIMIT_BITFLIPS (3 << 4)
++
++static SPINAND_OP_VARIANTS(read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_DUALIO_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X2_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(true, 0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, NULL, 0));
++
++static SPINAND_OP_VARIANTS(write_cache_variants,
++		SPINAND_PROG_LOAD_X4(true, 0, NULL, 0),
++		SPINAND_PROG_LOAD(true, 0, NULL, 0));
++
++static SPINAND_OP_VARIANTS(update_cache_variants,
++		SPINAND_PROG_LOAD_X4(false, 0, NULL, 0),
++		SPINAND_PROG_LOAD(false, 0, NULL, 0));
++
++static int etron_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (14 * section) + 72;
++	region->length = 14;
++
++	return 0;
++}
++
++static int etron_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	if (section) {
++		region->offset = 18 * section;
++		region->length = 18;
++	} else {
++		/* section 0 has one byte reserved for bad block mark */
++		region->offset = 2;
++		region->length = 16;
++	}
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops etron_ooblayout = {
++	.ecc = etron_ooblayout_ecc,
++	.rfree = etron_ooblayout_free,
++};
++
++static int etron_ecc_get_status(struct spinand_device *spinand,
++				   u8 status)
++{
++	struct nand_device *nand = spinand_to_nand(spinand);
++
++	switch (status & STATUS_ECC_MASK) {
++	case STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	case STATUS_ECC_HAS_BITFLIPS:
++		return nand->eccreq.strength >> 1;
++
++	case STATUS_ECC_LIMIT_BITFLIPS:
++		return nand->eccreq.strength;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
++static const struct spinand_info etron_spinand_table[] = {
++	/* EM73C 1Gb 3.3V */
++	SPINAND_INFO("EM73C044VCF",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x25),
++		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xD 2Gb */
++	SPINAND_INFO("EM73D044VCR",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x41),
++		     NAND_MEMORG(1, 2048, 64, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM73D044VCO",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x3A),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78D044VCM",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x8E),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xE 4Gb */
++	SPINAND_INFO("EM73E044VCE",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x3B),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 80, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78E044VCD",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x8F),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 80, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	/* EM7xF044VCA 8Gb */
++	SPINAND_INFO("EM73F044VCA",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x15),
++		     NAND_MEMORG(1, 4096, 256, 64, 4096, 80, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++	SPINAND_INFO("EM78F044VCA",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x8D),
++		     NAND_MEMORG(1, 4096, 256, 64, 4096, 80, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&etron_ooblayout, etron_ecc_get_status)),
++};
++
++static const struct spinand_manufacturer_ops etron_spinand_manuf_ops = {
++};
++
++const struct spinand_manufacturer etron_spinand_manufacturer = {
++	.id = SPINAND_MFR_ETRON,
++	.name = "Etron",
++	.chips = etron_spinand_table,
++	.nchips = ARRAY_SIZE(etron_spinand_table),
++	.ops = &etron_spinand_manuf_ops,
++};
+--- a/drivers/mtd/nand/spi/gigadevice.c
++++ b/drivers/mtd/nand/spi/gigadevice.c
+@@ -43,6 +43,24 @@ static SPINAND_OP_VARIANTS(read_cache_va
+ 		SPINAND_PAGE_READ_FROM_CACHE_OP_3A(true, 0, 1, NULL, 0),
+ 		SPINAND_PAGE_READ_FROM_CACHE_OP_3A(false, 0, 0, NULL, 0));
+ 
++/* Q5 1Gb */
++static SPINAND_OP_VARIANTS(dummy2_read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 2, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_DUALIO_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X2_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(true, 0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, NULL, 0));
++
++/* Q5 2Gb & 4Gb */
++static SPINAND_OP_VARIANTS(dummy4_read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 4, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_DUALIO_OP(0, 2, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X2_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(true, 0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, NULL, 0));
++
+ static SPINAND_OP_VARIANTS(write_cache_variants,
+ 		SPINAND_PROG_LOAD_X4(true, 0, NULL, 0),
+ 		SPINAND_PROG_LOAD(true, 0, NULL, 0));
+@@ -268,7 +286,45 @@ static int gd5fxgq4ufxxg_ecc_get_status(
+ 	return -EINVAL;
+ }
+ 
++static int esmt_1_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (16 * section) + 8;
++	region->length = 8;
++
++	return 0;
++}
++
++static int esmt_1_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (16 * section) + 2;
++	region->length = 6;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops esmt_1_ooblayout = {
++	.ecc = esmt_1_ooblayout_ecc,
++	.rfree = esmt_1_ooblayout_free,
++ };
++
+ static const struct spinand_info gigadevice_spinand_table[] = {
++	SPINAND_INFO("F50L1G41LB",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x01),
++		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&dummy2_read_cache_variants,
++		          &write_cache_variants,
++		          &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&esmt_1_ooblayout, NULL)),
+ 	SPINAND_INFO("GD5F1GQ4xA",
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0xf1),
+ 		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
+@@ -349,6 +405,87 @@ static const struct spinand_info gigadev
+ 		     SPINAND_HAS_QE_BIT,
+ 		     SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
+ 				     gd5fxgq5xexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F2GQ5UExxG",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x52),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&dummy4_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq5xexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F4GQ6UExxG",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x55),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 80, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&dummy4_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq5xexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F1GM7UExxG",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x91),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq4uexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F2GM7UExxG",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x92),
++			 NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
++			 NAND_ECCREQ(8, 512),
++			 SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++			 SPINAND_HAS_QE_BIT,
++			 SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq4uexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F4GM8UExxG",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x95),
++			 NAND_MEMORG(1, 2048, 128, 64, 4096, 80, 1, 1, 1),
++			 NAND_ECCREQ(8, 512),
++			 SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++			 SPINAND_HAS_QE_BIT,
++			 SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq4uexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F1GQ5UExxH",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x31),
++			 NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++			 NAND_ECCREQ(4, 512),
++			 SPINAND_INFO_OP_VARIANTS(&dummy2_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++			 SPINAND_HAS_QE_BIT,
++			 SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq5xexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F2GQ5UExxH",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x32),
++			 NAND_MEMORG(1, 2048, 64, 64, 2048, 40, 1, 1, 1),
++			 NAND_ECCREQ(4, 512),
++			 SPINAND_INFO_OP_VARIANTS(&dummy4_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++			 SPINAND_HAS_QE_BIT,
++			 SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++				     gd5fxgq5xexxg_ecc_get_status)),
++	SPINAND_INFO("GD5F4GQ6UExxH",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x35),
++			 NAND_MEMORG(1, 2048, 64, 64, 4096, 40, 1, 1, 1),
++			 NAND_ECCREQ(4, 512),
++			 SPINAND_INFO_OP_VARIANTS(&dummy4_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++			 SPINAND_HAS_QE_BIT,
++			 SPINAND_ECCINFO(&gd5fxgqx_variant2_ooblayout,
++			     gd5fxgq5xexxg_ecc_get_status)),
++
+ };
+ 
+ static const struct spinand_manufacturer_ops gigadevice_spinand_manuf_ops = {
+--- a/drivers/mtd/nand/spi/winbond.c
++++ b/drivers/mtd/nand/spi/winbond.c
+@@ -18,6 +18,23 @@
+ 
+ #define WINBOND_CFG_BUF_READ		BIT(3)
+ 
++#define W25N02_N04KV_STATUS_ECC_MASK		(3 << 4)
++#define W25N02_N04KV_STATUS_ECC_NO_BITFLIPS	(0 << 4)
++#define W25N02_N04KV_STATUS_ECC_1_4_BITFLIPS	(1 << 4)
++#define W25N02_N04KV_STATUS_ECC_5_8_BITFLIPS	(3 << 4)
++#define W25N02_N04KV_STATUS_ECC_UNCOR_ERROR	(2 << 4)
++
++#define W25N01_M02GV_STATUS_ECC_MASK		(3 << 4)
++#define W25N01_M02GV_STATUS_ECC_NO_BITFLIPS	(0 << 4)
++#define W25N01_M02GV_STATUS_ECC_1_BITFLIPS	(1 << 4)
++#define W25N01_M02GV_STATUS_ECC_UNCOR_ERROR	(2 << 4)
++
++#define W25N01KV_STATUS_ECC_MASK		(3 << 4)
++#define W25N01KV_STATUS_ECC_NO_BITFLIPS		(0 << 4)
++#define W25N01KV_STATUS_ECC_1_3_BITFLIPS	(1 << 4)
++#define W25N01KV_STATUS_ECC_4_BITFLIPS		(3 << 4)
++#define W25N01KV_STATUS_ECC_UNCOR_ERROR		(2 << 4)
++
+ static SPINAND_OP_VARIANTS(read_cache_variants,
+ 		SPINAND_PAGE_READ_FROM_CACHE_QUADIO_OP(0, 2, NULL, 0),
+ 		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
+@@ -34,6 +51,35 @@ static SPINAND_OP_VARIANTS(update_cache_
+ 		SPINAND_PROG_LOAD_X4(false, 0, NULL, 0),
+ 		SPINAND_PROG_LOAD(false, 0, NULL, 0));
+ 
++static int w25n02kv_n04kv_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (16 * section) + 64;
++	region->length = 16;
++
++	return 0;
++}
++
++static int w25n02kv_n04kv_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (16 * section) + 2;
++	region->length = 14;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops w25n02kv_n04kv_ooblayout = {
++	.ecc = w25n02kv_n04kv_ooblayout_ecc,
++	.rfree = w25n02kv_n04kv_ooblayout_free,
++};
++
+ static int w25m02gv_ooblayout_ecc(struct mtd_info *mtd, int section,
+ 				  struct mtd_oob_region *region)
+ {
+@@ -106,6 +152,58 @@ static const struct mtd_ooblayout_ops w2
+ 	.rfree = w25n02kv_ooblayout_free,
+ };
+ 
++static int w25n01kv_ecc_get_status(struct spinand_device *spinand,
++					u8 status)
++{
++	switch (status & W25N01KV_STATUS_ECC_MASK) {
++	case W25N01KV_STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case W25N01KV_STATUS_ECC_1_3_BITFLIPS:
++		return 3;
++
++	case W25N01KV_STATUS_ECC_4_BITFLIPS:
++		return 4;
++
++	case W25N01KV_STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
++static int w25n02kv_n04kv_ecc_get_status(struct spinand_device *spinand,
++					u8 status)
++{
++	switch (status & W25N02_N04KV_STATUS_ECC_MASK) {
++	case W25N02_N04KV_STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case W25N02_N04KV_STATUS_ECC_1_4_BITFLIPS:
++		return 3;
++
++	case W25N02_N04KV_STATUS_ECC_5_8_BITFLIPS:
++		return 4;
++
++	/* W25N02_N04KV_use internal 8bit ECC algorithm.
++	 * But the ECC strength is 4 bit requried.
++	 * Return 3 if the bit bit flip count less than 5.
++	 * Return 4 if the bit bit flip count more than 5 to 8.
++	*/
++
++	case W25N02_N04KV_STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
+ static int w25n02kv_ecc_get_status(struct spinand_device *spinand,
+ 				   u8 status)
+ {
+@@ -163,6 +261,15 @@ static const struct spinand_info winbond
+ 					      &update_cache_variants),
+ 		     0,
+ 		     SPINAND_ECCINFO(&w25m02gv_ooblayout, NULL)),
++	SPINAND_INFO("W25N01KV",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xae, 0x21),
++		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&w25n02kv_n04kv_ooblayout, w25n01kv_ecc_get_status)),
+ 	SPINAND_INFO("W25N02KV",
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x22),
+ 		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
+@@ -172,6 +279,16 @@ static const struct spinand_info winbond
+ 					      &update_cache_variants),
+ 		     0,
+ 		     SPINAND_ECCINFO(&w25n02kv_ooblayout, w25n02kv_ecc_get_status)),
++	SPINAND_INFO("W25N04KV",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x23),
++		     NAND_MEMORG(1, 2048, 128, 64, 4096, 80, 2, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&w25n02kv_n04kv_ooblayout,
++				     w25n02kv_n04kv_ecc_get_status)),
+ };
+ 
+ static int winbond_spinand_init(struct spinand_device *spinand)
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -245,6 +245,7 @@ struct spinand_manufacturer {
+ };
+ 
+ /* SPI NAND manufacturers */
++extern const struct spinand_manufacturer etron_spinand_manufacturer;
+ extern const struct spinand_manufacturer gigadevice_spinand_manufacturer;
+ extern const struct spinand_manufacturer macronix_spinand_manufacturer;
+ extern const struct spinand_manufacturer micron_spinand_manufacturer;

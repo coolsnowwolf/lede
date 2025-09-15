@@ -1,0 +1,77 @@
+From 2d1a42cf7f77cda54dbbee18d00b1200e7bc22aa Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Wed, 18 Oct 2023 14:35:48 +0200
+Subject: [PATCH 1/3] net: stmmac: improve TX timer arm logic
+
+There is currently a problem with the TX timer getting armed multiple
+unnecessary times causing big performance regression on some device that
+suffer from heavy handling of hrtimer rearm.
+
+The use of the TX timer is an old implementation that predates the napi
+implementation and the interrupt enable/disable handling.
+
+Due to stmmac being a very old code, the TX timer was never evaluated
+again with this new implementation and was kept there causing
+performance regression. The performance regression started to appear
+with kernel version 4.19 with 8fce33317023 ("net: stmmac: Rework coalesce
+timer and fix multi-queue races") where the timer was reduced to 1ms
+causing it to be armed 40 times more than before.
+
+Decreasing the timer made the problem more present and caused the
+regression in the other of 600-700mbps on some device (regression where
+this was notice is ipq806x).
+
+The problem is in the fact that handling the hrtimer on some target is
+expensive and recent kernel made the timer armed much more times.
+A solution that was proposed was reverting the hrtimer change and use
+mod_timer but such solution would still hide the real problem in the
+current implementation.
+
+To fix the regression, apply some additional logic and skip arming the
+timer when not needed.
+
+Arm the timer ONLY if a napi is not already scheduled. Running the timer
+is redundant since the same function (stmmac_tx_clean) will run in the
+napi TX poll. Also try to cancel any timer if a napi is scheduled to
+prevent redundant run of TX call.
+
+With the following new logic the original performance are restored while
+keeping using the hrtimer.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ .../net/ethernet/stmicro/stmmac/stmmac_main.c  | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -2988,13 +2988,25 @@ static void stmmac_tx_timer_arm(struct s
+ {
+ 	struct stmmac_tx_queue *tx_q = &priv->dma_conf.tx_queue[queue];
+ 	u32 tx_coal_timer = priv->tx_coal_timer[queue];
++	struct stmmac_channel *ch;
++	struct napi_struct *napi;
+ 
+ 	if (!tx_coal_timer)
+ 		return;
+ 
+-	hrtimer_start(&tx_q->txtimer,
+-		      STMMAC_COAL_TIMER(tx_coal_timer),
+-		      HRTIMER_MODE_REL);
++	ch = &priv->channel[tx_q->queue_index];
++	napi = tx_q->xsk_pool ? &ch->rxtx_napi : &ch->tx_napi;
++
++	/* Arm timer only if napi is not already scheduled.
++	 * Try to cancel any timer if napi is scheduled, timer will be armed
++	 * again in the next scheduled napi.
++	 */
++	if (unlikely(!napi_is_scheduled(napi)))
++		hrtimer_start(&tx_q->txtimer,
++			      STMMAC_COAL_TIMER(tx_coal_timer),
++			      HRTIMER_MODE_REL);
++	else
++		hrtimer_try_to_cancel(&tx_q->txtimer);
+ }
+ 
+ /**

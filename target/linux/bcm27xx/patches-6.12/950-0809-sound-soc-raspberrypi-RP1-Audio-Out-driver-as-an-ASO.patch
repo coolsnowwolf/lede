@@ -1,0 +1,439 @@
+From 03cf560f45cf0a1de672bb105b1aae97af2a4cd5 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Wed, 12 Feb 2025 19:12:19 +0000
+Subject: [PATCH] sound: soc: raspberrypi: RP1 Audio Out driver as an ASOC DAI
+
+Only 48000Hz stereo 16-bit output is currently supported.
+
+It requires some additional OF plumbing to connect it to a
+"dummy" codec and generic sound card.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ arch/arm64/configs/bcm2711_defconfig |   2 +-
+ arch/arm64/configs/bcm2712_defconfig |   2 +-
+ sound/soc/Kconfig                    |   1 +
+ sound/soc/Makefile                   |   1 +
+ sound/soc/raspberrypi/Kconfig        |  12 +
+ sound/soc/raspberrypi/Makefile       |   2 +
+ sound/soc/raspberrypi/rp1_aout.c     | 372 +++++++++++++++++++++++++++
+ 7 files changed, 390 insertions(+), 2 deletions(-)
+ create mode 100644 sound/soc/raspberrypi/Kconfig
+ create mode 100644 sound/soc/raspberrypi/Makefile
+ create mode 100644 sound/soc/raspberrypi/rp1_aout.c
+
+--- a/sound/soc/Kconfig
++++ b/sound/soc/Kconfig
+@@ -106,6 +106,7 @@ source "sound/soc/meson/Kconfig"
+ source "sound/soc/mxs/Kconfig"
+ source "sound/soc/pxa/Kconfig"
+ source "sound/soc/qcom/Kconfig"
++source "sound/soc/raspberrypi/Kconfig"
+ source "sound/soc/rockchip/Kconfig"
+ source "sound/soc/samsung/Kconfig"
+ source "sound/soc/sh/Kconfig"
+--- a/sound/soc/Makefile
++++ b/sound/soc/Makefile
+@@ -59,6 +59,7 @@ obj-$(CONFIG_SND_SOC)	+= mxs/
+ obj-$(CONFIG_SND_SOC)	+= kirkwood/
+ obj-$(CONFIG_SND_SOC)	+= pxa/
+ obj-$(CONFIG_SND_SOC)	+= qcom/
++obj-$(CONFIG_SND_SOC)	+= raspberrypi/
+ obj-$(CONFIG_SND_SOC)	+= rockchip/
+ obj-$(CONFIG_SND_SOC)	+= samsung/
+ obj-$(CONFIG_SND_SOC)	+= sh/
+--- /dev/null
++++ b/sound/soc/raspberrypi/Kconfig
+@@ -0,0 +1,12 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config SND_RP1_AUDIO_OUT
++	tristate "PWM Audio Out from RP1"
++	select SND_SOC_GENERIC_DMAENGINE_PCM
++	select SND_SOC_SPDIF
++	help
++	 Say Y or M if you want to add support for PWM digital
++	 audio output from a Raspberry Pi 5, 500 or CM5.
++
++	 Output is from RP1 GPIOs pins 12 and 13 only, and additional
++	 components will be needed. It may be useful when HDMI, I2S
++	 or USB audio devices are unavailable, or for compatibility.
+--- /dev/null
++++ b/sound/soc/raspberrypi/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_SND_RP1_AUDIO_OUT) += rp1_aout.o
+--- /dev/null
++++ b/sound/soc/raspberrypi/rp1_aout.c
+@@ -0,0 +1,372 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2025 Raspberry Pi Ltd.
++ *
++ * rp1_aout.c -- Driver for Raspberry Pi RP1 Audio Out block.
++ * This is a modified 2-channel PWM with hardware 40 times oversampling,
++ * 2nd order noise shaping and dither. Only output (playback) is supported.
++ *
++ * For ASOC, this is implemented as a "DAI" and will need to be linked to a
++ * dummy codec such as "linux,spdif-dit" and card such as "simple-audio-card".
++ *
++ * Driver/file structure derived in part from "soc/starfive/jh7110_pwmdac.c"
++ * and other example drivers.
++ */
++
++#include <linux/clk.h>
++#include <linux/device.h>
++#include <linux/init.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/reset.h>
++#include <linux/slab.h>
++#include <linux/types.h>
++#include <sound/dmaengine_pcm.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++
++#define AUDIO_OUT_CTRL                      0x0000
++#define AUDIO_OUT_CTRL_PERIPH_EN            BIT(31)
++#define AUDIO_OUT_CTRL_CIC_RATE             GENMASK(11, 8)
++#define AUDIO_OUT_CTRL_CHANNEL_SWAP         BIT(2)
++#define AUDIO_OUT_CTRL_RIGHT_CH_ENABLE      BIT(1)
++#define AUDIO_OUT_CTRL_LEFT_CH_ENABLE       BIT(0)
++
++#define AUDIO_OUT_SDMCTL_LEFT               0x0004
++#define AUDIO_OUT_SDMCTL_RIGHT              0x0008
++#define AUDIO_OUT_SDMCTL_LR_BIAS            GENMASK(31, 16)
++#define AUDIO_OUT_SDMCTL_LR_BYPASS          BIT(7)
++#define AUDIO_OUT_SDMCTL_LR_SDM_ORDER       BIT(6)
++#define AUDIO_OUT_SDMCTL_LR_CLAMP_EN        BIT(5)
++#define AUDIO_OUT_SDMCTL_LR_DITHER_EN       BIT(4)
++#define AUDIO_OUT_SDMCTL_LR_OUTPUT_BITWIDTH GENMASK(3, 0)
++
++#define AUDIO_OUT_QCLAMP_LEFT               0x000c
++#define AUDIO_OUT_QCLAMP_RIGHT              0x0010
++#define AUDIO_OUT_QCLAMP_LR_MAX             GENMASK(31, 16)
++#define AUDIO_OUT_QCLAMP_LR_MIN             GENMASK(15, 0)
++
++#define AUDIO_OUT_MUTE_CTRL_LEFT            0x0014
++#define AUDIO_OUT_MUTE_CTRL_RIGHT           0x0018
++#define AUDIO_OUT_MUTE_CTRL_LR_BYPASS       BIT(31)
++#define AUDIO_OUT_MUTE_CTRL_LR_MUTE_PERIOD  GENMASK(23, 16)
++#define AUDIO_OUT_MUTE_CTRL_LR_STEP_SIZE    GENMASK(15, 8)
++#define AUDIO_OUT_MUTE_CTRL_LR_INIT_UNMUTE  BIT(5)
++#define AUDIO_OUT_MUTE_CTRL_LR_INIT_MUTE    BIT(4)
++#define AUDIO_OUT_MUTE_CTRL_LR_MUTE_FSM     GENMASK(3, 0)
++
++#define AUDIO_OUT_PWMCTL_LEFT               0x001c
++#define AUDIO_OUT_PWMRANGE_LEFT             0x0020
++#define AUDIO_OUT_PWMCTL_RIGHT              0x0028
++#define AUDIO_OUT_PWMRANGE_RIGHT            0x002c
++
++#define AUDIO_OUT_FIFO_CONTROL              0x0034
++#define AUDIO_OUT_FIFO_CONTROL_DMA_DREQ_EN  BIT(31)
++#define AUDIO_OUT_FIFO_CONTROL_FLUSH_DONE   BIT(25)
++#define AUDIO_OUT_FIFO_CONTROL_FIFO_FLUSH   BIT(24)
++#define AUDIO_OUT_FIFO_CONTROL_DWELL_TIME   GENMASK(20, 16)
++#define AUDIO_OUT_FIFO_CONTROL_THRESHOLD    GENMASK(5, 0)
++
++#define AUDIO_OUT_SAMPLE_FIFO               0x0038
++
++struct rp1_aout {
++	void __iomem *regs;
++	phys_addr_t physaddr;
++	struct clk *clk;
++	struct device *dev;
++	struct snd_dmaengine_dai_dma_data play_dma_data;
++	bool initted;
++	bool swap_lr;
++};
++
++static inline void aout_reg_wr(struct rp1_aout *ao, unsigned int offset, u32 val)
++{
++	void __iomem *addr = ao->regs + offset;
++
++	writel(val, addr);
++}
++
++static inline u32 aout_reg_rd(struct rp1_aout *ao, unsigned int offset)
++{
++	void __iomem *addr = ao->regs + offset;
++
++	return readl(addr);
++}
++
++static void audio_init(struct rp1_aout *aout)
++{
++	u32 val;
++
++	/*
++	 * The hardware was tuned to play at 48 kHz with 40 times oversampling and
++	 * 40-level two-sided PWM, for a clock rate of 48000 * 40 * 80 = 153.6 MHz.
++	 * Changing these settings is not recommended. At those rates, the filter
++	 * leaves ~2.2 dB headroom, so Qclamp will clip just slightly below FSD.
++	 */
++
++	/* Clamp to +/- (32767 * 40 / 64) before quantization */
++	val = FIELD_PREP_CONST(AUDIO_OUT_QCLAMP_LR_MAX, 20479) |
++		FIELD_PREP_CONST(AUDIO_OUT_QCLAMP_LR_MIN, (u16)(-20479));
++	aout_reg_wr(aout, AUDIO_OUT_QCLAMP_LEFT, val);
++	aout_reg_wr(aout, AUDIO_OUT_QCLAMP_RIGHT, val);
++	aout_reg_wr(aout, AUDIO_OUT_PWMCTL_LEFT, 0);
++	aout_reg_wr(aout, AUDIO_OUT_PWMCTL_RIGHT, 0);
++
++	/* Range = 39 */
++	aout_reg_wr(aout, AUDIO_OUT_PWMRANGE_LEFT, 0x27);
++	aout_reg_wr(aout, AUDIO_OUT_PWMRANGE_RIGHT, 0x27);
++
++	/* bias = 20 (half FSD). Quantize to 5+1 bits */
++	val = FIELD_PREP_CONST(AUDIO_OUT_SDMCTL_LR_BIAS, 0x14) |
++		AUDIO_OUT_SDMCTL_LR_CLAMP_EN |
++		AUDIO_OUT_SDMCTL_LR_DITHER_EN |
++		FIELD_PREP_CONST(AUDIO_OUT_SDMCTL_LR_OUTPUT_BITWIDTH, 5);
++	aout_reg_wr(aout, AUDIO_OUT_SDMCTL_LEFT, val);
++	aout_reg_wr(aout, AUDIO_OUT_SDMCTL_RIGHT, val);
++
++	/* ~300ms ramp = 12k*40 samples to FSD/2 => step size 1, interval 13 */
++	val = FIELD_PREP_CONST(AUDIO_OUT_MUTE_CTRL_LR_STEP_SIZE, 1) |
++		FIELD_PREP_CONST(AUDIO_OUT_MUTE_CTRL_LR_MUTE_PERIOD, 13);
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_LEFT, val);
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_RIGHT, val);
++
++	/* Configure DMA flow control with threshold at half FIFO depth */
++	val = FIELD_PREP_CONST(AUDIO_OUT_FIFO_CONTROL_DWELL_TIME, 2) |
++		FIELD_PREP_CONST(AUDIO_OUT_FIFO_CONTROL_THRESHOLD, 0x10) |
++		AUDIO_OUT_FIFO_CONTROL_DMA_DREQ_EN;
++	aout_reg_wr(aout, AUDIO_OUT_FIFO_CONTROL, val);
++}
++
++static void audio_startup(struct rp1_aout *aout)
++{
++	u32 val;
++
++	/* CIC rate 10, for an overall upsampling ratio of 40 */
++	val =  FIELD_PREP_CONST(AUDIO_OUT_CTRL_CIC_RATE, 0xa) |
++		AUDIO_OUT_CTRL_LEFT_CH_ENABLE | AUDIO_OUT_CTRL_RIGHT_CH_ENABLE;
++	if (aout->swap_lr)
++		val |= AUDIO_OUT_CTRL_CHANNEL_SWAP;
++	aout_reg_wr(aout, AUDIO_OUT_CTRL, val);
++	aout_reg_rd(aout, AUDIO_OUT_CTRL); /* synchronization delay */
++
++	/* Press the "go" button */
++	val |= AUDIO_OUT_CTRL_PERIPH_EN;
++	aout_reg_wr(aout, AUDIO_OUT_CTRL, val);
++	aout_reg_rd(aout, AUDIO_OUT_CTRL); /* FIFO reset release delay */
++
++	/* Poke zeroes in to avoid undefined values on underrun */
++	aout_reg_wr(aout, AUDIO_OUT_SAMPLE_FIFO, 0);
++}
++
++static void audio_muting(struct rp1_aout *aout, u32 flag)
++{
++	u32 val = FIELD_PREP_CONST(AUDIO_OUT_MUTE_CTRL_LR_STEP_SIZE, 1) |
++		FIELD_PREP_CONST(AUDIO_OUT_MUTE_CTRL_LR_MUTE_PERIOD, 13);
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_LEFT, val);
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_RIGHT, val);
++
++	val |= flag;
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_LEFT, val);
++	aout_reg_wr(aout, AUDIO_OUT_MUTE_CTRL_RIGHT, val);
++	aout_reg_rd(aout, AUDIO_OUT_MUTE_CTRL_RIGHT); /* synchronization delay */
++}
++
++static void audio_mute_sync(struct rp1_aout *aout)
++{
++	static const u32 mask = 0x1 | 0x4; /* transitional states */
++	unsigned int count;
++
++	for (count = 0; count < 500; count++) {
++		if ((aout_reg_rd(aout, AUDIO_OUT_MUTE_CTRL_LEFT) & mask) == 0)
++			break;
++		usleep_range(1000, 5000);
++	}
++	for (; count < 500; count++) {
++		if ((aout_reg_rd(aout, AUDIO_OUT_MUTE_CTRL_RIGHT) & mask) == 0)
++			break;
++		usleep_range(1000, 5000);
++	}
++}
++
++/* Device DAI interface */
++
++static int rp1_aout_startup(struct snd_pcm_substream *substream,
++			    struct snd_soc_dai *dai)
++{
++	struct rp1_aout *aout = dev_get_drvdata(dai->dev);
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai_link *dai_link = rtd->dai_link;
++
++	dai_link->trigger_stop = SND_SOC_TRIGGER_ORDER_LDC;
++
++	if (!aout->initted) {
++		dev_info(dai->dev, "RP1 Audio Out start\n");
++		audio_init(aout);
++		audio_startup(aout);
++		audio_muting(aout, AUDIO_OUT_MUTE_CTRL_LR_INIT_UNMUTE);
++		aout->initted = true;
++	}
++
++	return 0;
++}
++
++static int rp1_aout_hw_params(struct snd_pcm_substream *substream,
++			      struct snd_pcm_hw_params *params,
++			      struct snd_soc_dai *dai)
++{
++	struct rp1_aout *aout = dev_get_drvdata(dai->dev);
++
++	/* We only support this one configuration */
++	if (params_rate(params) != 48000 || params_channels(params) != 2 ||
++	    params_format(params) != SNDRV_PCM_FORMAT_S16_LE) {
++		dev_err(dai->dev, "Invalid HW params\n");
++		return -EINVAL;
++	}
++
++	audio_mute_sync(aout);
++
++	return 0;
++}
++
++static int rp1_aout_trigger(struct snd_pcm_substream *substream, int cmd,
++			    struct snd_soc_dai *dai)
++{
++	struct rp1_aout *aout = snd_soc_dai_get_drvdata(dai);
++
++	if (cmd == SNDRV_PCM_TRIGGER_STOP ||
++	    cmd == SNDRV_PCM_TRIGGER_SUSPEND ||
++	    cmd == SNDRV_PCM_TRIGGER_PAUSE_PUSH) {
++		/* Push a zero sample (assuming DMA has stopped already) */
++		aout_reg_wr(aout, AUDIO_OUT_SAMPLE_FIFO, 0);
++	}
++
++	return 0;
++}
++
++static int rp1_aout_dai_probe(struct snd_soc_dai *dai)
++{
++	struct rp1_aout *aout = dev_get_drvdata(dai->dev);
++
++	snd_soc_dai_init_dma_data(dai, &aout->play_dma_data, NULL);
++	snd_soc_dai_set_drvdata(dai, aout);
++
++	return 0;
++}
++
++static const struct snd_soc_dai_ops rp1_aout_dai_ops = {
++	.probe		= rp1_aout_dai_probe,
++	.startup	= rp1_aout_startup,
++	.hw_params	= rp1_aout_hw_params,
++	.trigger	= rp1_aout_trigger,
++};
++
++static const struct snd_soc_component_driver rp1_aout_component = {
++	.name		= "rp1-aout",
++};
++
++static struct snd_soc_dai_driver rp1_aout_dai = {
++	.name		= "rp1-aout",
++	.id		= 0,
++	.playback = {
++		.channels_min = 2,
++		.channels_max = 2,
++		.rates = SNDRV_PCM_RATE_48000,
++		.formats = SNDRV_PCM_FMTBIT_S16_LE,
++	},
++	.ops = &rp1_aout_dai_ops,
++};
++
++static int rp1_aout_platform_probe(struct platform_device *pdev)
++{
++	int ret;
++	struct rp1_aout *aout;
++	struct resource *ioresource;
++
++	dev_info(&pdev->dev, "rp1_aout_platform_probe");
++	aout = devm_kzalloc(&pdev->dev, sizeof(*aout), GFP_KERNEL);
++	if (!aout)
++		return -ENOMEM;
++
++	aout->clk = devm_clk_get(&pdev->dev, NULL);
++	if (IS_ERR(aout->clk))
++		return dev_err_probe(&pdev->dev, PTR_ERR(aout->clk),
++				     "could not get clk\n");
++
++	aout->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &ioresource);
++	if (IS_ERR(aout->regs))
++		return dev_err_probe(&pdev->dev, PTR_ERR(aout->regs),
++				     "could not map registers\n");
++	aout->physaddr = ioresource->start;
++	aout->swap_lr = of_property_read_bool(pdev->dev.of_node, "swap_lr");
++
++	/* Initialize playback DMA parameters */
++	aout->play_dma_data.addr = aout->physaddr + AUDIO_OUT_SAMPLE_FIFO;
++	aout->play_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
++	aout->play_dma_data.fifo_size = 16; /* actually 32 but the threshold is 16(?) */
++	aout->play_dma_data.maxburst = 4;
++
++	clk_prepare_enable(aout->clk);
++	aout->dev = &pdev->dev;
++	platform_set_drvdata(pdev, aout);
++
++	ret = devm_snd_dmaengine_pcm_register(&pdev->dev, NULL, 0);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret, "failed to register pcm\n");
++
++	/* Finally, register the component so simple-audio-card can detect it */
++	ret = devm_snd_soc_register_component(&pdev->dev,
++					      &rp1_aout_component,
++					      &rp1_aout_dai, 1);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret, "failed to register dai\n");
++
++	return 0;
++}
++
++static void rp1_aout_platform_remove(struct platform_device *pdev)
++{
++	struct rp1_aout *aout = platform_get_drvdata(pdev);
++
++	if (aout) {
++		/*
++		 * We leave the PWM carrier/bias running between playbacks,
++		 * but mute it just before shutting down, to avoid a click
++		 * (devm should clear up everything else).
++		 */
++		if (aout->initted) {
++			audio_mute_sync(aout);
++			audio_muting(aout,
++				     AUDIO_OUT_MUTE_CTRL_LR_INIT_MUTE);
++			audio_mute_sync(aout);
++			aout->initted = false;
++		}
++		clk_disable_unprepare(aout->clk);
++	}
++}
++
++static const struct of_device_id rp1_aout_of_match[] = {
++	{ .compatible = "raspberrypi,rp1-audio-out", },
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, rp1_aout_of_match);
++
++static struct platform_driver rp1_audio_out_driver = {
++	.probe  = rp1_aout_platform_probe,
++	.remove = rp1_aout_platform_remove,
++	.shutdown = rp1_aout_platform_remove,
++	.driver = {
++		.name = "rp1-audio-out",
++		.of_match_table = rp1_aout_of_match,
++	},
++};
++
++module_platform_driver(rp1_audio_out_driver);
++
++MODULE_DESCRIPTION("RP1 Audio out");
++MODULE_AUTHOR("Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>");
++MODULE_AUTHOR("Jonathan Bell <jonathan@raspberrypi.com>");
++MODULE_LICENSE("GPL");

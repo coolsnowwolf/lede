@@ -1,0 +1,68 @@
+#!/bin/sh
+# Copyright (C) 2011 OpenWrt.org
+
+. /lib/functions.sh
+
+include /lib/network
+
+get_ifname() {
+	local interface="$1"
+	local cfgt
+
+	scan_interfaces
+	config_get cfgt "$interface" TYPE
+	[ "$cfgt" = "interface" ] && config_get "$interface" ifname
+}
+
+qos_set_device() {
+	config_get TYPE "$1" TYPE
+	[ "interface" = "$TYPE" ] && {
+		config_get device "$1" ifname
+		[ -z "$device" ] && device="$(get_ifname $1)"
+		config_set "$1" device "$device"
+	}
+}
+
+config_load qos
+config_foreach qos_set_device
+
+print_comments() {
+	echo ''
+	echo '# Interface: '"$1"
+	echo '# Direction: '"$2"
+	echo '# Stats:     '"$3"
+	echo ''
+}	
+
+get_device() {
+	( config_load network; scan_interfaces; config_get "$1" ifname )
+}
+
+interface_stats() {
+	local interface="$1"
+	local device
+
+	device="$(get_device "$interface")"
+	[ -z "$device" ] && config_get device "$interface" device
+	config_get_bool enabled "$interface" enabled 1
+	[ -z "$device" -o 1 -ne "$enabled" ] && {
+		return 1
+	}
+	config_get_bool halfduplex "$interface" halfduplex 0
+
+	if [ 1 -ne "$halfduplex" ]; then
+		unset halfduplex
+		print_comments "$interface" "Egress" "Start"
+		tc -s class show dev "$device"
+		print_comments "$interface" "Egress" "End"
+		id="root"
+	else
+		id=""
+	fi
+
+	print_comments "$interface" "Ingress${halfduplex:+/Egress}" "Start"
+	tc -s class show dev "$(tc filter show dev $device $id | grep mirred | sed -e 's,.*\(ifb.*\)).*,\1,')"
+	print_comments "$interface" "Ingress${halfduplex:+/Egress}" "End"
+}
+
+[ -z "$1" ] && config_foreach interface_stats interface || interface_stats "$1"

@@ -1,0 +1,107 @@
+--- a/src/include/drv_dsl_cpe_pm_core.h
++++ b/src/include/drv_dsl_cpe_pm_core.h
+@@ -1510,9 +1510,9 @@ typedef struct
+    /** Common PM module mutex*/
+    DSL_DRV_Mutex_t pmMutex;
+    /** PM module direction Near-End mutex*/
+-   DSL_DRV_Mutex_t pmNeMutex;
++   struct semaphore pmNeMutex;
+    /** PM module direction Far-End mutex*/
+-   DSL_DRV_Mutex_t pmFeMutex;
++   struct semaphore pmFeMutex;
+    /** PM module Near-End access mutex*/
+    DSL_DRV_Mutex_t pmNeAccessMutex;
+    /** PM module Far-End access mutex*/
+--- a/src/pm/drv_dsl_cpe_api_pm.c
++++ b/src/pm/drv_dsl_cpe_api_pm.c
+@@ -220,9 +220,9 @@ DSL_Error_t DSL_DRV_PM_Start(
+    /* init PM module common mutex */
+    DSL_DRV_MUTEX_INIT(DSL_DRV_PM_CONTEXT(pContext)->pmMutex);
+    /* init PM module direction Near-End mutex */
+-   DSL_DRV_MUTEX_INIT(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex);
++   sema_init(&(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex),1);
+    /* init PM module direction Far-End mutex */
+-   DSL_DRV_MUTEX_INIT(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex);
++   sema_init(&(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex),1);
+    /* init PM module Near-End access mutex */
+    DSL_DRV_MUTEX_INIT(DSL_DRV_PM_CONTEXT(pContext)->pmNeAccessMutex);
+    /* init PM module Far-End access mutex */
+@@ -592,7 +592,7 @@ DSL_Error_t DSL_DRV_PM_Stop(
+    if( DSL_DRV_PM_CONTEXT(pContext)->pmThreadFe.bRun != DSL_TRUE )
+    {
+       DSL_DEBUG(DSL_DBG_WRN,
+-         (pContext, SYS_DBG_WRN"DSL[%02d]: PM module Near-End thread already stopped"
++         (pContext, SYS_DBG_WRN"DSL[%02d]: PM module Far-End thread already stopped"
+          DSL_DRV_CRLF, DSL_DEV_NUM(pContext)));
+    }
+    else
+--- a/src/pm/drv_dsl_cpe_pm_core.c
++++ b/src/pm/drv_dsl_cpe_pm_core.c
+@@ -1022,7 +1022,7 @@ DSL_Error_t DSL_DRV_PM_DirectionMutexCon
+    {
+       if( bLock )
+       {
+-         if( DSL_DRV_MUTEX_LOCK(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex) )
++         if(down_interruptible(&(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex)))
+          {
+             DSL_DEBUG( DSL_DBG_ERR,
+                (pContext, SYS_DBG_ERR"DSL[%02d]: ERROR - Couldn't lock PM NE mutex!"
+@@ -1034,14 +1034,14 @@ DSL_Error_t DSL_DRV_PM_DirectionMutexCon
+       else
+       {
+           /* Unlock PM module NE Mutex*/
+-          DSL_DRV_MUTEX_UNLOCK(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex);
++          up(&(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex));
+       }
+    }
+    else
+    {
+       if( bLock )
+       {
+-         if( DSL_DRV_MUTEX_LOCK(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex) )
++         if(down_interruptible(&(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex)))
+          {
+             DSL_DEBUG( DSL_DBG_ERR,
+                (pContext, SYS_DBG_ERR"DSL[%02d]: ERROR - Couldn't lock PM FE mutex!"
+@@ -1053,7 +1053,7 @@ DSL_Error_t DSL_DRV_PM_DirectionMutexCon
+       else
+       {
+          /* Unlock PM module FE Mutex*/
+-         DSL_DRV_MUTEX_UNLOCK(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex);
++         up(&(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex));
+       }
+    }
+ 
+@@ -1139,7 +1139,7 @@ DSL_Error_t DSL_DRV_PM_Lock(DSL_Context_
+    if( !(DSL_DRV_PM_CONTEXT(pContext)->bPmLock) )
+    {
+       /* Lock PM module Near-End Mutex*/
+-      if( DSL_DRV_MUTEX_LOCK(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex) )
++      if(down_interruptible(&(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex)))
+       {
+          DSL_DEBUG( DSL_DBG_ERR,
+             (pContext, SYS_DBG_ERR"DSL[%02d]: ERROR - Couldn't lock PM NE mutex!"
+@@ -1148,8 +1148,8 @@ DSL_Error_t DSL_DRV_PM_Lock(DSL_Context_
+          return DSL_ERR_SEMAPHORE_GET;
+       }
+ 
+-      /* Lock PM module Near-End Mutex*/
+-      if( DSL_DRV_MUTEX_LOCK(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex) )
++      /* Lock PM module Far-End Mutex*/
++      if( down_interruptible(&(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex)) )
+       {
+          DSL_DEBUG( DSL_DBG_ERR,
+             (pContext, SYS_DBG_ERR"DSL[%02d]: ERROR - Couldn't lock PM FE mutex!"
+@@ -1193,10 +1193,10 @@ DSL_Error_t DSL_DRV_PM_UnLock(DSL_Contex
+    if( DSL_DRV_PM_CONTEXT(pContext)->bPmLock )
+    {
+       /* Unlock PM module NE Mutex*/
+-      DSL_DRV_MUTEX_UNLOCK(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex);
++      up(&(DSL_DRV_PM_CONTEXT(pContext)->pmNeMutex));
+ 
+       /* Unlock PM module FE Mutex*/
+-      DSL_DRV_MUTEX_UNLOCK(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex);
++      up(&(DSL_DRV_PM_CONTEXT(pContext)->pmFeMutex));
+ 
+       /* Clear bPmLock flag*/
+       DSL_DRV_PM_CONTEXT(pContext)->bPmLock = DSL_FALSE;

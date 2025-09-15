@@ -1,0 +1,262 @@
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Mon,  4 Aug 2025 18:16:30 +0000
+Subject: [PATCH v2 1/3] rockchip: Add initial RK3582 support
+
+The RK3582 SoC is a variant of the RK3588S with some IP blocks disabled.
+What blocks are disabled/non-working is indicated by ip-state in OTP.
+
+This add initial support for RK3582 by using ft_system_setup() to mark
+any cpu and/or gpu node with status=fail as indicated by ip-state.
+
+This apply same policy as vendor U-Boot for RK3582, i.e. two big cpu
+cores and the gpu is always failed/disabled.
+
+Enable Kconfig option OF_SYSTEM_SETUP in board defconfig to make use of
+the required DT fixups for RK3582 board variants.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ arch/arm/mach-rockchip/rk3588/rk3588.c | 221 +++++++++++++++++++++++++
+ 1 file changed, 221 insertions(+)
+
+--- a/arch/arm/mach-rockchip/rk3588/rk3588.c
++++ b/arch/arm/mach-rockchip/rk3588/rk3588.c
+@@ -7,6 +7,7 @@
+ #define LOG_CATEGORY LOGC_ARCH
+ 
+ #include <dm.h>
++#include <fdt_support.h>
+ #include <misc.h>
+ #include <spl.h>
+ #include <asm/armv8/mmu.h>
+@@ -192,6 +193,16 @@ int arch_cpu_init(void)
+ 
+ #define RK3588_OTP_CPU_CODE_OFFSET		0x02
+ #define RK3588_OTP_SPECIFICATION_OFFSET		0x06
++#define RK3588_OTP_IP_STATE_OFFSET		0x1d
++
++#define FAIL_CPU_CLUSTER0		GENMASK(3, 0)
++#define FAIL_CPU_CLUSTER1		GENMASK(5, 4)
++#define FAIL_CPU_CLUSTER2		GENMASK(7, 6)
++#define FAIL_GPU				GENMASK(4, 1)
++#define FAIL_RKVDEC0			BIT(6)
++#define FAIL_RKVDEC1			BIT(7)
++#define FAIL_RKVENC0			BIT(0)
++#define FAIL_RKVENC1			BIT(2)
+ 
+ int checkboard(void)
+ {
+@@ -237,3 +248,213 @@ int checkboard(void)
+ 
+ 	return 0;
+ }
++
++static int fdt_path_del_node(void *fdt, const char *path)
++{
++	int nodeoffset;
++
++	nodeoffset = fdt_path_offset(fdt, path);
++	if (nodeoffset < 0)
++		return nodeoffset;
++
++	return fdt_del_node(fdt, nodeoffset);
++}
++
++static int fdt_path_set_name(void *fdt, const char *path, const char *name)
++{
++	int nodeoffset;
++
++	nodeoffset = fdt_path_offset(fdt, path);
++	if (nodeoffset < 0)
++		return nodeoffset;
++
++	return fdt_set_name(fdt, nodeoffset, name);
++}
++
++/*
++ * RK3582 is a variant of the RK3588S with some IP blocks disabled. What blocks
++ * are disabled/non-working is indicated by ip-state in OTP. ft_system_setup()
++ * is used to mark any cpu and/or gpu node with status=fail as indicated by
++ * ip-state. Apply same policy as vendor U-Boot for RK3582, i.e. two big cpu
++ * cores and the gpu is always failed/disabled. Enable OF_SYSTEM_SETUP to make
++ * use of the required DT fixups for RK3582 board variants.
++ */
++int ft_system_setup(void *blob, struct bd_info *bd)
++{
++	static const char * const cpu_node_names[] = {
++		"cpu@0", "cpu@100", "cpu@200", "cpu@300",
++		"cpu@400", "cpu@500", "cpu@600", "cpu@700",
++	};
++	int parent, node, i, comp_len, len, ret;
++	bool cluster1_removed = false;
++	u8 cpu_code[2], ip_state[3];
++	struct udevice *dev;
++	char soc_comp[16];
++	const char *comp;
++	void *data;
++
++	if (!IS_ENABLED(CONFIG_OF_SYSTEM_SETUP))
++		return 0;
++
++	if (!IS_ENABLED(CONFIG_ROCKCHIP_OTP) || !CONFIG_IS_ENABLED(MISC))
++		return -ENOSYS;
++
++	ret = uclass_get_device_by_driver(UCLASS_MISC,
++					  DM_DRIVER_GET(rockchip_otp), &dev);
++	if (ret) {
++		log_debug("Could not find otp device, ret=%d\n", ret);
++		return ret;
++	}
++
++	/* cpu-code: SoC model, e.g. 0x35 0x82 or 0x35 0x88 */
++	ret = misc_read(dev, RK3588_OTP_CPU_CODE_OFFSET, cpu_code, 2);
++	if (ret < 0) {
++		log_debug("Could not read cpu-code, ret=%d\n", ret);
++		return ret;
++	}
++
++	log_debug("cpu-code: %02x %02x\n", cpu_code[0], cpu_code[1]);
++
++	/* only fail devices on rk3582/rk3583 */
++	if (!(cpu_code[0] == 0x35 && cpu_code[1] == 0x82) &&
++	    !(cpu_code[0] == 0x35 && cpu_code[1] == 0x83))
++		return 0;
++
++	ret = misc_read(dev, RK3588_OTP_IP_STATE_OFFSET, &ip_state, 3);
++	if (ret < 0) {
++		log_err("Could not read ip-state, ret=%d\n", ret);
++		return ret;
++	}
++
++	log_debug("ip-state: %02x %02x %02x (otp)\n",
++		  ip_state[0], ip_state[1], ip_state[2]);
++
++	/* policy: fail entire big core cluster when one or more core is bad */
++	if (ip_state[0] & FAIL_CPU_CLUSTER1)
++		ip_state[0] |= FAIL_CPU_CLUSTER1;
++	if (ip_state[0] & FAIL_CPU_CLUSTER2)
++		ip_state[0] |= FAIL_CPU_CLUSTER2;
++
++	/* policy: always fail one big core cluster on rk3582/rk3583 */
++	if (!(ip_state[0] & (FAIL_CPU_CLUSTER1 | FAIL_CPU_CLUSTER2)))
++		ip_state[0] |= FAIL_CPU_CLUSTER2;
++
++	if (cpu_code[0] == 0x35 && cpu_code[1] == 0x82) {
++		/* policy: always fail gpu on rk3582 */
++		ip_state[1] |= FAIL_GPU;
++
++		/* policy: always fail rkvdec on rk3582 */
++		ip_state[1] |= FAIL_RKVDEC0 | FAIL_RKVDEC1;
++	} else if (cpu_code[0] == 0x35 && cpu_code[1] == 0x83) {
++		/* policy: always fail one rkvdec core on rk3583 */
++		if (!(ip_state[1] & (FAIL_RKVDEC0 | FAIL_RKVDEC1)))
++			ip_state[1] |= FAIL_RKVDEC1;
++	}
++
++	/* policy: always fail one rkvenc core on rk3582/rk3583 */
++	if (!(ip_state[2] & (FAIL_RKVENC0 | FAIL_RKVENC1)))
++		ip_state[2] |= FAIL_RKVENC1;
++
++	log_debug("ip-state: %02x %02x %02x (policy)\n",
++		  ip_state[0], ip_state[1], ip_state[2]);
++
++	/* cpu cluster1: ip_state[0]: bit4~5 */
++	if ((ip_state[0] & FAIL_CPU_CLUSTER1) == FAIL_CPU_CLUSTER1) {
++		log_debug("remove cpu-map cluster1\n");
++		fdt_path_del_node(blob, "/cpus/cpu-map/cluster1");
++		cluster1_removed = true;
++	}
++
++	/* cpu cluster2: ip_state[0]: bit6~7 */
++	if ((ip_state[0] & FAIL_CPU_CLUSTER2) == FAIL_CPU_CLUSTER2) {
++		log_debug("remove cpu-map cluster2\n");
++		fdt_path_del_node(blob, "/cpus/cpu-map/cluster2");
++	} else if (cluster1_removed) {
++		/* cluster nodes must be named in a continuous series */
++		log_debug("rename cpu-map cluster2\n");
++		fdt_path_set_name(blob, "/cpus/cpu-map/cluster2", "cluster1");
++	}
++
++	/* gpu: ip_state[1]: bit1~4 */
++	if (ip_state[1] & FAIL_GPU) {
++		log_debug("fail gpu\n");
++		fdt_status_fail_by_pathf(blob, "/gpu@fb000000");
++	}
++
++	/* rkvdec: ip_state[1]: bit6,7 */
++	if (ip_state[1] & FAIL_RKVDEC0) {
++		log_debug("fail rkvdec0\n");
++		fdt_status_fail_by_pathf(blob, "/video-codec@fdc38000");
++		fdt_status_fail_by_pathf(blob, "/iommu@fdc38700");
++	}
++	if (ip_state[1] & FAIL_RKVDEC1) {
++		log_debug("fail rkvdec1\n");
++		fdt_status_fail_by_pathf(blob, "/video-codec@fdc40000");
++		fdt_status_fail_by_pathf(blob, "/iommu@fdc40700");
++	}
++
++	/* rkvenc: ip_state[2]: bit0,2 */
++	if (ip_state[2] & FAIL_RKVENC0) {
++		log_debug("fail rkvenc0\n");
++		fdt_status_fail_by_pathf(blob, "/video-codec@fdbd0000");
++		fdt_status_fail_by_pathf(blob, "/iommu@fdbdf000");
++	}
++	if (ip_state[2] & FAIL_RKVENC1) {
++		log_debug("fail rkvenc1\n");
++		fdt_status_fail_by_pathf(blob, "/video-codec@fdbe0000");
++		fdt_status_fail_by_pathf(blob, "/iommu@fdbef000");
++	}
++
++	parent = fdt_path_offset(blob, "/cpus");
++	if (parent < 0) {
++		log_err("Could not find /cpus, parent=%d\n", parent);
++		return parent;
++	}
++
++	/* cpu: ip_state[0]: bit0~7 */
++	for (i = 0; i < 8; i++) {
++		/* fail any bad cpu core */
++		if (!(ip_state[0] & BIT(i)))
++			continue;
++
++		node = fdt_subnode_offset(blob, parent, cpu_node_names[i]);
++		if (node >= 0) {
++			log_debug("fail cpu %s\n", cpu_node_names[i]);
++			fdt_status_fail(blob, node);
++		} else {
++			log_err("Could not find %s, node=%d\n",
++				cpu_node_names[i], node);
++			return node;
++		}
++	}
++
++	node = fdt_path_offset(blob, "/");
++	if (node < 0) {
++		log_err("Could not find /, node=%d\n", node);
++		return node;
++	}
++
++	snprintf(soc_comp, sizeof(soc_comp), "rockchip,rk35%x", cpu_code[1]);
++
++	for (i = 0, comp_len = 0;
++	     (comp = fdt_stringlist_get(blob, node, "compatible", i, &len));
++	     i++) {
++		/* stop at soc compatible */
++		if (!strcmp(comp, soc_comp) ||
++		    !strcmp(comp, "rockchip,rk3588s") ||
++		    !strcmp(comp, "rockchip,rk3588"))
++			break;
++
++		log_debug("compatible[%d]: %s\n", i, comp);
++		comp_len += len + 1;
++	}
++
++	/* truncate to only include board compatible */
++	fdt_setprop_placeholder(blob, node, "compatible", comp_len, &data);
++
++	/* append soc compatible */
++	fdt_appendprop_string(blob, node, "compatible", soc_comp);
++	fdt_appendprop_string(blob, node, "compatible", "rockchip,rk3588s");
++
++	return 0;
++}

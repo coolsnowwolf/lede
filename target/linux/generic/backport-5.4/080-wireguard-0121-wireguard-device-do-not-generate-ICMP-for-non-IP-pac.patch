@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Mon, 22 Feb 2021 17:25:47 +0100
+Subject: [PATCH] wireguard: device: do not generate ICMP for non-IP packets
+
+commit 99fff5264e7ab06f45b0ad60243475be0a8d0559 upstream.
+
+If skb->protocol doesn't match the actual skb->data header, it's
+probably not a good idea to pass it off to icmp{,v6}_ndo_send, which is
+expecting to reply to a valid IP packet. So this commit has that early
+mismatch case jump to a later error label.
+
+Fixes: e7096c131e51 ("net: WireGuard secure network tunnel")
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/net/wireguard/device.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/wireguard/device.c
++++ b/drivers/net/wireguard/device.c
+@@ -138,7 +138,7 @@ static netdev_tx_t wg_xmit(struct sk_buf
+ 		else if (skb->protocol == htons(ETH_P_IPV6))
+ 			net_dbg_ratelimited("%s: No peer has allowed IPs matching %pI6\n",
+ 					    dev->name, &ipv6_hdr(skb)->daddr);
+-		goto err;
++		goto err_icmp;
+ 	}
+ 
+ 	family = READ_ONCE(peer->endpoint.addr.sa_family);
+@@ -201,12 +201,13 @@ static netdev_tx_t wg_xmit(struct sk_buf
+ 
+ err_peer:
+ 	wg_peer_put(peer);
+-err:
+-	++dev->stats.tx_errors;
++err_icmp:
+ 	if (skb->protocol == htons(ETH_P_IP))
+ 		icmp_ndo_send(skb, ICMP_DEST_UNREACH, ICMP_HOST_UNREACH, 0);
+ 	else if (skb->protocol == htons(ETH_P_IPV6))
+ 		icmpv6_ndo_send(skb, ICMPV6_DEST_UNREACH, ICMPV6_ADDR_UNREACH, 0);
++err:
++	++dev->stats.tx_errors;
+ 	kfree_skb(skb);
+ 	return ret;
+ }

@@ -1,0 +1,86 @@
+From 2c32a3d3c233b855943677609fe388f82b1f0975 Mon Sep 17 00:00:00 2001
+From: Florian Fainelli <f.fainelli@gmail.com>
+Date: Tue, 8 Jun 2021 14:22:04 -0700
+Subject: [PATCH] net: dsa: b53: Do not force CPU to be always tagged
+
+Commit ca8931948344 ("net: dsa: b53: Keep CPU port as tagged in all
+VLANs") forced the CPU port to be always tagged in any VLAN membership.
+This was necessary back then because we did not support Broadcom tags
+for all configurations so the only way to differentiate tagged and
+untagged traffic while DSA_TAG_PROTO_NONE was used was to force the CPU
+port into being always tagged.
+
+With most configurations enabling Broadcom tags, especially after
+8fab459e69ab ("net: dsa: b53: Enable Broadcom tags for 531x5/539x
+families") we do not need to apply this unconditional force tagging of
+the CPU port in all VLANs.
+
+A helper function is introduced to faciliate the encapsulation of the
+specific condition requiring the CPU port to be tagged in all VLANs and
+the dsa_switch_ops::untag_bridge_pvid boolean is moved to when
+dsa_switch_ops::setup is called when we have already determined the
+tagging protocol we will be using.
+
+Reported-by: Matthew Hagan <mnhagan88@gmail.com>
+Signed-off-by: Florian Fainelli <f.fainelli@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Tested-by: Matthew Hagan <mnhagan88@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/b53/b53_common.c | 17 ++++++++++++++---
+ 1 file changed, 14 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1049,6 +1049,11 @@ static int b53_setup(struct dsa_switch *
+ 	unsigned int port;
+ 	int ret;
+ 
++	/* Request bridge PVID untagged when DSA_TAG_PROTO_NONE is set
++	 * which forces the CPU port to be tagged in all VLANs.
++	 */
++	ds->untag_bridge_pvid = dev->tag_protocol == DSA_TAG_PROTO_NONE;
++
+ 	ret = b53_reset_switch(dev);
+ 	if (ret) {
+ 		dev_err(ds->dev, "failed to reset switch\n");
+@@ -1423,6 +1428,13 @@ int b53_vlan_prepare(struct dsa_switch *
+ 	return 0;
+ }
+ EXPORT_SYMBOL(b53_vlan_prepare);
++ 
++static bool b53_vlan_port_needs_forced_tagged(struct dsa_switch *ds, int port)
++{
++	struct b53_device *dev = ds->priv;
++
++	return dev->tag_protocol == DSA_TAG_PROTO_NONE && dsa_is_cpu_port(ds, port);
++}
+ 
+ void b53_vlan_add(struct dsa_switch *ds, int port,
+ 		  const struct switchdev_obj_port_vlan *vlan)
+@@ -1442,7 +1454,7 @@ void b53_vlan_add(struct dsa_switch *ds,
+ 			untagged = true;
+ 
+ 		vl->members |= BIT(port);
+-		if (untagged && !dsa_is_cpu_port(ds, port))
++		if (untagged && !b53_vlan_port_needs_forced_tagged(ds, port))
+ 			vl->untag |= BIT(port);
+ 		else
+ 			vl->untag &= ~BIT(port);
+@@ -1480,7 +1492,7 @@ int b53_vlan_del(struct dsa_switch *ds,
+ 		if (pvid == vid)
+ 			pvid = b53_default_pvid(dev);
+ 
+-		if (untagged && !dsa_is_cpu_port(ds, port))
++		if (untagged && !b53_vlan_port_needs_forced_tagged(ds, port))
+ 			vl->untag &= ~(BIT(port));
+ 
+ 		b53_set_vlan_entry(dev, vid, vl);
+@@ -2644,7 +2656,6 @@ struct b53_device *b53_switch_alloc(stru
+ 	dev->ops = ops;
+ 	ds->ops = &b53_switch_ops;
+ 	ds->configure_vlan_while_not_filtering = true;
+-	ds->untag_bridge_pvid = true;
+ 	dev->vlan_enabled = ds->configure_vlan_while_not_filtering;
+ 	/* Let DSA handle the case were multiple bridges span the same switch
+ 	 * device and different VLAN awareness settings are requested, which

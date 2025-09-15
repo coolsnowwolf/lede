@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Mon, 29 Jun 2020 19:06:21 -0600
+Subject: [PATCH] wireguard: queueing: make use of ip_tunnel_parse_protocol
+
+commit 1a574074ae7d1d745c16f7710655f38a53174c27 upstream.
+
+Now that wg_examine_packet_protocol has been added for general
+consumption as ip_tunnel_parse_protocol, it's possible to remove
+wg_examine_packet_protocol and simply use the new
+ip_tunnel_parse_protocol function directly.
+
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ drivers/net/wireguard/queueing.h | 19 ++-----------------
+ drivers/net/wireguard/receive.c  |  2 +-
+ 2 files changed, 3 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/wireguard/queueing.h
++++ b/drivers/net/wireguard/queueing.h
+@@ -11,6 +11,7 @@
+ #include <linux/skbuff.h>
+ #include <linux/ip.h>
+ #include <linux/ipv6.h>
++#include <net/ip_tunnels.h>
+ 
+ struct wg_device;
+ struct wg_peer;
+@@ -65,25 +66,9 @@ struct packet_cb {
+ #define PACKET_CB(skb) ((struct packet_cb *)((skb)->cb))
+ #define PACKET_PEER(skb) (PACKET_CB(skb)->keypair->entry.peer)
+ 
+-/* Returns either the correct skb->protocol value, or 0 if invalid. */
+-static inline __be16 wg_examine_packet_protocol(struct sk_buff *skb)
+-{
+-	if (skb_network_header(skb) >= skb->head &&
+-	    (skb_network_header(skb) + sizeof(struct iphdr)) <=
+-		    skb_tail_pointer(skb) &&
+-	    ip_hdr(skb)->version == 4)
+-		return htons(ETH_P_IP);
+-	if (skb_network_header(skb) >= skb->head &&
+-	    (skb_network_header(skb) + sizeof(struct ipv6hdr)) <=
+-		    skb_tail_pointer(skb) &&
+-	    ipv6_hdr(skb)->version == 6)
+-		return htons(ETH_P_IPV6);
+-	return 0;
+-}
+-
+ static inline bool wg_check_packet_protocol(struct sk_buff *skb)
+ {
+-	__be16 real_protocol = wg_examine_packet_protocol(skb);
++	__be16 real_protocol = ip_tunnel_parse_protocol(skb);
+ 	return real_protocol && skb->protocol == real_protocol;
+ }
+ 
+--- a/drivers/net/wireguard/receive.c
++++ b/drivers/net/wireguard/receive.c
+@@ -387,7 +387,7 @@ static void wg_packet_consume_data_done(
+ 	 */
+ 	skb->ip_summed = CHECKSUM_UNNECESSARY;
+ 	skb->csum_level = ~0; /* All levels */
+-	skb->protocol = wg_examine_packet_protocol(skb);
++	skb->protocol = ip_tunnel_parse_protocol(skb);
+ 	if (skb->protocol == htons(ETH_P_IP)) {
+ 		len = ntohs(ip_hdr(skb)->tot_len);
+ 		if (unlikely(len < sizeof(struct iphdr)))

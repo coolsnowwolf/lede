@@ -1,0 +1,375 @@
+From 42cb399df978a33539b95d668b3f973d927cb902 Mon Sep 17 00:00:00 2001
+From: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Date: Mon, 17 Dec 2012 23:37:57 +0100
+Subject: net: switchlib: add driver for REALTEK RTL8306
+
+Signed-off-by: Oliver Muth <dr.o.muth@gmx.de>
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+
+--- a/drivers/net/switch/Makefile
++++ b/drivers/net/switch/Makefile
+@@ -13,6 +13,7 @@ COBJS-$(CONFIG_SWITCH_MULTI) += switch.o
+ COBJS-$(CONFIG_SWITCH_PSB697X) += psb697x.o
+ COBJS-$(CONFIG_SWITCH_ADM6996I) += adm6996i.o
+ COBJS-$(CONFIG_SWITCH_AR8216) += ar8216.o
++COBJS-$(CONFIG_SWITCH_RTL8306) += rtl8306.o
+ 
+ COBJS	:= $(COBJS-y)
+ SRCS	:= $(COBJS:.o=.c)
+--- /dev/null
++++ b/drivers/net/switch/rtl8306.c
+@@ -0,0 +1,332 @@
++/*
++ * Based on OpenWrt linux driver
++ *
++ * Copyright (C) 2011-2012 Daniel Schwierzeck, daniel.schwierzeck@gmail.com
++ * Copyright (C) 2009 Felix Fietkau <nbd@nbd.name>
++ *
++ * SPDX-License-Identifier:	GPL-2.0+
++ */
++#define DEBUG
++#include <common.h>
++#include <malloc.h>
++#include <switch.h>
++#include <miiphy.h>
++
++#define RTL8306_REG_PAGE		16
++#define RTL8306_REG_PAGE_LO		(1 << 15)
++#define RTL8306_REG_PAGE_HI		(1 << 1) /* inverted */
++#define RTL8306_CHIPID			0x5988
++
++#define RTL8306_NUM_VLANS		16
++#define RTL8306_NUM_PORTS		6
++#define RTL8306_PORT_CPU		5
++#define RTL8306_NUM_PAGES		4
++#define RTL8306_NUM_REGS		32
++
++enum {
++	RTL_TYPE_S,
++	RTL_TYPE_SD,
++	RTL_TYPE_SDM,
++};
++
++struct rtl_reg {
++	int page;
++	int phy;
++	int reg;
++	int bits;
++	int shift;
++	int inverted;
++};
++
++enum rtl_regidx {
++	RTL_REG_CHIPID,
++	RTL_REG_CHIPVER,
++	RTL_REG_CHIPTYPE,
++	RTL_REG_CPUPORT,
++
++	RTL_REG_EN_CPUPORT,
++	RTL_REG_EN_TAG_OUT,
++	RTL_REG_EN_TAG_CLR,
++	RTL_REG_EN_TAG_IN,
++	RTL_REG_TRAP_CPU,
++	RTL_REG_TRUNK_PORTSEL,
++	RTL_REG_EN_TRUNK,
++	RTL_REG_RESET,
++	RTL_REG_PHY_RESET,
++	RTL_REG_CPU_LINKUP,
++
++	RTL_REG_VLAN_ENABLE,
++	RTL_REG_VLAN_FILTER,
++	RTL_REG_VLAN_TAG_ONLY,
++	RTL_REG_VLAN_TAG_AWARE,
++#define RTL_VLAN_ENUM(id) \
++	RTL_REG_VLAN##id##_VID, \
++	RTL_REG_VLAN##id##_PORTMASK
++	RTL_VLAN_ENUM(0),
++	RTL_VLAN_ENUM(1),
++	RTL_VLAN_ENUM(2),
++	RTL_VLAN_ENUM(3),
++	RTL_VLAN_ENUM(4),
++	RTL_VLAN_ENUM(5),
++	RTL_VLAN_ENUM(6),
++	RTL_VLAN_ENUM(7),
++	RTL_VLAN_ENUM(8),
++	RTL_VLAN_ENUM(9),
++	RTL_VLAN_ENUM(10),
++	RTL_VLAN_ENUM(11),
++	RTL_VLAN_ENUM(12),
++	RTL_VLAN_ENUM(13),
++	RTL_VLAN_ENUM(14),
++	RTL_VLAN_ENUM(15),
++#define RTL_PORT_ENUM(id) \
++	RTL_REG_PORT##id##_PVID, \
++	RTL_REG_PORT##id##_NULL_VID_REPLACE, \
++	RTL_REG_PORT##id##_NON_PVID_DISCARD, \
++	RTL_REG_PORT##id##_VID_INSERT, \
++	RTL_REG_PORT##id##_TAG_INSERT, \
++	RTL_REG_PORT##id##_LINK, \
++	RTL_REG_PORT##id##_SPEED, \
++	RTL_REG_PORT##id##_NWAY, \
++	RTL_REG_PORT##id##_NRESTART, \
++	RTL_REG_PORT##id##_DUPLEX, \
++	RTL_REG_PORT##id##_RXEN, \
++	RTL_REG_PORT##id##_TXEN, \
++	RTL_REG_PORT##id##_LRNEN
++	RTL_PORT_ENUM(0),
++	RTL_PORT_ENUM(1),
++	RTL_PORT_ENUM(2),
++	RTL_PORT_ENUM(3),
++	RTL_PORT_ENUM(4),
++	RTL_PORT_ENUM(5),
++};
++
++static const struct rtl_reg rtl_regs[] = {
++	[RTL_REG_CHIPID]         = { 0, 4, 30, 16,  0, 0 },
++	[RTL_REG_CHIPVER]        = { 0, 4, 31,  8,  0, 0 },
++	[RTL_REG_CHIPTYPE]       = { 0, 4, 31,  2,  8, 0 },
++
++	/* CPU port number */
++	[RTL_REG_CPUPORT]        = { 2, 4, 21,  3,  0, 0 },
++	/* Enable CPU port function */
++	[RTL_REG_EN_CPUPORT]     = { 3, 2, 21,  1, 15, 1 },
++	/* Enable CPU port tag insertion */
++	[RTL_REG_EN_TAG_OUT]     = { 3, 2, 21,  1, 12, 0 },
++	/* Enable CPU port tag removal */
++	[RTL_REG_EN_TAG_CLR]     = { 3, 2, 21,  1, 11, 0 },
++	/* Enable CPU port tag checking */
++	[RTL_REG_EN_TAG_IN]      = { 0, 4, 21,  1,  7, 0 },
++	[RTL_REG_EN_TRUNK]       = { 0, 0, 19,  1, 11, 1 },
++	[RTL_REG_TRUNK_PORTSEL]  = { 0, 0, 16,  1,  6, 1 },
++	[RTL_REG_RESET]          = { 0, 0, 16,  1, 12, 0 },
++	[RTL_REG_PHY_RESET]	 = { 0, 0,  0,  1, 15, 0 },
++	[RTL_REG_CPU_LINKUP]	 = { 0, 6, 22,  1, 15, 0 },
++	[RTL_REG_TRAP_CPU]       = { 3, 2, 22,  1,  6, 0 },
++
++	[RTL_REG_VLAN_TAG_ONLY]  = { 0, 0, 16,  1,  8, 1 },
++	[RTL_REG_VLAN_FILTER]    = { 0, 0, 16,  1,  9, 1 },
++	[RTL_REG_VLAN_TAG_AWARE] = { 0, 0, 16,  1, 10, 1 },
++	[RTL_REG_VLAN_ENABLE]    = { 0, 0, 18,  1,  8, 1 },
++
++#define RTL_VLAN_REGS(id, phy, page, regofs) \
++	[RTL_REG_VLAN##id##_VID] = { page, phy, 25 + regofs, 12, 0, 0 }, \
++	[RTL_REG_VLAN##id##_PORTMASK] = { page, phy, 24 + regofs, 6, 0, 0 }
++	RTL_VLAN_REGS( 0, 0, 0, 0),
++	RTL_VLAN_REGS( 1, 1, 0, 0),
++	RTL_VLAN_REGS( 2, 2, 0, 0),
++	RTL_VLAN_REGS( 3, 3, 0, 0),
++	RTL_VLAN_REGS( 4, 4, 0, 0),
++	RTL_VLAN_REGS( 5, 0, 1, 2),
++	RTL_VLAN_REGS( 6, 1, 1, 2),
++	RTL_VLAN_REGS( 7, 2, 1, 2),
++	RTL_VLAN_REGS( 8, 3, 1, 2),
++	RTL_VLAN_REGS( 9, 4, 1, 2),
++	RTL_VLAN_REGS(10, 0, 1, 4),
++	RTL_VLAN_REGS(11, 1, 1, 4),
++	RTL_VLAN_REGS(12, 2, 1, 4),
++	RTL_VLAN_REGS(13, 3, 1, 4),
++	RTL_VLAN_REGS(14, 4, 1, 4),
++	RTL_VLAN_REGS(15, 0, 1, 6),
++
++#define REG_PORT_SETTING(port, phy) \
++	[RTL_REG_PORT##port##_SPEED] = { 0, phy, 0, 1, 13, 0 }, \
++	[RTL_REG_PORT##port##_NWAY] = { 0, phy, 0, 1, 12, 0 }, \
++	[RTL_REG_PORT##port##_NRESTART] = { 0, phy, 0, 1, 9, 0 }, \
++	[RTL_REG_PORT##port##_DUPLEX] = { 0, phy, 0, 1, 8, 0 }, \
++	[RTL_REG_PORT##port##_TXEN] = { 0, phy, 24, 1, 11, 0 }, \
++	[RTL_REG_PORT##port##_RXEN] = { 0, phy, 24, 1, 10, 0 }, \
++	[RTL_REG_PORT##port##_LRNEN] = { 0, phy, 24, 1, 9, 0 }, \
++	[RTL_REG_PORT##port##_LINK] = { 0, phy, 1, 1, 2, 0 }, \
++	[RTL_REG_PORT##port##_NULL_VID_REPLACE] = { 0, phy, 22, 1, 12, 0 }, \
++	[RTL_REG_PORT##port##_NON_PVID_DISCARD] = { 0, phy, 22, 1, 11, 0 }, \
++	[RTL_REG_PORT##port##_VID_INSERT] = { 0, phy, 22, 2, 9, 0 }, \
++	[RTL_REG_PORT##port##_TAG_INSERT] = { 0, phy, 22, 2, 0, 0 }
++
++	REG_PORT_SETTING(0, 0),
++	REG_PORT_SETTING(1, 1),
++	REG_PORT_SETTING(2, 2),
++	REG_PORT_SETTING(3, 3),
++	REG_PORT_SETTING(4, 4),
++	REG_PORT_SETTING(5, 6),
++
++#define REG_PORT_PVID(phy, page, regofs) \
++	{ page, phy, 24 + regofs, 4, 12, 0 }
++	[RTL_REG_PORT0_PVID] = REG_PORT_PVID(0, 0, 0),
++	[RTL_REG_PORT1_PVID] = REG_PORT_PVID(1, 0, 0),
++	[RTL_REG_PORT2_PVID] = REG_PORT_PVID(2, 0, 0),
++	[RTL_REG_PORT3_PVID] = REG_PORT_PVID(3, 0, 0),
++	[RTL_REG_PORT4_PVID] = REG_PORT_PVID(4, 0, 0),
++	[RTL_REG_PORT5_PVID] = REG_PORT_PVID(0, 1, 2),
++};
++
++static void rtl_set_page(struct mii_dev *bus, unsigned int page)
++{
++	u16 pgsel;
++
++	BUG_ON(page > RTL8306_NUM_PAGES);
++
++	pgsel = bus->read(bus, 0, MDIO_DEVAD_NONE, RTL8306_REG_PAGE);
++	pgsel &= ~(RTL8306_REG_PAGE_LO | RTL8306_REG_PAGE_HI);
++
++	if (page & (1 << 0))
++		pgsel |= RTL8306_REG_PAGE_LO;
++
++	if (!(page & (1 << 1))) /* bit is inverted */
++		pgsel |= RTL8306_REG_PAGE_HI;
++
++	bus->write(bus, 0, MDIO_DEVAD_NONE, RTL8306_REG_PAGE, pgsel);
++
++}
++
++static __maybe_unused int rtl_w16(struct mii_dev *bus, unsigned int page, unsigned int phy,
++			unsigned int reg, u16 val)
++{
++	rtl_set_page(bus, page);
++
++	bus->write(bus, phy, MDIO_DEVAD_NONE, reg, val);
++	bus->read(bus, phy, MDIO_DEVAD_NONE, reg); /* flush */
++
++	return 0;
++}
++
++static int rtl_r16(struct mii_dev *bus, unsigned int page, unsigned int phy,
++			unsigned int reg)
++{
++	rtl_set_page(bus, page);
++
++	return bus->read(bus, phy, MDIO_DEVAD_NONE, reg);
++}
++
++static u16 rtl_rmw(struct mii_dev *bus, unsigned int page, unsigned int phy,
++			unsigned int reg, u16 mask, u16 val)
++{
++	u16 r;
++
++	rtl_set_page(bus, page);
++
++	r = bus->read(bus, phy, MDIO_DEVAD_NONE, reg);
++	r &= ~mask;
++	r |= val;
++	bus->write(bus, phy, MDIO_DEVAD_NONE, reg, r);
++
++	return bus->read(bus, phy, MDIO_DEVAD_NONE, reg); /* flush */
++}
++
++static int rtl_get(struct mii_dev *bus, enum rtl_regidx s)
++{
++	const struct rtl_reg *r = &rtl_regs[s];
++	u16 val;
++
++	BUG_ON(s >= ARRAY_SIZE(rtl_regs));
++
++	if (r->bits == 0) /* unimplemented */
++		return 0;
++
++	val = rtl_r16(bus, r->page, r->phy, r->reg);
++
++	if (r->shift > 0)
++		val >>= r->shift;
++
++	if (r->inverted)
++		val = ~val;
++
++	val &= (1 << r->bits) - 1;
++
++	return val;
++}
++
++static __maybe_unused int rtl_set(struct mii_dev *bus, enum rtl_regidx s, unsigned int val)
++{
++	const struct rtl_reg *r = &rtl_regs[s];
++	u16 mask = 0xffff;
++
++	BUG_ON(s >= ARRAY_SIZE(rtl_regs));
++
++	if (r->bits == 0) /* unimplemented */
++		return 0;
++
++	if (r->shift > 0)
++		val <<= r->shift;
++
++	if (r->inverted)
++		val = ~val;
++
++	if (r->bits != 16) {
++		mask = (1 << r->bits) - 1;
++		mask <<= r->shift;
++	}
++
++	val &= mask;
++
++	return rtl_rmw(bus, r->page, r->phy, r->reg, mask, val);
++}
++
++static int rtl8306_probe(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++	unsigned int chipid, chipver, chiptype;
++
++	chipid = rtl_get(bus, RTL_REG_CHIPID);
++	chipver = rtl_get(bus, RTL_REG_CHIPVER);
++	chiptype = rtl_get(bus, RTL_REG_CHIPTYPE);
++
++	debug("%s: chipid %x, chipver %x, chiptype %x\n",
++		__func__, chipid, chipver, chiptype);
++
++	if (chipid == RTL8306_CHIPID)
++		return 0;
++
++	return 1;
++}
++
++static void rtl8306_setup(struct switch_device *dev)
++{
++	struct mii_dev *bus = dev->bus;
++
++	/* initialize cpu port settings */
++	rtl_set(bus, RTL_REG_CPUPORT, dev->cpu_port);
++	rtl_set(bus, RTL_REG_EN_CPUPORT, 1);
++
++	/* enable phy 5 link status */
++	rtl_set(bus, RTL_REG_CPU_LINKUP, 1);
++//	rtl_set(bus, RTL_REG_PORT5_TXEN, 1);
++//	rtl_set(bus, RTL_REG_PORT5_RXEN, 1);
++//	rtl_set(bus, RTL_REG_PORT5_LRNEN, 1);
++#ifdef DEBUG
++ debug("%s: CPU link up: %i\n",
++		__func__, rtl_get(bus, RTL_REG_PORT5_LINK));
++#endif
++
++}
++
++static struct switch_driver rtl8306_drv = {
++	.name = "rtl8306",
++};
++
++void switch_rtl8306_init(void)
++{
++	/* For archs with manual relocation */
++	rtl8306_drv.probe = rtl8306_probe;
++	rtl8306_drv.setup = rtl8306_setup;
++
++	switch_driver_register(&rtl8306_drv);
++}
+--- a/drivers/net/switch/switch.c
++++ b/drivers/net/switch/switch.c
+@@ -26,6 +26,9 @@ void switch_init(void)
+ #if defined(CONFIG_SWITCH_AR8216)
+ 	switch_ar8216_init();
+ #endif
++#if defined(CONFIG_SWITCH_RTL8306)
++	switch_rtl8306_init();
++#endif
+ 
+ 	board_switch_init();
+ }
+--- a/include/switch.h
++++ b/include/switch.h
+@@ -100,6 +100,7 @@ static inline void switch_setup(struct s
+ extern void switch_psb697x_init(void);
+ extern void switch_adm6996i_init(void);
+ extern void switch_ar8216_init(void);
++extern void switch_rtl8306_init(void);
+ 
+ #endif /* __SWITCH_H */
+ 

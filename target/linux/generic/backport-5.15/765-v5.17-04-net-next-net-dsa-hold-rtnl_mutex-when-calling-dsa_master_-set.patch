@@ -1,0 +1,78 @@
+From c146f9bc195a9dc3ad7fd000a14540e7c9df952d Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Thu, 6 Jan 2022 01:11:15 +0200
+Subject: [PATCH 4/6] net: dsa: hold rtnl_mutex when calling
+ dsa_master_{setup,teardown}
+
+DSA needs to simulate master tracking events when a binding is first
+with a DSA master established and torn down, in order to give drivers
+the simplifying guarantee that ->master_state_change calls are made
+only when the master's readiness state to pass traffic changes.
+master_state_change() provide a operational bool that DSA driver can use
+to understand if DSA master is operational or not.
+To avoid races, we need to block the reception of
+NETDEV_UP/NETDEV_CHANGE/NETDEV_GOING_DOWN events in the netdev notifier
+chain while we are changing the master's dev->dsa_ptr (this changes what
+netdev_uses_dsa(dev) reports).
+
+The dsa_master_setup() and dsa_master_teardown() functions optionally
+require the rtnl_mutex to be held, if the tagger needs the master to be
+promiscuous, these functions call dev_set_promiscuity(). Move the
+rtnl_lock() from that function and make it top-level.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Florian Fainelli <f.fainelli@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/dsa/dsa2.c   | 8 ++++++++
+ net/dsa/master.c | 4 ++--
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -1056,6 +1056,8 @@ static int dsa_tree_setup_master(struct
+ 	struct dsa_port *dp;
+ 	int err;
+ 
++	rtnl_lock();
++
+ 	list_for_each_entry(dp, &dst->ports, list) {
+ 		if (dsa_port_is_cpu(dp)) {
+ 			err = dsa_master_setup(dp->master, dp);
+@@ -1064,6 +1066,8 @@ static int dsa_tree_setup_master(struct
+ 		}
+ 	}
+ 
++	rtnl_unlock();
++
+ 	return 0;
+ }
+ 
+@@ -1071,9 +1075,13 @@ static void dsa_tree_teardown_master(str
+ {
+ 	struct dsa_port *dp;
+ 
++	rtnl_lock();
++
+ 	list_for_each_entry(dp, &dst->ports, list)
+ 		if (dsa_port_is_cpu(dp))
+ 			dsa_master_teardown(dp->master);
++
++	rtnl_unlock();
+ }
+ 
+ static int dsa_tree_setup_lags(struct dsa_switch_tree *dst)
+--- a/net/dsa/master.c
++++ b/net/dsa/master.c
+@@ -266,9 +266,9 @@ static void dsa_master_set_promiscuity(s
+ 	if (!ops->promisc_on_master)
+ 		return;
+ 
+-	rtnl_lock();
++	ASSERT_RTNL();
++
+ 	dev_set_promiscuity(dev, inc);
+-	rtnl_unlock();
+ }
+ 
+ static ssize_t tagging_show(struct device *d, struct device_attribute *attr,

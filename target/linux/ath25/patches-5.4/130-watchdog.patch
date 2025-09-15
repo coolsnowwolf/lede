@@ -1,0 +1,277 @@
+--- /dev/null
++++ b/drivers/watchdog/ar2315-wtd.c
+@@ -0,0 +1,209 @@
++/*
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ *
++ * Copyright (C) 2008 John Crispin <blogic@openwrt.org>
++ * Based on EP93xx and ifxmips wdt driver
++ */
++
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/moduleparam.h>
++#include <linux/types.h>
++#include <linux/miscdevice.h>
++#include <linux/watchdog.h>
++#include <linux/fs.h>
++#include <linux/ioport.h>
++#include <linux/notifier.h>
++#include <linux/reboot.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
++#include <linux/io.h>
++#include <linux/uaccess.h>
++
++#define DRIVER_NAME	"ar2315-wdt"
++
++#define CLOCK_RATE 40000000
++#define HEARTBEAT(x) (x < 1 || x > 90 ? 20 : x)
++
++#define WDT_REG_TIMER		0x00
++#define WDT_REG_CTRL		0x04
++
++#define WDT_CTRL_ACT_NONE	0x00000000	/* No action */
++#define WDT_CTRL_ACT_NMI	0x00000001	/* NMI on watchdog */
++#define WDT_CTRL_ACT_RESET	0x00000002	/* reset on watchdog */
++
++static int wdt_timeout = 20;
++static int started;
++static int in_use;
++static void __iomem *wdt_base;
++
++static inline void ar2315_wdt_wr(unsigned reg, u32 val)
++{
++	iowrite32(val, wdt_base + reg);
++}
++
++static void
++ar2315_wdt_enable(void)
++{
++	ar2315_wdt_wr(WDT_REG_TIMER, wdt_timeout * CLOCK_RATE);
++}
++
++static ssize_t
++ar2315_wdt_write(struct file *file, const char __user *data, size_t len,
++		 loff_t *ppos)
++{
++	if (len)
++		ar2315_wdt_enable();
++	return len;
++}
++
++static int
++ar2315_wdt_open(struct inode *inode, struct file *file)
++{
++	if (in_use)
++		return -EBUSY;
++	ar2315_wdt_enable();
++	in_use = 1;
++	started = 1;
++	return nonseekable_open(inode, file);
++}
++
++static int
++ar2315_wdt_release(struct inode *inode, struct file *file)
++{
++	in_use = 0;
++	return 0;
++}
++
++static irqreturn_t
++ar2315_wdt_interrupt(int irq, void *dev)
++{
++	struct platform_device *pdev = (struct platform_device *)dev;
++
++	if (started) {
++		dev_crit(&pdev->dev, "watchdog expired, rebooting system\n");
++		emergency_restart();
++	} else {
++		ar2315_wdt_wr(WDT_REG_CTRL, 0);
++		ar2315_wdt_wr(WDT_REG_TIMER, 0);
++	}
++	return IRQ_HANDLED;
++}
++
++static struct watchdog_info ident = {
++	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING,
++	.identity = "ar2315 Watchdog",
++};
++
++static long
++ar2315_wdt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	int new_wdt_timeout;
++	int ret = -ENOIOCTLCMD;
++
++	switch (cmd) {
++	case WDIOC_GETSUPPORT:
++		ret = copy_to_user((void __user *)arg, &ident, sizeof(ident)) ?
++		      -EFAULT : 0;
++		break;
++	case WDIOC_KEEPALIVE:
++		ar2315_wdt_enable();
++		ret = 0;
++		break;
++	case WDIOC_SETTIMEOUT:
++		ret = get_user(new_wdt_timeout, (int __user *)arg);
++		if (ret)
++			break;
++		wdt_timeout = HEARTBEAT(new_wdt_timeout);
++		ar2315_wdt_enable();
++		break;
++	case WDIOC_GETTIMEOUT:
++		ret = put_user(wdt_timeout, (int __user *)arg);
++		break;
++	}
++	return ret;
++}
++
++static const struct file_operations ar2315_wdt_fops = {
++	.owner		= THIS_MODULE,
++	.llseek		= no_llseek,
++	.write		= ar2315_wdt_write,
++	.unlocked_ioctl	= ar2315_wdt_ioctl,
++	.open		= ar2315_wdt_open,
++	.release	= ar2315_wdt_release,
++};
++
++static struct miscdevice ar2315_wdt_miscdev = {
++	.minor	= WATCHDOG_MINOR,
++	.name	= "watchdog",
++	.fops	= &ar2315_wdt_fops,
++};
++
++static int
++ar2315_wdt_probe(struct platform_device *dev)
++{
++	struct resource *mem_res, *irq_res;
++	int ret = 0;
++
++	if (wdt_base)
++		return -EBUSY;
++
++	irq_res = platform_get_resource(dev, IORESOURCE_IRQ, 0);
++	if (!irq_res) {
++		dev_err(&dev->dev, "no IRQ resource\n");
++		return -ENOENT;
++	}
++
++	mem_res = platform_get_resource(dev, IORESOURCE_MEM, 0);
++	wdt_base = devm_ioremap_resource(&dev->dev, mem_res);
++	if (IS_ERR(wdt_base))
++		return PTR_ERR(wdt_base);
++
++	ret = devm_request_irq(&dev->dev, irq_res->start, ar2315_wdt_interrupt,
++			       0, DRIVER_NAME, dev);
++	if (ret) {
++		dev_err(&dev->dev, "failed to register inetrrupt\n");
++		goto out;
++	}
++
++	ret = misc_register(&ar2315_wdt_miscdev);
++	if (ret)
++		dev_err(&dev->dev, "failed to register miscdev\n");
++
++out:
++	return ret;
++}
++
++static int
++ar2315_wdt_remove(struct platform_device *dev)
++{
++	misc_deregister(&ar2315_wdt_miscdev);
++	return 0;
++}
++
++static struct platform_driver ar2315_wdt_driver = {
++	.probe = ar2315_wdt_probe,
++	.remove = ar2315_wdt_remove,
++	.driver = {
++		.name = DRIVER_NAME,
++		.owner = THIS_MODULE,
++	},
++};
++
++module_platform_driver(ar2315_wdt_driver);
++
++MODULE_DESCRIPTION("Atheros AR2315 hardware watchdog driver");
++MODULE_AUTHOR("John Crispin <blogic@openwrt.org>");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("platform:" DRIVER_NAME);
+--- a/drivers/watchdog/Kconfig
++++ b/drivers/watchdog/Kconfig
+@@ -1832,6 +1832,13 @@ config PIC32_DMT
+ 	  To compile this driver as a loadable module, choose M here.
+ 	  The module will be called pic32-dmt.
+ 
++config AR2315_WDT
++	tristate "Atheros AR2315+ WiSoCs Watchdog Timer"
++	depends on ATH25
++	help
++	  Hardware driver for the built-in watchdog timer on the Atheros
++	  AR2315/AR2316 WiSoCs.
++
+ # PARISC Architecture
+ 
+ # POWERPC Architecture
+--- a/drivers/watchdog/Makefile
++++ b/drivers/watchdog/Makefile
+@@ -161,6 +161,7 @@ obj-$(CONFIG_WDT_MTX1) += mtx-1_wdt.o
+ obj-$(CONFIG_PNX833X_WDT) += pnx833x_wdt.o
+ obj-$(CONFIG_SIBYTE_WDOG) += sb_wdog.o
+ obj-$(CONFIG_AR7_WDT) += ar7_wdt.o
++obj-$(CONFIG_AR2315_WDT) += ar2315-wtd.o
+ obj-$(CONFIG_TXX9_WDT) += txx9wdt.o
+ obj-$(CONFIG_OCTEON_WDT) += octeon-wdt.o
+ octeon-wdt-y := octeon-wdt-main.o octeon-wdt-nmi.o
+--- a/arch/mips/ath25/ar2315.c
++++ b/arch/mips/ath25/ar2315.c
+@@ -220,6 +220,24 @@ static struct platform_device ar2315_gpi
+ 	.num_resources = ARRAY_SIZE(ar2315_gpio_res)
+ };
+ 
++static struct resource ar2315_wdt_res[] = {
++	{
++		.flags = IORESOURCE_MEM,
++		.start = AR2315_RST_BASE + AR2315_WDT_TIMER,
++		.end = AR2315_RST_BASE + AR2315_WDT_TIMER + 8 - 1,
++	},
++	{
++		.flags = IORESOURCE_IRQ,
++	}
++};
++
++static struct platform_device ar2315_wdt = {
++	.id = 0,
++	.name = "ar2315-wdt",
++	.resource = ar2315_wdt_res,
++	.num_resources = ARRAY_SIZE(ar2315_wdt_res)
++};
++
+ static struct resource ar2315_spiflash_res[] = {
+ 	{
+ 		.name = "spiflash_read",
+@@ -252,6 +270,11 @@ void __init ar2315_init_devices(void)
+ 	ar2315_gpio_res[1].end = ar2315_gpio_res[1].start;
+ 	platform_device_register(&ar2315_gpio);
+ 
++	ar2315_wdt_res[1].start = irq_create_mapping(ar2315_misc_irq_domain,
++						     AR2315_MISC_IRQ_WATCHDOG);
++	ar2315_wdt_res[1].end = ar2315_wdt_res[1].start;
++	platform_device_register(&ar2315_wdt);
++
+ 	platform_device_register(&ar2315_spiflash);
+ 
+ 	ar2315_eth_data.macaddr = ath25_board.config->enet0_mac;

@@ -1,0 +1,83 @@
+From 7164a8cde4b42f76474088ccaf53f1e463d4e2f6 Mon Sep 17 00:00:00 2001
+From: Tobias Waldekranz <tobias@waldekranz.com>
+Date: Mon, 24 Jan 2022 22:09:43 +0100
+Subject: [PATCH 5.10 1/2] net: dsa: Move VLAN filtering syncing out of
+ dsa_switch_bridge_leave
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 381a730182f1d174e1950cd4e63e885b1c302051 upstream.
+
+Most of dsa_switch_bridge_leave was, in fact, dealing with the syncing
+of VLAN filtering for switches on which that is a global
+setting. Separate the two phases to prepare for the cross-chip related
+bugfix in the following commit.
+
+Signed-off-by: Tobias Waldekranz <tobias@waldekranz.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+Signed-off-by: Marek Behún <kabel@kernel.org>
+---
+ net/dsa/switch.c | 39 ++++++++++++++++++++++++++-------------
+ 1 file changed, 26 insertions(+), 13 deletions(-)
+
+--- a/net/dsa/switch.c
++++ b/net/dsa/switch.c
+@@ -104,23 +104,12 @@ static int dsa_switch_bridge_join(struct
+ 	return 0;
+ }
+ 
+-static int dsa_switch_bridge_leave(struct dsa_switch *ds,
+-				   struct dsa_notifier_bridge_info *info)
++static int dsa_switch_sync_vlan_filtering(struct dsa_switch *ds,
++					  struct dsa_notifier_bridge_info *info)
+ {
+ 	bool unset_vlan_filtering = br_vlan_enabled(info->br);
+-	struct dsa_switch_tree *dst = ds->dst;
+ 	int err, i;
+ 
+-	if (dst->index == info->tree_index && ds->index == info->sw_index &&
+-	    ds->ops->port_bridge_leave)
+-		ds->ops->port_bridge_leave(ds, info->port, info->br);
+-
+-	if ((dst->index != info->tree_index || ds->index != info->sw_index) &&
+-	    ds->ops->crosschip_bridge_leave)
+-		ds->ops->crosschip_bridge_leave(ds, info->tree_index,
+-						info->sw_index, info->port,
+-						info->br);
+-
+ 	/* If the bridge was vlan_filtering, the bridge core doesn't trigger an
+ 	 * event for changing vlan_filtering setting upon slave ports leaving
+ 	 * it. That is a good thing, because that lets us handle it and also
+@@ -153,6 +142,30 @@ static int dsa_switch_bridge_leave(struc
+ 		if (err && err != EOPNOTSUPP)
+ 			return err;
+ 	}
++
++	return 0;
++}
++
++static int dsa_switch_bridge_leave(struct dsa_switch *ds,
++				   struct dsa_notifier_bridge_info *info)
++{
++	struct dsa_switch_tree *dst = ds->dst;
++	int err;
++
++	if (dst->index == info->tree_index && ds->index == info->sw_index &&
++	    ds->ops->port_bridge_leave)
++		ds->ops->port_bridge_leave(ds, info->port, info->br);
++
++	if ((dst->index != info->tree_index || ds->index != info->sw_index) &&
++	    ds->ops->crosschip_bridge_leave)
++		ds->ops->crosschip_bridge_leave(ds, info->tree_index,
++						info->sw_index, info->port,
++						info->br);
++
++	err = dsa_switch_sync_vlan_filtering(ds, info);
++	if (err)
++		return err;
++
+ 	return 0;
+ }
+ 

@@ -1,0 +1,261 @@
+From bba140a566ed075304c49c52ab32c0016cab624a Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Fri, 9 Feb 2024 02:03:46 -0300
+Subject: net: dsa: realtek: use the same mii bus driver for
+ both interfaces
+
+The realtek-mdio will now use this driver instead of the generic DSA
+driver ("dsa user smi"), which should not be used with OF[1].
+
+With a single ds_ops for both interfaces, the ds_ops in realtek_priv is
+no longer necessary. Now, the realtek_variant.ds_ops can be used
+directly.
+
+The realtek_priv.setup_interface() has been removed as we can directly
+call the new common function.
+
+[1] https://lkml.kernel.org/netdev/20220630200423.tieprdu5fpabflj7@bang-olufsen.dk/T/
+
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/realtek/realtek-mdio.c |  1 -
+ drivers/net/dsa/realtek/realtek-smi.c  |  2 -
+ drivers/net/dsa/realtek/realtek.h      |  5 +--
+ drivers/net/dsa/realtek/rtl8365mb.c    | 49 +++---------------------
+ drivers/net/dsa/realtek/rtl8366rb.c    | 52 +++-----------------------
+ drivers/net/dsa/realtek/rtl83xx.c      |  2 +-
+ 6 files changed, 14 insertions(+), 97 deletions(-)
+
+--- a/drivers/net/dsa/realtek/realtek-mdio.c
++++ b/drivers/net/dsa/realtek/realtek-mdio.c
+@@ -131,7 +131,6 @@ int realtek_mdio_probe(struct mdio_devic
+ 	priv->bus = mdiodev->bus;
+ 	priv->mdio_addr = mdiodev->addr;
+ 	priv->write_reg_noack = realtek_mdio_write;
+-	priv->ds_ops = priv->variant->ds_ops_mdio;
+ 
+ 	ret = rtl83xx_register_switch(priv);
+ 	if (ret) {
+--- a/drivers/net/dsa/realtek/realtek-smi.c
++++ b/drivers/net/dsa/realtek/realtek-smi.c
+@@ -352,8 +352,6 @@ int realtek_smi_probe(struct platform_de
+ 	}
+ 
+ 	priv->write_reg_noack = realtek_smi_write_reg_noack;
+-	priv->setup_interface = rtl83xx_setup_user_mdio;
+-	priv->ds_ops = priv->variant->ds_ops_smi;
+ 
+ 	ret = rtl83xx_register_switch(priv);
+ 	if (ret) {
+--- a/drivers/net/dsa/realtek/realtek.h
++++ b/drivers/net/dsa/realtek/realtek.h
+@@ -62,7 +62,6 @@ struct realtek_priv {
+ 
+ 	spinlock_t		lock; /* Locks around command writes */
+ 	struct dsa_switch	*ds;
+-	const struct dsa_switch_ops *ds_ops;
+ 	struct irq_domain	*irqdomain;
+ 	bool			leds_disabled;
+ 
+@@ -73,7 +72,6 @@ struct realtek_priv {
+ 	struct rtl8366_mib_counter *mib_counters;
+ 
+ 	const struct realtek_ops *ops;
+-	int			(*setup_interface)(struct dsa_switch *ds);
+ 	int			(*write_reg_noack)(void *ctx, u32 addr, u32 data);
+ 
+ 	int			vlan_enabled;
+@@ -115,8 +113,7 @@ struct realtek_ops {
+ };
+ 
+ struct realtek_variant {
+-	const struct dsa_switch_ops *ds_ops_smi;
+-	const struct dsa_switch_ops *ds_ops_mdio;
++	const struct dsa_switch_ops *ds_ops;
+ 	const struct realtek_ops *ops;
+ 	unsigned int clk_delay;
+ 	u8 cmd_read;
+--- a/drivers/net/dsa/realtek/rtl8365mb.c
++++ b/drivers/net/dsa/realtek/rtl8365mb.c
+@@ -828,17 +828,6 @@ static int rtl8365mb_phy_write(struct re
+ 	return 0;
+ }
+ 
+-static int rtl8365mb_dsa_phy_read(struct dsa_switch *ds, int phy, int regnum)
+-{
+-	return rtl8365mb_phy_read(ds->priv, phy, regnum);
+-}
+-
+-static int rtl8365mb_dsa_phy_write(struct dsa_switch *ds, int phy, int regnum,
+-				   u16 val)
+-{
+-	return rtl8365mb_phy_write(ds->priv, phy, regnum, val);
+-}
+-
+ static const struct rtl8365mb_extint *
+ rtl8365mb_get_port_extint(struct realtek_priv *priv, int port)
+ {
+@@ -2018,12 +2007,10 @@ static int rtl8365mb_setup(struct dsa_sw
+ 	if (ret)
+ 		goto out_teardown_irq;
+ 
+-	if (priv->setup_interface) {
+-		ret = priv->setup_interface(ds);
+-		if (ret) {
+-			dev_err(priv->dev, "could not set up MDIO bus\n");
+-			goto out_teardown_irq;
+-		}
++	ret = rtl83xx_setup_user_mdio(ds);
++	if (ret) {
++		dev_err(priv->dev, "could not set up MDIO bus\n");
++		goto out_teardown_irq;
+ 	}
+ 
+ 	/* Start statistics counter polling */
+@@ -2117,28 +2104,7 @@ static int rtl8365mb_detect(struct realt
+ 	return 0;
+ }
+ 
+-static const struct dsa_switch_ops rtl8365mb_switch_ops_smi = {
+-	.get_tag_protocol = rtl8365mb_get_tag_protocol,
+-	.change_tag_protocol = rtl8365mb_change_tag_protocol,
+-	.setup = rtl8365mb_setup,
+-	.teardown = rtl8365mb_teardown,
+-	.phylink_get_caps = rtl8365mb_phylink_get_caps,
+-	.phylink_mac_config = rtl8365mb_phylink_mac_config,
+-	.phylink_mac_link_down = rtl8365mb_phylink_mac_link_down,
+-	.phylink_mac_link_up = rtl8365mb_phylink_mac_link_up,
+-	.port_stp_state_set = rtl8365mb_port_stp_state_set,
+-	.get_strings = rtl8365mb_get_strings,
+-	.get_ethtool_stats = rtl8365mb_get_ethtool_stats,
+-	.get_sset_count = rtl8365mb_get_sset_count,
+-	.get_eth_phy_stats = rtl8365mb_get_phy_stats,
+-	.get_eth_mac_stats = rtl8365mb_get_mac_stats,
+-	.get_eth_ctrl_stats = rtl8365mb_get_ctrl_stats,
+-	.get_stats64 = rtl8365mb_get_stats64,
+-	.port_change_mtu = rtl8365mb_port_change_mtu,
+-	.port_max_mtu = rtl8365mb_port_max_mtu,
+-};
+-
+-static const struct dsa_switch_ops rtl8365mb_switch_ops_mdio = {
++static const struct dsa_switch_ops rtl8365mb_switch_ops = {
+ 	.get_tag_protocol = rtl8365mb_get_tag_protocol,
+ 	.change_tag_protocol = rtl8365mb_change_tag_protocol,
+ 	.setup = rtl8365mb_setup,
+@@ -2147,8 +2113,6 @@ static const struct dsa_switch_ops rtl83
+ 	.phylink_mac_config = rtl8365mb_phylink_mac_config,
+ 	.phylink_mac_link_down = rtl8365mb_phylink_mac_link_down,
+ 	.phylink_mac_link_up = rtl8365mb_phylink_mac_link_up,
+-	.phy_read = rtl8365mb_dsa_phy_read,
+-	.phy_write = rtl8365mb_dsa_phy_write,
+ 	.port_stp_state_set = rtl8365mb_port_stp_state_set,
+ 	.get_strings = rtl8365mb_get_strings,
+ 	.get_ethtool_stats = rtl8365mb_get_ethtool_stats,
+@@ -2168,8 +2132,7 @@ static const struct realtek_ops rtl8365m
+ };
+ 
+ const struct realtek_variant rtl8365mb_variant = {
+-	.ds_ops_smi = &rtl8365mb_switch_ops_smi,
+-	.ds_ops_mdio = &rtl8365mb_switch_ops_mdio,
++	.ds_ops = &rtl8365mb_switch_ops,
+ 	.ops = &rtl8365mb_ops,
+ 	.clk_delay = 10,
+ 	.cmd_read = 0xb9,
+--- a/drivers/net/dsa/realtek/rtl8366rb.c
++++ b/drivers/net/dsa/realtek/rtl8366rb.c
+@@ -1035,12 +1035,10 @@ static int rtl8366rb_setup(struct dsa_sw
+ 	if (ret)
+ 		dev_info(priv->dev, "no interrupt support\n");
+ 
+-	if (priv->setup_interface) {
+-		ret = priv->setup_interface(ds);
+-		if (ret) {
+-			dev_err(priv->dev, "could not set up MDIO bus\n");
+-			return -ENODEV;
+-		}
++	ret = rtl83xx_setup_user_mdio(ds);
++	if (ret) {
++		dev_err(priv->dev, "could not set up MDIO bus\n");
++		return -ENODEV;
+ 	}
+ 
+ 	return 0;
+@@ -1699,17 +1697,6 @@ out:
+ 	return ret;
+ }
+ 
+-static int rtl8366rb_dsa_phy_read(struct dsa_switch *ds, int phy, int regnum)
+-{
+-	return rtl8366rb_phy_read(ds->priv, phy, regnum);
+-}
+-
+-static int rtl8366rb_dsa_phy_write(struct dsa_switch *ds, int phy, int regnum,
+-				   u16 val)
+-{
+-	return rtl8366rb_phy_write(ds->priv, phy, regnum, val);
+-}
+-
+ static int rtl8366rb_reset_chip(struct realtek_priv *priv)
+ {
+ 	int timeout = 10;
+@@ -1775,35 +1762,9 @@ static int rtl8366rb_detect(struct realt
+ 	return 0;
+ }
+ 
+-static const struct dsa_switch_ops rtl8366rb_switch_ops_smi = {
+-	.get_tag_protocol = rtl8366_get_tag_protocol,
+-	.setup = rtl8366rb_setup,
+-	.phylink_get_caps = rtl8366rb_phylink_get_caps,
+-	.phylink_mac_link_up = rtl8366rb_mac_link_up,
+-	.phylink_mac_link_down = rtl8366rb_mac_link_down,
+-	.get_strings = rtl8366_get_strings,
+-	.get_ethtool_stats = rtl8366_get_ethtool_stats,
+-	.get_sset_count = rtl8366_get_sset_count,
+-	.port_bridge_join = rtl8366rb_port_bridge_join,
+-	.port_bridge_leave = rtl8366rb_port_bridge_leave,
+-	.port_vlan_filtering = rtl8366rb_vlan_filtering,
+-	.port_vlan_add = rtl8366_vlan_add,
+-	.port_vlan_del = rtl8366_vlan_del,
+-	.port_enable = rtl8366rb_port_enable,
+-	.port_disable = rtl8366rb_port_disable,
+-	.port_pre_bridge_flags = rtl8366rb_port_pre_bridge_flags,
+-	.port_bridge_flags = rtl8366rb_port_bridge_flags,
+-	.port_stp_state_set = rtl8366rb_port_stp_state_set,
+-	.port_fast_age = rtl8366rb_port_fast_age,
+-	.port_change_mtu = rtl8366rb_change_mtu,
+-	.port_max_mtu = rtl8366rb_max_mtu,
+-};
+-
+-static const struct dsa_switch_ops rtl8366rb_switch_ops_mdio = {
++static const struct dsa_switch_ops rtl8366rb_switch_ops = {
+ 	.get_tag_protocol = rtl8366_get_tag_protocol,
+ 	.setup = rtl8366rb_setup,
+-	.phy_read = rtl8366rb_dsa_phy_read,
+-	.phy_write = rtl8366rb_dsa_phy_write,
+ 	.phylink_get_caps = rtl8366rb_phylink_get_caps,
+ 	.phylink_mac_link_up = rtl8366rb_mac_link_up,
+ 	.phylink_mac_link_down = rtl8366rb_mac_link_down,
+@@ -1842,8 +1803,7 @@ static const struct realtek_ops rtl8366r
+ };
+ 
+ const struct realtek_variant rtl8366rb_variant = {
+-	.ds_ops_smi = &rtl8366rb_switch_ops_smi,
+-	.ds_ops_mdio = &rtl8366rb_switch_ops_mdio,
++	.ds_ops = &rtl8366rb_switch_ops,
+ 	.ops = &rtl8366rb_ops,
+ 	.clk_delay = 10,
+ 	.cmd_read = 0xa9,
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -233,7 +233,7 @@ int rtl83xx_register_switch(struct realt
+ 
+ 	ds->priv = priv;
+ 	ds->dev = priv->dev;
+-	ds->ops = priv->ds_ops;
++	ds->ops = priv->variant->ds_ops;
+ 	ds->num_ports = priv->num_ports;
+ 	priv->ds = ds;
+ 

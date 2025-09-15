@@ -1,0 +1,72 @@
+From 431e7d2eece5b906578926d15ee22a70504c364d Mon Sep 17 00:00:00 2001
+From: Peter Geis <pgwipeout@gmail.com>
+Date: Fri, 29 Apr 2022 08:38:28 -0400
+Subject: [PATCH] PCI: rockchip-dwc: Reset core at driver probe
+
+The PCIe controller is in an unknown state at driver probe. This can
+lead to undesireable effects when the driver attempts to configure the
+controller.
+
+Prevent issues in the future by resetting the core during probe.
+
+Link: https://lore.kernel.org/r/20220429123832.2376381-3-pgwipeout@gmail.com
+Tested-by: Nicolas Frattaroli <frattaroli.nicolas@gmail.com>
+Signed-off-by: Peter Geis <pgwipeout@gmail.com>
+Signed-off-by: Lorenzo Pieralisi <lorenzo.pieralisi@arm.com>
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 23 ++++++++-----------
+ 1 file changed, 10 insertions(+), 13 deletions(-)
+
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -152,6 +152,11 @@ static int rockchip_pcie_resource_get(st
+ 	if (IS_ERR(rockchip->rst_gpio))
+ 		return PTR_ERR(rockchip->rst_gpio);
+ 
++	rockchip->rst = devm_reset_control_array_get_exclusive(&pdev->dev);
++	if (IS_ERR(rockchip->rst))
++		return dev_err_probe(&pdev->dev, PTR_ERR(rockchip->rst),
++				     "failed to get reset lines\n");
++
+ 	return 0;
+ }
+ 
+@@ -182,18 +187,6 @@ static void rockchip_pcie_phy_deinit(str
+ 	phy_power_off(rockchip->phy);
+ }
+ 
+-static int rockchip_pcie_reset_control_release(struct rockchip_pcie *rockchip)
+-{
+-	struct device *dev = rockchip->pci.dev;
+-
+-	rockchip->rst = devm_reset_control_array_get_exclusive(dev);
+-	if (IS_ERR(rockchip->rst))
+-		return dev_err_probe(dev, PTR_ERR(rockchip->rst),
+-				     "failed to get reset lines\n");
+-
+-	return reset_control_deassert(rockchip->rst);
+-}
+-
+ static const struct dw_pcie_ops dw_pcie_ops = {
+ 	.link_up = rockchip_pcie_link_up,
+ 	.start_link = rockchip_pcie_start_link,
+@@ -222,6 +215,10 @@ static int rockchip_pcie_probe(struct pl
+ 	if (ret)
+ 		return ret;
+ 
++	ret = reset_control_assert(rockchip->rst);
++	if (ret)
++		return ret;
++
+ 	/* DON'T MOVE ME: must be enable before PHY init */
+ 	rockchip->vpcie3v3 = devm_regulator_get_optional(dev, "vpcie3v3");
+ 	if (IS_ERR(rockchip->vpcie3v3)) {
+@@ -241,7 +238,7 @@ static int rockchip_pcie_probe(struct pl
+ 	if (ret)
+ 		goto disable_regulator;
+ 
+-	ret = rockchip_pcie_reset_control_release(rockchip);
++	ret = reset_control_deassert(rockchip->rst);
+ 	if (ret)
+ 		goto deinit_phy;
+ 

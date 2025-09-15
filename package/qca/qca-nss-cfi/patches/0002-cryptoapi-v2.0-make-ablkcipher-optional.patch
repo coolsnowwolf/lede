@@ -1,0 +1,116 @@
+From 26cca5006bddb0da57398452616e07ee7b11edb1 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 22 Jan 2023 22:01:34 +0100
+Subject: [PATCH 2/5] cryptoapi: v2.0: make ablkcipher optional
+
+albkcipher has been removed from the kernel in v5.5, so until it has been
+converted to skcipher, lets make it optional to at least have hashes
+working.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ cryptoapi/v2.0/Makefile                |  3 +++
+ cryptoapi/v2.0/nss_cryptoapi.c         | 10 ++++++++++
+ cryptoapi/v2.0/nss_cryptoapi_private.h |  2 ++
+ 3 files changed, 15 insertions(+)
+
+--- a/cryptoapi/v2.0/Makefile
++++ b/cryptoapi/v2.0/Makefile
+@@ -5,7 +5,10 @@ NSS_CRYPTOAPI_MOD_NAME=qca-nss-cfi-crypt
+ obj-m += $(NSS_CRYPTOAPI_MOD_NAME).o
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs = nss_cryptoapi.o
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_aead.o
++ifneq "$(NSS_CRYPTOAPI_ABLK)" "n"
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_ablk.o
++ccflags-y += -DNSS_CRYPTOAPI_ABLK
++endif
+ $(NSS_CRYPTOAPI_MOD_NAME)-objs += nss_cryptoapi_ahash.o
+ 
+ obj ?= .
+--- a/cryptoapi/v2.0/nss_cryptoapi.c
++++ b/cryptoapi/v2.0/nss_cryptoapi.c
+@@ -1367,6 +1367,7 @@ struct aead_alg cryptoapi_aead_algs[] =
+ /*
+  * ABLK cipher algorithms
+  */
++#if defined(NSS_CRYPTOAPI_ABLK)
+ static struct crypto_alg cryptoapi_ablkcipher_algs[] = {
+ 	{
+ 		.cra_name = "cbc(aes)",
+@@ -1466,6 +1467,7 @@ static struct crypto_alg cryptoapi_ablkc
+ 		},
+ 	}
+ };
++#endif
+ 
+ /*
+  * AHASH algorithms
+@@ -2189,7 +2191,9 @@ void nss_cryptoapi_add_ctx2debugfs(struc
+  */
+ void nss_cryptoapi_attach_user(void *app_data, struct nss_crypto_user *user)
+ {
++#if defined(NSS_CRYPTOAPI_ABLK)
+ 	struct crypto_alg *ablk = cryptoapi_ablkcipher_algs;
++#endif
+ 	struct aead_alg *aead = cryptoapi_aead_algs;
+ 	struct ahash_alg *ahash = cryptoapi_ahash_algs;
+ 	struct nss_cryptoapi *sc = app_data;
+@@ -2212,6 +2216,7 @@ void nss_cryptoapi_attach_user(void *app
+ 		      g_cryptoapi.user = user;
+ 	}
+ 
++#if defined(NSS_CRYPTOAPI_ABLK)
+ 	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_ablkcipher_algs)); i++, ablk++) {
+ 		info = nss_cryptoapi_cra_name_lookup(ablk->cra_name);
+ 		if(!info || !nss_crypto_algo_is_supp(info->algo))
+@@ -2222,6 +2227,7 @@ void nss_cryptoapi_attach_user(void *app
+ 			ablk->cra_flags = 0;
+ 		}
+ 	}
++#endif
+ 
+ 	for (i = 0; enable_aead && (i < ARRAY_SIZE(cryptoapi_aead_algs)); i++, aead++) {
+ 		info = nss_cryptoapi_cra_name_lookup(aead->base.cra_name);
+@@ -2257,7 +2263,9 @@ void nss_cryptoapi_attach_user(void *app
+  */
+ void nss_cryptoapi_detach_user(void *app_data, struct nss_crypto_user *user)
+ {
++#if defined(NSS_CRYPTOAPI_ABLK)
+ 	struct crypto_alg *ablk = cryptoapi_ablkcipher_algs;
++#endif
+ 	struct aead_alg *aead = cryptoapi_aead_algs;
+ 	struct ahash_alg *ahash = cryptoapi_ahash_algs;
+ 	struct nss_cryptoapi *sc = app_data;
+@@ -2270,6 +2278,7 @@ void nss_cryptoapi_detach_user(void *app
+ 	 */
+ 	atomic_set(&g_cryptoapi.registered, 0);
+ 
++#if defined(NSS_CRYPTOAPI_ABLK)
+ 	for (i = 0; enable_ablk && (i < ARRAY_SIZE(cryptoapi_ablkcipher_algs)); i++, ablk++) {
+ 		if (!ablk->cra_flags)
+ 			continue;
+@@ -2277,6 +2286,7 @@ void nss_cryptoapi_detach_user(void *app
+ 		crypto_unregister_alg(ablk);
+ 		nss_cfi_info("%px: ABLK unregister succeeded, algo: %s\n", sc, ablk->cra_name);
+ 	}
++#endif
+ 
+ 	for (i = 0; enable_aead && (i < ARRAY_SIZE(cryptoapi_aead_algs)); i++, aead++) {
+ 		if (!aead->base.cra_flags)
+--- a/cryptoapi/v2.0/nss_cryptoapi_private.h
++++ b/cryptoapi/v2.0/nss_cryptoapi_private.h
+@@ -250,12 +250,14 @@ extern void nss_cryptoapi_aead_tx_proc(s
+ /*
+  * ABLKCIPHER
+  */
++#if defined(NSS_CRYPTOAPI_ABLK)
+ extern int nss_cryptoapi_ablkcipher_init(struct crypto_tfm *tfm);
+ extern void nss_cryptoapi_ablkcipher_exit(struct crypto_tfm *tfm);
+ extern int nss_cryptoapi_ablk_setkey(struct crypto_ablkcipher *cipher, const u8 *key, unsigned int len);
+ extern int nss_cryptoapi_ablk_encrypt(struct ablkcipher_request *req);
+ extern int nss_cryptoapi_ablk_decrypt(struct ablkcipher_request *req);
+ extern void nss_cryptoapi_copy_iv(struct nss_cryptoapi_ctx *ctx, struct scatterlist *sg, uint8_t *iv, uint8_t iv_len);
++#endif
+ 
+ /*
+  * AHASH

@@ -1,0 +1,390 @@
+From efc3e6f5d29f87a433b42f15a0b87e04b7cd498d Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 3 Mar 2021 10:11:32 +0800
+Subject: [PATCH 38/71] env: add support for generic MTD device
+
+Add an env driver for generic MTD device.
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ cmd/nvedit.c           |   3 +-
+ env/Kconfig            |  37 +++++-
+ env/Makefile           |   1 +
+ env/env.c              |   3 +
+ env/mtd.c              | 256 +++++++++++++++++++++++++++++++++++++++++
+ include/env_internal.h |   1 +
+ tools/Makefile         |   1 +
+ 7 files changed, 299 insertions(+), 3 deletions(-)
+ create mode 100644 env/mtd.c
+
+--- a/env/Kconfig
++++ b/env/Kconfig
+@@ -61,7 +61,7 @@ config ENV_IS_DEFAULT
+ 		     !ENV_IS_IN_MMC && !ENV_IS_IN_NAND && \
+ 		     !ENV_IS_IN_NVRAM && !ENV_IS_IN_ONENAND && \
+ 		     !ENV_IS_IN_REMOTE && !ENV_IS_IN_SPI_FLASH && \
+-		     !ENV_IS_IN_UBI
++		     !ENV_IS_IN_UBI && !ENV_IS_IN_MTD
+ 	select ENV_IS_NOWHERE
+ 
+ config ENV_IS_NOWHERE
+@@ -254,6 +254,27 @@ config ENV_IS_IN_MMC
+ 	  offset: "u-boot,mmc-env-offset", "u-boot,mmc-env-offset-redundant".
+ 	  CONFIG_ENV_OFFSET and CONFIG_ENV_OFFSET_REDUND are not used.
+ 
++config ENV_IS_IN_MTD
++	bool "Environment in a MTD device"
++	depends on !CHAIN_OF_TRUST
++	depends on MTD
++	help
++	  Define this if you have a MTD device which you want to use for
++	  the environment.
++
++	  - CONFIG_ENV_MTD_NAME:
++	  - CONFIG_ENV_OFFSET:
++	  - CONFIG_ENV_SIZE:
++
++	  These three #defines specify the MTD device where the environment
++	  is stored, offset and size of the environment area within the MTD
++	  device. CONFIG_ENV_OFFSET must be aligned to an erase block boundary.
++
++	  - CONFIG_ENV_SIZE_REDUND:
++
++	  This #define specify the maximum size allowed for read/write/erase
++	  with skipped bad blocks starting from ENV_OFFSET.
++
+ config ENV_IS_IN_NAND
+ 	bool "Environment in a NAND device"
+ 	depends on !CHAIN_OF_TRUST
+@@ -561,10 +582,16 @@ config ENV_ADDR_REDUND
+ 	  Offset from the start of the device (or partition) of the redundant
+ 	  environment location.
+ 
++config ENV_MTD_NAME
++	string "Name of the MTD device storing the environment"
++	depends on ENV_IS_IN_MTD
++	help
++	  Name of the MTD device that stores the environment
++
+ config ENV_OFFSET
+ 	hex "Environment offset"
+ 	depends on ENV_IS_IN_EEPROM || ENV_IS_IN_MMC || ENV_IS_IN_NAND || \
+-		    ENV_IS_IN_SPI_FLASH
++		    ENV_IS_IN_SPI_FLASH || ENV_IS_IN_MTD
+ 	default 0x3f8000 if ARCH_ROCKCHIP && ENV_IS_IN_MMC
+ 	default 0x140000 if ARCH_ROCKCHIP && ENV_IS_IN_SPI_FLASH
+ 	default 0xF0000 if ARCH_SUNXI
+@@ -622,6 +649,12 @@ config ENV_SECT_SIZE
+ 	help
+ 	  Size of the sector containing the environment.
+ 
++config ENV_SIZE_REDUND
++	hex "Redundant environment size"
++	depends on ENV_IS_IN_MTD
++	help
++	  The maximum size allowed for read/write/erase with skipped bad blocks.
++
+ config ENV_UBI_PART
+ 	string "UBI partition name"
+ 	depends on ENV_IS_IN_UBI
+--- a/env/Makefile
++++ b/env/Makefile
+@@ -24,6 +24,7 @@ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_NOWHERE)
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_MMC) += mmc.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_FAT) += fat.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_EXT4) += ext4.o
++obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_MTD) += mtd.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_NAND) += nand.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_SPI_FLASH) += sf.o
+ obj-$(CONFIG_$(SPL_TPL_)ENV_IS_IN_FLASH) += flash.o
+--- a/env/env.c
++++ b/env/env.c
+@@ -46,6 +46,9 @@ static enum env_location env_locations[]
+ #ifdef CONFIG_ENV_IS_IN_MMC
+ 	ENVL_MMC,
+ #endif
++#ifdef CONFIG_ENV_IS_IN_MTD
++	ENVL_MTD,
++#endif
+ #ifdef CONFIG_ENV_IS_IN_NAND
+ 	ENVL_NAND,
+ #endif
+--- /dev/null
++++ b/env/mtd.c
+@@ -0,0 +1,256 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * Copyright (C) 2021 MediaTek Inc. All Rights Reserved.
++ *
++ * Author: Weijie Gao <weijie.gao@mediatek.com>
++ */
++
++#include <command.h>
++#include <env.h>
++#include <env_internal.h>
++#include <errno.h>
++#include <linux/kernel.h>
++#include <linux/stddef.h>
++#include <linux/types.h>
++#include <linux/mtd/mtd.h>
++#include <malloc.h>
++#include <memalign.h>
++#include <mtd.h>
++#include <search.h>
++
++#if CONFIG_ENV_SIZE_REDUND < CONFIG_ENV_SIZE
++#undef CONFIG_ENV_SIZE_REDUND
++#define CONFIG_ENV_SIZE_REDUND CONFIG_ENV_SIZE
++#endif
++
++#if defined(ENV_IS_EMBEDDED)
++env_t *env_ptr = &environment;
++#else /* ! ENV_IS_EMBEDDED */
++env_t *env_ptr;
++#endif /* ENV_IS_EMBEDDED */
++
++DECLARE_GLOBAL_DATA_PTR;
++
++static int env_mtd_init(void)
++{
++#if defined(ENV_IS_EMBEDDED)
++	int crc1_ok = 0, crc2_ok = 0;
++	env_t *tmp_env1;
++
++	tmp_env1 = env_ptr;
++	crc1_ok = crc32(0, tmp_env1->data, ENV_SIZE) == tmp_env1->crc;
++
++	if (!crc1_ok && !crc2_ok) {
++		gd->env_addr	= 0;
++		gd->env_valid	= ENV_INVALID;
++
++		return 0;
++	} else if (crc1_ok && !crc2_ok) {
++		gd->env_valid = ENV_VALID;
++	}
++
++	if (gd->env_valid == ENV_VALID)
++		env_ptr = tmp_env1;
++
++	gd->env_addr = (ulong)env_ptr->data;
++
++#else /* ENV_IS_EMBEDDED */
++	gd->env_addr	= (ulong)&default_environment[0];
++	gd->env_valid	= ENV_VALID;
++#endif /* ENV_IS_EMBEDDED */
++
++	return 0;
++}
++
++static struct mtd_info *env_mtd_get_dev(void)
++{
++	struct mtd_info *mtd;
++
++	mtd_probe_devices();
++
++	mtd = get_mtd_device_nm(CONFIG_ENV_MTD_NAME);
++	if (IS_ERR(mtd) || !mtd) {
++		printf("MTD device '%s' not found\n", CONFIG_ENV_MTD_NAME);
++		return NULL;
++	}
++
++	return mtd;
++}
++
++static inline bool mtd_addr_is_block_aligned(struct mtd_info *mtd, u64 addr)
++{
++	return (addr & mtd->erasesize_mask) == 0;
++}
++
++static int mtd_io_skip_bad(struct mtd_info *mtd, bool read, loff_t offset,
++			   size_t length, size_t redund, u8 *buffer)
++{
++	struct mtd_oob_ops io_op = {};
++	size_t remaining = length;
++	loff_t off, end;
++	int ret;
++
++	io_op.mode = MTD_OPS_PLACE_OOB;
++	io_op.len = mtd->writesize;
++	io_op.datbuf = (void *)buffer;
++
++	/* Search for the first good block after the given offset */
++	off = offset;
++	end = (off + redund) | (mtd->erasesize - 1);
++	while (mtd_block_isbad(mtd, off) && off < end)
++		off += mtd->erasesize;
++
++	/* Reached end position */
++	if (off >= end)
++		return -EIO;
++
++	/* Loop over the pages to do the actual read/write */
++	while (remaining) {
++		/* Skip the block if it is bad */
++		if (mtd_addr_is_block_aligned(mtd, off) &&
++		    mtd_block_isbad(mtd, off)) {
++			off += mtd->erasesize;
++			continue;
++		}
++
++		if (read)
++			ret = mtd_read_oob(mtd, off, &io_op);
++		else
++			ret = mtd_write_oob(mtd, off, &io_op);
++
++		if (ret) {
++			printf("Failure while %s at offset 0x%llx\n",
++			       read ? "reading" : "writing", off);
++			break;
++		}
++
++		off += io_op.retlen;
++		remaining -= io_op.retlen;
++		io_op.datbuf += io_op.retlen;
++		io_op.oobbuf += io_op.oobretlen;
++
++		/* Reached end position */
++		if (off >= end)
++			return -EIO;
++	}
++
++	return 0;
++}
++
++#ifdef CONFIG_CMD_SAVEENV
++static int mtd_erase_skip_bad(struct mtd_info *mtd, loff_t offset,
++			      size_t length, size_t redund)
++{
++	struct erase_info erase_op = {};
++	loff_t end = (offset + redund) | (mtd->erasesize - 1);
++	int ret;
++
++	erase_op.mtd = mtd;
++	erase_op.addr = offset;
++	erase_op.len = length;
++
++	while (erase_op.len) {
++		ret = mtd_erase(mtd, &erase_op);
++
++		/* Abort if its not a bad block error */
++		if (ret != -EIO)
++			return ret;
++
++		printf("Skipping bad block at 0x%08llx\n", erase_op.fail_addr);
++
++		/* Skip bad block and continue behind it */
++		erase_op.len -= erase_op.fail_addr - erase_op.addr;
++		erase_op.len -= mtd->erasesize;
++		erase_op.addr = erase_op.fail_addr + mtd->erasesize;
++
++		/* Reached end position */
++		if (erase_op.addr >= end)
++			return -EIO;
++	}
++
++	return 0;
++}
++
++static int env_mtd_save(void)
++{
++	ALLOC_CACHE_ALIGN_BUFFER(env_t, env_new, 1);
++	struct mtd_info *mtd;
++	int ret = 0;
++
++	ret = env_export(env_new);
++	if (ret)
++		return ret;
++
++	mtd = env_mtd_get_dev();
++	if (!mtd)
++		return 1;
++
++	printf("Erasing on MTD device '%s'... ", mtd->name);
++
++	ret = mtd_erase_skip_bad(mtd, CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE,
++				 CONFIG_ENV_SIZE_REDUND);
++
++	puts(ret ? "FAILED\n" : "OK\n");
++
++	if (ret) {
++		put_mtd_device(mtd);
++		return 1;
++	}
++
++	printf("Writing to MTD device '%s'... ", mtd->name);
++
++	ret = mtd_io_skip_bad(mtd, false, CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE,
++			      CONFIG_ENV_SIZE_REDUND, (u8 *)env_new);
++
++	puts(ret ? "FAILED\n" : "OK\n");
++
++	put_mtd_device(mtd);
++
++	return !!ret;
++}
++#endif /* CONFIG_CMD_SAVEENV */
++
++static int readenv(size_t offset, u_char *buf)
++{
++	struct mtd_info *mtd;
++	int ret;
++
++	mtd = env_mtd_get_dev();
++	if (!mtd)
++		return 1;
++
++	ret = mtd_io_skip_bad(mtd, true, offset, CONFIG_ENV_SIZE,
++			      CONFIG_ENV_SIZE_REDUND, buf);
++
++	put_mtd_device(mtd);
++
++	return !!ret;
++}
++
++static int env_mtd_load(void)
++{
++#if !defined(ENV_IS_EMBEDDED)
++	ALLOC_CACHE_ALIGN_BUFFER(char, buf, CONFIG_ENV_SIZE);
++	int ret;
++
++	ret = readenv(CONFIG_ENV_OFFSET, (u_char *)buf);
++	if (ret) {
++		env_set_default("readenv() failed", 0);
++		return -EIO;
++	}
++
++	return env_import(buf, 1, H_EXTERNAL);
++#endif /* ! ENV_IS_EMBEDDED */
++
++	return 0;
++}
++
++U_BOOT_ENV_LOCATION(mtd) = {
++	.location	= ENVL_MTD,
++	ENV_NAME("MTD")
++	.load		= env_mtd_load,
++#if defined(CONFIG_CMD_SAVEENV)
++	.save		= env_save_ptr(env_mtd_save),
++#endif
++	.init		= env_mtd_init,
++};
+--- a/include/env_internal.h
++++ b/include/env_internal.h
+@@ -109,6 +109,7 @@ enum env_location {
+ 	ENVL_FAT,
+ 	ENVL_FLASH,
+ 	ENVL_MMC,
++	ENVL_MTD,
+ 	ENVL_NAND,
+ 	ENVL_NVRAM,
+ 	ENVL_ONENAND,
+--- a/tools/Makefile
++++ b/tools/Makefile
+@@ -37,6 +37,7 @@ subdir-$(HOST_TOOLS_ALL) += gdb
+ ENVCRC-$(CONFIG_ENV_IS_IN_EEPROM) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_FLASH) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_ONENAND) = y
++ENVCRC-$(CONFIG_ENV_IS_IN_MTD) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_NAND) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_NVRAM) = y
+ ENVCRC-$(CONFIG_ENV_IS_IN_SPI_FLASH) = y

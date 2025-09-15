@@ -1,0 +1,107 @@
+From 92719518d6336db632a00bcfb2ec28a8f82998a8 Mon Sep 17 00:00:00 2001
+From: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Date: Mon, 29 Jul 2024 16:53:18 +0100
+Subject: [PATCH] numa/emulation: Check emulated zones around the CMA window
+
+... Make sure CMA zones do not straddle the emulated NUMA nodes ...
+
+Signed-off-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+---
+ include/linux/cma.h |  6 ++++++
+ mm/cma.c            | 36 ++++++++++++++++++++++++++++++++++++
+ mm/numa_emulation.c |  6 ++++++
+ 3 files changed, 48 insertions(+)
+
+--- a/include/linux/cma.h
++++ b/include/linux/cma.h
+@@ -56,6 +56,7 @@ extern void cma_reserve_pages_on_error(s
+ #ifdef CONFIG_CMA
+ struct folio *cma_alloc_folio(struct cma *cma, int order, gfp_t gfp);
+ bool cma_free_folio(struct cma *cma, const struct folio *folio);
++int cma_check_range(u64 *start, u64 *end);
+ #else
+ static inline struct folio *cma_alloc_folio(struct cma *cma, int order, gfp_t gfp)
+ {
+@@ -66,6 +67,11 @@ static inline bool cma_free_folio(struct
+ {
+ 	return false;
+ }
++
++static inline int cma_check_range(u64 *start, u64 *end)
++{
++	return 0;
++}
+ #endif
+ 
+ #endif
+--- a/mm/cma.c
++++ b/mm/cma.c
+@@ -602,3 +602,39 @@ int cma_for_each_area(int (*it)(struct c
+ 
+ 	return 0;
+ }
++
++struct cma_check_range_data {
++	u64 start, end;
++};
++
++static int check_range(struct cma *cma_, void *data)
++{
++	struct cma_check_range_data *range = data;
++	struct cma_check_range_data cma;
++	bool starts_in_range;
++	bool ends_in_range;
++
++	cma.start = cma_get_base(cma_);
++	cma.end = cma.start + cma_get_size(cma_) - 1;
++
++	starts_in_range = cma.start >= range->start && cma.start <= range->end;
++	ends_in_range = cma.end >= range->start && cma.end <= range->end;
++
++	if (starts_in_range == ends_in_range)
++		return 0;
++
++	pr_notice("CMA %s [%llx-%llx] straddles range [%llx-%llx]\n",
++		  cma_->name, cma.start, cma.end, range->start, range->end);
++
++	return -EINVAL;
++}
++
++int cma_check_range(u64 *start, u64 *end)
++{
++	struct cma_check_range_data range = {
++		.start = *start,
++		.end = *end,
++	};
++
++	return cma_for_each_area(check_range, &range);
++}
+--- a/mm/numa_emulation.c
++++ b/mm/numa_emulation.c
+@@ -7,6 +7,7 @@
+ #include <linux/topology.h>
+ #include <linux/memblock.h>
+ #include <linux/numa_memblks.h>
++#include <linux/cma.h>
+ #include <asm/numa.h>
+ 
+ #define FAKE_NODE_MIN_SIZE	((u64)32 << 20)
+@@ -51,6 +52,7 @@ static int __init emu_setup_memblk(struc
+ {
+ 	struct numa_memblk *eb = &ei->blk[ei->nr_blks];
+ 	struct numa_memblk *pb = &pi->blk[phys_blk];
++	int ret;
+ 
+ 	if (ei->nr_blks >= NR_NODE_MEMBLKS) {
+ 		pr_err("NUMA: Too many emulated memblks, failing emulation\n");
+@@ -62,6 +64,10 @@ static int __init emu_setup_memblk(struc
+ 	eb->end = pb->start + size;
+ 	eb->nid = nid;
+ 
++	ret = cma_check_range(&eb->start, &eb->end);
++	if (ret)
++		return ret;
++
+ 	if (emu_nid_to_phys[nid] == NUMA_NO_NODE)
+ 		emu_nid_to_phys[nid] = pb->nid;
+ 

@@ -1,0 +1,1233 @@
+From: "Russell King (Oracle)" <linux@armlinux.org.uk>
+To: Andrew Lunn <andrew@lunn.ch>, Heiner Kallweit <hkallweit1@gmail.com>
+Cc: Alexander Couzens <lynxis@fe80.eu>,
+	Andrew Lunn <andrew+netdev@lunn.ch>,
+	AngeloGioacchino Del Regno
+	<angelogioacchino.delregno@collabora.com>,
+	Broadcom internal kernel review list
+	<bcm-kernel-feedback-list@broadcom.com>,
+	Daniel Golle <daniel@makrotopia.org>,
+	"David S. Miller" <davem@davemloft.net>,
+	Eric Dumazet <edumazet@google.com>,
+	Florian Fainelli <florian.fainelli@broadcom.com>,
+	Ioana Ciornei <ioana.ciornei@nxp.com>,
+	Jakub Kicinski <kuba@kernel.org>,
+	Jose Abreu <Jose.Abreu@synopsys.com>,
+	linux-arm-kernel@lists.infradead.org,
+	linux-mediatek@lists.infradead.org,
+	Marcin Wojtas <marcin.s.wojtas@gmail.com>,
+	Matthias Brugger <matthias.bgg@gmail.com>,
+	netdev@vger.kernel.org, Paolo Abeni <pabeni@redhat.com>
+Subject: [PATCH RFC net-next 00/16] net: add negotiation of in-band capabilities
+Date: Tue, 26 Nov 2024 09:23:48 +0000	[thread overview]
+Message-ID: <Z0WTpE8wkpjMiv_J@shell.armlinux.org.uk> (raw)
+
+Hi,
+
+Yes, this is one patch over the limit of 15 for netdev - but I think it's
+important to include the last patch to head off review comments like "why
+don't you remove phylink_phy_no_inband() in this series?"
+
+Phylink's handling of in-band has been deficient for a long time, and
+people keep hitting problems with it. Notably, situations with the way-
+to-late standardized 2500Base-X and whether that should or should not
+have in-band enabled. We have also been carrying a hack in the form of
+phylink_phy_no_inband() for a PHY that has been used on a SFP module,
+but has no in-band capabilities, not even for SGMII.
+
+When phylink is trying to operate in in-band mode, this series will look
+at the capabilities of the MAC-side PCS and PHY, and work out whether
+in-band can or should be used, programming the PHY as appropriate. This
+includes in-band bypass mode at the PHY.
+
+We don't... yet... support that on the MAC side PCS, because that
+requires yet more complexity.
+
+Patch 1 passes struct phylink and struct phylink_pcs into
+phylink_pcs_neg_mode() so we can look at more state in this function in
+a future patch.
+
+Patch 2 splits "cur_link_an_mode" (the MLO_AN_* mode) into two separate
+purposes - a requested and an active mode. The active mode is the one
+we will be using for the MAC, which becomes dependent on the result of
+in-band negotiation.
+
+Patch 3 adds debug to phylink_major_config() so we can see what is going
+on with the requested and active AN modes.
+
+Patch 4 adds to phylib a method to get the in-band capabilities of the
+PHY from phylib. Patches 5 and 6 add implementations for BCM84881 and
+some Marvell PHYs found on SFPs.
+
+Patch 7 adds to phylib a method to configure the PHY in-band signalling,
+and patch 8 implements it for those Marvell PHYs that support the method
+in patch 4.
+
+Patch 9 does the same as patch 4 but for the MAC-side PCS, with patches
+10 through 14 adding support to several PCS.
+
+Patch 15 adds the code to phylink_pcs_neg_mode() which looks at the
+capabilities, and works out whether to use in-band or out-band mode for
+driving the link between the MAC PCS and PHY.
+
+Patch 16 removes the phylink_phy_no_inband() hack now that we are
+publishing the in-band capabilities from the BCM84881 PHY driver.
+
+ drivers/net/ethernet/marvell/mvneta.c           |  27 +-
+ drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c |  25 +-
+ drivers/net/pcs/pcs-lynx.c                      |  22 ++
+ drivers/net/pcs/pcs-mtk-lynxi.c                 |  16 ++
+ drivers/net/pcs/pcs-xpcs.c                      |  28 ++
+ drivers/net/phy/bcm84881.c                      |  10 +
+ drivers/net/phy/marvell.c                       |  48 ++++
+ drivers/net/phy/phy.c                           |  52 ++++
+ drivers/net/phy/phylink.c                       | 352 +++++++++++++++++++-----
+ include/linux/phy.h                             |  34 +++
+ include/linux/phylink.h                         |  17 ++
+ 11 files changed, 539 insertions(+), 92 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -56,7 +56,8 @@ struct phylink {
+ 	struct phy_device *phydev;
+ 	phy_interface_t link_interface;	/* PHY_INTERFACE_xxx */
+ 	u8 cfg_link_an_mode;		/* MLO_AN_xxx */
+-	u8 cur_link_an_mode;
++	u8 req_link_an_mode;		/* Requested MLO_AN_xxx mode */
++	u8 act_link_an_mode;		/* Active MLO_AN_xxx mode */
+ 	u8 link_port;			/* The current non-phy ethtool port */
+ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(supported);
+ 
+@@ -74,6 +75,7 @@ struct phylink {
+ 
+ 	struct mutex state_mutex;
+ 	struct phylink_link_state phy_state;
++	unsigned int phy_ib_mode;
+ 	struct work_struct resolve;
+ 	unsigned int pcs_neg_mode;
+ 	unsigned int pcs_state;
+@@ -175,6 +177,24 @@ static const char *phylink_an_mode_str(u
+ 	return mode < ARRAY_SIZE(modestr) ? modestr[mode] : "unknown";
+ }
+ 
++static const char *phylink_pcs_mode_str(unsigned int mode)
++{
++	if (!mode)
++		return "none";
++
++	if (mode & PHYLINK_PCS_NEG_OUTBAND)
++		return "outband";
++
++	if (mode & PHYLINK_PCS_NEG_INBAND) {
++		if (mode & PHYLINK_PCS_NEG_ENABLED)
++			return "inband,an-enabled";
++		else
++			return "inband,an-disabled";
++	}
++
++	return "unknown";
++}
++
+ static unsigned int phylink_interface_signal_rate(phy_interface_t interface)
+ {
+ 	switch (interface) {
+@@ -1053,6 +1073,15 @@ static void phylink_resolve_an_pause(str
+ 	}
+ }
+ 
++static unsigned int phylink_pcs_inband_caps(struct phylink_pcs *pcs,
++				    phy_interface_t interface)
++{
++	if (pcs && pcs->ops->pcs_inband_caps)
++		return pcs->ops->pcs_inband_caps(pcs, interface);
++
++	return 0;
++}
++
+ static void phylink_pcs_pre_config(struct phylink_pcs *pcs,
+ 				   phy_interface_t interface)
+ {
+@@ -1106,6 +1135,24 @@ static void phylink_pcs_link_up(struct p
+ 		pcs->ops->pcs_link_up(pcs, neg_mode, interface, speed, duplex);
+ }
+ 
++/* Query inband for a specific interface mode, asking the MAC for the
++ * PCS which will be used to handle the interface mode.
++ */
++static unsigned int phylink_inband_caps(struct phylink *pl,
++					 phy_interface_t interface)
++{
++	struct phylink_pcs *pcs;
++
++	if (!pl->mac_ops->mac_select_pcs)
++		return 0;
++
++	pcs = pl->mac_ops->mac_select_pcs(pl->config, interface);
++	if (!pcs)
++		return 0;
++
++	return phylink_pcs_inband_caps(pcs, interface);
++}
++
+ static void phylink_pcs_poll_stop(struct phylink *pl)
+ {
+ 	if (pl->cfg_link_an_mode == MLO_AN_INBAND)
+@@ -1132,13 +1179,13 @@ static void phylink_mac_config(struct ph
+ 
+ 	phylink_dbg(pl,
+ 		    "%s: mode=%s/%s/%s adv=%*pb pause=%02x\n",
+-		    __func__, phylink_an_mode_str(pl->cur_link_an_mode),
++		    __func__, phylink_an_mode_str(pl->act_link_an_mode),
+ 		    phy_modes(st.interface),
+ 		    phy_rate_matching_to_str(st.rate_matching),
+ 		    __ETHTOOL_LINK_MODE_MASK_NBITS, st.advertising,
+ 		    st.pause);
+ 
+-	pl->mac_ops->mac_config(pl->config, pl->cur_link_an_mode, &st);
++	pl->mac_ops->mac_config(pl->config, pl->act_link_an_mode, &st);
+ }
+ 
+ static void phylink_pcs_an_restart(struct phylink *pl)
+@@ -1146,13 +1193,14 @@ static void phylink_pcs_an_restart(struc
+ 	if (pl->pcs && linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
+ 					 pl->link_config.advertising) &&
+ 	    phy_interface_mode_is_8023z(pl->link_config.interface) &&
+-	    phylink_autoneg_inband(pl->cur_link_an_mode))
++	    phylink_autoneg_inband(pl->act_link_an_mode))
+ 		pl->pcs->ops->pcs_an_restart(pl->pcs);
+ }
+ 
+ /**
+  * phylink_pcs_neg_mode() - helper to determine PCS inband mode
+- * @mode: one of %MLO_AN_FIXED, %MLO_AN_PHY, %MLO_AN_INBAND.
++ * @pl: a pointer to a &struct phylink returned from phylink_create()
++ * @pcs: a pointer to &struct phylink_pcs
+  * @interface: interface mode to be used
+  * @advertising: adertisement ethtool link mode mask
+  *
+@@ -1169,11 +1217,21 @@ static void phylink_pcs_an_restart(struc
+  * Note: this is for cases where the PCS itself is involved in negotiation
+  * (e.g. Clause 37, SGMII and similar) not Clause 73.
+  */
+-static unsigned int phylink_pcs_neg_mode(unsigned int mode,
+-					 phy_interface_t interface,
+-					 const unsigned long *advertising)
++static void phylink_pcs_neg_mode(struct phylink *pl, struct phylink_pcs *pcs,
++				 phy_interface_t interface,
++				 const unsigned long *advertising)
+ {
+-	unsigned int neg_mode;
++	unsigned int pcs_ib_caps = 0;
++	unsigned int phy_ib_caps = 0;
++	unsigned int neg_mode, mode;
++	enum {
++		INBAND_CISCO_SGMII,
++		INBAND_BASEX,
++	} type;
++
++	mode = pl->req_link_an_mode;
++
++	pl->phy_ib_mode = 0;
+ 
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+@@ -1185,10 +1243,7 @@ static unsigned int phylink_pcs_neg_mode
+ 		 * inband communication. Note: there exist PHYs that run
+ 		 * with SGMII but do not send the inband data.
+ 		 */
+-		if (!phylink_autoneg_inband(mode))
+-			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
+-		else
+-			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
++		type = INBAND_CISCO_SGMII;
+ 		break;
+ 
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+@@ -1199,21 +1254,143 @@ static unsigned int phylink_pcs_neg_mode
+ 		 * as well, but drivers may not support this, so may
+ 		 * need to override this.
+ 		 */
+-		if (!phylink_autoneg_inband(mode))
++		type = INBAND_BASEX;
++		break;
++
++	default:
++		pl->pcs_neg_mode = PHYLINK_PCS_NEG_NONE;
++		pl->act_link_an_mode = mode;
++		return;
++	}
++
++	if (pcs)
++		pcs_ib_caps = phylink_pcs_inband_caps(pcs, interface);
++
++	if (pl->phydev)
++		phy_ib_caps = phy_inband_caps(pl->phydev, interface);
++
++	phylink_dbg(pl, "interface %s inband modes: pcs=%02x phy=%02x\n",
++		    phy_modes(interface), pcs_ib_caps, phy_ib_caps);
++
++	if (!phylink_autoneg_inband(mode)) {
++		bool pcs_ib_only = false;
++		bool phy_ib_only = false;
++
++		if (pcs_ib_caps && pcs_ib_caps != LINK_INBAND_DISABLE) {
++			/* PCS supports reporting in-band capabilities, and
++			 * supports more than disable mode.
++			 */
++			if (pcs_ib_caps & LINK_INBAND_DISABLE)
++				neg_mode = PHYLINK_PCS_NEG_OUTBAND;
++			else if (pcs_ib_caps & LINK_INBAND_ENABLE)
++				pcs_ib_only = true;
++		}
++
++		if (phy_ib_caps && phy_ib_caps != LINK_INBAND_DISABLE) {
++			/* PHY supports in-band capabilities, and supports
++			 * more than disable mode.
++			 */
++			if (phy_ib_caps & LINK_INBAND_DISABLE)
++				pl->phy_ib_mode = LINK_INBAND_DISABLE;
++			else if (phy_ib_caps & LINK_INBAND_BYPASS)
++				pl->phy_ib_mode = LINK_INBAND_BYPASS;
++			else if (phy_ib_caps & LINK_INBAND_ENABLE)
++				phy_ib_only = true;
++		}
++
++		/* If either the PCS or PHY requires inband to be enabled,
++		 * this is an invalid configuration. Provide a diagnostic
++		 * message for this case, but don't try to force the issue.
++		 */
++		if (pcs_ib_only || phy_ib_only)
++			phylink_warn(pl,
++				     "firmware wants %s mode, but %s%s%s requires inband\n",
++				     phylink_an_mode_str(mode),
++				     pcs_ib_only ? "PCS" : "",
++				     pcs_ib_only && phy_ib_only ? " and " : "",
++				     phy_ib_only ? "PHY" : "");
++
++		neg_mode = PHYLINK_PCS_NEG_OUTBAND;
++	} else if (type == INBAND_CISCO_SGMII || pl->phydev) {
++		/* For SGMII modes which are designed to be used with PHYs, or
++		 * Base-X with a PHY, we try to use in-band mode where-ever
++		 * possible. However, there are some PHYs e.g. BCM84881 which
++		 * do not support in-band.
++		 */
++		const unsigned int inband_ok = LINK_INBAND_ENABLE |
++					       LINK_INBAND_BYPASS;
++		const unsigned int outband_ok = LINK_INBAND_DISABLE |
++						LINK_INBAND_BYPASS;
++		/* PCS	PHY
++		 * D E	D E
++		 * 0 0  0 0	no information			inband enabled
++		 * 1 0  0 0	pcs doesn't support		outband
++		 * 0 1  0 0	pcs required			inband enabled
++		 * 1 1  0 0	pcs optional			inband enabled
++		 * 0 0  1 0	phy doesn't support		outband
++		 * 1 0  1 0	pcs+phy doesn't support		outband
++		 * 0 1  1 0	pcs required, phy doesn't support, invalid
++		 * 1 1  1 0	pcs optional, phy doesn't support, outband
++		 * 0 0  0 1	phy required			inband enabled
++		 * 1 0  0 1	pcs doesn't support, phy required, invalid
++		 * 0 1  0 1	pcs+phy required		inband enabled
++		 * 1 1  0 1	pcs optional, phy required	inband enabled
++		 * 0 0  1 1	phy optional			inband enabled
++		 * 1 0  1 1	pcs doesn't support, phy optional, outband
++		 * 0 1  1 1	pcs required, phy optional	inband enabled
++		 * 1 1  1 1	pcs+phy optional		inband enabled
++		 */
++		if ((!pcs_ib_caps || pcs_ib_caps & inband_ok) &&
++		    (!phy_ib_caps || phy_ib_caps & inband_ok)) {
++			/* In-band supported or unknown at both ends. Enable
++			 * in-band mode with or without bypass at the PHY.
++			 */
++			if (phy_ib_caps & LINK_INBAND_ENABLE)
++				pl->phy_ib_mode = LINK_INBAND_ENABLE;
++			else if (phy_ib_caps & LINK_INBAND_BYPASS)
++				pl->phy_ib_mode = LINK_INBAND_BYPASS;
++
++			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
++		} else if ((!pcs_ib_caps || pcs_ib_caps & outband_ok) &&
++			   (!phy_ib_caps || phy_ib_caps & outband_ok)) {
++			/* Either in-band not supported at at least one end.
++			 * In-band bypass at the other end is possible.
++			 */
++			if (phy_ib_caps & LINK_INBAND_DISABLE)
++				pl->phy_ib_mode = LINK_INBAND_DISABLE;
++			else if (phy_ib_caps & LINK_INBAND_BYPASS)
++				pl->phy_ib_mode = LINK_INBAND_BYPASS;
++
+ 			neg_mode = PHYLINK_PCS_NEG_OUTBAND;
++			if (pl->phydev)
++				mode = MLO_AN_PHY;
++		} else {
++			/* invalid */
++			phylink_warn(pl, "%s: incompatible in-band capabilities, trying in-band",
++				     phy_modes(interface));
++			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
++		}
++	} else {
++		/* For Base-X without a PHY */
++		if (pcs_ib_caps == LINK_INBAND_DISABLE)
++			/* If the PCS doesn't support inband, then inband must
++			 * be disabled.
++			 */
++			neg_mode = PHYLINK_PCS_NEG_INBAND_DISABLED;
++		else if (pcs_ib_caps == LINK_INBAND_ENABLE)
++			/* If the PCS requires inband, then inband must always
++			 * be enabled.
++			 */
++			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
+ 		else if (linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
+ 					   advertising))
+ 			neg_mode = PHYLINK_PCS_NEG_INBAND_ENABLED;
+ 		else
+ 			neg_mode = PHYLINK_PCS_NEG_INBAND_DISABLED;
+-		break;
+-
+-	default:
+-		neg_mode = PHYLINK_PCS_NEG_NONE;
+-		break;
+ 	}
+ 
+-	return neg_mode;
++	pl->pcs_neg_mode = neg_mode;
++	pl->act_link_an_mode = mode;
+ }
+ 
+ static void phylink_major_config(struct phylink *pl, bool restart,
+@@ -1225,11 +1402,9 @@ static void phylink_major_config(struct
+ 	unsigned int neg_mode;
+ 	int err;
+ 
+-	phylink_dbg(pl, "major config %s\n", phy_modes(state->interface));
+-
+-	pl->pcs_neg_mode = phylink_pcs_neg_mode(pl->cur_link_an_mode,
+-						state->interface,
+-						state->advertising);
++	phylink_dbg(pl, "major config, requested %s/%s\n",
++		    phylink_an_mode_str(pl->req_link_an_mode),
++		    phy_modes(state->interface));
+ 
+ 	if (pl->using_mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+@@ -1243,10 +1418,17 @@ static void phylink_major_config(struct
+ 		pcs_changed = pcs && pl->pcs != pcs;
+ 	}
+ 
++	phylink_pcs_neg_mode(pl, pcs, state->interface, state->advertising);
++
++	phylink_dbg(pl, "major config, active %s/%s/%s\n",
++		    phylink_an_mode_str(pl->act_link_an_mode),
++		    phylink_pcs_mode_str(pl->pcs_neg_mode),
++		    phy_modes(state->interface));
++
+ 	phylink_pcs_poll_stop(pl);
+ 
+ 	if (pl->mac_ops->mac_prepare) {
+-		err = pl->mac_ops->mac_prepare(pl->config, pl->cur_link_an_mode,
++		err = pl->mac_ops->mac_prepare(pl->config, pl->act_link_an_mode,
+ 					       state->interface);
+ 		if (err < 0) {
+ 			phylink_err(pl, "mac_prepare failed: %pe\n",
+@@ -1280,7 +1462,7 @@ static void phylink_major_config(struct
+ 	if (pl->pcs_state == PCS_STATE_STARTING || pcs_changed)
+ 		phylink_pcs_enable(pl->pcs);
+ 
+-	neg_mode = pl->cur_link_an_mode;
++	neg_mode = pl->act_link_an_mode;
+ 	if (pl->pcs && pl->pcs->neg_mode)
+ 		neg_mode = pl->pcs_neg_mode;
+ 
+@@ -1296,13 +1478,20 @@ static void phylink_major_config(struct
+ 		phylink_pcs_an_restart(pl);
+ 
+ 	if (pl->mac_ops->mac_finish) {
+-		err = pl->mac_ops->mac_finish(pl->config, pl->cur_link_an_mode,
++		err = pl->mac_ops->mac_finish(pl->config, pl->act_link_an_mode,
+ 					      state->interface);
+ 		if (err < 0)
+ 			phylink_err(pl, "mac_finish failed: %pe\n",
+ 				    ERR_PTR(err));
+ 	}
+ 
++	if (pl->phydev && pl->phy_ib_mode) {
++		err = phy_config_inband(pl->phydev, pl->phy_ib_mode);
++		if (err < 0)
++			phylink_err(pl, "phy_config_inband: %pe\n",
++				    ERR_PTR(err));
++	}
++
+ 	if (pl->sfp_bus) {
+ 		rate_kbd = phylink_interface_signal_rate(state->interface);
+ 		if (rate_kbd)
+@@ -1327,17 +1516,16 @@ static int phylink_change_inband_advert(
+ 		return 0;
+ 
+ 	phylink_dbg(pl, "%s: mode=%s/%s adv=%*pb pause=%02x\n", __func__,
+-		    phylink_an_mode_str(pl->cur_link_an_mode),
++		    phylink_an_mode_str(pl->req_link_an_mode),
+ 		    phy_modes(pl->link_config.interface),
+ 		    __ETHTOOL_LINK_MODE_MASK_NBITS, pl->link_config.advertising,
+ 		    pl->link_config.pause);
+ 
+ 	/* Recompute the PCS neg mode */
+-	pl->pcs_neg_mode = phylink_pcs_neg_mode(pl->cur_link_an_mode,
+-					pl->link_config.interface,
+-					pl->link_config.advertising);
++	phylink_pcs_neg_mode(pl, pl->pcs, pl->link_config.interface,
++			     pl->link_config.advertising);
+ 
+-	neg_mode = pl->cur_link_an_mode;
++	neg_mode = pl->act_link_an_mode;
+ 	if (pl->pcs->neg_mode)
+ 		neg_mode = pl->pcs_neg_mode;
+ 
+@@ -1402,7 +1590,7 @@ static void phylink_mac_initial_config(s
+ {
+ 	struct phylink_link_state link_state;
+ 
+-	switch (pl->cur_link_an_mode) {
++	switch (pl->req_link_an_mode) {
+ 	case MLO_AN_PHY:
+ 		link_state = pl->phy_state;
+ 		break;
+@@ -1476,14 +1664,14 @@ static void phylink_link_up(struct phyli
+ 
+ 	pl->cur_interface = link_state.interface;
+ 
+-	neg_mode = pl->cur_link_an_mode;
++	neg_mode = pl->act_link_an_mode;
+ 	if (pl->pcs && pl->pcs->neg_mode)
+ 		neg_mode = pl->pcs_neg_mode;
+ 
+ 	phylink_pcs_link_up(pl->pcs, neg_mode, pl->cur_interface, speed,
+ 			    duplex);
+ 
+-	pl->mac_ops->mac_link_up(pl->config, pl->phydev, pl->cur_link_an_mode,
++	pl->mac_ops->mac_link_up(pl->config, pl->phydev, pl->act_link_an_mode,
+ 				 pl->cur_interface, speed, duplex,
+ 				 !!(link_state.pause & MLO_PAUSE_TX), rx_pause);
+ 
+@@ -1503,7 +1691,7 @@ static void phylink_link_down(struct phy
+ 
+ 	if (ndev)
+ 		netif_carrier_off(ndev);
+-	pl->mac_ops->mac_link_down(pl->config, pl->cur_link_an_mode,
++	pl->mac_ops->mac_link_down(pl->config, pl->act_link_an_mode,
+ 				   pl->cur_interface);
+ 	phylink_info(pl, "Link is Down\n");
+ }
+@@ -1530,7 +1718,7 @@ static void phylink_resolve(struct work_
+ 		link_state.link = false;
+ 		retrigger = true;
+ 	} else {
+-		switch (pl->cur_link_an_mode) {
++		switch (pl->act_link_an_mode) {
+ 		case MLO_AN_PHY:
+ 			link_state = pl->phy_state;
+ 			phylink_apply_manual_flow(pl, &link_state);
+@@ -1773,7 +1961,7 @@ struct phylink *phylink_create(struct ph
+ 		}
+ 	}
+ 
+-	pl->cur_link_an_mode = pl->cfg_link_an_mode;
++	pl->req_link_an_mode = pl->cfg_link_an_mode;
+ 
+ 	ret = phylink_register_sfp(pl, fwnode);
+ 	if (ret < 0) {
+@@ -2236,7 +2424,7 @@ void phylink_start(struct phylink *pl)
+ 	ASSERT_RTNL();
+ 
+ 	phylink_info(pl, "configuring for %s/%s link mode\n",
+-		     phylink_an_mode_str(pl->cur_link_an_mode),
++		     phylink_an_mode_str(pl->req_link_an_mode),
+ 		     phy_modes(pl->link_config.interface));
+ 
+ 	/* Always set the carrier off */
+@@ -2495,7 +2683,7 @@ int phylink_ethtool_ksettings_get(struct
+ 
+ 	linkmode_copy(kset->link_modes.supported, pl->supported);
+ 
+-	switch (pl->cur_link_an_mode) {
++	switch (pl->act_link_an_mode) {
+ 	case MLO_AN_FIXED:
+ 		/* We are using fixed settings. Report these as the
+ 		 * current link settings - and note that these also
+@@ -2526,6 +2714,26 @@ int phylink_ethtool_ksettings_get(struct
+ }
+ EXPORT_SYMBOL_GPL(phylink_ethtool_ksettings_get);
+ 
++static bool phylink_validate_pcs_inband_autoneg(struct phylink *pl,
++					        phy_interface_t interface,
++						unsigned long *adv)
++{
++	unsigned int inband = phylink_inband_caps(pl, interface);
++	unsigned int mask;
++
++	/* If the PCS doesn't implement inband support, be permissive. */
++	if (!inband)
++		return true;
++
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT, adv))
++		mask = LINK_INBAND_ENABLE;
++	else
++		mask = LINK_INBAND_DISABLE;
++
++	/* Check whether the PCS implements the required mode */
++	return !!(inband & mask);
++}
++
+ /**
+  * phylink_ethtool_ksettings_set() - set the link settings
+  * @pl: a pointer to a &struct phylink returned from phylink_create()
+@@ -2587,7 +2795,7 @@ int phylink_ethtool_ksettings_set(struct
+ 		/* If we have a fixed link, refuse to change link parameters.
+ 		 * If the link parameters match, accept them but do nothing.
+ 		 */
+-		if (pl->cur_link_an_mode == MLO_AN_FIXED) {
++		if (pl->req_link_an_mode == MLO_AN_FIXED) {
+ 			if (s->speed != pl->link_config.speed ||
+ 			    s->duplex != pl->link_config.duplex)
+ 				return -EINVAL;
+@@ -2603,7 +2811,7 @@ int phylink_ethtool_ksettings_set(struct
+ 		 * is our default case) but do not allow the advertisement to
+ 		 * be changed. If the advertisement matches, simply return.
+ 		 */
+-		if (pl->cur_link_an_mode == MLO_AN_FIXED) {
++		if (pl->req_link_an_mode == MLO_AN_FIXED) {
+ 			if (!linkmode_equal(config.advertising,
+ 					    pl->link_config.advertising))
+ 				return -EINVAL;
+@@ -2643,7 +2851,7 @@ int phylink_ethtool_ksettings_set(struct
+ 		linkmode_copy(support, pl->supported);
+ 		if (phylink_validate(pl, support, &config)) {
+ 			phylink_err(pl, "validation of %s/%s with support %*pb failed\n",
+-				    phylink_an_mode_str(pl->cur_link_an_mode),
++				    phylink_an_mode_str(pl->req_link_an_mode),
+ 				    phy_modes(config.interface),
+ 				    __ETHTOOL_LINK_MODE_MASK_NBITS, support);
+ 			return -EINVAL;
+@@ -2661,6 +2869,13 @@ int phylink_ethtool_ksettings_set(struct
+ 	    phylink_is_empty_linkmode(config.advertising))
+ 		return -EINVAL;
+ 
++	/* Validate the autonegotiation state. We don't have a PHY in this
++	 * situation, so the PCS is the media-facing entity.
++	 */
++	if (!phylink_validate_pcs_inband_autoneg(pl, config.interface,
++						 config.advertising))
++		return -EINVAL;
++
+ 	mutex_lock(&pl->state_mutex);
+ 	pl->link_config.speed = config.speed;
+ 	pl->link_config.duplex = config.duplex;
+@@ -2743,7 +2958,7 @@ int phylink_ethtool_set_pauseparam(struc
+ 
+ 	ASSERT_RTNL();
+ 
+-	if (pl->cur_link_an_mode == MLO_AN_FIXED)
++	if (pl->req_link_an_mode == MLO_AN_FIXED)
+ 		return -EOPNOTSUPP;
+ 
+ 	if (!phylink_test(pl->supported, Pause) &&
+@@ -3007,7 +3222,7 @@ static int phylink_mii_read(struct phyli
+ 	struct phylink_link_state state;
+ 	int val = 0xffff;
+ 
+-	switch (pl->cur_link_an_mode) {
++	switch (pl->act_link_an_mode) {
+ 	case MLO_AN_FIXED:
+ 		if (phy_id == 0) {
+ 			phylink_get_fixed_state(pl, &state);
+@@ -3032,7 +3247,7 @@ static int phylink_mii_read(struct phyli
+ static int phylink_mii_write(struct phylink *pl, unsigned int phy_id,
+ 			     unsigned int reg, unsigned int val)
+ {
+-	switch (pl->cur_link_an_mode) {
++	switch (pl->act_link_an_mode) {
+ 	case MLO_AN_FIXED:
+ 		break;
+ 
+@@ -3202,10 +3417,11 @@ static phy_interface_t phylink_choose_sf
+ 	return interface;
+ }
+ 
+-static void phylink_sfp_set_config(struct phylink *pl, u8 mode,
++static void phylink_sfp_set_config(struct phylink *pl,
+ 				   unsigned long *supported,
+ 				   struct phylink_link_state *state)
+ {
++	u8 mode = MLO_AN_INBAND;
+ 	bool changed = false;
+ 
+ 	phylink_dbg(pl, "requesting link mode %s/%s with support %*pb\n",
+@@ -3222,9 +3438,9 @@ static void phylink_sfp_set_config(struc
+ 		changed = true;
+ 	}
+ 
+-	if (pl->cur_link_an_mode != mode ||
++	if (pl->req_link_an_mode != mode ||
+ 	    pl->link_config.interface != state->interface) {
+-		pl->cur_link_an_mode = mode;
++		pl->req_link_an_mode = mode;
+ 		pl->link_config.interface = state->interface;
+ 
+ 		changed = true;
+@@ -3239,8 +3455,7 @@ static void phylink_sfp_set_config(struc
+ 		phylink_mac_initial_config(pl, false);
+ }
+ 
+-static int phylink_sfp_config_phy(struct phylink *pl, u8 mode,
+-				  struct phy_device *phy)
++static int phylink_sfp_config_phy(struct phylink *pl, struct phy_device *phy)
+ {
+ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(support1);
+ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(support);
+@@ -3279,8 +3494,7 @@ static int phylink_sfp_config_phy(struct
+ 	ret = phylink_validate(pl, support1, &config);
+ 	if (ret) {
+ 		phylink_err(pl,
+-			    "validation of %s/%s with support %*pb failed: %pe\n",
+-			    phylink_an_mode_str(mode),
++			    "validation of %s with support %*pb failed: %pe\n",
+ 			    phy_modes(config.interface),
+ 			    __ETHTOOL_LINK_MODE_MASK_NBITS, support,
+ 			    ERR_PTR(ret));
+@@ -3289,7 +3503,7 @@ static int phylink_sfp_config_phy(struct
+ 
+ 	pl->link_port = pl->sfp_port;
+ 
+-	phylink_sfp_set_config(pl, mode, support, &config);
++	phylink_sfp_set_config(pl, support, &config);
+ 
+ 	return 0;
+ }
+@@ -3345,6 +3559,12 @@ static int phylink_sfp_config_optical(st
+ 	phylink_dbg(pl, "optical SFP: chosen %s interface\n",
+ 		    phy_modes(interface));
+ 
++	if (!phylink_validate_pcs_inband_autoneg(pl, interface,
++						 config.advertising)) {
++		phylink_err(pl, "autoneg setting not compatible with PCS");
++		return -EINVAL;
++	}
++
+ 	config.interface = interface;
+ 
+ 	/* Ignore errors if we're expecting a PHY to attach later */
+@@ -3358,7 +3578,7 @@ static int phylink_sfp_config_optical(st
+ 
+ 	pl->link_port = pl->sfp_port;
+ 
+-	phylink_sfp_set_config(pl, MLO_AN_INBAND, pl->sfp_support, &config);
++	phylink_sfp_set_config(pl, pl->sfp_support, &config);
+ 
+ 	return 0;
+ }
+@@ -3429,20 +3649,10 @@ static void phylink_sfp_link_up(void *up
+ 	phylink_enable_and_run_resolve(pl, PHYLINK_DISABLE_LINK);
+ }
+ 
+-/* The Broadcom BCM84881 in the Methode DM7052 is unable to provide a SGMII
+- * or 802.3z control word, so inband will not work.
+- */
+-static bool phylink_phy_no_inband(struct phy_device *phy)
+-{
+-	return phy->is_c45 && phy_id_compare(phy->c45_ids.device_ids[1],
+-					     0xae025150, 0xfffffff0);
+-}
+-
+ static int phylink_sfp_connect_phy(void *upstream, struct phy_device *phy)
+ {
+ 	struct phylink *pl = upstream;
+ 	phy_interface_t interface;
+-	u8 mode;
+ 	int ret;
+ 
+ 	/*
+@@ -3454,17 +3664,12 @@ static int phylink_sfp_connect_phy(void
+ 	 */
+ 	phy_support_asym_pause(phy);
+ 
+-	if (phylink_phy_no_inband(phy))
+-		mode = MLO_AN_PHY;
+-	else
+-		mode = MLO_AN_INBAND;
+-
+ 	/* Set the PHY's host supported interfaces */
+ 	phy_interface_and(phy->host_interfaces, phylink_sfp_interfaces,
+ 			  pl->config->supported_interfaces);
+ 
+ 	/* Do the initial configuration */
+-	ret = phylink_sfp_config_phy(pl, mode, phy);
++	ret = phylink_sfp_config_phy(pl, phy);
+ 	if (ret < 0)
+ 		return ret;
+ 
+--- a/drivers/net/phy/phy.c
++++ b/drivers/net/phy/phy.c
+@@ -973,6 +973,58 @@ static int phy_check_link_status(struct
+ }
+ 
+ /**
++ * phy_inband_caps - query which in-band signalling modes are supported
++ * @phydev: a pointer to a &struct phy_device
++ * @interface: the interface mode for the PHY
++ *
++ * Returns zero if it is unknown what in-band signalling is supported by the
++ * PHY (e.g. because the PHY driver doesn't implement the method.) Otherwise,
++ * returns a bit mask of the LINK_INBAND_* values from
++ * &enum link_inband_signalling to describe which inband modes are supported
++ * by the PHY for this interface mode.
++ */
++unsigned int phy_inband_caps(struct phy_device *phydev,
++			     phy_interface_t interface)
++{
++	if (phydev->drv && phydev->drv->inband_caps)
++		return phydev->drv->inband_caps(phydev, interface);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(phy_inband_caps);
++
++/**
++ * phy_config_inband - configure the desired PHY in-band mode
++ * @phydev: the phy_device struct
++ * @modes: in-band modes to configure
++ *
++ * Description: disables, enables or enables-with-bypass in-band signalling
++ *   between the PHY and host system.
++ *
++ * Returns: zero on success, or negative errno value.
++ */
++int phy_config_inband(struct phy_device *phydev, unsigned int modes)
++{
++	int err;
++
++	if (!!(modes & LINK_INBAND_DISABLE) +
++	    !!(modes & LINK_INBAND_ENABLE) +
++	    !!(modes & LINK_INBAND_BYPASS) != 1)
++		return -EINVAL;
++
++	mutex_lock(&phydev->lock);
++	if (!phydev->drv)
++		err = -EIO;
++	else if (!phydev->drv->config_inband)
++		err = -EOPNOTSUPP;
++	else
++		err = phydev->drv->config_inband(phydev, modes);
++	mutex_unlock(&phydev->lock);
++
++	return err;
++}
++
++/**
+  * _phy_start_aneg - start auto-negotiation for this PHY device
+  * @phydev: the phy_device struct
+  *
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -800,6 +800,24 @@ struct phy_tdr_config {
+ #define PHY_PAIR_ALL -1
+ 
+ /**
++ * enum link_inband_signalling - in-band signalling modes that are supported
++ *
++ * @LINK_INBAND_DISABLE: in-band signalling can be disabled
++ * @LINK_INBAND_ENABLE: in-band signalling can be enabled without bypass
++ * @LINK_INBAND_BYPASS: in-band signalling can be enabled with bypass
++ *
++ * The possible and required bits can only be used if the valid bit is set.
++ * If possible is clear, that means inband signalling can not be used.
++ * Required is only valid when possible is set, and means that inband
++ * signalling must be used.
++ */
++enum link_inband_signalling {
++	LINK_INBAND_DISABLE		= BIT(0),
++	LINK_INBAND_ENABLE		= BIT(1),
++	LINK_INBAND_BYPASS		= BIT(2),
++};
++
++/**
+  * struct phy_plca_cfg - Configuration of the PLCA (Physical Layer Collision
+  * Avoidance) Reconciliation Sublayer.
+  *
+@@ -939,6 +957,19 @@ struct phy_driver {
+ 	int (*get_features)(struct phy_device *phydev);
+ 
+ 	/**
++	 * @inband_caps: query whether in-band is supported for the given PHY
++	 * interface mode. Returns a bitmask of bits defined by enum
++	 * link_inband_signalling.
++	 */
++	unsigned int (*inband_caps)(struct phy_device *phydev,
++				    phy_interface_t interface);
++
++	/**
++	 * @config_inband: configure in-band mode for the PHY
++	 */
++	int (*config_inband)(struct phy_device *phydev, unsigned int modes);
++
++	/**
+ 	 * @get_rate_matching: Get the supported type of rate matching for a
+ 	 * particular phy interface. This is used by phy consumers to determine
+ 	 * whether to advertise lower-speed modes for that interface. It is
+@@ -1774,6 +1805,9 @@ void phy_stop(struct phy_device *phydev)
+ int phy_config_aneg(struct phy_device *phydev);
+ int phy_start_aneg(struct phy_device *phydev);
+ int phy_aneg_done(struct phy_device *phydev);
++unsigned int phy_inband_caps(struct phy_device *phydev,
++			     phy_interface_t interface);
++int phy_config_inband(struct phy_device *phydev, unsigned int modes);
+ int phy_speed_down(struct phy_device *phydev, bool sync);
+ int phy_speed_up(struct phy_device *phydev);
+ bool phy_check_valid(int speed, int duplex, unsigned long *features);
+--- a/drivers/net/phy/bcm84881.c
++++ b/drivers/net/phy/bcm84881.c
+@@ -223,11 +223,21 @@ static int bcm84881_read_status(struct p
+ 	return genphy_c45_read_mdix(phydev);
+ }
+ 
++/* The Broadcom BCM84881 in the Methode DM7052 is unable to provide a SGMII
++ * or 802.3z control word, so inband will not work.
++ */
++static unsigned int bcm84881_inband_caps(struct phy_device *phydev,
++					 phy_interface_t interface)
++{
++	return LINK_INBAND_DISABLE;
++}
++
+ static struct phy_driver bcm84881_drivers[] = {
+ 	{
+ 		.phy_id		= 0xae025150,
+ 		.phy_id_mask	= 0xfffffff0,
+ 		.name		= "Broadcom BCM84881",
++		.inband_caps	= bcm84881_inband_caps,
+ 		.config_init	= bcm84881_config_init,
+ 		.probe		= bcm84881_probe,
+ 		.get_features	= bcm84881_get_features,
+--- a/drivers/net/phy/marvell.c
++++ b/drivers/net/phy/marvell.c
+@@ -673,6 +673,48 @@ static int marvell_config_aneg_fiber(str
+ 	return genphy_check_and_restart_aneg(phydev, changed);
+ }
+ 
++static unsigned int m88e1111_inband_caps(struct phy_device *phydev,
++					 phy_interface_t interface)
++{
++	/* In 1000base-X and SGMII modes, the inband mode can be changed
++	 * through the Fibre page BMCR ANENABLE bit.
++	 */
++	if (interface == PHY_INTERFACE_MODE_1000BASEX ||
++	    interface == PHY_INTERFACE_MODE_SGMII)
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE |
++		       LINK_INBAND_BYPASS;
++
++	return 0;
++}
++
++static int m88e1111_config_inband(struct phy_device *phydev, unsigned int modes)
++{
++	u16 extsr, bmcr;
++	int err;
++
++	if (phydev->interface != PHY_INTERFACE_MODE_1000BASEX &&
++	    phydev->interface != PHY_INTERFACE_MODE_SGMII)
++		return -EINVAL;
++
++	if (modes == LINK_INBAND_BYPASS)
++		extsr = MII_M1111_HWCFG_SERIAL_AN_BYPASS;
++	else
++		extsr = 0;
++
++	if (modes == LINK_INBAND_DISABLE)
++		bmcr = 0;
++	else
++		bmcr = BMCR_ANENABLE;
++
++	err = phy_modify(phydev, MII_M1111_PHY_EXT_SR,
++			 MII_M1111_HWCFG_SERIAL_AN_BYPASS, extsr);
++	if (err < 0)
++		return extsr;
++
++	return phy_modify_paged(phydev, MII_MARVELL_FIBER_PAGE, MII_BMCR,
++				BMCR_ANENABLE, bmcr);
++}
++
+ static int m88e1111_config_aneg(struct phy_device *phydev)
+ {
+ 	int extsr = phy_read(phydev, MII_M1111_PHY_EXT_SR);
+@@ -3292,6 +3334,8 @@ static struct phy_driver marvell_drivers
+ 		.name = "Marvell 88E1112",
+ 		/* PHY_GBIT_FEATURES */
+ 		.probe = marvell_probe,
++		.inband_caps = m88e1111_inband_caps,
++		.config_inband = m88e1111_config_inband,
+ 		.config_init = m88e1112_config_init,
+ 		.config_aneg = marvell_config_aneg,
+ 		.config_intr = marvell_config_intr,
+@@ -3312,6 +3356,8 @@ static struct phy_driver marvell_drivers
+ 		.name = "Marvell 88E1111",
+ 		/* PHY_GBIT_FEATURES */
+ 		.probe = marvell_probe,
++		.inband_caps = m88e1111_inband_caps,
++		.config_inband = m88e1111_config_inband,
+ 		.config_init = m88e1111gbe_config_init,
+ 		.config_aneg = m88e1111_config_aneg,
+ 		.read_status = marvell_read_status,
+@@ -3333,6 +3379,8 @@ static struct phy_driver marvell_drivers
+ 		.name = "Marvell 88E1111 (Finisar)",
+ 		/* PHY_GBIT_FEATURES */
+ 		.probe = marvell_probe,
++		.inband_caps = m88e1111_inband_caps,
++		.config_inband = m88e1111_config_inband,
+ 		.config_init = m88e1111gbe_config_init,
+ 		.config_aneg = m88e1111_config_aneg,
+ 		.read_status = marvell_read_status,
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -432,6 +432,7 @@ struct phylink_pcs {
+ /**
+  * struct phylink_pcs_ops - MAC PCS operations structure.
+  * @pcs_validate: validate the link configuration.
++ * @pcs_inband_caps: query inband support for interface mode.
+  * @pcs_enable: enable the PCS.
+  * @pcs_disable: disable the PCS.
+  * @pcs_pre_config: pre-mac_config method (for errata)
+@@ -445,6 +446,8 @@ struct phylink_pcs {
+ struct phylink_pcs_ops {
+ 	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
+ 			    const struct phylink_link_state *state);
++	unsigned int (*pcs_inband_caps)(struct phylink_pcs *pcs,
++					phy_interface_t interface);
+ 	int (*pcs_enable)(struct phylink_pcs *pcs);
+ 	void (*pcs_disable)(struct phylink_pcs *pcs);
+ 	void (*pcs_pre_config)(struct phylink_pcs *pcs,
+@@ -481,6 +484,20 @@ int pcs_validate(struct phylink_pcs *pcs
+ 		 const struct phylink_link_state *state);
+ 
+ /**
++ * pcs_inband_caps - query PCS in-band capabilities for interface mode.
++ * @pcs: a pointer to a &struct phylink_pcs.
++ * @interface: interface mode to be queried
++ *
++ * Returns zero if it is unknown what in-band signalling is supported by the
++ * PHY (e.g. because the PHY driver doesn't implement the method.) Otherwise,
++ * returns a bit mask of the LINK_INBAND_* values from
++ * &enum link_inband_signalling to describe which inband modes are supported
++ * for this interface mode.
++ */
++unsigned int pcs_inband_caps(struct phylink_pcs *pcs,
++			     phy_interface_t interface);
++
++/**
+  * pcs_enable() - enable the PCS.
+  * @pcs: a pointer to a &struct phylink_pcs.
+  */
+--- a/drivers/net/ethernet/marvell/mvneta.c
++++ b/drivers/net/ethernet/marvell/mvneta.c
+@@ -3959,20 +3959,27 @@ static struct mvneta_port *mvneta_pcs_to
+ 	return container_of(pcs, struct mvneta_port, phylink_pcs);
+ }
+ 
+-static int mvneta_pcs_validate(struct phylink_pcs *pcs,
+-			       unsigned long *supported,
+-			       const struct phylink_link_state *state)
++static unsigned int mvneta_pcs_inband_caps(struct phylink_pcs *pcs,
++					   phy_interface_t interface)
+ {
+-	/* We only support QSGMII, SGMII, 802.3z and RGMII modes.
+-	 * When in 802.3z mode, we must have AN enabled:
++	/* When operating in an 802.3z mode, we must have AN enabled:
+ 	 * "Bit 2 Field InBandAnEn In-band Auto-Negotiation enable. ...
+ 	 * When <PortType> = 1 (1000BASE-X) this field must be set to 1."
++	 * Therefore, inband is "required".
+ 	 */
+-	if (phy_interface_mode_is_8023z(state->interface) &&
+-	    !phylink_test(state->advertising, Autoneg))
+-		return -EINVAL;
++	if (phy_interface_mode_is_8023z(interface))
++		return LINK_INBAND_ENABLE;
+ 
+-	return 0;
++	/* QSGMII, SGMII and RGMII can be configured to use inband
++	 * signalling of the AN result. Indicate these as "possible".
++	 */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_QSGMII ||
++	    phy_interface_mode_is_rgmii(interface))
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++
++	/* For any other modes, indicate that inband is not supported. */
++	return LINK_INBAND_DISABLE;
+ }
+ 
+ static void mvneta_pcs_get_state(struct phylink_pcs *pcs,
+@@ -4070,7 +4077,7 @@ static void mvneta_pcs_an_restart(struct
+ }
+ 
+ static const struct phylink_pcs_ops mvneta_phylink_pcs_ops = {
+-	.pcs_validate = mvneta_pcs_validate,
++	.pcs_inband_caps = mvneta_pcs_inband_caps,
+ 	.pcs_get_state = mvneta_pcs_get_state,
+ 	.pcs_config = mvneta_pcs_config,
+ 	.pcs_an_restart = mvneta_pcs_an_restart,
+--- a/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c
++++ b/drivers/net/ethernet/marvell/mvpp2/mvpp2_main.c
+@@ -6214,19 +6214,26 @@ static const struct phylink_pcs_ops mvpp
+ 	.pcs_config = mvpp2_xlg_pcs_config,
+ };
+ 
+-static int mvpp2_gmac_pcs_validate(struct phylink_pcs *pcs,
+-				   unsigned long *supported,
+-				   const struct phylink_link_state *state)
++static unsigned int mvpp2_gmac_pcs_inband_caps(struct phylink_pcs *pcs,
++					       phy_interface_t interface)
+ {
+-	/* When in 802.3z mode, we must have AN enabled:
++	/* When operating in an 802.3z mode, we must have AN enabled:
+ 	 * Bit 2 Field InBandAnEn In-band Auto-Negotiation enable. ...
+ 	 * When <PortType> = 1 (1000BASE-X) this field must be set to 1.
++	 * Therefore, inband is "required".
+ 	 */
+-	if (phy_interface_mode_is_8023z(state->interface) &&
+-	    !phylink_test(state->advertising, Autoneg))
+-		return -EINVAL;
++	if (phy_interface_mode_is_8023z(interface))
++		return LINK_INBAND_ENABLE;
+ 
+-	return 0;
++	/* SGMII and RGMII can be configured to use inband signalling of the
++	 * AN result. Indicate these as "possible".
++	 */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    phy_interface_mode_is_rgmii(interface))
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++
++	/* For any other modes, indicate that inband is not supported. */
++	return LINK_INBAND_DISABLE;
+ }
+ 
+ static void mvpp2_gmac_pcs_get_state(struct phylink_pcs *pcs,
+@@ -6333,7 +6340,7 @@ static void mvpp2_gmac_pcs_an_restart(st
+ }
+ 
+ static const struct phylink_pcs_ops mvpp2_phylink_gmac_pcs_ops = {
+-	.pcs_validate = mvpp2_gmac_pcs_validate,
++	.pcs_inband_caps = mvpp2_gmac_pcs_inband_caps,
+ 	.pcs_get_state = mvpp2_gmac_pcs_get_state,
+ 	.pcs_config = mvpp2_gmac_pcs_config,
+ 	.pcs_an_restart = mvpp2_gmac_pcs_an_restart,
+--- a/drivers/net/pcs/pcs-lynx.c
++++ b/drivers/net/pcs/pcs-lynx.c
+@@ -35,6 +35,27 @@ enum sgmii_speed {
+ #define phylink_pcs_to_lynx(pl_pcs) container_of((pl_pcs), struct lynx_pcs, pcs)
+ #define lynx_to_phylink_pcs(lynx) (&(lynx)->pcs)
+ 
++static unsigned int lynx_pcs_inband_caps(struct phylink_pcs *pcs,
++					 phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_QSGMII:
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++
++	case PHY_INTERFACE_MODE_10GBASER:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		return LINK_INBAND_DISABLE;
++
++	case PHY_INTERFACE_MODE_USXGMII:
++		return LINK_INBAND_ENABLE;
++
++	default:
++		return 0;
++	}
++}
++
+ static void lynx_pcs_get_state_usxgmii(struct mdio_device *pcs,
+ 				       struct phylink_link_state *state)
+ {
+@@ -307,6 +328,7 @@ static void lynx_pcs_link_up(struct phyl
+ }
+ 
+ static const struct phylink_pcs_ops lynx_pcs_phylink_ops = {
++	.pcs_inband_caps = lynx_pcs_inband_caps,
+ 	.pcs_get_state = lynx_pcs_get_state,
+ 	.pcs_config = lynx_pcs_config,
+ 	.pcs_an_restart = lynx_pcs_an_restart,
+--- a/drivers/net/pcs/pcs-mtk-lynxi.c
++++ b/drivers/net/pcs/pcs-mtk-lynxi.c
+@@ -110,6 +110,21 @@ static struct mtk_pcs_lynxi *pcs_to_mtk_
+ 	return container_of(pcs, struct mtk_pcs_lynxi, pcs);
+ }
+ 
++static unsigned int mtk_pcs_lynxi_inband_caps(struct phylink_pcs *pcs,
++					      phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_2500BASEX:
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_QSGMII:
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++
++	default:
++		return 0;
++	}
++}
++
+ static void mtk_pcs_lynxi_get_state(struct phylink_pcs *pcs,
+ 				    struct phylink_link_state *state)
+ {
+@@ -302,6 +317,7 @@ static void mtk_pcs_lynxi_disable(struct
+ }
+ 
+ static const struct phylink_pcs_ops mtk_pcs_lynxi_ops = {
++	.pcs_inband_caps = mtk_pcs_lynxi_inband_caps,
+ 	.pcs_get_state = mtk_pcs_lynxi_get_state,
+ 	.pcs_config = mtk_pcs_lynxi_config,
+ 	.pcs_an_restart = mtk_pcs_lynxi_restart_an,
+--- a/drivers/net/pcs/pcs-xpcs.c
++++ b/drivers/net/pcs/pcs-xpcs.c
+@@ -628,6 +628,33 @@ static int xpcs_validate(struct phylink_
+ 	return 0;
+ }
+ 
++static unsigned int xpcs_inband_caps(struct phylink_pcs *pcs,
++				     phy_interface_t interface)
++{
++	struct dw_xpcs *xpcs = phylink_pcs_to_xpcs(pcs);
++	const struct dw_xpcs_compat *compat;
++
++	compat = xpcs_find_compat(xpcs, interface);
++	if (!compat)
++		return 0;
++
++	switch (compat->an_mode) {
++	case DW_AN_C73:
++		return LINK_INBAND_ENABLE;
++
++	case DW_AN_C37_SGMII:
++	case DW_AN_C37_1000BASEX:
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++
++	case DW_10GBASER:
++	case DW_2500BASEX:
++		return LINK_INBAND_DISABLE;
++
++	default:
++		return 0;
++	}
++}
++
+ void xpcs_get_interfaces(struct dw_xpcs *xpcs, unsigned long *interfaces)
+ {
+ 	int i, j;
+@@ -1331,6 +1358,7 @@ static const struct xpcs_id xpcs_id_list
+ 
+ static const struct phylink_pcs_ops xpcs_phylink_ops = {
+ 	.pcs_validate = xpcs_validate,
++	.pcs_inband_caps = xpcs_inband_caps,
+ 	.pcs_config = xpcs_config,
+ 	.pcs_get_state = xpcs_get_state,
+ 	.pcs_an_restart = xpcs_an_restart,

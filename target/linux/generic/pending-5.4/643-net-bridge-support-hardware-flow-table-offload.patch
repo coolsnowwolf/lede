@@ -1,0 +1,61 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 15 Mar 2018 20:50:37 +0100
+Subject: [PATCH] net: bridge: support hardware flow table offload
+
+Look up the real device and pass it on
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/bridge/br_device.c
++++ b/net/bridge/br_device.c
+@@ -14,6 +14,10 @@
+ #include <linux/ethtool.h>
+ #include <linux/list.h>
+ #include <linux/netfilter_bridge.h>
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++#include <linux/netfilter.h>
++#include <net/netfilter/nf_flow_table.h>
++#endif
+ 
+ #include <linux/uaccess.h>
+ #include "br_private.h"
+@@ -384,6 +388,28 @@ static const struct ethtool_ops br_ethto
+ 	.get_link	= ethtool_op_get_link,
+ };
+ 
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++static int br_flow_offload_check(struct flow_offload_hw_path *path)
++{
++	struct net_device *dev = path->dev;
++	struct net_bridge *br = netdev_priv(dev);
++	struct net_bridge_fdb_entry *dst;
++
++	if (!(path->flags & FLOW_OFFLOAD_PATH_ETHERNET))
++		return -EINVAL;
++
++	dst = br_fdb_find_rcu(br, path->eth_dest, path->vlan_id);
++	if (!dst || !dst->dst)
++		return -ENOENT;
++
++	path->dev = dst->dst->dev;
++	if (path->dev->netdev_ops->ndo_flow_offload_check)
++		return path->dev->netdev_ops->ndo_flow_offload_check(path);
++
++	return 0;
++}
++#endif /* CONFIG_NF_FLOW_TABLE */
++
+ static const struct net_device_ops br_netdev_ops = {
+ 	.ndo_open		 = br_dev_open,
+ 	.ndo_stop		 = br_dev_stop,
+@@ -412,6 +438,9 @@ static const struct net_device_ops br_ne
+ 	.ndo_bridge_setlink	 = br_setlink,
+ 	.ndo_bridge_dellink	 = br_dellink,
+ 	.ndo_features_check	 = passthru_features_check,
++#if IS_ENABLED(CONFIG_NF_FLOW_TABLE)
++	.ndo_flow_offload_check	 = br_flow_offload_check,
++#endif
+ };
+ 
+ static struct device_type br_type = {

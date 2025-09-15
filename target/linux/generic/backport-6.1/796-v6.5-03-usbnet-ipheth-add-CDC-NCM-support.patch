@@ -1,0 +1,326 @@
+From a2d274c62e44b1995c170595db3865c6fe701226 Mon Sep 17 00:00:00 2001
+From: Foster Snowhill <forst@pen.gy>
+Date: Wed, 7 Jun 2023 15:57:01 +0200
+Subject: [PATCH 3/4] usbnet: ipheth: add CDC NCM support
+
+Recent iOS releases support CDC NCM encapsulation on RX. This mode is
+the default on macOS and Windows. In this mode, an iOS device may include
+one or more Ethernet frames inside a single URB.
+
+Freshly booted iOS devices start in legacy mode, but are put into
+NCM mode by the official Apple driver. When reconnecting such a device
+from a macOS/Windows machine to a Linux host, the device stays in
+NCM mode, making it unusable with the legacy ipheth driver code.
+
+To correctly support such a device, the driver has to either support
+the NCM mode too, or put the device back into legacy mode.
+
+To match the behaviour of the macOS/Windows driver, and since there
+is no documented control command to revert to legacy mode, implement
+NCM support. The device is attempted to be put into NCM mode by default,
+and falls back to legacy mode if the attempt fails.
+
+Signed-off-by: Foster Snowhill <forst@pen.gy>
+Tested-by: Georgi Valkov <gvalkov@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/usb/ipheth.c | 180 +++++++++++++++++++++++++++++++++------
+ 1 file changed, 155 insertions(+), 25 deletions(-)
+
+--- a/drivers/net/usb/ipheth.c
++++ b/drivers/net/usb/ipheth.c
+@@ -52,6 +52,7 @@
+ #include <linux/ethtool.h>
+ #include <linux/usb.h>
+ #include <linux/workqueue.h>
++#include <linux/usb/cdc.h>
+ 
+ #define USB_VENDOR_APPLE        0x05ac
+ 
+@@ -59,8 +60,12 @@
+ #define IPHETH_USBINTF_SUBCLASS 253
+ #define IPHETH_USBINTF_PROTO    1
+ 
+-#define IPHETH_BUF_SIZE         1514
+ #define IPHETH_IP_ALIGN		2	/* padding at front of URB */
++#define IPHETH_NCM_HEADER_SIZE  (12 + 96) /* NCMH + NCM0 */
++#define IPHETH_TX_BUF_SIZE      ETH_FRAME_LEN
++#define IPHETH_RX_BUF_SIZE_LEGACY (IPHETH_IP_ALIGN + ETH_FRAME_LEN)
++#define IPHETH_RX_BUF_SIZE_NCM	65536
++
+ #define IPHETH_TX_TIMEOUT       (5 * HZ)
+ 
+ #define IPHETH_INTFNUM          2
+@@ -71,6 +76,7 @@
+ #define IPHETH_CTRL_TIMEOUT     (5 * HZ)
+ 
+ #define IPHETH_CMD_GET_MACADDR   0x00
++#define IPHETH_CMD_ENABLE_NCM    0x04
+ #define IPHETH_CMD_CARRIER_CHECK 0x45
+ 
+ #define IPHETH_CARRIER_CHECK_TIMEOUT round_jiffies_relative(1 * HZ)
+@@ -97,6 +103,8 @@ struct ipheth_device {
+ 	u8 bulk_out;
+ 	struct delayed_work carrier_work;
+ 	bool confirmed_pairing;
++	int (*rcvbulk_callback)(struct urb *urb);
++	size_t rx_buf_len;
+ };
+ 
+ static int ipheth_rx_submit(struct ipheth_device *dev, gfp_t mem_flags);
+@@ -116,12 +124,12 @@ static int ipheth_alloc_urbs(struct iphe
+ 	if (rx_urb == NULL)
+ 		goto free_tx_urb;
+ 
+-	tx_buf = usb_alloc_coherent(iphone->udev, IPHETH_BUF_SIZE,
++	tx_buf = usb_alloc_coherent(iphone->udev, IPHETH_TX_BUF_SIZE,
+ 				    GFP_KERNEL, &tx_urb->transfer_dma);
+ 	if (tx_buf == NULL)
+ 		goto free_rx_urb;
+ 
+-	rx_buf = usb_alloc_coherent(iphone->udev, IPHETH_BUF_SIZE + IPHETH_IP_ALIGN,
++	rx_buf = usb_alloc_coherent(iphone->udev, iphone->rx_buf_len,
+ 				    GFP_KERNEL, &rx_urb->transfer_dma);
+ 	if (rx_buf == NULL)
+ 		goto free_tx_buf;
+@@ -134,7 +142,7 @@ static int ipheth_alloc_urbs(struct iphe
+ 	return 0;
+ 
+ free_tx_buf:
+-	usb_free_coherent(iphone->udev, IPHETH_BUF_SIZE, tx_buf,
++	usb_free_coherent(iphone->udev, IPHETH_TX_BUF_SIZE, tx_buf,
+ 			  tx_urb->transfer_dma);
+ free_rx_urb:
+ 	usb_free_urb(rx_urb);
+@@ -146,9 +154,9 @@ error_nomem:
+ 
+ static void ipheth_free_urbs(struct ipheth_device *iphone)
+ {
+-	usb_free_coherent(iphone->udev, IPHETH_BUF_SIZE + IPHETH_IP_ALIGN, iphone->rx_buf,
++	usb_free_coherent(iphone->udev, iphone->rx_buf_len, iphone->rx_buf,
+ 			  iphone->rx_urb->transfer_dma);
+-	usb_free_coherent(iphone->udev, IPHETH_BUF_SIZE, iphone->tx_buf,
++	usb_free_coherent(iphone->udev, IPHETH_TX_BUF_SIZE, iphone->tx_buf,
+ 			  iphone->tx_urb->transfer_dma);
+ 	usb_free_urb(iphone->rx_urb);
+ 	usb_free_urb(iphone->tx_urb);
+@@ -160,15 +168,106 @@ static void ipheth_kill_urbs(struct iphe
+ 	usb_kill_urb(dev->rx_urb);
+ }
+ 
+-static void ipheth_rcvbulk_callback(struct urb *urb)
++static int ipheth_consume_skb(char *buf, int len, struct ipheth_device *dev)
+ {
+-	struct ipheth_device *dev;
+ 	struct sk_buff *skb;
+-	int status;
++
++	skb = dev_alloc_skb(len);
++	if (!skb) {
++		dev->net->stats.rx_dropped++;
++		return -ENOMEM;
++	}
++
++	skb_put_data(skb, buf, len);
++	skb->dev = dev->net;
++	skb->protocol = eth_type_trans(skb, dev->net);
++
++	dev->net->stats.rx_packets++;
++	dev->net->stats.rx_bytes += len;
++	netif_rx(skb);
++
++	return 0;
++}
++
++static int ipheth_rcvbulk_callback_legacy(struct urb *urb)
++{
++	struct ipheth_device *dev;
++	char *buf;
++	int len;
++
++	dev = urb->context;
++
++	if (urb->actual_length <= IPHETH_IP_ALIGN) {
++		dev->net->stats.rx_length_errors++;
++		return -EINVAL;
++	}
++	len = urb->actual_length - IPHETH_IP_ALIGN;
++	buf = urb->transfer_buffer + IPHETH_IP_ALIGN;
++
++	return ipheth_consume_skb(buf, len, dev);
++}
++
++static int ipheth_rcvbulk_callback_ncm(struct urb *urb)
++{
++	struct usb_cdc_ncm_nth16 *ncmh;
++	struct usb_cdc_ncm_ndp16 *ncm0;
++	struct usb_cdc_ncm_dpe16 *dpe;
++	struct ipheth_device *dev;
++	int retval = -EINVAL;
+ 	char *buf;
+ 	int len;
+ 
+ 	dev = urb->context;
++
++	if (urb->actual_length < IPHETH_NCM_HEADER_SIZE) {
++		dev->net->stats.rx_length_errors++;
++		return retval;
++	}
++
++	ncmh = urb->transfer_buffer;
++	if (ncmh->dwSignature != cpu_to_le32(USB_CDC_NCM_NTH16_SIGN) ||
++	    le16_to_cpu(ncmh->wNdpIndex) >= urb->actual_length) {
++		dev->net->stats.rx_errors++;
++		return retval;
++	}
++
++	ncm0 = urb->transfer_buffer + le16_to_cpu(ncmh->wNdpIndex);
++	if (ncm0->dwSignature != cpu_to_le32(USB_CDC_NCM_NDP16_NOCRC_SIGN) ||
++	    le16_to_cpu(ncmh->wHeaderLength) + le16_to_cpu(ncm0->wLength) >=
++	    urb->actual_length) {
++		dev->net->stats.rx_errors++;
++		return retval;
++	}
++
++	dpe = ncm0->dpe16;
++	while (le16_to_cpu(dpe->wDatagramIndex) != 0 &&
++	       le16_to_cpu(dpe->wDatagramLength) != 0) {
++		if (le16_to_cpu(dpe->wDatagramIndex) >= urb->actual_length ||
++		    le16_to_cpu(dpe->wDatagramIndex) +
++		    le16_to_cpu(dpe->wDatagramLength) > urb->actual_length) {
++			dev->net->stats.rx_length_errors++;
++			return retval;
++		}
++
++		buf = urb->transfer_buffer + le16_to_cpu(dpe->wDatagramIndex);
++		len = le16_to_cpu(dpe->wDatagramLength);
++
++		retval = ipheth_consume_skb(buf, len, dev);
++		if (retval != 0)
++			return retval;
++
++		dpe++;
++	}
++
++	return 0;
++}
++
++static void ipheth_rcvbulk_callback(struct urb *urb)
++{
++	struct ipheth_device *dev;
++	int retval, status;
++
++	dev = urb->context;
+ 	if (dev == NULL)
+ 		return;
+ 
+@@ -191,25 +290,27 @@ static void ipheth_rcvbulk_callback(stru
+ 		dev->net->stats.rx_length_errors++;
+ 		return;
+ 	}
+-	len = urb->actual_length - IPHETH_IP_ALIGN;
+-	buf = urb->transfer_buffer + IPHETH_IP_ALIGN;
+ 
+-	skb = dev_alloc_skb(len);
+-	if (!skb) {
+-		dev_err(&dev->intf->dev, "%s: dev_alloc_skb: -ENOMEM\n",
+-			__func__);
+-		dev->net->stats.rx_dropped++;
++	/* RX URBs starting with 0x00 0x01 do not encapsulate Ethernet frames,
++	 * but rather are control frames. Their purpose is not documented, and
++	 * they don't affect driver functionality, okay to drop them.
++	 * There is usually just one 4-byte control frame as the very first
++	 * URB received from the bulk IN endpoint.
++	 */
++	if (unlikely
++		(((char *)urb->transfer_buffer)[0] == 0 &&
++		 ((char *)urb->transfer_buffer)[1] == 1))
++		goto rx_submit;
++
++	retval = dev->rcvbulk_callback(urb);
++	if (retval != 0) {
++		dev_err(&dev->intf->dev, "%s: callback retval: %d\n",
++			__func__, retval);
+ 		return;
+ 	}
+ 
+-	skb_put_data(skb, buf, len);
+-	skb->dev = dev->net;
+-	skb->protocol = eth_type_trans(skb, dev->net);
+-
+-	dev->net->stats.rx_packets++;
+-	dev->net->stats.rx_bytes += len;
++rx_submit:
+ 	dev->confirmed_pairing = true;
+-	netif_rx(skb);
+ 	ipheth_rx_submit(dev, GFP_ATOMIC);
+ }
+ 
+@@ -311,6 +412,27 @@ static int ipheth_get_macaddr(struct iph
+ 	return retval;
+ }
+ 
++static int ipheth_enable_ncm(struct ipheth_device *dev)
++{
++	struct usb_device *udev = dev->udev;
++	int retval;
++
++	retval = usb_control_msg(udev,
++				 usb_sndctrlpipe(udev, IPHETH_CTRL_ENDP),
++				 IPHETH_CMD_ENABLE_NCM, /* request */
++				 0x41, /* request type */
++				 0x00, /* value */
++				 0x02, /* index */
++				 NULL,
++				 0,
++				 IPHETH_CTRL_TIMEOUT);
++
++	dev_info(&dev->intf->dev, "%s: usb_control_msg: %d\n",
++		 __func__, retval);
++
++	return retval;
++}
++
+ static int ipheth_rx_submit(struct ipheth_device *dev, gfp_t mem_flags)
+ {
+ 	struct usb_device *udev = dev->udev;
+@@ -318,7 +440,7 @@ static int ipheth_rx_submit(struct iphet
+ 
+ 	usb_fill_bulk_urb(dev->rx_urb, udev,
+ 			  usb_rcvbulkpipe(udev, dev->bulk_in),
+-			  dev->rx_buf, IPHETH_BUF_SIZE + IPHETH_IP_ALIGN,
++			  dev->rx_buf, dev->rx_buf_len,
+ 			  ipheth_rcvbulk_callback,
+ 			  dev);
+ 	dev->rx_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+@@ -366,7 +488,7 @@ static netdev_tx_t ipheth_tx(struct sk_b
+ 	int retval;
+ 
+ 	/* Paranoid */
+-	if (skb->len > IPHETH_BUF_SIZE) {
++	if (skb->len > IPHETH_TX_BUF_SIZE) {
+ 		WARN(1, "%s: skb too large: %d bytes\n", __func__, skb->len);
+ 		dev->net->stats.tx_dropped++;
+ 		dev_kfree_skb_any(skb);
+@@ -449,6 +571,8 @@ static int ipheth_probe(struct usb_inter
+ 	dev->net = netdev;
+ 	dev->intf = intf;
+ 	dev->confirmed_pairing = false;
++	dev->rx_buf_len = IPHETH_RX_BUF_SIZE_LEGACY;
++	dev->rcvbulk_callback = ipheth_rcvbulk_callback_legacy;
+ 	/* Set up endpoints */
+ 	hintf = usb_altnum_to_altsetting(intf, IPHETH_ALT_INTFNUM);
+ 	if (hintf == NULL) {
+@@ -480,6 +604,12 @@ static int ipheth_probe(struct usb_inter
+ 	if (retval)
+ 		goto err_get_macaddr;
+ 
++	retval = ipheth_enable_ncm(dev);
++	if (!retval) {
++		dev->rx_buf_len = IPHETH_RX_BUF_SIZE_NCM;
++		dev->rcvbulk_callback = ipheth_rcvbulk_callback_ncm;
++	}
++
+ 	INIT_DELAYED_WORK(&dev->carrier_work, ipheth_carrier_check_work);
+ 
+ 	retval = ipheth_alloc_urbs(dev);

@@ -1,0 +1,60 @@
+From b48688ea3c9ac8d5d910c6e91fb7f80d846581f0 Mon Sep 17 00:00:00 2001
+From: ChunHao Lin <hau@realtek.com>
+Date: Tue, 18 Mar 2025 16:37:21 +0800
+Subject: [PATCH] r8169: disable RTL8126 ZRX-DC timeout
+
+Disable it due to it dose not meet ZRX-DC specification. If it is enabled,
+device will exit L1 substate every 100ms. Disable it for saving more power
+in L1 substate.
+
+Signed-off-by: ChunHao Lin <hau@realtek.com>
+Reviewed-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://patch.msgid.link/20250318083721.4127-3-hau@realtek.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 27 +++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -2856,6 +2856,32 @@ static u32 rtl_csi_read(struct rtl8169_p
+ 		RTL_R32(tp, CSIDR) : ~0;
+ }
+ 
++static void rtl_disable_zrxdc_timeout(struct rtl8169_private *tp)
++{
++	struct pci_dev *pdev = tp->pci_dev;
++	u32 csi;
++	int rc;
++	u8 val;
++
++#define RTL_GEN3_RELATED_OFF	0x0890
++#define RTL_GEN3_ZRXDC_NONCOMPL	0x1
++	if (pdev->cfg_size > RTL_GEN3_RELATED_OFF) {
++		rc = pci_read_config_byte(pdev, RTL_GEN3_RELATED_OFF, &val);
++		if (rc == PCIBIOS_SUCCESSFUL) {
++			val &= ~RTL_GEN3_ZRXDC_NONCOMPL;
++			rc = pci_write_config_byte(pdev, RTL_GEN3_RELATED_OFF,
++						   val);
++			if (rc == PCIBIOS_SUCCESSFUL)
++				return;
++		}
++	}
++
++	netdev_notice_once(tp->dev,
++		"No native access to PCI extended config space, falling back to CSI\n");
++	csi = rtl_csi_read(tp, RTL_GEN3_RELATED_OFF);
++	rtl_csi_write(tp, RTL_GEN3_RELATED_OFF, csi & ~RTL_GEN3_ZRXDC_NONCOMPL);
++}
++
+ static void rtl_set_aspm_entry_latency(struct rtl8169_private *tp, u8 val)
+ {
+ 	struct pci_dev *pdev = tp->pci_dev;
+@@ -3828,6 +3854,7 @@ static void rtl_hw_start_8125d(struct rt
+ 
+ static void rtl_hw_start_8126a(struct rtl8169_private *tp)
+ {
++	rtl_disable_zrxdc_timeout(tp);
+ 	rtl_set_def_aspm_entry_latency(tp);
+ 	rtl_hw_start_8125_common(tp);
+ }

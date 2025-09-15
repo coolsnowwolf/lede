@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+
+#include "ar9331_tplink_tl-wr710n.dtsi"
+
+/ {
+	aliases {
+		label-mac-device = &eth0;
+	};
+};
+
+&spi {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			uboot: partition@0 {
+				reg = <0x0 0x20000>;
+				label = "u-boot";
+				read-only;
+			};
+
+			partition@20000 {
+				compatible = "tplink,firmware";
+				reg = <0x20000 0x7d0000>;
+				label = "firmware";
+			};
+
+			art: partition@7f0000 {
+				reg = <0x7f0000 0x10000>;
+				label = "art";
+				read-only;
+			};
+		};
+	};
+};
+
+&eth0 {
+	nvmem-cells = <&macaddr_uboot_1fc00>;
+	nvmem-cell-names = "mac-address";
+};
+
+&eth1 {
+	nvmem-cells = <&macaddr_uboot_1fc00>;
+	nvmem-cell-names = "mac-address";
+	mac-address-increment = <(-1)>;
+};
+
+&wmac {
+	mtd-cal-data = <&art 0x1000>;
+
+	nvmem-cells = <&macaddr_uboot_1fc00>;
+	nvmem-cell-names = "mac-address";
+};
+
+&uboot {
+	compatible = "nvmem-cells";
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	macaddr_uboot_1fc00: macaddr@1fc00 {
+		reg = <0x1fc00 0x6>;
+	};
+};

@@ -1,0 +1,118 @@
+From 1e3f407f3cacc5dcfe27166c412ed9bc263d82bf Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Thu, 6 Jan 2022 01:11:16 +0200
+Subject: [PATCH 5/6] net: dsa: first set up shared ports, then non-shared
+ ports
+
+After commit a57d8c217aad ("net: dsa: flush switchdev workqueue before
+tearing down CPU/DSA ports"), the port setup and teardown procedure
+became asymmetric.
+
+The fact of the matter is that user ports need the shared ports to be up
+before they can be used for CPU-initiated termination. And since we
+register net devices for the user ports, those won't be functional until
+we also call the setup for the shared (CPU, DSA) ports. But we may do
+that later, depending on the port numbering scheme of the hardware we
+are dealing with.
+
+It just makes sense that all shared ports are brought up before any user
+port is. I can't pinpoint any issue due to the current behavior, but
+let's change it nonetheless, for consistency's sake.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ net/dsa/dsa2.c | 50 +++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 37 insertions(+), 13 deletions(-)
+
+--- a/net/dsa/dsa2.c
++++ b/net/dsa/dsa2.c
+@@ -1021,23 +1021,28 @@ static void dsa_tree_teardown_switches(s
+ 		dsa_switch_teardown(dp->ds);
+ }
+ 
+-static int dsa_tree_setup_switches(struct dsa_switch_tree *dst)
++/* Bring shared ports up first, then non-shared ports */
++static int dsa_tree_setup_ports(struct dsa_switch_tree *dst)
+ {
+ 	struct dsa_port *dp;
+-	int err;
++	int err = 0;
+ 
+ 	list_for_each_entry(dp, &dst->ports, list) {
+-		err = dsa_switch_setup(dp->ds);
+-		if (err)
+-			goto teardown;
++		if (dsa_port_is_dsa(dp) || dsa_port_is_cpu(dp)) {
++			err = dsa_port_setup(dp);
++			if (err)
++				goto teardown;
++		}
+ 	}
+ 
+ 	list_for_each_entry(dp, &dst->ports, list) {
+-		err = dsa_port_setup(dp);
+-		if (err) {
+-			err = dsa_port_reinit_as_unused(dp);
+-			if (err)
+-				goto teardown;
++		if (dsa_port_is_user(dp) || dsa_port_is_unused(dp)) {
++			err = dsa_port_setup(dp);
++			if (err) {
++				err = dsa_port_reinit_as_unused(dp);
++				if (err)
++					goto teardown;
++			}
+ 		}
+ 	}
+ 
+@@ -1046,7 +1051,21 @@ static int dsa_tree_setup_switches(struc
+ teardown:
+ 	dsa_tree_teardown_ports(dst);
+ 
+-	dsa_tree_teardown_switches(dst);
++	return err;
++}
++
++static int dsa_tree_setup_switches(struct dsa_switch_tree *dst)
++{
++	struct dsa_port *dp;
++	int err = 0;
++
++	list_for_each_entry(dp, &dst->ports, list) {
++		err = dsa_switch_setup(dp->ds);
++		if (err) {
++			dsa_tree_teardown_switches(dst);
++			break;
++		}
++	}
+ 
+ 	return err;
+ }
+@@ -1133,10 +1152,14 @@ static int dsa_tree_setup(struct dsa_swi
+ 	if (err)
+ 		goto teardown_cpu_ports;
+ 
+-	err = dsa_tree_setup_master(dst);
++	err = dsa_tree_setup_ports(dst);
+ 	if (err)
+ 		goto teardown_switches;
+ 
++	err = dsa_tree_setup_master(dst);
++	if (err)
++		goto teardown_ports;
++
+ 	err = dsa_tree_setup_lags(dst);
+ 	if (err)
+ 		goto teardown_master;
+@@ -1149,8 +1172,9 @@ static int dsa_tree_setup(struct dsa_swi
+ 
+ teardown_master:
+ 	dsa_tree_teardown_master(dst);
+-teardown_switches:
++teardown_ports:
+ 	dsa_tree_teardown_ports(dst);
++teardown_switches:
+ 	dsa_tree_teardown_switches(dst);
+ teardown_cpu_ports:
+ 	dsa_tree_teardown_cpu_ports(dst);

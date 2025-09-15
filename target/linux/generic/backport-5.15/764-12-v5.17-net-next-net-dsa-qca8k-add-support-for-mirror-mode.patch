@@ -1,0 +1,155 @@
+From 2c1bdbc7e7560d7de754cad277d968d56bb1899e Mon Sep 17 00:00:00 2001
+From: Ansuel Smith <ansuelsmth@gmail.com>
+Date: Tue, 23 Nov 2021 03:59:10 +0100
+Subject: net: dsa: qca8k: add support for mirror mode
+
+The switch supports mirror mode. Only one port can set as mirror port and
+every other port can set to both ingress and egress mode. The mirror
+port is disabled and reverted to normal operation once every port is
+removed from sending packet to it.
+
+Signed-off-by: Ansuel Smith <ansuelsmth@gmail.com>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/qca8k.c | 95 +++++++++++++++++++++++++++++++++++++++++++++++++
+ drivers/net/dsa/qca8k.h |  4 +++
+ 2 files changed, 99 insertions(+)
+
+--- a/drivers/net/dsa/qca8k.c
++++ b/drivers/net/dsa/qca8k.c
+@@ -2046,6 +2046,99 @@ qca8k_port_mdb_del(struct dsa_switch *ds
+ }
+ 
+ static int
++qca8k_port_mirror_add(struct dsa_switch *ds, int port,
++		      struct dsa_mall_mirror_tc_entry *mirror,
++		      bool ingress)
++{
++	struct qca8k_priv *priv = ds->priv;
++	int monitor_port, ret;
++	u32 reg, val;
++
++	/* Check for existent entry */
++	if ((ingress ? priv->mirror_rx : priv->mirror_tx) & BIT(port))
++		return -EEXIST;
++
++	ret = regmap_read(priv->regmap, QCA8K_REG_GLOBAL_FW_CTRL0, &val);
++	if (ret)
++		return ret;
++
++	/* QCA83xx can have only one port set to mirror mode.
++	 * Check that the correct port is requested and return error otherwise.
++	 * When no mirror port is set, the values is set to 0xF
++	 */
++	monitor_port = FIELD_GET(QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM, val);
++	if (monitor_port != 0xF && monitor_port != mirror->to_local_port)
++		return -EEXIST;
++
++	/* Set the monitor port */
++	val = FIELD_PREP(QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM,
++			 mirror->to_local_port);
++	ret = regmap_update_bits(priv->regmap, QCA8K_REG_GLOBAL_FW_CTRL0,
++				 QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM, val);
++	if (ret)
++		return ret;
++
++	if (ingress) {
++		reg = QCA8K_PORT_LOOKUP_CTRL(port);
++		val = QCA8K_PORT_LOOKUP_ING_MIRROR_EN;
++	} else {
++		reg = QCA8K_REG_PORT_HOL_CTRL1(port);
++		val = QCA8K_PORT_HOL_CTRL1_EG_MIRROR_EN;
++	}
++
++	ret = regmap_update_bits(priv->regmap, reg, val, val);
++	if (ret)
++		return ret;
++
++	/* Track mirror port for tx and rx to decide when the
++	 * mirror port has to be disabled.
++	 */
++	if (ingress)
++		priv->mirror_rx |= BIT(port);
++	else
++		priv->mirror_tx |= BIT(port);
++
++	return 0;
++}
++
++static void
++qca8k_port_mirror_del(struct dsa_switch *ds, int port,
++		      struct dsa_mall_mirror_tc_entry *mirror)
++{
++	struct qca8k_priv *priv = ds->priv;
++	u32 reg, val;
++	int ret;
++
++	if (mirror->ingress) {
++		reg = QCA8K_PORT_LOOKUP_CTRL(port);
++		val = QCA8K_PORT_LOOKUP_ING_MIRROR_EN;
++	} else {
++		reg = QCA8K_REG_PORT_HOL_CTRL1(port);
++		val = QCA8K_PORT_HOL_CTRL1_EG_MIRROR_EN;
++	}
++
++	ret = regmap_clear_bits(priv->regmap, reg, val);
++	if (ret)
++		goto err;
++
++	if (mirror->ingress)
++		priv->mirror_rx &= ~BIT(port);
++	else
++		priv->mirror_tx &= ~BIT(port);
++
++	/* No port set to send packet to mirror port. Disable mirror port */
++	if (!priv->mirror_rx && !priv->mirror_tx) {
++		val = FIELD_PREP(QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM, 0xF);
++		ret = regmap_update_bits(priv->regmap, QCA8K_REG_GLOBAL_FW_CTRL0,
++					 QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM, val);
++		if (ret)
++			goto err;
++	}
++err:
++	dev_err(priv->dev, "Failed to del mirror port from %d", port);
++}
++
++static int
+ qca8k_port_vlan_filtering(struct dsa_switch *ds, int port, bool vlan_filtering,
+ 			  struct netlink_ext_ack *extack)
+ {
+@@ -2155,6 +2248,8 @@ static const struct dsa_switch_ops qca8k
+ 	.port_fdb_dump		= qca8k_port_fdb_dump,
+ 	.port_mdb_add		= qca8k_port_mdb_add,
+ 	.port_mdb_del		= qca8k_port_mdb_del,
++	.port_mirror_add	= qca8k_port_mirror_add,
++	.port_mirror_del	= qca8k_port_mirror_del,
+ 	.port_vlan_filtering	= qca8k_port_vlan_filtering,
+ 	.port_vlan_add		= qca8k_port_vlan_add,
+ 	.port_vlan_del		= qca8k_port_vlan_del,
+--- a/drivers/net/dsa/qca8k.h
++++ b/drivers/net/dsa/qca8k.h
+@@ -180,6 +180,7 @@
+ #define   QCA8K_ATU_AGE_TIME(x)				FIELD_PREP(QCA8K_ATU_AGE_TIME_MASK, (x))
+ #define QCA8K_REG_GLOBAL_FW_CTRL0			0x620
+ #define   QCA8K_GLOBAL_FW_CTRL0_CPU_PORT_EN		BIT(10)
++#define   QCA8K_GLOBAL_FW_CTRL0_MIRROR_PORT_NUM		GENMASK(7, 4)
+ #define QCA8K_REG_GLOBAL_FW_CTRL1			0x624
+ #define   QCA8K_GLOBAL_FW_CTRL1_IGMP_DP_MASK		GENMASK(30, 24)
+ #define   QCA8K_GLOBAL_FW_CTRL1_BC_DP_MASK		GENMASK(22, 16)
+@@ -201,6 +202,7 @@
+ #define   QCA8K_PORT_LOOKUP_STATE_LEARNING		QCA8K_PORT_LOOKUP_STATE(0x3)
+ #define   QCA8K_PORT_LOOKUP_STATE_FORWARD		QCA8K_PORT_LOOKUP_STATE(0x4)
+ #define   QCA8K_PORT_LOOKUP_LEARN			BIT(20)
++#define   QCA8K_PORT_LOOKUP_ING_MIRROR_EN		BIT(25)
+ 
+ #define QCA8K_REG_GLOBAL_FC_THRESH			0x800
+ #define   QCA8K_GLOBAL_FC_GOL_XON_THRES_MASK		GENMASK(24, 16)
+@@ -305,6 +307,8 @@ struct qca8k_ports_config {
+ struct qca8k_priv {
+ 	u8 switch_id;
+ 	u8 switch_revision;
++	u8 mirror_rx;
++	u8 mirror_tx;
+ 	bool legacy_phy_port_mapping;
+ 	struct qca8k_ports_config ports_config;
+ 	struct regmap *regmap;

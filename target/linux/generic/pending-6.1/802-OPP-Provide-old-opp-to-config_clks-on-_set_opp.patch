@@ -1,0 +1,108 @@
+From fd59b838dd90452f61a17dc9e5ff175205003068 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 15 Sep 2022 18:49:43 +0200
+Subject: [PATCH] OPP: Provide old opp to config_clks on _set_opp
+
+With the target opp, also pass the old opp to config_clks function.
+This can be useful when a driver needs to take decision on what fequency
+to set based on what is the current frequency without using a
+clk_get_freq call.
+Update the only user of custom config_clks (tegra30 devfreq driver) to
+this new implementation.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/devfreq/tegra30-devfreq.c |  5 +++--
+ drivers/opp/core.c                | 11 ++++++-----
+ include/linux/pm_opp.h            | 11 ++++++-----
+ 3 files changed, 15 insertions(+), 12 deletions(-)
+
+--- a/drivers/devfreq/tegra30-devfreq.c
++++ b/drivers/devfreq/tegra30-devfreq.c
+@@ -823,8 +823,9 @@ static int devm_tegra_devfreq_init_hw(st
+ 
+ static int tegra_devfreq_config_clks_nop(struct device *dev,
+ 					 struct opp_table *opp_table,
+-					 struct dev_pm_opp *opp, void *data,
+-					 bool scaling_down)
++					 struct dev_pm_opp *old_opp,
++					 struct dev_pm_opp *opp,
++					 void *data, bool scaling_down)
+ {
+ 	/* We want to skip clk configuration via dev_pm_opp_set_opp() */
+ 	return 0;
+--- a/drivers/opp/core.c
++++ b/drivers/opp/core.c
+@@ -816,7 +816,8 @@ static int _set_opp_voltage(struct devic
+ 
+ static int
+ _opp_config_clk_single(struct device *dev, struct opp_table *opp_table,
+-		       struct dev_pm_opp *opp, void *data, bool scaling_down)
++		       struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
++		       void *data, bool scaling_down)
+ {
+ 	unsigned long *target = data;
+ 	unsigned long freq;
+@@ -848,8 +849,8 @@ _opp_config_clk_single(struct device *de
+  * the order in which they are present in the array while scaling up.
+  */
+ int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down)
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down)
+ {
+ 	int ret, i;
+ 
+@@ -1121,7 +1122,7 @@ static int _set_opp(struct device *dev,
+ 	}
+ 
+ 	if (opp_table->config_clks) {
+-		ret = opp_table->config_clks(dev, opp_table, opp, clk_data, scaling_down);
++		ret = opp_table->config_clks(dev, opp_table, old_opp, opp, clk_data, scaling_down);
+ 		if (ret)
+ 			return ret;
+ 	}
+@@ -1196,7 +1197,7 @@ int dev_pm_opp_set_rate(struct device *d
+ 		 * equivalent to a clk_set_rate()
+ 		 */
+ 		if (!_get_opp_count(opp_table)) {
+-			ret = opp_table->config_clks(dev, opp_table, NULL,
++			ret = opp_table->config_clks(dev, opp_table, NULL, NULL,
+ 						     &target_freq, false);
+ 			goto put_opp_table;
+ 		}
+--- a/include/linux/pm_opp.h
++++ b/include/linux/pm_opp.h
+@@ -61,7 +61,8 @@ typedef int (*config_regulators_t)(struc
+ 			struct dev_pm_opp *old_opp, struct dev_pm_opp *new_opp,
+ 			struct regulator **regulators, unsigned int count);
+ 
+-typedef int (*config_clks_t)(struct device *dev, struct opp_table *opp_table,
++typedef int (*config_clks_t)(struct device *dev,
++			struct opp_table *opp_table, struct dev_pm_opp *old_opp, 
+ 			struct dev_pm_opp *opp, void *data, bool scaling_down);
+ 
+ /**
+@@ -160,8 +161,8 @@ int dev_pm_opp_set_config(struct device
+ int devm_pm_opp_set_config(struct device *dev, struct dev_pm_opp_config *config);
+ void dev_pm_opp_clear_config(int token);
+ int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down);
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down);
+ 
+ struct dev_pm_opp *dev_pm_opp_xlate_required_opp(struct opp_table *src_table, struct opp_table *dst_table, struct dev_pm_opp *src_opp);
+ int dev_pm_opp_xlate_performance_state(struct opp_table *src_table, struct opp_table *dst_table, unsigned int pstate);
+@@ -346,8 +347,8 @@ static inline int devm_pm_opp_set_config
+ static inline void dev_pm_opp_clear_config(int token) {}
+ 
+ static inline int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down)
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down)
+ {
+ 	return -EOPNOTSUPP;
+ }

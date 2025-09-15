@@ -1,0 +1,137 @@
+--- a/src/common/drv_dsl_cpe_os_linux.c
++++ b/src/common/drv_dsl_cpe_os_linux.c
+@@ -11,6 +11,7 @@
+ #ifdef __LINUX__
+ 
+ #define DSL_INTERN
++#include <linux/kthread.h>
+ #include <linux/of_platform.h>
+ 
+ #include "drv_dsl_cpe_api.h"
+@@ -39,7 +40,7 @@ static DSL_ssize_t DSL_DRV_Write(DSL_DRV
+ static DSL_int_t DSL_DRV_Ioctls(DSL_DRV_inode_t * pINode, DSL_DRV_file_t * pFile,
+                          DSL_uint_t nCommand, unsigned long nArg);
+ #else
+-static DSL_int_t DSL_DRV_Ioctls(DSL_DRV_file_t * pFile,
++static long DSL_DRV_Ioctls(DSL_DRV_file_t * pFile,
+                          DSL_uint_t nCommand, unsigned long nArg);
+ #endif
+ static int DSL_DRV_Open(DSL_DRV_inode_t * ino, DSL_DRV_file_t * fil);
+@@ -183,7 +184,7 @@ static DSL_int_t DSL_DRV_Ioctls(DSL_DRV_
+    DSL_uint_t nCommand,
+    unsigned long nArg)
+ #else
+-static DSL_int_t DSL_DRV_Ioctls(
++static long DSL_DRV_Ioctls(
+    DSL_DRV_file_t * pFile,
+    DSL_uint_t nCommand,
+    unsigned long nArg)
+@@ -520,9 +521,9 @@ DSL_void_t* DSL_IoctlMemCpyTo(
+    - IFX_SUCCESS on success
+    - IFX_ERROR on error
+ */
+-DSL_DRV_STATIC DSL_int32_t DSL_DRV_KernelThreadStartup(
+-                              DSL_DRV_ThreadCtrl_t *pThrCntrl)
++static int DSL_DRV_KernelThreadStartup(void *data)
+ {
++   DSL_DRV_ThreadCtrl_t *pThrCntrl = (DSL_DRV_ThreadCtrl_t*) data;
+    DSL_int32_t retVal          = -1;
+ #ifndef _lint
+ 
+@@ -545,30 +546,6 @@ DSL_DRV_STATIC DSL_int32_t DSL_DRV_Kerne
+       (DSL_NULL, "ENTER - Kernel Thread Startup <%s>" DSL_DRV_CRLF,
+         pThrCntrl->thrParams.pName));
+ 
+-   /* do LINUX specific setup */
+-#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
+-   daemonize();
+-   reparent_to_init();
+-
+-   /* lock the kernel. A new kernel thread starts without
+-      the big kernel lock, regardless of the lock state
+-      of the creator (the lock level is *not* inheritated)
+-   */
+-   lock_kernel();
+-
+-   /* Don't care about any signals. */
+-   siginitsetinv(&current->blocked, 0);
+-
+-   /* set name of this process */
+-   strcpy(kthread->comm, pThrCntrl->thrParams.pName);
+-
+-   /* let others run */
+-   unlock_kernel();
+-#else
+-   daemonize(pThrCntrl->thrParams.pName);
+-
+-#endif
+-
+    /*DSL_DRV_ThreadPriorityModify(pThrCntrl->nPriority);*/
+ 
+    pThrCntrl->thrParams.bRunning = 1;
+@@ -638,9 +615,7 @@ DSL_int32_t DSL_DRV_ThreadInit(
+          init_completion(&pThrCntrl->thrCompletion);
+ 
+          /* start kernel thread via the wrapper function */
+-         pThrCntrl->pid = kernel_thread( (DSL_DRV_KERNEL_THREAD_StartRoutine)DSL_DRV_KernelThreadStartup,
+-                        (void *)pThrCntrl,
+-                        DSL_DRV_DRV_THREAD_OPTIONS);
++         pThrCntrl->pid = kthread_run(DSL_DRV_KernelThreadStartup, (void *)pThrCntrl, pThrCntrl->thrParams.pName);
+ 
+          pThrCntrl->bValid = DSL_TRUE;
+ 
+@@ -1070,12 +1045,12 @@ static void DSL_DRV_DebugInit(void)
+ #endif
+ 
+ /* Entry point of driver */
+-static int __devinit ltq_adsl_probe(struct platform_device *pdev)
++static int ltq_adsl_probe(struct platform_device *pdev)
+ {
+    struct class *dsl_class;
+    DSL_int_t i;
+ 
+-   printk(DSL_DRV_CRLF DSL_DRV_CRLF "Infineon CPE API Driver version: %s" DSL_DRV_CRLF,
++   printk("Infineon CPE API Driver version: %s" DSL_DRV_CRLF,
+       &(dsl_cpe_api_version[4]));
+ 
+    DSL_DRV_MemSet( ifxDevices, 0, sizeof(DSL_devCtx_t) * DSL_DRV_MAX_DEVICE_NUMBER );
+@@ -1124,7 +1099,7 @@ static int __devinit ltq_adsl_probe(stru
+    return 0;
+ }
+ 
+-static int __devexit ltq_adsl_remove(struct platform_device *pdev)
++static int ltq_adsl_remove(struct platform_device *pdev)
+ {
+    printk("Module will be unloaded"DSL_DRV_CRLF);
+ 
+@@ -1169,7 +1144,7 @@ MODULE_DEVICE_TABLE(of, ltq_adsl_match);
+ 
+ static struct platform_driver ltq_adsl_driver = {
+ 	.probe = ltq_adsl_probe,
+-	.remove = __devexit_p(ltq_adsl_remove),
++	.remove = ltq_adsl_remove,
+ 	.driver = {
+ 		.name = "adsl",
+ 		.owner = THIS_MODULE,
+--- a/src/include/drv_dsl_cpe_os_lint_map.h
++++ b/src/include/drv_dsl_cpe_os_lint_map.h
+@@ -247,7 +247,7 @@ typedef struct
+    DSL_DRV_ThreadFunction_t  pThrFct;
+ 
+    /** Kernel thread process ID */
+-   DSL_int32_t             pid;
++   struct task_struct             *pid;
+ 
+    /** requested kernel thread priority */
+    DSL_int32_t             nPriority;
+--- a/src/include/drv_dsl_cpe_os_linux.h
++++ b/src/include/drv_dsl_cpe_os_linux.h
+@@ -288,7 +288,7 @@ typedef struct
+    DSL_DRV_ThreadFunction_t  pThrFct;
+ 
+    /** Kernel thread process ID */
+-   DSL_int32_t             pid;
++   struct task_struct             *pid;
+ 
+    /** requested kernel thread priority */
+    DSL_int32_t             nPriority;

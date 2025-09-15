@@ -1,0 +1,165 @@
+From e17398316e82d8b28217232b4fd6030c65138e74 Mon Sep 17 00:00:00 2001
+From: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Date: Mon, 12 Aug 2013 01:18:00 +0200
+Subject: MIPS: lantiq: add NAND SPL support
+
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+
+--- a/arch/mips/cpu/mips32/lantiq-common/spl.c
++++ b/arch/mips/cpu/mips32/lantiq-common/spl.c
+@@ -8,6 +8,7 @@
+ #include <image.h>
+ #include <version.h>
+ #include <spi_flash.h>
++#include <nand.h>
+ #include <linux/compiler.h>
+ #include <lzma/LzmaDec.h>
+ #include <linux/lzo.h>
+@@ -63,6 +64,18 @@
+ #define spl_boot_nor_flash	0
+ #endif
+ 
++#if defined(CONFIG_LTQ_SUPPORT_SPL_NAND_FLASH) && defined(CONFIG_SYS_BOOT_NANDSPL)
++#define spl_boot_nand_flash	1
++#else
++#define spl_boot_nand_flash	0
++#ifndef CONFIG_SYS_NAND_U_BOOT_OFFS
++#define CONFIG_SYS_NAND_U_BOOT_OFFS	0
++#endif
++#ifndef CONFIG_SYS_NAND_PAGE_SIZE
++#define CONFIG_SYS_NAND_PAGE_SIZE	0
++#endif
++#endif
++
+ #define spl_sync()	__asm__ __volatile__("sync");
+ 
+ struct spl_image {
+@@ -337,6 +350,58 @@ static int spl_load_nor_flash(struct spl
+ 	return ret;
+ }
+ 
++static int spl_load_nand_flash(struct spl_image *spl)
++{
++	image_header_t *hdr;
++	int ret;
++	unsigned long loadaddr;
++
++	/*
++	 * Image format:
++	 *
++	 * - 12 byte non-volatile bootstrap header
++	 * - SPL binary
++	 * - 12 byte non-volatile bootstrap header
++	 * - padding bytes up to CONFIG_SYS_NAND_U_BOOT_OFFS
++	 * - 64 byte U-Boot mkimage header
++	 * - U-Boot binary
++	 */
++	spl->data_addr = CONFIG_SYS_NAND_U_BOOT_OFFS;
++
++	spl_puts("SPL: initializing NAND flash\n");
++	nand_init();
++
++	spl_debug("SPL: reading image header at page offset %lx\n",
++		  spl->data_addr);
++
++	hdr = (image_header_t *) CONFIG_LOADADDR;
++	ret = nand_spl_load_image(spl->data_addr,
++				  CONFIG_SYS_NAND_PAGE_SIZE, hdr);
++	if (ret)
++		return ret;
++
++	spl_debug("SPL: checking image header at address %p\n", hdr);
++
++	ret = spl_parse_image(hdr, spl);
++	if (ret)
++		return ret;
++
++	if (spl_is_compressed(spl))
++		loadaddr = CONFIG_LOADADDR;
++	else
++		loadaddr = spl->entry_addr;
++
++	spl_puts("SPL: loading U-Boot to RAM\n");
++
++	ret = nand_spl_load_image(spl->data_addr, spl->data_size,
++				  (void *) loadaddr);
++
++	if (spl_is_compressed(spl))
++		ret = spl_uncompress(spl, loadaddr);
++
++	return ret;
++}
++
+ static int spl_load(struct spl_image *spl)
+ {
+ 	int ret;
+@@ -345,6 +410,8 @@ static int spl_load(struct spl_image *sp
+ 		ret = spl_load_spi_flash(spl);
+ 	else if (spl_boot_nor_flash)
+ 		ret = spl_load_nor_flash(spl);
++	else if (spl_boot_nand_flash)
++		ret = spl_load_nand_flash(spl);
+ 	else
+ 		ret = 1;
+ 
+--- a/arch/mips/include/asm/lantiq/config.h
++++ b/arch/mips/include/asm/lantiq/config.h
+@@ -40,6 +40,26 @@
+ #define CONFIG_SPI_SPL_SIMPLE
+ #endif
+ 
++/*
++ * NAND flash SPL
++ * BOOT CFG 06 only (address cycle based probing, 2KB or 512B page size)
++ */
++#if defined(CONFIG_LTQ_SUPPORT_SPL_NAND_FLASH) && defined(CONFIG_SYS_BOOT_NANDSPL)
++#define CONFIG_SPL
++#define CONFIG_SPL_NAND_SUPPORT
++#define CONFIG_SPL_NAND_DRIVERS
++#define CONFIG_SPL_NAND_SIMPLE
++#define CONFIG_SPL_NAND_ECC
++
++/* use software ECC until driver supports HW ECC */
++#define CONFIG_SPL_NAND_SOFTECC
++#define CONFIG_SYS_NAND_ECCSIZE		256
++#define CONFIG_SYS_NAND_ECCBYTES	3
++#define CONFIG_SYS_NAND_ECCPOS		{40, 41, 42, 43, 44, 45, 46, 47, \
++					48, 49, 50, 51, 52, 53, 54, 55, \
++					56, 57, 58, 59, 60, 61, 62, 63}
++#endif
++
+ #if defined(CONFIG_LTQ_SUPPORT_SPL_NOR_FLASH) && defined(CONFIG_SYS_BOOT_NORSPL)
+ #define CONFIG_SPL
+ #endif
+@@ -148,6 +168,21 @@
+ #define CONFIG_ENV_LOAD_UBOOT_SF
+ #endif
+ 
++#if defined(CONFIG_LTQ_SUPPORT_NAND_FLASH)
++#define CONFIG_ENV_WRITE_UBOOT_NAND				\
++	"write-uboot-nand="					\
++	"nand erase 0 $filesize && "				\
++	"nand write $fileaddr 0 $filesize\0"
++
++#define CONFIG_ENV_LOAD_UBOOT_NAND						\
++	"load-uboot-nandspl=tftpboot u-boot.ltq.nandspl\0"			\
++	"load-uboot-nandspl-lzo=tftpboot u-boot.ltq.lzo.nandspl\0"		\
++	"load-uboot-nandspl-lzma=tftpboot u-boot.ltq.lzma.nandspl\0"
++#else
++#define CONFIG_ENV_WRITE_UBOOT_NAND
++#define CONFIG_ENV_LOAD_UBOOT_NAND
++#endif
++
+ #define CONFIG_ENV_LANTIQ_DEFAULTS	\
+ 	CONFIG_ENV_CONSOLEDEV		\
+ 	CONFIG_ENV_ADDCONSOLE		\
+@@ -159,6 +194,8 @@
+ 	CONFIG_ENV_LOAD_UBOOT_NOR	\
+ 	CONFIG_ENV_SF_PROBE		\
+ 	CONFIG_ENV_WRITE_UBOOT_SF	\
+-	CONFIG_ENV_LOAD_UBOOT_SF
++	CONFIG_ENV_LOAD_UBOOT_SF	\
++	CONFIG_ENV_WRITE_UBOOT_NAND	\
++	CONFIG_ENV_LOAD_UBOOT_NAND
+ 
+ #endif /* __LANTIQ_CONFIG_H__ */

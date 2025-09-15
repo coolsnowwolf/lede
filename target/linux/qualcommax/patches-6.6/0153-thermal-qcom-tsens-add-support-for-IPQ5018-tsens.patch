@@ -1,0 +1,118 @@
+From: Sricharan Ramabadhran <quic_srichara@quicinc.com>
+Subject: [PATCH] thermal/drivers/tsens: Add support for IPQ5018 tsens
+Date: Fri, 22 Sep 2023 17:21:15 +0530
+
+IPQ5018 has tsens IP V1.0, 4 sensors and 1 interrupt.
+The soc does not have a RPM, hence tsens has to be reset and
+enabled in the driver init. Adding the driver support for same.
+
+Signed-off-by: Sricharan Ramabadhran <quic_srichara@quicinc.com>
+---
+ drivers/thermal/qcom/tsens-v1.c | 60 +++++++++++++++++++++++++++++++++
+ drivers/thermal/qcom/tsens.c    |  3 ++
+ drivers/thermal/qcom/tsens.h    |  2 +-
+ 3 files changed, 64 insertions(+), 1 deletion(-)
+
+--- a/drivers/thermal/qcom/tsens-v1.c
++++ b/drivers/thermal/qcom/tsens-v1.c
+@@ -79,6 +79,18 @@ static struct tsens_features tsens_v1_fe
+ 	.trip_max_temp	= 120000,
+ };
+ 
++static struct tsens_features tsens_v1_ipq5018_feat = {
++	.ver_major	= VER_1_X,
++	.crit_int	= 0,
++	.combo_int	= 0,
++	.adc		= 1,
++	.srot_split	= 1,
++	.max_sensors	= 11,
++	.trip_min_temp	= -40000,
++	.trip_max_temp	= 120000,
++	.ignore_enable	= 1,
++};
++
+ static const struct reg_field tsens_v1_regfields[MAX_REGFIELDS] = {
+ 	/* ----- SROT ------ */
+ 	/* VERSION */
+@@ -150,6 +162,41 @@ static int __init init_8956(struct tsens
+ 	return init_common(priv);
+ }
+ 
++static int __init init_ipq5018(struct tsens_priv *priv)
++{
++	int ret;
++	u32 mask;
++
++	ret = init_common(priv);
++	if (ret < 0) {
++		dev_err(priv->dev, "Init common failed %d\n", ret);
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 1);
++	if (ret) {
++		dev_err(priv->dev, "Reset failed\n");
++		return ret;
++	}
++
++	mask = GENMASK(priv->num_sensors, 0);
++	ret = regmap_field_update_bits(priv->rf[SENSOR_EN], mask, mask);
++	if (ret) {
++		dev_err(priv->dev, "Sensor Enable failed\n");
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_EN], 1);
++	if (ret) {
++		dev_err(priv->dev, "Enable failed\n");
++		return ret;
++	}
++
++	ret = regmap_field_write(priv->rf[TSENS_SW_RST], 0);
++
++	return ret;
++}
++
+ static const struct tsens_ops ops_generic_v1 = {
+ 	.init		= init_common,
+ 	.calibrate	= calibrate_v1,
+@@ -194,3 +241,16 @@ struct tsens_plat_data data_8976 = {
+ 	.feat		= &tsens_v1_feat,
+ 	.fields		= tsens_v1_regfields,
+ };
++
++const struct tsens_ops ops_ipq5018 = {
++	.init		= init_ipq5018,
++	.calibrate	= tsens_calibrate_common,
++	.get_temp	= get_temp_tsens_valid,
++};
++
++struct tsens_plat_data data_ipq5018 = {
++	.num_sensors	= 5,
++	.ops		= &ops_ipq5018,
++	.feat		= &tsens_v1_ipq5018_feat,
++	.fields		= tsens_v1_regfields,
++};
+--- a/drivers/thermal/qcom/tsens.c
++++ b/drivers/thermal/qcom/tsens.c
+@@ -1101,6 +1101,9 @@ static SIMPLE_DEV_PM_OPS(tsens_pm_ops, t
+ 
+ static const struct of_device_id tsens_table[] = {
+ 	{
++		.compatible = "qcom,ipq5018-tsens",
++		.data = &data_ipq5018,
++	}, {
+ 		.compatible = "qcom,ipq8064-tsens",
+ 		.data = &data_8960,
+ 	}, {
+--- a/drivers/thermal/qcom/tsens.h
++++ b/drivers/thermal/qcom/tsens.h
+@@ -645,7 +645,7 @@ extern struct tsens_plat_data data_8960;
+ extern struct tsens_plat_data data_8226, data_8909, data_8916, data_8939, data_8974, data_9607;
+ 
+ /* TSENS v1 targets */
+-extern struct tsens_plat_data data_tsens_v1, data_8937, data_8976, data_8956;
++extern struct tsens_plat_data data_tsens_v1, data_8937, data_8976, data_8956, data_ipq5018;
+ 
+ /* TSENS v2 targets */
+ extern struct tsens_plat_data data_8996, data_ipq8074, data_tsens_v2;

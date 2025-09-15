@@ -1,0 +1,92 @@
+include ./common-mikrotik.mk
+
+define Device/mikrotik_routerboard-493g
+  $(Device/mikrotik_nand)
+  SOC := ar7161
+  DEVICE_MODEL := RouterBOARD 493G
+  DEVICE_PACKAGES += kmod-usb-ohci kmod-usb2
+  SUPPORTED_DEVICES += rb-493g
+endef
+TARGET_DEVICES += mikrotik_routerboard-493g
+
+define Device/mikrotik_routerboard-912uag-2hpnd
+  $(Device/mikrotik_nand)
+  SOC := ar9342
+  DEVICE_MODEL := RouterBOARD 912UAG-2HPnD
+  DEVICE_PACKAGES += kmod-usb-ehci kmod-usb2
+  SUPPORTED_DEVICES += rb-912uag-2hpnd
+endef
+TARGET_DEVICES += mikrotik_routerboard-912uag-2hpnd
+
+define Device/mikrotik_routerboard-921gs-5hpacd-15s
+  $(Device/mikrotik_nand)
+  SOC := qca9558
+  DEVICE_MODEL := RouterBOARD 921GS-5HPacD-15s (mANTBox 15s)
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct kmod-i2c-gpio \
+	kmod-sfp
+  SUPPORTED_DEVICES += rb-921gs-5hpacd-r2
+endef
+TARGET_DEVICES += mikrotik_routerboard-921gs-5hpacd-15s
+
+define Device/mikrotik_routerboard-922uags-5hpacd
+  $(Device/mikrotik_nand)
+  SOC := qca9558
+  DEVICE_MODEL := RouterBOARD 922UAGS-5HPacD
+  DEVICE_PACKAGES += kmod-ath10k-ct ath10k-firmware-qca988x-ct kmod-usb2 \
+	kmod-i2c-gpio kmod-sfp
+  SUPPORTED_DEVICES += rb-922uags-5hpacd
+endef
+TARGET_DEVICES += mikrotik_routerboard-922uags-5hpacd
+
+define Device/mikrotik_routerboard-lhg-2nd
+  $(Device/mikrotik_nor)
+  SOC := qca9533
+  DEVICE_MODEL := RouterBOARD LHG 2nD (LHG 2)
+  IMAGE_SIZE := 16256k
+endef
+TARGET_DEVICES += mikrotik_routerboard-lhg-2nd
+
+define Device/mikrotik_routerboard-lhg-5nd
+  $(Device/mikrotik_nor)
+  SOC := ar9344
+  DEVICE_MODEL := RouterBOARD LHG 5nD (LHG 5)
+  DEVICE_PACKAGES += rssileds
+  IMAGE_SIZE := 16256k
+endef
+TARGET_DEVICES += mikrotik_routerboard-lhg-5nd
+
+define Device/mikrotik_routerboard-mapl-2nd
+  $(Device/mikrotik_nor)
+  SOC := qca9533
+  DEVICE_MODEL := RouterBOARD mAPL-2nD (mAP lite)
+  IMAGE_SIZE := 16256k
+endef
+TARGET_DEVICES += mikrotik_routerboard-mapl-2nd
+
+define Device/mikrotik_routerboard-sxt-5nd-r2
+  $(Device/mikrotik_nand)
+  SOC := ar9344
+  DEVICE_MODEL := RouterBOARD SXT 5nD r2 (SXT Lite5)
+  DEVICE_PACKAGES += rssileds kmod-gpio-beeper
+  SUPPORTED_DEVICES += rb-sxt5n
+endef
+TARGET_DEVICES += mikrotik_routerboard-sxt-5nd-r2
+
+define Device/mikrotik_routerboard-wap-g-5hact2hnd
+  $(Device/mikrotik_nor)
+  SOC := qca9556
+  DEVICE_MODEL := RouterBOARD wAP G-5HacT2HnD (wAP AC)
+  IMAGE_SIZE := 16256k
+  DEVICE_PACKAGES += kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+  SUPPORTED_DEVICES += rb-wapg-5hact2hnd
+endef
+TARGET_DEVICES += mikrotik_routerboard-wap-g-5hact2hnd
+
+define Device/mikrotik_routerboard-wapr-2nd
+  $(Device/mikrotik_nor)
+  SOC := qca9533
+  DEVICE_MODEL := RouterBOARD wAPR-2nD (wAP R)
+  DEVICE_PACKAGES += kmod-usb2 rssileds
+  IMAGE_SIZE := 16256k
+endef
+TARGET_DEVICES += mikrotik_routerboard-wapr-2nd

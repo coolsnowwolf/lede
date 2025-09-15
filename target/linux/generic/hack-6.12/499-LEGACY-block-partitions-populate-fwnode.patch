@@ -1,0 +1,130 @@
+From: Daniel Golle <daniel@makrotopia.org>
+Subject: [PATCH] LEGACY block: partitions: populate fwnode
+
+Assign matching firmware nodes to block partitions in order to allow
+them to be referenced e.g. as NVMEM providers.
+
+REMOVE THIS PATCH ONCE ALL TARGETS ARE USING LINUX 6.12 AND ALL BOARDS
+HAVE MIGRATED TO UPSTREAM DT BINDINGS.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+--- a/block/partitions/core.c
++++ b/block/partitions/core.c
+@@ -11,6 +11,8 @@
+ #include <linux/vmalloc.h>
+ #include <linux/device.h>
+ #include <linux/raid/detect.h>
++#include <linux/property.h>
++
+ #include "check.h"
+ 
+ static int (*const check_part[])(struct parsed_partitions *) = {
+@@ -285,6 +287,74 @@ static ssize_t whole_disk_show(struct de
+ }
+ static const DEVICE_ATTR(whole_disk, 0444, whole_disk_show, NULL);
+ 
++static bool part_meta_match(const char *attr, const char *member, size_t length)
++{
++	/* check if length of attr exceeds specified maximum length */
++	if (strnlen(attr, length) == length)
++		return false;
++
++	/* return true if strings match */
++	return !strncmp(attr, member, length);
++}
++
++static struct fwnode_handle *find_partition_fwnode(struct block_device *bdev)
++{
++	struct fwnode_handle *fw_parts, *fw_part;
++	struct device *ddev = disk_to_dev(bdev->bd_disk);
++	const char *partname, *uuid;
++	u32 partno;
++	bool got_uuid, got_partname, got_partno;
++
++	fw_parts = device_get_named_child_node(ddev, "partitions");
++	if (!fw_parts)
++		return NULL;
++
++	fwnode_for_each_child_node(fw_parts, fw_part) {
++		got_uuid = false;
++		got_partname = false;
++		got_partno = false;
++		/*
++		 * In case 'uuid' is defined in the partitions firmware node
++		 * require partition meta info being present and the specified
++		 * uuid to match.
++		 */
++		got_uuid = !fwnode_property_read_string(fw_part, "uuid", &uuid);
++		if (got_uuid && (!bdev->bd_meta_info ||
++				 !part_meta_match(uuid, bdev->bd_meta_info->uuid,
++						  PARTITION_META_INFO_UUIDLTH)))
++			continue;
++
++		/*
++		 * In case 'partname' is defined in the partitions firmware node
++		 * require partition meta info being present and the specified
++		 * volname to match.
++		 */
++		got_partname = !fwnode_property_read_string(fw_part, "partname",
++							    &partname);
++		if (got_partname && (!bdev->bd_meta_info ||
++				     !part_meta_match(partname,
++						      bdev->bd_meta_info->volname,
++						      PARTITION_META_INFO_VOLNAMELTH)))
++			continue;
++
++		/*
++		 * In case 'partno' is defined in the partitions firmware node
++		 * the specified partno needs to match.
++		 */
++		got_partno = !fwnode_property_read_u32(fw_part, "partno", &partno);
++		if (got_partno && bdev_partno(bdev) != partno)
++			continue;
++
++		/* Skip if no matching criteria is present in firmware node */
++		if (!got_uuid && !got_partname && !got_partno)
++			continue;
++
++		return fw_part;
++	}
++
++	return NULL;
++}
++
+ /*
+  * Must be called either with open_mutex held, before a disk can be opened or
+  * after all disk users are gone.
+@@ -361,6 +431,9 @@ static struct block_device *add_partitio
+ 			goto out_put;
+ 	}
+ 
++	if (!pdev->fwnode && !pdev->of_node)
++		device_set_node(pdev, find_partition_fwnode(bdev));
++
+ 	/* delay uevent until 'holders' subdir is created */
+ 	dev_set_uevent_suppress(pdev, 1);
+ 	err = device_add(pdev);
+--- a/drivers/mmc/core/bus.c
++++ b/drivers/mmc/core/bus.c
+@@ -368,6 +368,8 @@ int mmc_add_card(struct mmc_card *card)
+ 
+ 	mmc_add_card_debugfs(card);
+ 	card->dev.of_node = mmc_of_find_child_device(card->host, 0);
++	if (card->dev.of_node && !card->dev.fwnode)
++		card->dev.fwnode = &card->dev.of_node->fwnode;
+ 
+ 	device_enable_async_suspend(&card->dev);
+ 
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -2679,6 +2679,10 @@ static struct mmc_blk_data *mmc_blk_allo
+ 	if (area_type == MMC_BLK_DATA_AREA_MAIN)
+ 		dev_set_drvdata(&card->dev, md);
+ 	disk_fwnode = mmc_blk_get_partitions_node(parent, subname);
++	if (!disk_fwnode)
++		disk_fwnode = device_get_named_child_node(subname ? md->parent->parent :
++							  md->parent,
++							  subname ? subname : "block");
+ 	ret = add_disk_fwnode(md->parent, md->disk, mmc_disk_attr_groups,
+ 			      disk_fwnode);
+ 	if (ret)

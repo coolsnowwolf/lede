@@ -1,0 +1,93 @@
+--- a/driver/nvram_stub.c
++++ b/driver/nvram_stub.c
+@@ -5,6 +5,8 @@
+ #include <siutils.h>
+ #include <bcmendian.h>
+ #include <bcmnvram.h>
++#include <proto/ethernet.h>
++#include <linux/errno.h>
+ 
+ #ifdef BCMDBG_ERR
+ #define NVR_MSG(x) printf x
+@@ -24,6 +26,7 @@ typedef struct _vars {
+ static vars_t *vars = NULL;
+ static int nvram_init_done = 0;
+ extern char *nvram_buf[];
++static void fixup_mac_addr(vars_t *new);
+ 
+ int
+ BCMATTACHFN(nvram_init)(void *si)
+@@ -55,6 +58,7 @@ BCMATTACHFN(nvram_init)(void *si)
+ 	vars = new;
+ 
+ 	bcopy((char *)(&nvh[1]), new->vars, nvs);
++	fixup_mac_addr(new);
+ 	return 0;
+ }
+ 
+@@ -164,3 +168,65 @@ nvram_getall(char *buf, int count)
+ 	*buf = '\0';
+ 	return 0;
+ }
++
++static bool nvram_is_valid_mac(struct ether_addr *mac)
++{
++	return mac && !(mac->octet[0] == 0x00 && mac->octet[1] == 0x90 && mac->octet[2] == 0x4c);
++}
++
++static int nvram_increase_mac_addr(struct ether_addr *mac, u8 num)
++{
++	u8 *oui = mac->octet + ETHER_ADDR_LEN/2 - 1;
++	u8 *p = mac->octet + ETHER_ADDR_LEN - 1;
++
++	do {
++		(*p) += num;
++		if (*p > num)
++			break;
++		p--;
++		num = 1;
++	} while (p != oui);
++
++	if (p == oui) {
++		pr_err("unable to fetch mac address\n");
++		return -ENOENT;
++	}
++	return 0;
++}
++
++static void nvram_change_mac_addr(vars_t *new, struct ether_addr *valid, const char *name)
++{
++	char *macaddr_c;
++	struct ether_addr macaddr;
++
++	macaddr_c = findvar(new->vars, new->vars + new->size, name);
++	if (!macaddr_c)
++		return;
++
++	bcm_ether_atoe(macaddr_c, &macaddr);
++	if (nvram_is_valid_mac(&macaddr))
++		return;
++	nvram_increase_mac_addr(valid, 1);
++	bcm_ether_ntoa(valid, macaddr_c);
++}
++
++static void fixup_mac_addr(vars_t *new)
++{
++	char *macaddr_base_c;
++	struct ether_addr macaddr_base;
++
++	macaddr_base_c = findvar(new->vars, new->vars + new->size, "et0macaddr");
++	if (!macaddr_base_c)
++		return;
++
++	bcm_ether_atoe(macaddr_base_c, &macaddr_base);
++	if (!nvram_is_valid_mac(&macaddr_base))
++		return;
++
++	/* jump over the first free address so it can be used for wan */
++	nvram_increase_mac_addr(&macaddr_base, 1);
++	nvram_change_mac_addr(new, &macaddr_base, "sb/1/macaddr");
++	nvram_change_mac_addr(new, &macaddr_base, "pci/1/1/macaddr");
++	nvram_change_mac_addr(new, &macaddr_base, "pci/1/2/macaddr");
++	nvram_change_mac_addr(new, &macaddr_base, "pci/2/1/macaddr");
++}

@@ -1,0 +1,80 @@
+From eee3a7956b943dd3e23a74fbb5bfe89405eb0782 Mon Sep 17 00:00:00 2001
+From: Andrea Righi <andrea.righi@canonical.com>
+Date: Mon, 6 Dec 2021 17:34:47 +0100
+Subject: UBUNTU: SAUCE: ipv6: fix NULL pointer dereference in ip6_output()
+
+It is possible to trigger a NULL pointer dereference by running the srv6
+net kselftest (tools/testing/selftests/net/srv6_end_dt46_l3vpn_test.sh):
+
+[  249.051216] BUG: kernel NULL pointer dereference, address: 0000000000000378
+[  249.052331] #PF: supervisor read access in kernel mode
+[  249.053137] #PF: error_code(0x0000) - not-present page
+[  249.053960] PGD 0 P4D 0
+[  249.054376] Oops: 0000 [#1] PREEMPT SMP NOPTI
+[  249.055083] CPU: 1 PID: 21 Comm: ksoftirqd/1 Tainted: G            E     5.16.0-rc4 #2
+[  249.056328] Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS 1.14.0-2 04/01/2014
+[  249.057632] RIP: 0010:ip6_forward+0x53c/0xab0
+[  249.058354] Code: 49 c7 44 24 20 00 00 00 00 48 83 e0 fe 48 8b 40 30 48 3d 70 b2 b5 81 0f 85 b5 04 00 00 e8 7c f2 ff ff 41 89 c5 e9 17 01 00 00 <44> 8b 93 78 03 00 00 45 85 d2 0f 85 92 fb ff ff 49 8b 54 24 10 48
+[  249.061274] RSP: 0018:ffffc900000cbb30 EFLAGS: 00010246
+[  249.062042] RAX: 0000000000000000 RBX: 0000000000000000 RCX: ffff8881051d3400
+[  249.063141] RDX: ffff888104bda000 RSI: 00000000000002c0 RDI: 0000000000000000
+[  249.064264] RBP: ffffc900000cbbc8 R08: 0000000000000000 R09: 0000000000000000
+[  249.065376] R10: 0000000000000040 R11: 0000000000000000 R12: ffff888103409800
+[  249.066498] R13: ffff8881051d3410 R14: ffff888102725280 R15: ffff888103525000
+[  249.067619] FS:  0000000000000000(0000) GS:ffff88813bc80000(0000) knlGS:0000000000000000
+[  249.068881] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[  249.069777] CR2: 0000000000000378 CR3: 0000000104980000 CR4: 0000000000750ee0
+[  249.070907] PKRU: 55555554
+[  249.071337] Call Trace:
+[  249.071730]  <TASK>
+[  249.072070]  ? debug_smp_processor_id+0x17/0x20
+[  249.072807]  seg6_input_core+0x2bb/0x2d0
+[  249.073436]  ? _raw_spin_unlock_irqrestore+0x29/0x40
+[  249.074225]  seg6_input+0x3b/0x130
+[  249.074768]  lwtunnel_input+0x5e/0xa0
+[  249.075357]  ip_rcv+0x17b/0x190
+[  249.075867]  ? update_load_avg+0x82/0x600
+[  249.076514]  __netif_receive_skb_one_core+0x86/0xa0
+[  249.077231]  __netif_receive_skb+0x15/0x60
+[  249.077843]  process_backlog+0x97/0x160
+[  249.078389]  __napi_poll+0x31/0x170
+[  249.078912]  net_rx_action+0x229/0x270
+[  249.079506]  __do_softirq+0xef/0x2ed
+[  249.080085]  run_ksoftirqd+0x37/0x50
+[  249.080663]  smpboot_thread_fn+0x193/0x230
+[  249.081312]  kthread+0x17a/0x1a0
+[  249.081847]  ? smpboot_register_percpu_thread+0xe0/0xe0
+[  249.082677]  ? set_kthread_struct+0x50/0x50
+[  249.083340]  ret_from_fork+0x22/0x30
+[  249.083926]  </TASK>
+[  249.090295] ---[ end trace 1998d7ba5965a365 ]---
+
+It looks like commit 0857d6f8c759 ("ipv6: When forwarding count rx stats
+on the orig netdev") tries to determine the right netdev to account the
+rx stats, but in this particular case it's failing and the netdev is
+NULL.
+
+Fallback to the previous method of determining the netdev interface (via
+skb->dev) to account the rx stats when the orig netdev can't be
+determined.
+
+Fixes: 0857d6f8c759 ("ipv6: When forwarding count rx stats on the orig netdev")
+Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
+(cherry picked from https://lore.kernel.org/lkml/20211206163447.991402-1-andrea.righi@canonical.com/T/#u)
+Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
+---
+ net/ipv6/ip6_output.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/net/ipv6/ip6_output.c
++++ b/net/ipv6/ip6_output.c
+@@ -506,6 +506,9 @@ int ip6_forward(struct sk_buff *skb)
+ 	u32 mtu;
+ 
+ 	idev = __in6_dev_get_safely(dev_get_by_index_rcu(net, IP6CB(skb)->iif));
++	if (unlikely(!idev))
++		idev = __in6_dev_get_safely(skb->dev);
++
+ 	if (net->ipv6.devconf_all->forwarding == 0)
+ 		goto error;
+ 

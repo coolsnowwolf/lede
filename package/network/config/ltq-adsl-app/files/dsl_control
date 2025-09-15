@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2012 OpenWrt.org
+
+START=97
+USE_PROCD=1
+
+dslstat() {
+	ubus call dsl metrics
+}
+
+EXTRA_COMMANDS="dslstat"
+EXTRA_HELP="	dslstat Get DSL status information"
+
+annex_b=10_00_10_00_00_04_00_00
+annex_bdmt=10_00_00_00_00_00_00_00
+annex_b2=00_00_10_00_00_00_00_00
+annex_b2p=00_00_00_00_00_04_00_00
+annex_a=05_01_04_00_4C_01_04_00
+annex_at1=01_00_00_00_00_00_00_00
+annex_alite=00_01_00_00_00_00_00_00
+annex_admt=04_00_00_00_00_00_00_00
+annex_a2=00_00_04_00_00_00_00_00
+annex_a2p=00_00_00_00_00_01_00_00
+annex_l=00_00_00_00_0C_00_00_00
+annex_m=00_00_00_00_40_00_04_00
+annex_m2=00_00_00_00_40_00_00_00
+annex_m2p=00_00_00_00_00_00_04_00
+annex_j=10_00_10_40_00_04_01_00
+
+service_triggers() {
+	procd_add_reload_trigger network
+}
+
+start_service() {
+	local annex
+	local firmware
+	local xtu
+	config_load network
+	config_get annex dsl annex
+	config_get firmware dsl firmware
+
+	eval "xtu=\"\${annex_$annex}\""
+
+	[ -z "${firmware}" ] &&
+		firmware=/lib/firmware/adsl.bin
+	[ -f "${firmware}" ] || {
+		echo failed to find $firmware
+		return 1
+	}
+
+	procd_open_instance
+	procd_set_param command /sbin/dsl_cpe_control \
+			-i${xtu} \
+			-n /sbin/dsl_notify.sh \
+			-f ${firmware}
+	procd_close_instance
+}
+
+stop_service() {
+	DSL_NOTIFICATION_TYPE="DSL_INTERFACE_STATUS" \
+	DSL_INTERFACE_STATUS="DOWN" \
+		/sbin/dsl_notify.sh
+
+	service_stop /sbin/dsl_cpe_control
+}
+

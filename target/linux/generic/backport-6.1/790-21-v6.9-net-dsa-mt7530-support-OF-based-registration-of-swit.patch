@@ -1,0 +1,116 @@
+From 38be6fdf7e93431e91aac3884837b22236325f68 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ar=C4=B1n=C3=A7=20=C3=9CNAL?= <arinc.unal@arinc9.com>
+Date: Mon, 22 Jan 2024 08:34:31 +0300
+Subject: [PATCH 21/48] net: dsa: mt7530: support OF-based registration of
+ switch MDIO bus
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Currently the MDIO bus of the switches the MT7530 DSA subdriver controls
+can only be registered as non-OF-based. Bring support for registering the
+bus OF-based.
+
+The subdrivers that control switches [with MDIO bus] probed on OF must
+follow this logic to support all cases properly:
+
+No switch MDIO bus defined: Populate ds->user_mii_bus, register the MDIO
+bus, set the interrupts for PHYs if "interrupt-controller" is defined at
+the switch node. This case should only be covered for the switches which
+their dt-bindings documentation didn't document the MDIO bus from the
+start. This is to keep supporting the device trees that do not describe the
+MDIO bus on the device tree but the MDIO bus is being used nonetheless.
+
+Switch MDIO bus defined: Don't populate ds->user_mii_bus, register the MDIO
+bus, set the interrupts for PHYs if ["interrupt-controller" is defined at
+the switch node and "interrupts" is defined at the PHY nodes under the
+switch MDIO bus node].
+
+Switch MDIO bus defined but explicitly disabled: If the device tree says
+status = "disabled" for the MDIO bus, we shouldn't need an MDIO bus at all.
+Instead, just exit as early as possible and do not call any MDIO API.
+
+The use of ds->user_mii_bus is inappropriate when the MDIO bus of the
+switch is described on the device tree [1], which is why we don't populate
+ds->user_mii_bus in that case.
+
+Link: https://lore.kernel.org/netdev/20231213120656.x46fyad6ls7sqyzv@skbuf/ [1]
+Suggested-by: David Bauer <mail@david-bauer.net>
+Signed-off-by: Arınç ÜNAL <arinc.unal@arinc9.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Link: https://lore.kernel.org/r/20240122053431.7751-1-arinc.unal@arinc9.com
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/dsa/mt7530.c | 34 ++++++++++++++++++++++++++--------
+ 1 file changed, 26 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -2350,24 +2350,40 @@ mt7530_free_irq_common(struct mt7530_pri
+ static void
+ mt7530_free_irq(struct mt7530_priv *priv)
+ {
+-	mt7530_free_mdio_irq(priv);
++	struct device_node *mnp, *np = priv->dev->of_node;
++
++	mnp = of_get_child_by_name(np, "mdio");
++	if (!mnp)
++		mt7530_free_mdio_irq(priv);
++	of_node_put(mnp);
++
+ 	mt7530_free_irq_common(priv);
+ }
+ 
+ static int
+ mt7530_setup_mdio(struct mt7530_priv *priv)
+ {
++	struct device_node *mnp, *np = priv->dev->of_node;
+ 	struct dsa_switch *ds = priv->ds;
+ 	struct device *dev = priv->dev;
+ 	struct mii_bus *bus;
+ 	static int idx;
+-	int ret;
++	int ret = 0;
++
++	mnp = of_get_child_by_name(np, "mdio");
++
++	if (mnp && !of_device_is_available(mnp))
++		goto out;
+ 
+ 	bus = devm_mdiobus_alloc(dev);
+-	if (!bus)
+-		return -ENOMEM;
++	if (!bus) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	if (!mnp)
++		ds->slave_mii_bus = bus;
+ 
+-	ds->slave_mii_bus = bus;
+ 	bus->priv = priv;
+ 	bus->name = KBUILD_MODNAME "-mii";
+ 	snprintf(bus->id, MII_BUS_ID_SIZE, KBUILD_MODNAME "-%d", idx++);
+@@ -2376,16 +2392,18 @@ mt7530_setup_mdio(struct mt7530_priv *pr
+ 	bus->parent = dev;
+ 	bus->phy_mask = ~ds->phys_mii_mask;
+ 
+-	if (priv->irq)
++	if (priv->irq && !mnp)
+ 		mt7530_setup_mdio_irq(priv);
+ 
+-	ret = devm_mdiobus_register(dev, bus);
++	ret = devm_of_mdiobus_register(dev, bus, mnp);
+ 	if (ret) {
+ 		dev_err(dev, "failed to register MDIO bus: %d\n", ret);
+-		if (priv->irq)
++		if (priv->irq && !mnp)
+ 			mt7530_free_mdio_irq(priv);
+ 	}
+ 
++out:
++	of_node_put(mnp);
+ 	return ret;
+ }
+ 

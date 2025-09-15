@@ -1,0 +1,226 @@
+From 2d664266cfdd114cc7a1fa28dd64275e99222455 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Jun 2023 17:18:09 +0100
+Subject: [PATCH 05/15] mtd: ubi: introduce pre-removal notification for UBI
+ volumes
+
+Introduce a new notification type UBI_VOLUME_SHUTDOWN to inform users
+that a volume is just about to be removed.
+This is needed because users (such as the NVMEM subsystem) expect that
+at the time their removal function is called, the parenting device is
+still available (for removal of sysfs nodes, for example, in case of
+NVMEM which otherwise WARNs on volume removal).
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/mtd/ubi/block.c | 26 ++++++++++++++++++++++++++
+ drivers/mtd/ubi/build.c | 20 +++++++++++++++-----
+ drivers/mtd/ubi/kapi.c  |  2 +-
+ drivers/mtd/ubi/ubi.h   |  2 ++
+ drivers/mtd/ubi/vmt.c   | 17 +++++++++++++++--
+ include/linux/mtd/ubi.h |  2 ++
+ 6 files changed, 61 insertions(+), 8 deletions(-)
+
+--- a/drivers/mtd/ubi/block.c
++++ b/drivers/mtd/ubi/block.c
+@@ -568,6 +568,29 @@ static int ubiblock_resize(struct ubi_vo
+ 	return 0;
+ }
+ 
++static int ubiblock_shutdown(struct ubi_volume_info *vi)
++{
++	struct ubiblock *dev;
++	struct gendisk *disk;
++	int ret = 0;
++
++	mutex_lock(&devices_mutex);
++	dev = find_dev_nolock(vi->ubi_num, vi->vol_id);
++	if (!dev) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++	disk = dev->gd;
++
++out_unlock:
++	mutex_unlock(&devices_mutex);
++
++	if (!ret)
++		blk_mark_disk_dead(disk);
++
++	return ret;
++};
++
+ static bool
+ match_volume_desc(struct ubi_volume_info *vi, const char *name, int ubi_num, int vol_id)
+ {
+@@ -659,6 +682,9 @@ static int ubiblock_notify(struct notifi
+ 	case UBI_VOLUME_REMOVED:
+ 		ubiblock_remove(&nt->vi);
+ 		break;
++	case UBI_VOLUME_SHUTDOWN:
++		ubiblock_shutdown(&nt->vi);
++		break;
+ 	case UBI_VOLUME_RESIZED:
+ 		ubiblock_resize(&nt->vi);
+ 		break;
+--- a/drivers/mtd/ubi/build.c
++++ b/drivers/mtd/ubi/build.c
+@@ -89,7 +89,7 @@ static struct ubi_device *ubi_devices[UB
+ /* Serializes UBI devices creations and removals */
+ DEFINE_MUTEX(ubi_devices_mutex);
+ 
+-/* Protects @ubi_devices and @ubi->ref_count */
++/* Protects @ubi_devices, @ubi->ref_count and @ubi->is_dead */
+ static DEFINE_SPINLOCK(ubi_devices_lock);
+ 
+ /* "Show" method for files in '/<sysfs>/class/ubi/' */
+@@ -258,6 +258,9 @@ struct ubi_device *ubi_get_device(int ub
+ 
+ 	spin_lock(&ubi_devices_lock);
+ 	ubi = ubi_devices[ubi_num];
++	if (ubi && ubi->is_dead)
++		ubi = NULL;
++
+ 	if (ubi) {
+ 		ubi_assert(ubi->ref_count >= 0);
+ 		ubi->ref_count += 1;
+@@ -295,7 +298,7 @@ struct ubi_device *ubi_get_by_major(int
+ 	spin_lock(&ubi_devices_lock);
+ 	for (i = 0; i < UBI_MAX_DEVICES; i++) {
+ 		ubi = ubi_devices[i];
+-		if (ubi && MAJOR(ubi->cdev.dev) == major) {
++		if (ubi && !ubi->is_dead && MAJOR(ubi->cdev.dev) == major) {
+ 			ubi_assert(ubi->ref_count >= 0);
+ 			ubi->ref_count += 1;
+ 			get_device(&ubi->dev);
+@@ -324,7 +327,7 @@ int ubi_major2num(int major)
+ 	for (i = 0; i < UBI_MAX_DEVICES; i++) {
+ 		struct ubi_device *ubi = ubi_devices[i];
+ 
+-		if (ubi && MAJOR(ubi->cdev.dev) == major) {
++		if (ubi && !ubi->is_dead && MAJOR(ubi->cdev.dev) == major) {
+ 			ubi_num = ubi->ubi_num;
+ 			break;
+ 		}
+@@ -511,7 +514,7 @@ static void ubi_free_volumes_from(struct
+ 	int i;
+ 
+ 	for (i = from; i < ubi->vtbl_slots + UBI_INT_VOL_COUNT; i++) {
+-		if (!ubi->volumes[i])
++		if (!ubi->volumes[i] || ubi->volumes[i]->is_dead)
+ 			continue;
+ 		ubi_eba_replace_table(ubi->volumes[i], NULL);
+ 		ubi_fastmap_destroy_checkmap(ubi->volumes[i]);
+@@ -1094,10 +1097,10 @@ int ubi_detach_mtd_dev(int ubi_num, int
+ 		return -EINVAL;
+ 
+ 	spin_lock(&ubi_devices_lock);
+-	put_device(&ubi->dev);
+ 	ubi->ref_count -= 1;
+ 	if (ubi->ref_count) {
+ 		if (!anyway) {
++			ubi->ref_count += 1;
+ 			spin_unlock(&ubi_devices_lock);
+ 			return -EBUSY;
+ 		}
+@@ -1105,6 +1108,13 @@ int ubi_detach_mtd_dev(int ubi_num, int
+ 		ubi_err(ubi, "%s reference count %d, destroy anyway",
+ 			ubi->ubi_name, ubi->ref_count);
+ 	}
++	ubi->is_dead = true;
++	spin_unlock(&ubi_devices_lock);
++
++	ubi_notify_all(ubi, UBI_VOLUME_SHUTDOWN, NULL);
++
++	spin_lock(&ubi_devices_lock);
++	put_device(&ubi->dev);
+ 	ubi_devices[ubi_num] = NULL;
+ 	spin_unlock(&ubi_devices_lock);
+ 
+--- a/drivers/mtd/ubi/kapi.c
++++ b/drivers/mtd/ubi/kapi.c
+@@ -152,7 +152,7 @@ struct ubi_volume_desc *ubi_open_volume(
+ 
+ 	spin_lock(&ubi->volumes_lock);
+ 	vol = ubi->volumes[vol_id];
+-	if (!vol)
++	if (!vol || vol->is_dead)
+ 		goto out_unlock;
+ 
+ 	err = -EBUSY;
+--- a/drivers/mtd/ubi/ubi.h
++++ b/drivers/mtd/ubi/ubi.h
+@@ -345,6 +345,7 @@ struct ubi_volume {
+ 	int writers;
+ 	int exclusive;
+ 	int metaonly;
++	bool is_dead;
+ 
+ 	int reserved_pebs;
+ 	int vol_type;
+@@ -564,6 +565,7 @@ struct ubi_device {
+ 	spinlock_t volumes_lock;
+ 	int ref_count;
+ 	int image_seq;
++	bool is_dead;
+ 
+ 	int rsvd_pebs;
+ 	int avail_pebs;
+--- a/drivers/mtd/ubi/vmt.c
++++ b/drivers/mtd/ubi/vmt.c
+@@ -59,7 +59,7 @@ static ssize_t vol_attribute_show(struct
+ 	struct ubi_device *ubi = vol->ubi;
+ 
+ 	spin_lock(&ubi->volumes_lock);
+-	if (!ubi->volumes[vol->vol_id]) {
++	if (!ubi->volumes[vol->vol_id] || ubi->volumes[vol->vol_id]->is_dead) {
+ 		spin_unlock(&ubi->volumes_lock);
+ 		return -ENODEV;
+ 	}
+@@ -189,7 +189,7 @@ int ubi_create_volume(struct ubi_device
+ 
+ 	/* Ensure that the name is unique */
+ 	for (i = 0; i < ubi->vtbl_slots; i++)
+-		if (ubi->volumes[i] &&
++		if (ubi->volumes[i] && !ubi->volumes[i]->is_dead &&
+ 		    ubi->volumes[i]->name_len == req->name_len &&
+ 		    !strcmp(ubi->volumes[i]->name, req->name)) {
+ 			ubi_err(ubi, "volume \"%s\" exists (ID %d)",
+@@ -352,6 +352,19 @@ int ubi_remove_volume(struct ubi_volume_
+ 		err = -EBUSY;
+ 		goto out_unlock;
+ 	}
++
++	/*
++	 * Mark volume as dead at this point to prevent that anyone
++	 * can take a reference to the volume from now on.
++	 * This is necessary as we have to release the spinlock before
++	 * calling ubi_volume_notify.
++	 */
++	vol->is_dead = true;
++	spin_unlock(&ubi->volumes_lock);
++
++	ubi_volume_notify(ubi, vol, UBI_VOLUME_SHUTDOWN);
++
++	spin_lock(&ubi->volumes_lock);
+ 	ubi->volumes[vol_id] = NULL;
+ 	spin_unlock(&ubi->volumes_lock);
+ 
+--- a/include/linux/mtd/ubi.h
++++ b/include/linux/mtd/ubi.h
+@@ -192,6 +192,7 @@ struct ubi_device_info {
+  *			or a volume was removed)
+  * @UBI_VOLUME_RESIZED: a volume has been re-sized
+  * @UBI_VOLUME_RENAMED: a volume has been re-named
++ * @UBI_VOLUME_SHUTDOWN: a volume is going to removed, shutdown users
+  * @UBI_VOLUME_UPDATED: data has been written to a volume
+  *
+  * These constants define which type of event has happened when a volume
+@@ -202,6 +203,7 @@ enum {
+ 	UBI_VOLUME_REMOVED,
+ 	UBI_VOLUME_RESIZED,
+ 	UBI_VOLUME_RENAMED,
++	UBI_VOLUME_SHUTDOWN,
+ 	UBI_VOLUME_UPDATED,
+ };
+ 

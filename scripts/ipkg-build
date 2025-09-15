@@ -1,0 +1,200 @@
+#!/bin/sh
+
+# ipkg-build -- construct a .ipk from a directory
+# Carl Worth <cworth@east.isi.edu>
+# based on a script by Steve Redler IV, steve@sr-tech.com 5-21-2001
+# 2003-04-25 rea@sr.unh.edu
+#   Updated to work on Familiar Pre0.7rc1, with busybox tar.
+#   Note it Requires: binutils-ar (since the busybox ar can't create)
+#   For UID debugging it needs a better "find".
+set -e
+
+version=1.0
+FIND="$(command -v find)"
+FIND="${FIND:-$(command -v gfind)}"
+TAR="${TAR:-$(command -v tar)}"
+
+# try to use fixed source epoch
+if [ -n "$PKG_SOURCE_DATE_EPOCH" ]; then
+	TIMESTAMP=$(date --date="@$PKG_SOURCE_DATE_EPOCH")
+elif [ -n "$SOURCE_DATE_EPOCH" ]; then
+	TIMESTAMP=$(date --date="@$SOURCE_DATE_EPOCH")
+else
+	TIMESTAMP=$(date)
+fi
+
+ipkg_extract_value() {
+	sed -e "s/^[^:]*:[[:space:]]*//"
+}
+
+required_field() {
+	field=$1
+
+	grep "^$field:" < "$CONTROL/control" | ipkg_extract_value
+}
+
+pkg_appears_sane() {
+	local pkg_dir="$1"
+
+	local owd="$PWD"
+	cd "$pkg_dir"
+
+	PKG_ERROR=0
+	pkg="$(required_field Package)"
+	version="$(required_field Version | sed 's/Version://; s/^.://g;')"
+	arch="$(required_field Architecture)"
+
+	if echo "$pkg" | grep '[^a-zA-Z0-9_.+-]'; then
+		echo "*** Error: Package name $name contains illegal characters, (other than [a-z0-9.+-])" >&2
+		PKG_ERROR=1;
+	fi
+
+	if [ -f "$CONTROL/conffiles" ]; then
+		rm -f "$CONTROL/conffiles.resolved"
+
+		for cf in $($FIND $(sed -e "s!^/!$pkg_dir/!" "$CONTROL/conffiles") -type f); do
+			echo "${cf#$pkg_dir}" >> "$CONTROL/conffiles.resolved"
+		done
+
+		rm "$CONTROL"/conffiles
+		if [ -f "$CONTROL"/conffiles.resolved ]; then
+			LC_ALL=C sort -o "$CONTROL"/conffiles "$CONTROL"/conffiles.resolved
+			rm "$CONTROL"/conffiles.resolved
+			chmod 0644 "$CONTROL"/conffiles
+		fi
+	fi
+
+	cd "$owd"
+	return $PKG_ERROR
+}
+
+resolve_file_mode_id() {
+	local var=$1 type=$2 name=$3 id
+
+	case "$name" in
+		root)
+			id=0
+		;;
+		*[!0-9]*)
+			id=$(sed -ne "s#^$type $name \\([0-9]\\+\\)\\b.*\$#\\1#p" "$TOPDIR/tmp/.packageusergroup" 2>/dev/null)
+		;;
+		*)
+			id=$name
+		;;
+	esac
+
+	export "$var=$id"
+
+	[ -n "$id" ]
+}
+
+###
+# ipkg-build "main"
+###
+file_modes=""
+usage="Usage: $0 [-v] [-h] [-m] <pkg_directory> [<destination_directory>]"
+while getopts "hvm:" opt; do
+    case $opt in
+	v ) echo "$version"
+	    exit 0
+	    ;;
+	h ) 	echo "$usage"  >&2 ;;
+	m )	file_modes=$OPTARG ;;
+	\? ) 	echo "$usage"  >&2
+	esac
+done
+
+
+shift $((OPTIND - 1))
+
+# continue on to process additional arguments
+
+case $# in
+1)
+	dest_dir=$PWD
+	;;
+2)
+	dest_dir=$2
+	if [ "$dest_dir" = "." ] || [ "$dest_dir" = "./" ] ; then
+	    dest_dir=$PWD
+	fi
+	;;
+*)
+	echo "$usage" >&2
+	exit 1
+	;;
+esac
+
+pkg_dir="$(realpath "$1")"
+
+if [ ! -d "$pkg_dir" ]; then
+	echo "*** Error: Directory $pkg_dir does not exist" >&2
+	exit 1
+fi
+
+# CONTROL is second so that it takes precedence
+CONTROL=
+[ -d "$pkg_dir"/CONTROL ] && CONTROL=CONTROL
+if [ -z "$CONTROL" ]; then
+	echo "*** Error: Directory $pkg_dir has no CONTROL subdirectory." >&2
+	exit 1
+fi
+
+if ! pkg_appears_sane "$pkg_dir"; then
+	echo >&2
+	echo "ipkg-build: Please fix the above errors and try again." >&2
+	exit 1
+fi
+
+tmp_dir=$dest_dir/IPKG_BUILD.$$
+mkdir "$tmp_dir"
+
+echo $CONTROL > "$tmp_dir"/tarX
+cd "$pkg_dir"
+for file_mode in $file_modes; do
+	case $file_mode in
+	/*:*:*:*)
+	    ;;
+	*)
+	    echo "ERROR: file modes must use absolute path and contain user:group:mode"
+	    echo "$file_mode"
+	    exit 1
+	    ;;
+	esac
+
+	mode=${file_mode##*:}; path=${file_mode%:*}
+	group=${path##*:};     path=${path%:*}
+	user=${path##*:};      path=${path%:*}
+
+	if ! resolve_file_mode_id uid user "$user"; then
+		echo "ERROR: unable to resolve uid of $user" >&2
+		exit 1
+	fi
+
+	if ! resolve_file_mode_id gid group "$group"; then
+		echo "ERROR: unable to resolve gid of $group" >&2
+		exit 1
+	fi
+
+	chown "$uid:$gid" "$pkg_dir/$path"
+	chmod  "$mode" "$pkg_dir/$path"
+done
+$TAR -X "$tmp_dir"/tarX --format=gnu --numeric-owner --sort=name -cpf - --mtime="$TIMESTAMP" . | gzip -n - > "$tmp_dir"/data.tar.gz
+
+installed_size=$(stat -c "%s" "$tmp_dir"/data.tar.gz)
+sed -i -e "s/^Installed-Size: .*/Installed-Size: $installed_size/" \
+	"$pkg_dir"/$CONTROL/control
+
+( cd "$pkg_dir"/$CONTROL && $TAR --format=gnu --numeric-owner --sort=name -cf -  --mtime="$TIMESTAMP" . | gzip -n - > "$tmp_dir"/control.tar.gz )
+rm "$tmp_dir"/tarX
+
+echo "2.0" > "$tmp_dir"/debian-binary
+
+pkg_file=$dest_dir/${pkg}_${version}_${arch}.ipk
+rm -f "$pkg_file"
+( cd "$tmp_dir" && $TAR --format=gnu --numeric-owner --sort=name -cf -  --mtime="$TIMESTAMP" ./debian-binary ./data.tar.gz ./control.tar.gz | gzip -n - > "$pkg_file" )
+
+rm "$tmp_dir"/debian-binary "$tmp_dir"/data.tar.gz "$tmp_dir"/control.tar.gz
+rmdir "$tmp_dir"
+
+echo "Packaged contents of $pkg_dir into $pkg_file"

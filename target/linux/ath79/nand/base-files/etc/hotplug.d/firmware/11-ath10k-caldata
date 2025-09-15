@@ -1,0 +1,38 @@
+#!/bin/sh
+
+[ -e /lib/firmware/$FIRMWARE ] && exit 0
+
+. /lib/functions/caldata.sh
+
+board=$(board_name)
+
+case "$FIRMWARE" in
+"ath10k/cal-pci-0000:00:00.0.bin")
+	case $board in
+	arris,sbr-ac1750)
+		caldata_extract "caldata" 0x5000 0x844
+		ath10k_patch_mac $(mtd_get_mac_binary ft 0x12)
+		;;
+	domywifi,dw33d)
+		caldata_extract "art" 0x5000 0x844
+		ath10k_patch_mac $(mtd_get_mac_binary art 0x12)
+		;;
+	glinet,gl-ar750s-nor|\
+	glinet,gl-ar750s-nor-nand)
+		caldata_extract "art" 0x5000 0x844
+		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_binary art 0x0) 1)
+		;;
+	netgear,r6100)
+		caldata_extract "caldata" 0x5000 0x844
+		;;
+	zyxel,emg2926-q10a|\
+	zyxel,nbg6716)
+		caldata_extract "art" 0x5000 0x844
+		ath10k_patch_mac $(macaddr_add $(mtd_get_mac_ascii u-boot-env ethaddr) 1)
+		;;
+	esac
+	;;
+*)
+	exit 1
+	;;
+esac

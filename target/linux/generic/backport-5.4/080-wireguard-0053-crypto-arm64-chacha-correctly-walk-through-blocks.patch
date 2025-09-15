@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: "Jason A. Donenfeld" <Jason@zx2c4.com>
+Date: Wed, 18 Mar 2020 20:27:32 -0600
+Subject: [PATCH] crypto: arm64/chacha - correctly walk through blocks
+
+commit c8cfcb78c65877313cda7bcbace624d3dbd1f3b3 upstream.
+
+Prior, passing in chunks of 2, 3, or 4, followed by any additional
+chunks would result in the chacha state counter getting out of sync,
+resulting in incorrect encryption/decryption, which is a pretty nasty
+crypto vuln: "why do images look weird on webpages?" WireGuard users
+never experienced this prior, because we have always, out of tree, used
+a different crypto library, until the recent Frankenzinc addition. This
+commit fixes the issue by advancing the pointers and state counter by
+the actual size processed. It also fixes up a bug in the (optional,
+costly) stride test that prevented it from running on arm64.
+
+Fixes: b3aad5bad26a ("crypto: arm64/chacha - expose arm64 ChaCha routine as library function")
+Reported-and-tested-by: Emil Renner Berthing <kernel@esmil.dk>
+Cc: Ard Biesheuvel <ardb@kernel.org>
+Cc: stable@vger.kernel.org # v5.5+
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+Reviewed-by: Eric Biggers <ebiggers@google.com>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+Signed-off-by: Jason A. Donenfeld <Jason@zx2c4.com>
+---
+ arch/arm64/crypto/chacha-neon-glue.c   |  8 ++++----
+ lib/crypto/chacha20poly1305-selftest.c | 11 ++++++++---
+ 2 files changed, 12 insertions(+), 7 deletions(-)
+
+--- a/arch/arm64/crypto/chacha-neon-glue.c
++++ b/arch/arm64/crypto/chacha-neon-glue.c
+@@ -55,10 +55,10 @@ static void chacha_doneon(u32 *state, u8
+ 			break;
+ 		}
+ 		chacha_4block_xor_neon(state, dst, src, nrounds, l);
+-		bytes -= CHACHA_BLOCK_SIZE * 5;
+-		src += CHACHA_BLOCK_SIZE * 5;
+-		dst += CHACHA_BLOCK_SIZE * 5;
+-		state[12] += 5;
++		bytes -= l;
++		src += l;
++		dst += l;
++		state[12] += DIV_ROUND_UP(l, CHACHA_BLOCK_SIZE);
+ 	}
+ }
+ 
+--- a/lib/crypto/chacha20poly1305-selftest.c
++++ b/lib/crypto/chacha20poly1305-selftest.c
+@@ -9028,10 +9028,15 @@ bool __init chacha20poly1305_selftest(vo
+ 	     && total_len <= 1 << 10; ++total_len) {
+ 		for (i = 0; i <= total_len; ++i) {
+ 			for (j = i; j <= total_len; ++j) {
++				k = 0;
+ 				sg_init_table(sg_src, 3);
+-				sg_set_buf(&sg_src[0], input, i);
+-				sg_set_buf(&sg_src[1], input + i, j - i);
+-				sg_set_buf(&sg_src[2], input + j, total_len - j);
++				if (i)
++					sg_set_buf(&sg_src[k++], input, i);
++				if (j - i)
++					sg_set_buf(&sg_src[k++], input + i, j - i);
++				if (total_len - j)
++					sg_set_buf(&sg_src[k++], input + j, total_len - j);
++				sg_init_marker(sg_src, k);
+ 				memset(computed_output, 0, total_len);
+ 				memset(input, 0, total_len);
+ 

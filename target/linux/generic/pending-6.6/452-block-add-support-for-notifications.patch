@@ -1,0 +1,174 @@
+From patchwork Tue Jul 30 19:26:42 2024
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+X-Patchwork-Submitter: Daniel Golle <daniel@makrotopia.org>
+X-Patchwork-Id: 13747817
+Date: Tue, 30 Jul 2024 20:26:42 +0100
+From: Daniel Golle <daniel@makrotopia.org>
+To: Rob Herring <robh@kernel.org>, Krzysztof Kozlowski <krzk+dt@kernel.org>,
+ Conor Dooley <conor+dt@kernel.org>, Jens Axboe <axboe@kernel.dk>,
+ Daniel Golle <daniel@makrotopia.org>, Christian Brauner <brauner@kernel.org>,
+ Al Viro <viro@zeniv.linux.org.uk>, Li Lingfeng <lilingfeng3@huawei.com>,
+ Ming Lei <ming.lei@redhat.com>, Christian Heusel <christian@heusel.eu>,
+	=?utf-8?b?UmFmYcWCIE1pxYJlY2tp?= <rafal@milecki.pl>,
+ Felix Fietkau <nbd@nbd.name>, John Crispin <john@phrozen.org>,
+ Chad Monroe <chad.monroe@adtran.com>, Yangyu Chen <cyy@cyyself.name>,
+ Tianling Shen <cnsztl@immortalwrt.org>, Chuanhong Guo <gch981213@gmail.com>,
+ Chen Minqiang <ptpt52@gmail.com>, devicetree@vger.kernel.org,
+ linux-kernel@vger.kernel.org, linux-block@vger.kernel.org
+Subject: [PATCH v5 3/4] block: add support for notifications
+Message-ID: 
+ <ca0022886e8f211a323a716653a1396a3bc91653.1722365899.git.daniel@makrotopia.org>
+References: <cover.1722365899.git.daniel@makrotopia.org>
+Precedence: bulk
+X-Mailing-List: linux-block@vger.kernel.org
+List-Id: <linux-block.vger.kernel.org>
+List-Subscribe: <mailto:linux-block+subscribe@vger.kernel.org>
+List-Unsubscribe: <mailto:linux-block+unsubscribe@vger.kernel.org>
+MIME-Version: 1.0
+Content-Disposition: inline
+In-Reply-To: <cover.1722365899.git.daniel@makrotopia.org>
+
+Add notifier block to notify other subsystems about the addition or
+removal of block devices.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ block/Kconfig          |  6 +++
+ block/Makefile         |  1 +
+ block/blk-notify.c     | 87 ++++++++++++++++++++++++++++++++++++++++++
+ include/linux/blkdev.h | 11 ++++++
+ 4 files changed, 105 insertions(+)
+ create mode 100644 block/blk-notify.c
+
+--- a/block/Kconfig
++++ b/block/Kconfig
+@@ -208,6 +208,12 @@ config BLK_INLINE_ENCRYPTION_FALLBACK
+ 	  by falling back to the kernel crypto API when inline
+ 	  encryption hardware is not present.
+ 
++config BLOCK_NOTIFIERS
++	bool "Enable support for notifications in block layer"
++	help
++	  Enable this option to provide notifiers for other subsystems
++	  upon addition or removal of block devices.
++
+ source "block/partitions/Kconfig"
+ 
+ config BLK_MQ_PCI
+--- a/block/Makefile
++++ b/block/Makefile
+@@ -40,3 +40,4 @@ obj-$(CONFIG_BLK_INLINE_ENCRYPTION)	+= b
+ 					   blk-crypto-sysfs.o
+ obj-$(CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK)	+= blk-crypto-fallback.o
+ obj-$(CONFIG_BLOCK_HOLDER_DEPRECATED)	+= holder.o
++obj-$(CONFIG_BLOCK_NOTIFIERS) += blk-notify.o
+--- /dev/null
++++ b/block/blk-notify.c
+@@ -0,0 +1,87 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Notifiers for addition and removal of block devices
++ *
++ * Copyright (c) 2024 Daniel Golle <daniel@makrotopia.org>
++ */
++
++#include <linux/list.h>
++#include <linux/mutex.h>
++#include <linux/notifier.h>
++
++#include "blk.h"
++
++struct blk_device_list {
++	struct device *dev;
++	struct list_head list;
++};
++
++static RAW_NOTIFIER_HEAD(blk_notifier_list);
++static DEFINE_MUTEX(blk_notifier_lock);
++static LIST_HEAD(blk_devices);
++
++void blk_register_notify(struct notifier_block *nb)
++{
++	struct blk_device_list *existing_blkdev;
++
++	mutex_lock(&blk_notifier_lock);
++	raw_notifier_chain_register(&blk_notifier_list, nb);
++
++	list_for_each_entry(existing_blkdev, &blk_devices, list)
++		nb->notifier_call(nb, BLK_DEVICE_ADD, existing_blkdev->dev);
++
++	mutex_unlock(&blk_notifier_lock);
++}
++EXPORT_SYMBOL_GPL(blk_register_notify);
++
++void blk_unregister_notify(struct notifier_block *nb)
++{
++	mutex_lock(&blk_notifier_lock);
++	raw_notifier_chain_unregister(&blk_notifier_list, nb);
++	mutex_unlock(&blk_notifier_lock);
++}
++EXPORT_SYMBOL_GPL(blk_unregister_notify);
++
++static int blk_call_notifier_add(struct device *dev)
++{
++	struct blk_device_list *new_blkdev;
++
++	new_blkdev = kmalloc(sizeof(*new_blkdev), GFP_KERNEL);
++	if (!new_blkdev)
++		return -ENOMEM;
++
++	new_blkdev->dev = dev;
++	mutex_lock(&blk_notifier_lock);
++	list_add_tail(&new_blkdev->list, &blk_devices);
++	raw_notifier_call_chain(&blk_notifier_list, BLK_DEVICE_ADD, dev);
++	mutex_unlock(&blk_notifier_lock);
++	return 0;
++}
++
++static void blk_call_notifier_remove(struct device *dev)
++{
++	struct blk_device_list *old_blkdev, *tmp;
++
++	mutex_lock(&blk_notifier_lock);
++	list_for_each_entry_safe(old_blkdev, tmp, &blk_devices, list) {
++		if (old_blkdev->dev != dev)
++			continue;
++
++		list_del(&old_blkdev->list);
++		kfree(old_blkdev);
++	}
++	raw_notifier_call_chain(&blk_notifier_list, BLK_DEVICE_REMOVE, dev);
++	mutex_unlock(&blk_notifier_lock);
++}
++
++static struct class_interface blk_notifications_bus_interface __refdata = {
++	.class = &block_class,
++	.add_dev = &blk_call_notifier_add,
++	.remove_dev = &blk_call_notifier_remove,
++};
++
++static int __init blk_notifications_init(void)
++{
++	return class_interface_register(&blk_notifications_bus_interface);
++}
++device_initcall(blk_notifications_init);
+--- a/include/linux/blkdev.h
++++ b/include/linux/blkdev.h
+@@ -1567,4 +1567,15 @@ struct io_comp_batch {
+ 
+ #define DEFINE_IO_COMP_BATCH(name)	struct io_comp_batch name = { }
+ 
++
++#define BLK_DEVICE_ADD		1
++#define BLK_DEVICE_REMOVE	2
++#if defined(CONFIG_BLOCK_NOTIFIERS)
++void blk_register_notify(struct notifier_block *nb);
++void blk_unregister_notify(struct notifier_block *nb);
++#else
++static inline void blk_register_notify(struct notifier_block *nb) { };
++static inline void blk_unregister_notify(struct notifier_block *nb) { };
++#endif
++
+ #endif /* _LINUX_BLKDEV_H */

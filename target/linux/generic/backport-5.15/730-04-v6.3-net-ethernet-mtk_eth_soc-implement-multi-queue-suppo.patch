@@ -1,0 +1,654 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 27 Oct 2022 20:17:27 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: implement multi-queue
+ support for per-port queues
+
+When sending traffic to multiple ports with different link speeds, queued
+packets to one port can drown out tx to other ports.
+In order to better handle transmission to multiple ports, use the hardware
+shaper feature to implement weighted fair queueing between ports.
+Weight and maximum rate are automatically adjusted based on the link speed
+of the port.
+The first 3 queues are unrestricted and reserved for non-DSA direct tx on
+GMAC ports. The following queues are automatically assigned by the MTK DSA
+tag driver based on the target port number.
+The PPE offload code configures the queues for offloaded traffic in the same
+way.
+This feature is only supported on devices supporting QDMA. All queues still
+share the same DMA ring and descriptor pool.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -55,6 +55,7 @@ static const struct mtk_reg_map mtk_reg_
+ 	},
+ 	.qdma = {
+ 		.qtx_cfg	= 0x1800,
++		.qtx_sch	= 0x1804,
+ 		.rx_ptr		= 0x1900,
+ 		.rx_cnt_cfg	= 0x1904,
+ 		.qcrx_ptr	= 0x1908,
+@@ -62,6 +63,7 @@ static const struct mtk_reg_map mtk_reg_
+ 		.rst_idx	= 0x1a08,
+ 		.delay_irq	= 0x1a0c,
+ 		.fc_th		= 0x1a10,
++		.tx_sch_rate	= 0x1a14,
+ 		.int_grp	= 0x1a20,
+ 		.hred		= 0x1a44,
+ 		.ctx_ptr	= 0x1b00,
+@@ -117,6 +119,7 @@ static const struct mtk_reg_map mt7986_r
+ 	},
+ 	.qdma = {
+ 		.qtx_cfg	= 0x4400,
++		.qtx_sch	= 0x4404,
+ 		.rx_ptr		= 0x4500,
+ 		.rx_cnt_cfg	= 0x4504,
+ 		.qcrx_ptr	= 0x4508,
+@@ -134,6 +137,7 @@ static const struct mtk_reg_map mt7986_r
+ 		.fq_tail	= 0x4724,
+ 		.fq_count	= 0x4728,
+ 		.fq_blen	= 0x472c,
++		.tx_sch_rate	= 0x4798,
+ 	},
+ 	.gdm1_cnt		= 0x1c00,
+ 	.gdma_to_ppe0		= 0x3333,
+@@ -576,6 +580,75 @@ static void mtk_mac_link_down(struct phy
+ 	mtk_w32(mac->hw, mcr, MTK_MAC_MCR(mac->id));
+ }
+ 
++static void mtk_set_queue_speed(struct mtk_eth *eth, unsigned int idx,
++				int speed)
++{
++	const struct mtk_soc_data *soc = eth->soc;
++	u32 ofs, val;
++
++	if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA))
++		return;
++
++	val = MTK_QTX_SCH_MIN_RATE_EN |
++	      /* minimum: 10 Mbps */
++	      FIELD_PREP(MTK_QTX_SCH_MIN_RATE_MAN, 1) |
++	      FIELD_PREP(MTK_QTX_SCH_MIN_RATE_EXP, 4) |
++	      MTK_QTX_SCH_LEAKY_BUCKET_SIZE;
++	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2))
++		val |= MTK_QTX_SCH_LEAKY_BUCKET_EN;
++
++	if (IS_ENABLED(CONFIG_SOC_MT7621)) {
++		switch (speed) {
++		case SPEED_10:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 103) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 2) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 1);
++			break;
++		case SPEED_100:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 103) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 3);
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 1);
++			break;
++		case SPEED_1000:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 105) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 4) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 10);
++			break;
++		default:
++			break;
++		}
++	} else {
++		switch (speed) {
++		case SPEED_10:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 1) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 4) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 1);
++			break;
++		case SPEED_100:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 1) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 5);
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 1);
++			break;
++		case SPEED_1000:
++			val |= MTK_QTX_SCH_MAX_RATE_EN |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_MAN, 10) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_EXP, 5) |
++			       FIELD_PREP(MTK_QTX_SCH_MAX_RATE_WEIGHT, 10);
++			break;
++		default:
++			break;
++		}
++	}
++
++	ofs = MTK_QTX_OFFSET * idx;
++	mtk_w32(eth, val, soc->reg_map->qdma.qtx_sch + ofs);
++}
++
+ static void mtk_mac_link_up(struct phylink_config *config,
+ 			    struct phy_device *phy,
+ 			    unsigned int mode, phy_interface_t interface,
+@@ -601,6 +674,8 @@ static void mtk_mac_link_up(struct phyli
+ 		break;
+ 	}
+ 
++	mtk_set_queue_speed(mac->hw, mac->id, speed);
++
+ 	/* Configure duplex */
+ 	if (duplex == DUPLEX_FULL)
+ 		mcr |= MAC_MCR_FORCE_DPX;
+@@ -1059,7 +1134,8 @@ static void mtk_tx_set_dma_desc_v1(struc
+ 
+ 	WRITE_ONCE(desc->txd1, info->addr);
+ 
+-	data = TX_DMA_SWC | TX_DMA_PLEN0(info->size);
++	data = TX_DMA_SWC | TX_DMA_PLEN0(info->size) |
++	       FIELD_PREP(TX_DMA_PQID, info->qid);
+ 	if (info->last)
+ 		data |= TX_DMA_LS0;
+ 	WRITE_ONCE(desc->txd3, data);
+@@ -1093,9 +1169,6 @@ static void mtk_tx_set_dma_desc_v2(struc
+ 		data |= TX_DMA_LS0;
+ 	WRITE_ONCE(desc->txd3, data);
+ 
+-	if (!info->qid && mac->id)
+-		info->qid = MTK_QDMA_GMAC2_QID;
+-
+ 	data = (mac->id + 1) << TX_DMA_FPORT_SHIFT_V2; /* forward port */
+ 	data |= TX_DMA_SWC_V2 | QID_BITS_V2(info->qid);
+ 	WRITE_ONCE(desc->txd4, data);
+@@ -1139,11 +1212,12 @@ static int mtk_tx_map(struct sk_buff *sk
+ 		.gso = gso,
+ 		.csum = skb->ip_summed == CHECKSUM_PARTIAL,
+ 		.vlan = skb_vlan_tag_present(skb),
+-		.qid = skb->mark & MTK_QDMA_TX_MASK,
++		.qid = skb_get_queue_mapping(skb),
+ 		.vlan_tci = skb_vlan_tag_get(skb),
+ 		.first = true,
+ 		.last = !skb_is_nonlinear(skb),
+ 	};
++	struct netdev_queue *txq;
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 	const struct mtk_soc_data *soc = eth->soc;
+@@ -1151,8 +1225,10 @@ static int mtk_tx_map(struct sk_buff *sk
+ 	struct mtk_tx_dma *itxd_pdma, *txd_pdma;
+ 	struct mtk_tx_buf *itx_buf, *tx_buf;
+ 	int i, n_desc = 1;
++	int queue = skb_get_queue_mapping(skb);
+ 	int k = 0;
+ 
++	txq = netdev_get_tx_queue(dev, queue);
+ 	itxd = ring->next_free;
+ 	itxd_pdma = qdma_to_pdma(ring, itxd);
+ 	if (itxd == ring->last_free)
+@@ -1201,7 +1277,7 @@ static int mtk_tx_map(struct sk_buff *sk
+ 			memset(&txd_info, 0, sizeof(struct mtk_tx_dma_desc_info));
+ 			txd_info.size = min_t(unsigned int, frag_size,
+ 					      soc->txrx.dma_max_len);
+-			txd_info.qid = skb->mark & MTK_QDMA_TX_MASK;
++			txd_info.qid = queue;
+ 			txd_info.last = i == skb_shinfo(skb)->nr_frags - 1 &&
+ 					!(frag_size - txd_info.size);
+ 			txd_info.addr = skb_frag_dma_map(eth->dma_dev, frag,
+@@ -1240,7 +1316,7 @@ static int mtk_tx_map(struct sk_buff *sk
+ 			txd_pdma->txd2 |= TX_DMA_LS1;
+ 	}
+ 
+-	netdev_sent_queue(dev, skb->len);
++	netdev_tx_sent_queue(txq, skb->len);
+ 	skb_tx_timestamp(skb);
+ 
+ 	ring->next_free = mtk_qdma_phys_to_virt(ring, txd->txd2);
+@@ -1252,8 +1328,7 @@ static int mtk_tx_map(struct sk_buff *sk
+ 	wmb();
+ 
+ 	if (MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
+-		if (netif_xmit_stopped(netdev_get_tx_queue(dev, 0)) ||
+-		    !netdev_xmit_more())
++		if (netif_xmit_stopped(txq) || !netdev_xmit_more())
+ 			mtk_w32(eth, txd->txd2, soc->reg_map->qdma.ctx_ptr);
+ 	} else {
+ 		int next_idx;
+@@ -1322,7 +1397,7 @@ static void mtk_wake_queue(struct mtk_et
+ 	for (i = 0; i < MTK_MAC_COUNT; i++) {
+ 		if (!eth->netdev[i])
+ 			continue;
+-		netif_wake_queue(eth->netdev[i]);
++		netif_tx_wake_all_queues(eth->netdev[i]);
+ 	}
+ }
+ 
+@@ -1346,7 +1421,7 @@ static netdev_tx_t mtk_start_xmit(struct
+ 
+ 	tx_num = mtk_cal_txd_req(eth, skb);
+ 	if (unlikely(atomic_read(&ring->free_count) <= tx_num)) {
+-		netif_stop_queue(dev);
++		netif_tx_stop_all_queues(dev);
+ 		netif_err(eth, tx_queued, dev,
+ 			  "Tx Ring full when queue awake!\n");
+ 		spin_unlock(&eth->page_lock);
+@@ -1372,7 +1447,7 @@ static netdev_tx_t mtk_start_xmit(struct
+ 		goto drop;
+ 
+ 	if (unlikely(atomic_read(&ring->free_count) <= ring->thresh))
+-		netif_stop_queue(dev);
++		netif_tx_stop_all_queues(dev);
+ 
+ 	spin_unlock(&eth->page_lock);
+ 
+@@ -1539,10 +1614,12 @@ static int mtk_xdp_submit_frame(struct m
+ 	struct skb_shared_info *sinfo = xdp_get_shared_info_from_frame(xdpf);
+ 	const struct mtk_soc_data *soc = eth->soc;
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
++	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_tx_dma_desc_info txd_info = {
+ 		.size	= xdpf->len,
+ 		.first	= true,
+ 		.last	= !xdp_frame_has_frags(xdpf),
++		.qid	= mac->id,
+ 	};
+ 	int err, index = 0, n_desc = 1, nr_frags;
+ 	struct mtk_tx_dma *htxd, *txd, *txd_pdma;
+@@ -1593,6 +1670,7 @@ static int mtk_xdp_submit_frame(struct m
+ 		memset(&txd_info, 0, sizeof(struct mtk_tx_dma_desc_info));
+ 		txd_info.size = skb_frag_size(&sinfo->frags[index]);
+ 		txd_info.last = index + 1 == nr_frags;
++		txd_info.qid = mac->id;
+ 		data = skb_frag_address(&sinfo->frags[index]);
+ 
+ 		index++;
+@@ -1944,8 +2022,46 @@ rx_done:
+ 	return done;
+ }
+ 
++struct mtk_poll_state {
++    struct netdev_queue *txq;
++    unsigned int total;
++    unsigned int done;
++    unsigned int bytes;
++};
++
++static void
++mtk_poll_tx_done(struct mtk_eth *eth, struct mtk_poll_state *state, u8 mac,
++		 struct sk_buff *skb)
++{
++	struct netdev_queue *txq;
++	struct net_device *dev;
++	unsigned int bytes = skb->len;
++
++	state->total++;
++	eth->tx_packets++;
++	eth->tx_bytes += bytes;
++
++	dev = eth->netdev[mac];
++	if (!dev)
++		return;
++
++	txq = netdev_get_tx_queue(dev, skb_get_queue_mapping(skb));
++	if (state->txq == txq) {
++		state->done++;
++		state->bytes += bytes;
++		return;
++	}
++
++	if (state->txq)
++		netdev_tx_completed_queue(state->txq, state->done, state->bytes);
++
++	state->txq = txq;
++	state->done = 1;
++	state->bytes = bytes;
++}
++
+ static int mtk_poll_tx_qdma(struct mtk_eth *eth, int budget,
+-			    unsigned int *done, unsigned int *bytes)
++			    struct mtk_poll_state *state)
+ {
+ 	const struct mtk_reg_map *reg_map = eth->soc->reg_map;
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+@@ -1975,12 +2091,9 @@ static int mtk_poll_tx_qdma(struct mtk_e
+ 			break;
+ 
+ 		if (tx_buf->data != (void *)MTK_DMA_DUMMY_DESC) {
+-			if (tx_buf->type == MTK_TYPE_SKB) {
+-				struct sk_buff *skb = tx_buf->data;
++			if (tx_buf->type == MTK_TYPE_SKB)
++				mtk_poll_tx_done(eth, state, mac, tx_buf->data);
+ 
+-				bytes[mac] += skb->len;
+-				done[mac]++;
+-			}
+ 			budget--;
+ 		}
+ 		mtk_tx_unmap(eth, tx_buf, true);
+@@ -1998,7 +2111,7 @@ static int mtk_poll_tx_qdma(struct mtk_e
+ }
+ 
+ static int mtk_poll_tx_pdma(struct mtk_eth *eth, int budget,
+-			    unsigned int *done, unsigned int *bytes)
++			    struct mtk_poll_state *state)
+ {
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+ 	struct mtk_tx_buf *tx_buf;
+@@ -2014,12 +2127,8 @@ static int mtk_poll_tx_pdma(struct mtk_e
+ 			break;
+ 
+ 		if (tx_buf->data != (void *)MTK_DMA_DUMMY_DESC) {
+-			if (tx_buf->type == MTK_TYPE_SKB) {
+-				struct sk_buff *skb = tx_buf->data;
+-
+-				bytes[0] += skb->len;
+-				done[0]++;
+-			}
++			if (tx_buf->type == MTK_TYPE_SKB)
++				mtk_poll_tx_done(eth, state, 0, tx_buf->data);
+ 			budget--;
+ 		}
+ 		mtk_tx_unmap(eth, tx_buf, true);
+@@ -2040,26 +2149,15 @@ static int mtk_poll_tx(struct mtk_eth *e
+ {
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+ 	struct dim_sample dim_sample = {};
+-	unsigned int done[MTK_MAX_DEVS];
+-	unsigned int bytes[MTK_MAX_DEVS];
+-	int total = 0, i;
+-
+-	memset(done, 0, sizeof(done));
+-	memset(bytes, 0, sizeof(bytes));
++	struct mtk_poll_state state = {};
+ 
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+-		budget = mtk_poll_tx_qdma(eth, budget, done, bytes);
++		budget = mtk_poll_tx_qdma(eth, budget, &state);
+ 	else
+-		budget = mtk_poll_tx_pdma(eth, budget, done, bytes);
++		budget = mtk_poll_tx_pdma(eth, budget, &state);
+ 
+-	for (i = 0; i < MTK_MAC_COUNT; i++) {
+-		if (!eth->netdev[i] || !done[i])
+-			continue;
+-		netdev_completed_queue(eth->netdev[i], done[i], bytes[i]);
+-		total += done[i];
+-		eth->tx_packets += done[i];
+-		eth->tx_bytes += bytes[i];
+-	}
++	if (state.txq)
++		netdev_tx_completed_queue(state.txq, state.done, state.bytes);
+ 
+ 	dim_update_sample(eth->tx_events, eth->tx_packets, eth->tx_bytes,
+ 			  &dim_sample);
+@@ -2069,7 +2167,7 @@ static int mtk_poll_tx(struct mtk_eth *e
+ 	    (atomic_read(&ring->free_count) > ring->thresh))
+ 		mtk_wake_queue(eth);
+ 
+-	return total;
++	return state.total;
+ }
+ 
+ static void mtk_handle_status_irq(struct mtk_eth *eth)
+@@ -2155,6 +2253,7 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 	int i, sz = soc->txrx.txd_size;
+ 	struct mtk_tx_dma_v2 *txd;
+ 	int ring_size;
++	u32 ofs, val;
+ 
+ 	if (MTK_HAS_CAPS(soc->caps, MTK_QDMA))
+ 		ring_size = MTK_QDMA_RING_SIZE;
+@@ -2222,8 +2321,25 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 			ring->phys + ((ring_size - 1) * sz),
+ 			soc->reg_map->qdma.crx_ptr);
+ 		mtk_w32(eth, ring->last_free_ptr, soc->reg_map->qdma.drx_ptr);
+-		mtk_w32(eth, (QDMA_RES_THRES << 8) | QDMA_RES_THRES,
+-			soc->reg_map->qdma.qtx_cfg);
++
++		for (i = 0, ofs = 0; i < MTK_QDMA_NUM_QUEUES; i++) {
++			val = (QDMA_RES_THRES << 8) | QDMA_RES_THRES;
++			mtk_w32(eth, val, soc->reg_map->qdma.qtx_cfg + ofs);
++
++			val = MTK_QTX_SCH_MIN_RATE_EN |
++			      /* minimum: 10 Mbps */
++			      FIELD_PREP(MTK_QTX_SCH_MIN_RATE_MAN, 1) |
++			      FIELD_PREP(MTK_QTX_SCH_MIN_RATE_EXP, 4) |
++			      MTK_QTX_SCH_LEAKY_BUCKET_SIZE;
++			if (!MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2))
++				val |= MTK_QTX_SCH_LEAKY_BUCKET_EN;
++			mtk_w32(eth, val, soc->reg_map->qdma.qtx_sch + ofs);
++			ofs += MTK_QTX_OFFSET;
++		}
++		val = MTK_QDMA_TX_SCH_MAX_WFQ | (MTK_QDMA_TX_SCH_MAX_WFQ << 16);
++		mtk_w32(eth, val, soc->reg_map->qdma.tx_sch_rate);
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2))
++			mtk_w32(eth, val, soc->reg_map->qdma.tx_sch_rate + 4);
+ 	} else {
+ 		mtk_w32(eth, ring->phys_pdma, MT7628_TX_BASE_PTR0);
+ 		mtk_w32(eth, ring_size, MT7628_TX_MAX_CNT0);
+@@ -2906,7 +3022,7 @@ static int mtk_start_dma(struct mtk_eth
+ 		if (MTK_HAS_CAPS(eth->soc->caps, MTK_NETSYS_V2))
+ 			val |= MTK_MUTLI_CNT | MTK_RESV_BUF |
+ 			       MTK_WCOMP_EN | MTK_DMAD_WR_WDONE |
+-			       MTK_CHK_DDONE_EN;
++			       MTK_CHK_DDONE_EN | MTK_LEAKY_BUCKET_EN;
+ 		else
+ 			val |= MTK_RX_BT_32DWORDS;
+ 		mtk_w32(eth, val, reg_map->qdma.glo_cfg);
+@@ -2952,6 +3068,45 @@ static void mtk_gdm_config(struct mtk_et
+ 	mtk_w32(eth, 0, MTK_RST_GL);
+ }
+ 
++static int mtk_device_event(struct notifier_block *n, unsigned long event, void *ptr)
++{
++	struct mtk_mac *mac = container_of(n, struct mtk_mac, device_notifier);
++	struct mtk_eth *eth = mac->hw;
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++	struct ethtool_link_ksettings s;
++	struct net_device *ldev;
++	struct list_head *iter;
++	struct dsa_port *dp;
++
++	if (event != NETDEV_CHANGE)
++		return NOTIFY_DONE;
++
++	netdev_for_each_lower_dev(dev, ldev, iter) {
++		if (netdev_priv(ldev) == mac)
++			goto found;
++	}
++
++	return NOTIFY_DONE;
++
++found:
++	if (!dsa_slave_dev_check(dev))
++		return NOTIFY_DONE;
++
++	if (__ethtool_get_link_ksettings(dev, &s))
++		return NOTIFY_DONE;
++
++	if (s.base.speed == 0 || s.base.speed == ((__u32)-1))
++		return NOTIFY_DONE;
++
++	dp = dsa_port_from_netdev(dev);
++	if (dp->index >= MTK_QDMA_NUM_QUEUES)
++		return NOTIFY_DONE;
++
++	mtk_set_queue_speed(eth, dp->index + 3, s.base.speed);
++
++	return NOTIFY_DONE;
++}
++
+ static int mtk_open(struct net_device *dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+@@ -2996,7 +3151,8 @@ static int mtk_open(struct net_device *d
+ 		refcount_inc(&eth->dma_refcnt);
+ 
+ 	phylink_start(mac->phylink);
+-	netif_start_queue(dev);
++	netif_tx_start_all_queues(dev);
++
+ 	return 0;
+ }
+ 
+@@ -3702,8 +3858,12 @@ static int mtk_unreg_dev(struct mtk_eth
+ 	int i;
+ 
+ 	for (i = 0; i < MTK_MAC_COUNT; i++) {
++		struct mtk_mac *mac;
+ 		if (!eth->netdev[i])
+ 			continue;
++		mac = netdev_priv(eth->netdev[i]);
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
++			unregister_netdevice_notifier(&mac->device_notifier);
+ 		unregister_netdev(eth->netdev[i]);
+ 	}
+ 
+@@ -3920,6 +4080,23 @@ static int mtk_set_rxnfc(struct net_devi
+ 	return ret;
+ }
+ 
++static u16 mtk_select_queue(struct net_device *dev, struct sk_buff *skb,
++			    struct net_device *sb_dev)
++{
++	struct mtk_mac *mac = netdev_priv(dev);
++	unsigned int queue = 0;
++
++	if (netdev_uses_dsa(dev))
++		queue = skb_get_queue_mapping(skb) + 3;
++	else
++		queue = mac->id;
++
++	if (queue >= dev->num_tx_queues)
++		queue = 0;
++
++	return queue;
++}
++
+ static const struct ethtool_ops mtk_ethtool_ops = {
+ 	.get_link_ksettings	= mtk_get_link_ksettings,
+ 	.set_link_ksettings	= mtk_set_link_ksettings,
+@@ -3954,6 +4131,7 @@ static const struct net_device_ops mtk_n
+ 	.ndo_setup_tc		= mtk_eth_setup_tc,
+ 	.ndo_bpf		= mtk_xdp,
+ 	.ndo_xdp_xmit		= mtk_xdp_xmit,
++	.ndo_select_queue	= mtk_select_queue,
+ };
+ 
+ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
+@@ -3963,6 +4141,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	struct phylink *phylink;
+ 	struct mtk_mac *mac;
+ 	int id, err;
++	int txqs = 1;
+ 
+ 	if (!_id) {
+ 		dev_err(eth->dev, "missing mac id\n");
+@@ -3980,7 +4159,10 @@ static int mtk_add_mac(struct mtk_eth *e
+ 		return -EINVAL;
+ 	}
+ 
+-	eth->netdev[id] = alloc_etherdev(sizeof(*mac));
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
++		txqs = MTK_QDMA_NUM_QUEUES;
++
++	eth->netdev[id] = alloc_etherdev_mqs(sizeof(*mac), txqs, 1);
+ 	if (!eth->netdev[id]) {
+ 		dev_err(eth->dev, "alloc_etherdev failed\n");
+ 		return -ENOMEM;
+@@ -4088,6 +4270,11 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	else
+ 		eth->netdev[id]->max_mtu = MTK_MAX_RX_LENGTH_2K - MTK_RX_ETH_HLEN;
+ 
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
++		mac->device_notifier.notifier_call = mtk_device_event;
++		register_netdevice_notifier(&mac->device_notifier);
++	}
++
+ 	return 0;
+ 
+ free_netdev:
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -22,6 +22,7 @@
+ #include <linux/bpf_trace.h>
+ #include "mtk_ppe.h"
+ 
++#define MTK_QDMA_NUM_QUEUES	16
+ #define MTK_QDMA_PAGE_SIZE	2048
+ #define MTK_MAX_RX_LENGTH	1536
+ #define MTK_MAX_RX_LENGTH_2K	2048
+@@ -215,8 +216,26 @@
+ #define MTK_RING_MAX_AGG_CNT_H		((MTK_HW_LRO_MAX_AGG_CNT >> 6) & 0x3)
+ 
+ /* QDMA TX Queue Configuration Registers */
++#define MTK_QTX_OFFSET		0x10
+ #define QDMA_RES_THRES		4
+ 
++/* QDMA Tx Queue Scheduler Configuration Registers */
++#define MTK_QTX_SCH_TX_SEL		BIT(31)
++#define MTK_QTX_SCH_TX_SEL_V2		GENMASK(31, 30)
++
++#define MTK_QTX_SCH_LEAKY_BUCKET_EN	BIT(30)
++#define MTK_QTX_SCH_LEAKY_BUCKET_SIZE	GENMASK(29, 28)
++#define MTK_QTX_SCH_MIN_RATE_EN		BIT(27)
++#define MTK_QTX_SCH_MIN_RATE_MAN	GENMASK(26, 20)
++#define MTK_QTX_SCH_MIN_RATE_EXP	GENMASK(19, 16)
++#define MTK_QTX_SCH_MAX_RATE_WEIGHT	GENMASK(15, 12)
++#define MTK_QTX_SCH_MAX_RATE_EN		BIT(11)
++#define MTK_QTX_SCH_MAX_RATE_MAN	GENMASK(10, 4)
++#define MTK_QTX_SCH_MAX_RATE_EXP	GENMASK(3, 0)
++
++/* QDMA TX Scheduler Rate Control Register */
++#define MTK_QDMA_TX_SCH_MAX_WFQ		BIT(15)
++
+ /* QDMA Global Configuration Register */
+ #define MTK_RX_2B_OFFSET	BIT(31)
+ #define MTK_RX_BT_32DWORDS	(3 << 11)
+@@ -235,6 +254,7 @@
+ #define MTK_WCOMP_EN		BIT(24)
+ #define MTK_RESV_BUF		(0x40 << 16)
+ #define MTK_MUTLI_CNT		(0x4 << 12)
++#define MTK_LEAKY_BUCKET_EN	BIT(11)
+ 
+ /* QDMA Flow Control Register */
+ #define FC_THRES_DROP_MODE	BIT(20)
+@@ -265,8 +285,6 @@
+ #define MTK_STAT_OFFSET		0x40
+ 
+ /* QDMA TX NUM */
+-#define MTK_QDMA_TX_NUM		16
+-#define MTK_QDMA_TX_MASK	(MTK_QDMA_TX_NUM - 1)
+ #define QID_BITS_V2(x)		(((x) & 0x3f) << 16)
+ #define MTK_QDMA_GMAC2_QID	8
+ 
+@@ -296,6 +314,7 @@
+ #define TX_DMA_PLEN0(x)		(((x) & eth->soc->txrx.dma_max_len) << eth->soc->txrx.dma_len_offset)
+ #define TX_DMA_PLEN1(x)		((x) & eth->soc->txrx.dma_max_len)
+ #define TX_DMA_SWC		BIT(14)
++#define TX_DMA_PQID		GENMASK(3, 0)
+ 
+ /* PDMA on MT7628 */
+ #define TX_DMA_DONE		BIT(31)
+@@ -953,6 +972,7 @@ struct mtk_reg_map {
+ 	} pdma;
+ 	struct {
+ 		u32	qtx_cfg;	/* tx queue configuration */
++		u32	qtx_sch;	/* tx queue scheduler configuration */
+ 		u32	rx_ptr;		/* rx base pointer */
+ 		u32	rx_cnt_cfg;	/* rx max count configuration */
+ 		u32	qcrx_ptr;	/* rx cpu pointer */
+@@ -970,6 +990,7 @@ struct mtk_reg_map {
+ 		u32	fq_tail;	/* fq tail pointer */
+ 		u32	fq_count;	/* fq free page count */
+ 		u32	fq_blen;	/* fq free page buffer length */
++		u32	tx_sch_rate;	/* tx scheduler rate control registers */
+ 	} qdma;
+ 	u32	gdm1_cnt;
+ 	u32	gdma_to_ppe0;
+@@ -1173,6 +1194,7 @@ struct mtk_mac {
+ 	__be32				hwlro_ip[MTK_MAX_LRO_IP_CNT];
+ 	int				hwlro_ip_cnt;
+ 	unsigned int			syscfg0;
++	struct notifier_block		device_notifier;
+ };
+ 
+ /* the struct describing the SoC. these are declared in the soc_xyz.c files */

@@ -1,0 +1,81 @@
+From d3403581532e7e35ef18947964d655d1d7f8610b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Mon, 23 Sep 2024 10:55:13 -0300
+Subject: [PATCH] drm/v3d: Use gemfs/THP in BO creation if available
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 20d69e8905fc36818ab585cb50f6de48fb8f6de3 upstream
+
+Although Big/Super Pages could appear naturally, it would be quite hard
+to have 1MB or 64KB allocated contiguously naturally. Therefore, we can
+force the creation of large pages allocated contiguously by using a
+mountpoint with "huge=within_size" enabled.
+
+Therefore, as V3D has a mountpoint with "huge=within_size" (if user has
+THP enabled), use this mountpoint for BO creation if available. This
+will allow us to create large pages allocated contiguously and make use
+of Big/Super Pages.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+Reviewed-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20240923141348.2422499-10-mcanal@igalia.com
+---
+ drivers/gpu/drm/v3d/v3d_bo.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_bo.c
++++ b/drivers/gpu/drm/v3d/v3d_bo.c
+@@ -107,6 +107,7 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	struct v3d_dev *v3d = to_v3d_dev(obj->dev);
+ 	struct v3d_bo *bo = to_v3d_bo(obj);
+ 	struct sg_table *sgt;
++	u64 align;
+ 	int ret;
+ 
+ 	/* So far we pin the BO in the MMU for its lifetime, so use
+@@ -116,6 +117,15 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	if (IS_ERR(sgt))
+ 		return PTR_ERR(sgt);
+ 
++	if (!v3d->gemfs)
++		align = SZ_4K;
++	else if (obj->size >= SZ_1M)
++		align = SZ_1M;
++	else if (obj->size >= SZ_64K)
++		align = SZ_64K;
++	else
++		align = SZ_4K;
++
+ 	spin_lock(&v3d->mm_lock);
+ 	/* Allocate the object's space in the GPU's page tables.
+ 	 * Inserting PTEs will happen later, but the offset is for the
+@@ -123,7 +133,7 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	 */
+ 	ret = drm_mm_insert_node_generic(&v3d->mm, &bo->node,
+ 					 obj->size >> V3D_MMU_PAGE_SHIFT,
+-					 SZ_4K >> V3D_MMU_PAGE_SHIFT, 0, 0);
++					 align >> V3D_MMU_PAGE_SHIFT, 0, 0);
+ 	spin_unlock(&v3d->mm_lock);
+ 	if (ret)
+ 		return ret;
+@@ -143,10 +153,17 @@ struct v3d_bo *v3d_bo_create(struct drm_
+ 			     size_t unaligned_size)
+ {
+ 	struct drm_gem_shmem_object *shmem_obj;
++	struct v3d_dev *v3d = to_v3d_dev(dev);
+ 	struct v3d_bo *bo;
+ 	int ret;
+ 
+-	shmem_obj = drm_gem_shmem_create(dev, unaligned_size);
++	/* Let the user opt out of allocating the BOs with THP */
++	if (v3d->gemfs)
++		shmem_obj = drm_gem_shmem_create_with_mnt(dev, unaligned_size,
++							  v3d->gemfs);
++	else
++		shmem_obj = drm_gem_shmem_create(dev, unaligned_size);
++
+ 	if (IS_ERR(shmem_obj))
+ 		return ERR_CAST(shmem_obj);
+ 	bo = to_v3d_bo(&shmem_obj->base);

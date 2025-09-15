@@ -1,0 +1,82 @@
+From: Tobias Wolf <dev-NTEO@vplace.de>
+Subject: mm: Fix alloc_node_mem_map with ARCH_PFN_OFFSET calculation
+
+An rt288x (ralink) based router (Belkin F5D8235 v1) does not boot with any
+kernel beyond version 4.3 resulting in:
+
+BUG: Bad page state in process swapper  pfn:086ac
+
+bisect resulted in:
+
+a1c34a3bf00af2cede839879502e12dc68491ad5 is the first bad commit
+commit a1c34a3bf00af2cede839879502e12dc68491ad5
+Author: Laura Abbott <laura@labbott.name>
+Date:   Thu Nov 5 18:48:46 2015 -0800
+
+    mm: Don't offset memmap for flatmem
+
+    Srinivas Kandagatla reported bad page messages when trying to remove the
+    bottom 2MB on an ARM based IFC6410 board
+
+      BUG: Bad page state in process swapper  pfn:fffa8
+      page:ef7fb500 count:0 mapcount:0 mapping:  (null) index:0x0
+      flags: 0x96640253(locked|error|dirty|active|arch_1|reclaim|mlocked)
+      page dumped because: PAGE_FLAGS_CHECK_AT_FREE flag(s) set
+      bad because of flags:
+      flags: 0x200041(locked|active|mlocked)
+      Modules linked in:
+      CPU: 0 PID: 0 Comm: swapper Not tainted 3.19.0-rc3-00007-g412f9ba-dirty
+#816
+      Hardware name: Qualcomm (Flattened Device Tree)
+        unwind_backtrace
+        show_stack
+        dump_stack
+        bad_page
+        free_pages_prepare
+        free_hot_cold_page
+        __free_pages
+        free_highmem_page
+        mem_init
+        start_kernel
+      Disabling lock debugging due to kernel taint
+    [...]
+:040000 040000 2de013c372345fd471cd58f0553c9b38b0ef1cc4
+0a8156f848733dfa21e16c196dfb6c0a76290709 M      mm
+
+This fix for ARM does not account ARCH_PFN_OFFSET for mem_map as later used by
+page_to_pfn anymore.
+
+The following output was generated with two hacked in printk statements:
+
+printk("before %p vs. %p or %p\n", mem_map, mem_map - offset, mem_map -
+(pgdat->node_start_pfn - ARCH_PFN_OFFSET));
+		if (page_to_pfn(mem_map) != pgdat->node_start_pfn)
+			mem_map -= offset + (pgdat->node_start_pfn - ARCH_PFN_OFFSET);
+printk("after %p\n", mem_map);
+
+Output:
+
+[    0.000000] before 8861b280 vs. 8861b280 or 8851b280
+[    0.000000] after 8851b280
+
+As seen in the first line mem_map with subtraction of offset does not equal the
+mem_map after subtraction of ARCH_PFN_OFFSET.
+
+After adding the offset of ARCH_PFN_OFFSET as well to mem_map as the
+previously calculated offset is zero for the named platform it is able to boot
+4.4 and 4.9-rc7 again.
+
+Signed-off-by: Tobias Wolf <dev-NTEO@vplace.de>
+---
+
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -7957,7 +7957,7 @@ static void __init alloc_node_mem_map(st
+ 	if (pgdat == NODE_DATA(0)) {
+ 		mem_map = NODE_DATA(0)->node_mem_map;
+ 		if (page_to_pfn(mem_map) != pgdat->node_start_pfn)
+-			mem_map -= offset;
++			mem_map -= offset + (pgdat->node_start_pfn - ARCH_PFN_OFFSET);
+ 	}
+ #endif
+ }

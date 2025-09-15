@@ -1,0 +1,343 @@
+From e0f8ad2a705367518b5c56bf9d6da89681467c02 Mon Sep 17 00:00:00 2001
+From: Shengyu Qu <wiagn233@outlook.com>
+Date: Fri, 21 Apr 2023 23:08:15 +0800
+Subject: [PATCH] mfd: axp20x: Add support for AXP15060 PMIC
+
+The AXP15060 is a PMIC chip produced by X-Powers, and could be connected
+via an I2C bus.
+
+Describe the regmap and the MFD bits, along with the registers exposed
+via I2C. Eventually advertise the device using a new compatible string
+and add support for power off the system.
+
+The driver would disable PEK function if IRQ is not configured in device
+tree, since some boards (For example, Starfive Visionfive 2) didn't
+connect IRQ line of PMIC to SOC.
+
+GPIO function isn't enabled in this commit, since its configuration
+operation is different from any existing AXP PMICs and needs
+logic modification on existing driver. GPIO support might come in later
+patches.
+
+Signed-off-by: Shengyu Qu <wiagn233@outlook.com>
+Reviewed-by: Krzysztof Kozlowski <krzysztof.kozlowski@linaro.org>
+Signed-off-by: Lee Jones <lee@kernel.org>
+Link: https://lore.kernel.org/r/TY3P286MB261162D57695AC8164ED50E298609@TY3P286MB2611.JPNP286.PROD.OUTLOOK.COM
+---
+ drivers/mfd/axp20x-i2c.c   |   2 +
+ drivers/mfd/axp20x.c       | 107 +++++++++++++++++++++++++++++++++++++
+ include/linux/mfd/axp20x.h |  85 +++++++++++++++++++++++++++++
+ 3 files changed, 194 insertions(+)
+
+--- a/drivers/mfd/axp20x-i2c.c
++++ b/drivers/mfd/axp20x-i2c.c
+@@ -66,6 +66,7 @@ static const struct of_device_id axp20x_
+ 	{ .compatible = "x-powers,axp223", .data = (void *)AXP223_ID },
+ 	{ .compatible = "x-powers,axp803", .data = (void *)AXP803_ID },
+ 	{ .compatible = "x-powers,axp806", .data = (void *)AXP806_ID },
++	{ .compatible = "x-powers,axp15060", .data = (void *)AXP15060_ID },
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(of, axp20x_i2c_of_match);
+@@ -79,6 +80,7 @@ static const struct i2c_device_id axp20x
+ 	{ "axp223", 0 },
+ 	{ "axp803", 0 },
+ 	{ "axp806", 0 },
++	{ "axp15060", 0 },
+ 	{ },
+ };
+ MODULE_DEVICE_TABLE(i2c, axp20x_i2c_id);
+--- a/drivers/mfd/axp20x.c
++++ b/drivers/mfd/axp20x.c
+@@ -43,6 +43,7 @@ static const char * const axp20x_model_n
+ 	"AXP806",
+ 	"AXP809",
+ 	"AXP813",
++	"AXP15060",
+ };
+ 
+ static const struct regmap_range axp152_writeable_ranges[] = {
+@@ -169,6 +170,31 @@ static const struct regmap_access_table
+ 	.n_yes_ranges	= ARRAY_SIZE(axp806_volatile_ranges),
+ };
+ 
++static const struct regmap_range axp15060_writeable_ranges[] = {
++	regmap_reg_range(AXP15060_PWR_OUT_CTRL1, AXP15060_DCDC_MODE_CTRL2),
++	regmap_reg_range(AXP15060_OUTPUT_MONITOR_DISCHARGE, AXP15060_CPUSLDO_V_CTRL),
++	regmap_reg_range(AXP15060_PWR_WAKEUP_CTRL, AXP15060_PWR_DISABLE_DOWN_SEQ),
++	regmap_reg_range(AXP15060_PEK_KEY, AXP15060_PEK_KEY),
++	regmap_reg_range(AXP15060_IRQ1_EN, AXP15060_IRQ2_EN),
++	regmap_reg_range(AXP15060_IRQ1_STATE, AXP15060_IRQ2_STATE),
++};
++
++static const struct regmap_range axp15060_volatile_ranges[] = {
++	regmap_reg_range(AXP15060_STARTUP_SRC, AXP15060_STARTUP_SRC),
++	regmap_reg_range(AXP15060_PWR_WAKEUP_CTRL, AXP15060_PWR_DISABLE_DOWN_SEQ),
++	regmap_reg_range(AXP15060_IRQ1_STATE, AXP15060_IRQ2_STATE),
++};
++
++static const struct regmap_access_table axp15060_writeable_table = {
++	.yes_ranges	= axp15060_writeable_ranges,
++	.n_yes_ranges	= ARRAY_SIZE(axp15060_writeable_ranges),
++};
++
++static const struct regmap_access_table axp15060_volatile_table = {
++	.yes_ranges	= axp15060_volatile_ranges,
++	.n_yes_ranges	= ARRAY_SIZE(axp15060_volatile_ranges),
++};
++
+ static const struct resource axp152_pek_resources[] = {
+ 	DEFINE_RES_IRQ_NAMED(AXP152_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
+ 	DEFINE_RES_IRQ_NAMED(AXP152_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+@@ -237,6 +263,11 @@ static const struct resource axp809_pek_
+ 	DEFINE_RES_IRQ_NAMED(AXP809_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
+ };
+ 
++static const struct resource axp15060_pek_resources[] = {
++	DEFINE_RES_IRQ_NAMED(AXP15060_IRQ_PEK_RIS_EDGE, "PEK_DBR"),
++	DEFINE_RES_IRQ_NAMED(AXP15060_IRQ_PEK_FAL_EDGE, "PEK_DBF"),
++};
++
+ static const struct regmap_config axp152_regmap_config = {
+ 	.reg_bits	= 8,
+ 	.val_bits	= 8,
+@@ -282,6 +313,15 @@ static const struct regmap_config axp806
+ 	.cache_type	= REGCACHE_RBTREE,
+ };
+ 
++static const struct regmap_config axp15060_regmap_config = {
++	.reg_bits	= 8,
++	.val_bits	= 8,
++	.wr_table	= &axp15060_writeable_table,
++	.volatile_table	= &axp15060_volatile_table,
++	.max_register	= AXP15060_IRQ2_STATE,
++	.cache_type	= REGCACHE_RBTREE,
++};
++
+ #define INIT_REGMAP_IRQ(_variant, _irq, _off, _mask)			\
+ 	[_variant##_IRQ_##_irq] = { .reg_offset = (_off), .mask = BIT(_mask) }
+ 
+@@ -503,6 +543,23 @@ static const struct regmap_irq axp809_re
+ 	INIT_REGMAP_IRQ(AXP809, GPIO0_INPUT,		4, 0),
+ };
+ 
++static const struct regmap_irq axp15060_regmap_irqs[] = {
++	INIT_REGMAP_IRQ(AXP15060, DIE_TEMP_HIGH_LV1,	0, 0),
++	INIT_REGMAP_IRQ(AXP15060, DIE_TEMP_HIGH_LV2,	0, 1),
++	INIT_REGMAP_IRQ(AXP15060, DCDC1_V_LOW,		0, 2),
++	INIT_REGMAP_IRQ(AXP15060, DCDC2_V_LOW,		0, 3),
++	INIT_REGMAP_IRQ(AXP15060, DCDC3_V_LOW,		0, 4),
++	INIT_REGMAP_IRQ(AXP15060, DCDC4_V_LOW,		0, 5),
++	INIT_REGMAP_IRQ(AXP15060, DCDC5_V_LOW,		0, 6),
++	INIT_REGMAP_IRQ(AXP15060, DCDC6_V_LOW,		0, 7),
++	INIT_REGMAP_IRQ(AXP15060, PEK_LONG,			1, 0),
++	INIT_REGMAP_IRQ(AXP15060, PEK_SHORT,			1, 1),
++	INIT_REGMAP_IRQ(AXP15060, GPIO1_INPUT,		1, 2),
++	INIT_REGMAP_IRQ(AXP15060, PEK_FAL_EDGE,			1, 3),
++	INIT_REGMAP_IRQ(AXP15060, PEK_RIS_EDGE,			1, 4),
++	INIT_REGMAP_IRQ(AXP15060, GPIO2_INPUT,		1, 5),
++};
++
+ static const struct regmap_irq_chip axp152_regmap_irq_chip = {
+ 	.name			= "axp152_irq_chip",
+ 	.status_base		= AXP152_IRQ1_STATE,
+@@ -589,6 +646,17 @@ static const struct regmap_irq_chip axp8
+ 	.num_regs		= 5,
+ };
+ 
++static const struct regmap_irq_chip axp15060_regmap_irq_chip = {
++	.name			= "axp15060",
++	.status_base		= AXP15060_IRQ1_STATE,
++	.ack_base		= AXP15060_IRQ1_STATE,
++	.unmask_base		= AXP15060_IRQ1_EN,
++	.init_ack_masked	= true,
++	.irqs			= axp15060_regmap_irqs,
++	.num_irqs		= ARRAY_SIZE(axp15060_regmap_irqs),
++	.num_regs		= 2,
++};
++
+ static const struct mfd_cell axp20x_cells[] = {
+ 	{
+ 		.name		= "axp20x-gpio",
+@@ -833,6 +901,23 @@ static const struct mfd_cell axp813_cell
+ 	},
+ };
+ 
++static const struct mfd_cell axp15060_cells[] = {
++	{
++		.name		= "axp221-pek",
++		.num_resources	= ARRAY_SIZE(axp15060_pek_resources),
++		.resources	= axp15060_pek_resources,
++	}, {
++		.name		= "axp20x-regulator",
++	},
++};
++
++/* For boards that don't have IRQ line connected to SOC. */
++static const struct mfd_cell axp_regulator_only_cells[] = {
++	{
++		.name		= "axp20x-regulator",
++	},
++};
++
+ static int axp20x_power_off(struct sys_off_data *data)
+ {
+ 	struct axp20x_dev *axp20x = data->cb_data;
+@@ -942,6 +1027,28 @@ int axp20x_match_device(struct axp20x_de
+ 		 */
+ 		axp20x->regmap_irq_chip = &axp803_regmap_irq_chip;
+ 		break;
++	case AXP15060_ID:
++		/*
++		 * Don't register the power key part if there is no interrupt
++		 * line.
++		 *
++		 * Since most use cases of AXP PMICs are Allwinner SOCs, board
++		 * designers follow Allwinner's reference design and connects
++		 * IRQ line to SOC, there's no need for those variants to deal
++		 * with cases that IRQ isn't connected. However, AXP15660 is
++		 * used by some other vendors' SOCs that didn't connect IRQ
++		 * line, we need to deal with this case.
++		 */
++		if (axp20x->irq > 0) {
++			axp20x->nr_cells = ARRAY_SIZE(axp15060_cells);
++			axp20x->cells = axp15060_cells;
++		} else {
++			axp20x->nr_cells = ARRAY_SIZE(axp_regulator_only_cells);
++			axp20x->cells = axp_regulator_only_cells;
++		}
++		axp20x->regmap_cfg = &axp15060_regmap_config;
++		axp20x->regmap_irq_chip = &axp15060_regmap_irq_chip;
++		break;
+ 	default:
+ 		dev_err(dev, "unsupported AXP20X ID %lu\n", axp20x->variant);
+ 		return -EINVAL;
+--- a/include/linux/mfd/axp20x.h
++++ b/include/linux/mfd/axp20x.h
+@@ -21,6 +21,7 @@ enum axp20x_variants {
+ 	AXP806_ID,
+ 	AXP809_ID,
+ 	AXP813_ID,
++	AXP15060_ID,
+ 	NR_AXP20X_VARIANTS,
+ };
+ 
+@@ -131,6 +132,39 @@ enum axp20x_variants {
+ /* Other DCDC regulator control registers are the same as AXP803 */
+ #define AXP813_DCDC7_V_OUT		0x26
+ 
++#define AXP15060_STARTUP_SRC		0x00
++#define AXP15060_PWR_OUT_CTRL1		0x10
++#define AXP15060_PWR_OUT_CTRL2		0x11
++#define AXP15060_PWR_OUT_CTRL3		0x12
++#define AXP15060_DCDC1_V_CTRL		0x13
++#define AXP15060_DCDC2_V_CTRL		0x14
++#define AXP15060_DCDC3_V_CTRL		0x15
++#define AXP15060_DCDC4_V_CTRL		0x16
++#define AXP15060_DCDC5_V_CTRL		0x17
++#define AXP15060_DCDC6_V_CTRL		0x18
++#define AXP15060_ALDO1_V_CTRL		0x19
++#define AXP15060_DCDC_MODE_CTRL1		0x1a
++#define AXP15060_DCDC_MODE_CTRL2		0x1b
++#define AXP15060_OUTPUT_MONITOR_DISCHARGE		0x1e
++#define AXP15060_IRQ_PWROK_VOFF		0x1f
++#define AXP15060_ALDO2_V_CTRL		0x20
++#define AXP15060_ALDO3_V_CTRL		0x21
++#define AXP15060_ALDO4_V_CTRL		0x22
++#define AXP15060_ALDO5_V_CTRL		0x23
++#define AXP15060_BLDO1_V_CTRL		0x24
++#define AXP15060_BLDO2_V_CTRL		0x25
++#define AXP15060_BLDO3_V_CTRL		0x26
++#define AXP15060_BLDO4_V_CTRL		0x27
++#define AXP15060_BLDO5_V_CTRL		0x28
++#define AXP15060_CLDO1_V_CTRL		0x29
++#define AXP15060_CLDO2_V_CTRL		0x2a
++#define AXP15060_CLDO3_V_CTRL		0x2b
++#define AXP15060_CLDO4_V_CTRL		0x2d
++#define AXP15060_CPUSLDO_V_CTRL		0x2e
++#define AXP15060_PWR_WAKEUP_CTRL		0x31
++#define AXP15060_PWR_DISABLE_DOWN_SEQ		0x32
++#define AXP15060_PEK_KEY		0x36
++
+ /* Interrupt */
+ #define AXP152_IRQ1_EN			0x40
+ #define AXP152_IRQ2_EN			0x41
+@@ -152,6 +186,11 @@ enum axp20x_variants {
+ #define AXP20X_IRQ5_STATE		0x4c
+ #define AXP20X_IRQ6_STATE		0x4d
+ 
++#define AXP15060_IRQ1_EN		0x40
++#define AXP15060_IRQ2_EN		0x41
++#define AXP15060_IRQ1_STATE		0x48
++#define AXP15060_IRQ2_STATE		0x49
++
+ /* ADC */
+ #define AXP20X_ACIN_V_ADC_H		0x56
+ #define AXP20X_ACIN_V_ADC_L		0x57
+@@ -222,6 +261,8 @@ enum axp20x_variants {
+ #define AXP22X_GPIO_STATE		0x94
+ #define AXP22X_GPIO_PULL_DOWN		0x95
+ 
++#define AXP15060_CLDO4_GPIO2_MODESET		0x2c
++
+ /* Battery */
+ #define AXP20X_CHRG_CC_31_24		0xb0
+ #define AXP20X_CHRG_CC_23_16		0xb1
+@@ -419,6 +460,33 @@ enum {
+ 	AXP813_REG_ID_MAX,
+ };
+ 
++enum {
++	AXP15060_DCDC1 = 0,
++	AXP15060_DCDC2,
++	AXP15060_DCDC3,
++	AXP15060_DCDC4,
++	AXP15060_DCDC5,
++	AXP15060_DCDC6,
++	AXP15060_ALDO1,
++	AXP15060_ALDO2,
++	AXP15060_ALDO3,
++	AXP15060_ALDO4,
++	AXP15060_ALDO5,
++	AXP15060_BLDO1,
++	AXP15060_BLDO2,
++	AXP15060_BLDO3,
++	AXP15060_BLDO4,
++	AXP15060_BLDO5,
++	AXP15060_CLDO1,
++	AXP15060_CLDO2,
++	AXP15060_CLDO3,
++	AXP15060_CLDO4,
++	AXP15060_CPUSLDO,
++	AXP15060_SW,
++	AXP15060_RTC_LDO,
++	AXP15060_REG_ID_MAX,
++};
++
+ /* IRQs */
+ enum {
+ 	AXP152_IRQ_LDO0IN_CONNECT = 1,
+@@ -637,6 +705,23 @@ enum axp809_irqs {
+ 	AXP809_IRQ_GPIO0_INPUT,
+ };
+ 
++enum axp15060_irqs {
++	AXP15060_IRQ_DIE_TEMP_HIGH_LV1 = 1,
++	AXP15060_IRQ_DIE_TEMP_HIGH_LV2,
++	AXP15060_IRQ_DCDC1_V_LOW,
++	AXP15060_IRQ_DCDC2_V_LOW,
++	AXP15060_IRQ_DCDC3_V_LOW,
++	AXP15060_IRQ_DCDC4_V_LOW,
++	AXP15060_IRQ_DCDC5_V_LOW,
++	AXP15060_IRQ_DCDC6_V_LOW,
++	AXP15060_IRQ_PEK_LONG,
++	AXP15060_IRQ_PEK_SHORT,
++	AXP15060_IRQ_GPIO1_INPUT,
++	AXP15060_IRQ_PEK_FAL_EDGE,
++	AXP15060_IRQ_PEK_RIS_EDGE,
++	AXP15060_IRQ_GPIO2_INPUT,
++};
++
+ struct axp20x_dev {
+ 	struct device			*dev;
+ 	int				irq;

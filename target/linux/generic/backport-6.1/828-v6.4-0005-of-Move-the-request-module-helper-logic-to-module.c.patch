@@ -1,0 +1,131 @@
+From e6506f06d5e82765666902ccf9e9162f3e31d518 Mon Sep 17 00:00:00 2001
+From: Miquel Raynal <miquel.raynal@bootlin.com>
+Date: Tue, 4 Apr 2023 18:21:18 +0100
+Subject: [PATCH] of: Move the request module helper logic to module.c
+
+Depending on device.c for pure OF handling is considered
+backwards. Let's extract the content of of_device_request_module() to
+have the real logic under module.c.
+
+The next step will be to convert users of of_device_request_module() to
+use the new helper.
+
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Reviewed-by: Rob Herring <robh@kernel.org>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Link: https://lore.kernel.org/r/20230404172148.82422-11-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/of/device.c | 25 ++-----------------------
+ drivers/of/module.c | 30 ++++++++++++++++++++++++++++++
+ include/linux/of.h  |  6 ++++++
+ 3 files changed, 38 insertions(+), 23 deletions(-)
+
+--- a/drivers/of/device.c
++++ b/drivers/of/device.c
+@@ -8,7 +8,6 @@
+ #include <linux/dma-direct.h> /* for bus_dma_region */
+ #include <linux/dma-map-ops.h>
+ #include <linux/init.h>
+-#include <linux/module.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/slab.h>
+ #include <linux/platform_device.h>
+@@ -249,30 +248,10 @@ EXPORT_SYMBOL(of_device_get_match_data);
+ 
+ int of_device_request_module(struct device *dev)
+ {
+-	char *str;
+-	ssize_t size;
+-	int ret;
+-
+-	if (!dev || !dev->of_node)
++	if (!dev)
+ 		return -ENODEV;
+ 
+-	size = of_modalias(dev->of_node, NULL, 0);
+-	if (size < 0)
+-		return size;
+-
+-	/* Reserve an additional byte for the trailing '\0' */
+-	size++;
+-
+-	str = kmalloc(size, GFP_KERNEL);
+-	if (!str)
+-		return -ENOMEM;
+-
+-	of_modalias(dev->of_node, str, size);
+-	str[size - 1] = '\0';
+-	ret = request_module(str);
+-	kfree(str);
+-
+-	return ret;
++	return of_request_module(dev->of_node);
+ }
+ EXPORT_SYMBOL_GPL(of_device_request_module);
+ 
+--- a/drivers/of/module.c
++++ b/drivers/of/module.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <linux/of.h>
++#include <linux/module.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+ 
+@@ -42,3 +43,32 @@ ssize_t of_modalias(const struct device_
+ 
+ 	return tsize;
+ }
++
++int of_request_module(const struct device_node *np)
++{
++	char *str;
++	ssize_t size;
++	int ret;
++
++	if (!np)
++		return -ENODEV;
++
++	size = of_modalias(np, NULL, 0);
++	if (size < 0)
++		return size;
++
++	/* Reserve an additional byte for the trailing '\0' */
++	size++;
++
++	str = kmalloc(size, GFP_KERNEL);
++	if (!str)
++		return -ENOMEM;
++
++	of_modalias(np, str, size);
++	str[size - 1] = '\0';
++	ret = request_module(str);
++	kfree(str);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(of_request_module);
+--- a/include/linux/of.h
++++ b/include/linux/of.h
+@@ -378,6 +378,7 @@ extern int of_count_phandle_with_args(co
+ 
+ /* module functions */
+ extern ssize_t of_modalias(const struct device_node *np, char *str, ssize_t len);
++extern int of_request_module(const struct device_node *np);
+ 
+ /* phandle iterator functions */
+ extern int of_phandle_iterator_init(struct of_phandle_iterator *it,
+@@ -741,6 +742,11 @@ static inline ssize_t of_modalias(const
+ {
+ 	return -ENODEV;
+ }
++
++static inline int of_request_module(const struct device_node *np)
++{
++	return -ENODEV;
++}
+ 
+ static inline int of_phandle_iterator_init(struct of_phandle_iterator *it,
+ 					   const struct device_node *np,

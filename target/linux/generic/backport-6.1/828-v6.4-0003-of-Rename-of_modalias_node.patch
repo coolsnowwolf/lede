@@ -1,0 +1,173 @@
+From 673aa1ed1c9b6710bf24e3f0957d85e2f46c77db Mon Sep 17 00:00:00 2001
+From: Miquel Raynal <miquel.raynal@bootlin.com>
+Date: Tue, 4 Apr 2023 18:21:16 +0100
+Subject: [PATCH] of: Rename of_modalias_node()
+
+This helper does not produce a real modalias, but tries to get the
+"product" compatible part of the "vendor,product" compatibles only. It
+is far from creating a purely useful modalias string and does not seem
+to be used like that directly anyway, so let's try to give this helper a
+more meaningful name before moving there a real modalias helper (already
+existing under of/device.c).
+
+Also update the various documentations to refer to the strings as
+"aliases" rather than "modaliases" which has a real meaning in the Linux
+kernel.
+
+There is no functional change.
+
+Cc: Rafael J. Wysocki <rafael@kernel.org>
+Cc: Len Brown <lenb@kernel.org>
+Cc: Maarten Lankhorst <maarten.lankhorst@linux.intel.com>
+Cc: Maxime Ripard <mripard@kernel.org>
+Cc: Thomas Zimmermann <tzimmermann@suse.de>
+Cc: Sebastian Reichel <sre@kernel.org>
+Cc: Wolfram Sang <wsa@kernel.org>
+Cc: Mark Brown <broonie@kernel.org>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Reviewed-by: Rob Herring <robh@kernel.org>
+Acked-by: Mark Brown <broonie@kernel.org>
+Signed-off-by: Srinivas Kandagatla <srinivas.kandagatla@linaro.org>
+Acked-by: Sebastian Reichel <sre@kernel.org>
+Link: https://lore.kernel.org/r/20230404172148.82422-9-srinivas.kandagatla@linaro.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/acpi/bus.c                |  7 ++++---
+ drivers/gpu/drm/drm_mipi_dsi.c    |  2 +-
+ drivers/hsi/hsi_core.c            |  2 +-
+ drivers/i2c/busses/i2c-powermac.c |  2 +-
+ drivers/i2c/i2c-core-of.c         |  2 +-
+ drivers/of/base.c                 | 18 +++++++++++-------
+ drivers/spi/spi.c                 |  4 ++--
+ include/linux/of.h                |  3 ++-
+ 8 files changed, 23 insertions(+), 17 deletions(-)
+
+--- a/drivers/acpi/bus.c
++++ b/drivers/acpi/bus.c
+@@ -806,9 +806,10 @@ static bool acpi_of_modalias(struct acpi
+  * @modalias:   Pointer to buffer that modalias value will be copied into
+  * @len:	Length of modalias buffer
+  *
+- * This is a counterpart of of_modalias_node() for struct acpi_device objects.
+- * If there is a compatible string for @adev, it will be copied to @modalias
+- * with the vendor prefix stripped; otherwise, @default_id will be used.
++ * This is a counterpart of of_alias_from_compatible() for struct acpi_device
++ * objects. If there is a compatible string for @adev, it will be copied to
++ * @modalias with the vendor prefix stripped; otherwise, @default_id will be
++ * used.
+  */
+ void acpi_set_modalias(struct acpi_device *adev, const char *default_id,
+ 		       char *modalias, size_t len)
+--- a/drivers/gpu/drm/drm_mipi_dsi.c
++++ b/drivers/gpu/drm/drm_mipi_dsi.c
+@@ -160,7 +160,7 @@ of_mipi_dsi_device_add(struct mipi_dsi_h
+ 	int ret;
+ 	u32 reg;
+ 
+-	if (of_modalias_node(node, info.type, sizeof(info.type)) < 0) {
++	if (of_alias_from_compatible(node, info.type, sizeof(info.type)) < 0) {
+ 		drm_err(host, "modalias failure on %pOF\n", node);
+ 		return ERR_PTR(-EINVAL);
+ 	}
+--- a/drivers/hsi/hsi_core.c
++++ b/drivers/hsi/hsi_core.c
+@@ -207,7 +207,7 @@ static void hsi_add_client_from_dt(struc
+ 	if (!cl)
+ 		return;
+ 
+-	err = of_modalias_node(client, name, sizeof(name));
++	err = of_alias_from_compatible(client, name, sizeof(name));
+ 	if (err)
+ 		goto err;
+ 
+--- a/drivers/i2c/busses/i2c-powermac.c
++++ b/drivers/i2c/busses/i2c-powermac.c
+@@ -284,7 +284,7 @@ static bool i2c_powermac_get_type(struct
+ 	 */
+ 
+ 	/* First try proper modalias */
+-	if (of_modalias_node(node, tmp, sizeof(tmp)) >= 0) {
++	if (of_alias_from_compatible(node, tmp, sizeof(tmp)) >= 0) {
+ 		snprintf(type, type_size, "MAC,%s", tmp);
+ 		return true;
+ 	}
+--- a/drivers/i2c/i2c-core-of.c
++++ b/drivers/i2c/i2c-core-of.c
+@@ -27,7 +27,7 @@ int of_i2c_get_board_info(struct device
+ 
+ 	memset(info, 0, sizeof(*info));
+ 
+-	if (of_modalias_node(node, info->type, sizeof(info->type)) < 0) {
++	if (of_alias_from_compatible(node, info->type, sizeof(info->type)) < 0) {
+ 		dev_err(dev, "of_i2c: modalias failure on %pOF\n", node);
+ 		return -EINVAL;
+ 	}
+--- a/drivers/of/base.c
++++ b/drivers/of/base.c
+@@ -1208,19 +1208,23 @@ struct device_node *of_find_matching_nod
+ EXPORT_SYMBOL(of_find_matching_node_and_match);
+ 
+ /**
+- * of_modalias_node - Lookup appropriate modalias for a device node
++ * of_alias_from_compatible - Lookup appropriate alias for a device node
++ *			      depending on compatible
+  * @node:	pointer to a device tree node
+- * @modalias:	Pointer to buffer that modalias value will be copied into
+- * @len:	Length of modalias value
++ * @alias:	Pointer to buffer that alias value will be copied into
++ * @len:	Length of alias value
+  *
+  * Based on the value of the compatible property, this routine will attempt
+- * to choose an appropriate modalias value for a particular device tree node.
++ * to choose an appropriate alias value for a particular device tree node.
+  * It does this by stripping the manufacturer prefix (as delimited by a ',')
+  * from the first entry in the compatible list property.
+  *
++ * Note: The matching on just the "product" side of the compatible is a relic
++ * from I2C and SPI. Please do not add any new user.
++ *
+  * Return: This routine returns 0 on success, <0 on failure.
+  */
+-int of_modalias_node(struct device_node *node, char *modalias, int len)
++int of_alias_from_compatible(const struct device_node *node, char *alias, int len)
+ {
+ 	const char *compatible, *p;
+ 	int cplen;
+@@ -1229,10 +1233,10 @@ int of_modalias_node(struct device_node
+ 	if (!compatible || strlen(compatible) > cplen)
+ 		return -ENODEV;
+ 	p = strchr(compatible, ',');
+-	strscpy(modalias, p ? p + 1 : compatible, len);
++	strscpy(alias, p ? p + 1 : compatible, len);
+ 	return 0;
+ }
+-EXPORT_SYMBOL_GPL(of_modalias_node);
++EXPORT_SYMBOL_GPL(of_alias_from_compatible);
+ 
+ /**
+  * of_find_node_by_phandle - Find a node given a phandle
+--- a/drivers/spi/spi.c
++++ b/drivers/spi/spi.c
+@@ -2344,8 +2344,8 @@ of_register_spi_device(struct spi_contro
+ 	}
+ 
+ 	/* Select device driver */
+-	rc = of_modalias_node(nc, spi->modalias,
+-				sizeof(spi->modalias));
++	rc = of_alias_from_compatible(nc, spi->modalias,
++				      sizeof(spi->modalias));
+ 	if (rc < 0) {
+ 		dev_err(&ctlr->dev, "cannot find modalias for %pOF\n", nc);
+ 		goto err_out;
+--- a/include/linux/of.h
++++ b/include/linux/of.h
+@@ -364,7 +364,8 @@ extern int of_n_addr_cells(struct device
+ extern int of_n_size_cells(struct device_node *np);
+ extern const struct of_device_id *of_match_node(
+ 	const struct of_device_id *matches, const struct device_node *node);
+-extern int of_modalias_node(struct device_node *node, char *modalias, int len);
++extern int of_alias_from_compatible(const struct device_node *node, char *alias,
++				    int len);
+ extern void of_print_phandle_args(const char *msg, const struct of_phandle_args *args);
+ extern int __of_parse_phandle_with_args(const struct device_node *np,
+ 	const char *list_name, const char *cells_name, int cell_count,

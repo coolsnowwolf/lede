@@ -1,0 +1,129 @@
+--- a/src/Makefile.in
++++ b/src/Makefile.in
+@@ -117,7 +117,7 @@ POST_UNINSTALL = :
+ 
+ # the headerfile of linux kernels 2.6.x contain to much arithmetic
+ # with void pointers (which is allowed for gcc!)
+-@KERNEL_2_6_FALSE@am__append_6 = -Wpointer-arith
++@KERNEL_2_6_FALSE@am__append_6 =
+ subdir = src
+ ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
+ am__aclocal_m4_deps = $(top_srcdir)/configure.in
+--- a/src/common/drv_dsl_cpe_os_linux.c
++++ b/src/common/drv_dsl_cpe_os_linux.c
+@@ -11,6 +11,7 @@
+ 
+ #define DSL_INTERN
+ 
++#include <linux/device.h>
+ #include "drv_dsl_cpe_api.h"
+ #include "drv_dsl_cpe_api_ioctl.h"
+ 
+@@ -249,14 +250,7 @@ static DSL_long_t DSL_DRV_Ioctls(DSL_DRV
+    }
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,36))
+-   if (pFile->f_dentry != DSL_NULL)
+-   {
+-      pINode = pFile->f_dentry->d_inode;
+-   }
+-   else
+-   {
+-      pINode = DSL_NULL;
+-   }
++   pINode = file_inode(pFile);
+ #endif
+ 
+    if (pINode == DSL_NULL)
+@@ -491,7 +485,11 @@ DSL_void_t* DSL_DRV_VMalloc(
+    DSL_DRV_size_t    nSize)
+ {
+    /* VRX500-BU: Better to use vmalloc or vzmalloc here?! */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
+    return __vmalloc((unsigned long)nSize, GFP_KERNEL, PAGE_KERNEL);
++#else
++   return __vmalloc((unsigned long)nSize, GFP_KERNEL);
++#endif
+    /*   return vmalloc(nSize);*/
+ }
+ 
+@@ -917,12 +915,19 @@ DSL_int32_t DSL_DRV_ThreadShutdown(
+ 
+ DSL_uint32_t DSL_DRV_SysTimeGet(DSL_uint32_t nOffset)
+ {
+-   struct timeval tv;
+    DSL_uint32_t nTime = 0;
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0))
++   struct timeval tv;
+ 
+    memset(&tv, 0, sizeof(tv));
+    do_gettimeofday(&tv);
+    nTime = (DSL_uint32_t)tv.tv_sec;
++#else
++   struct timespec64 now;
++
++   ktime_get_real_ts64(&now);
++   nTime = (DSL_uint32_t)now.tv_sec;
++#endif
+ 
+    if ( (nOffset == 0) || (nOffset > nTime) )
+    {
+@@ -1203,6 +1208,9 @@ static void DSL_DRV_NlSendMsg(DSL_char_t
+ }
+ #endif
+ 
++static struct class *dsl_class;
++static dev_t dsl_devt;
++
+ /* Entry point of driver */
+ int __init DSL_ModuleInit(void)
+ {
+@@ -1241,6 +1249,10 @@ int __init DSL_ModuleInit(void)
+ 
+    DSL_DRV_DevNodeInit();
+ 
++   dsl_class = class_create(THIS_MODULE, "dsl_cpe_api0");
++   dsl_devt = MKDEV(DRV_DSL_CPE_API_DEV_MAJOR, 0);
++   device_create(dsl_class, NULL, dsl_devt, NULL, "dsl_cpe_api0");
++
+    return 0;
+ }
+ 
+@@ -1248,6 +1260,11 @@ void __exit DSL_ModuleCleanup(void)
+ {
+    printk("Module will be unloaded"DSL_DRV_CRLF);
+ 
++   device_destroy(dsl_class, dsl_devt);
++   dsl_devt = NULL;
++   class_destroy(dsl_class);
++   dsl_class = NULL;
++
+    unregister_chrdev(nMajorNum, DRV_DSL_CPE_API_DEV_NAME);
+    
+    DSL_DRV_Cleanup();
+--- a/src/device/drv_dsl_cpe_device_vrx.c
++++ b/src/device/drv_dsl_cpe_device_vrx.c
+@@ -5337,6 +5337,7 @@ DSL_Error_t DSL_DRV_DEV_HybridTypeGet(
+ #undef DSL_DBG_BLOCK
+ #define DSL_DBG_BLOCK DSL_DBG_NOTIFICATIONS
+ 
++#if 0
+ DSL_Error_t DSL_DRV_DEV_MeiTcLayerSignaling
+ (
+    DSL_Context_t *pContext,
+@@ -5384,6 +5385,15 @@ DSL_Error_t DSL_DRV_DEV_MeiTcLayerSignal
+ 
+    return nErrCode;
+ }
++#else
++DSL_Error_t DSL_DRV_DEV_MeiTcLayerSignaling
++(
++   DSL_Context_t *pContext,
++   DSL_TcLayerSelection_t nTcLayer)
++{
++   return DSL_SUCCESS;
++}
++#endif
+ 
+ DSL_Error_t DSL_DRV_DEV_MeiShowtimeSignaling
+ (

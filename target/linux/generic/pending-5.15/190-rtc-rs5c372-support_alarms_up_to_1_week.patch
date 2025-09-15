@@ -1,0 +1,94 @@
+From: Daniel González Cabanelas <dgcbueu@gmail.com>
+Subject: [PATCH 1/2] rtc: rs5c372: support alarms up to 1 week
+
+The Ricoh R2221x, R2223x, RS5C372, RV5C387A chips can handle 1 week
+alarms.
+
+Read the "wday" alarm register and convert it to a date to support up 1
+week in our driver.
+
+Signed-off-by: Daniel González Cabanelas <dgcbueu@gmail.com>
+---
+ drivers/rtc/rtc-rs5c372.c | 48 ++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 42 insertions(+), 6 deletions(-)
+
+--- a/drivers/rtc/rtc-rs5c372.c
++++ b/drivers/rtc/rtc-rs5c372.c
+@@ -393,7 +393,9 @@ static int rs5c_read_alarm(struct device
+ {
+ 	struct i2c_client	*client = to_i2c_client(dev);
+ 	struct rs5c372		*rs5c = i2c_get_clientdata(client);
+-	int			status;
++	int			status, wday_offs;
++	struct rtc_time 	rtc;
++	unsigned long 		alarm_secs;
+ 
+ 	status = rs5c_get_regs(rs5c);
+ 	if (status < 0)
+@@ -403,6 +405,30 @@ static int rs5c_read_alarm(struct device
+ 	t->time.tm_sec = 0;
+ 	t->time.tm_min = bcd2bin(rs5c->regs[RS5C_REG_ALARM_A_MIN] & 0x7f);
+ 	t->time.tm_hour = rs5c_reg2hr(rs5c, rs5c->regs[RS5C_REG_ALARM_A_HOURS]);
++	t->time.tm_wday = ffs(rs5c->regs[RS5C_REG_ALARM_A_WDAY] & 0x7f) - 1;
++
++	/* determine the day, month and year based on alarm wday, taking as a
++	 * reference the current time from the rtc
++	 */
++	status = rs5c372_rtc_read_time(dev, &rtc);
++	if (status < 0)
++		return status;
++
++	wday_offs = t->time.tm_wday - rtc.tm_wday;
++	alarm_secs = mktime64(rtc.tm_year + 1900,
++			      rtc.tm_mon + 1,
++			      rtc.tm_mday + wday_offs,
++			      t->time.tm_hour,
++			      t->time.tm_min,
++			      t->time.tm_sec);
++
++	if (wday_offs < 0 || (wday_offs == 0 &&
++			      (t->time.tm_hour < rtc.tm_hour ||
++			       (t->time.tm_hour == rtc.tm_hour &&
++				t->time.tm_min <= rtc.tm_min))))
++		alarm_secs += 7 * 86400;
++
++	rtc_time64_to_tm(alarm_secs, &t->time);
+ 
+ 	/* ... and status */
+ 	t->enabled = !!(rs5c->regs[RS5C_REG_CTRL1] & RS5C_CTRL1_AALE);
+@@ -417,12 +443,20 @@ static int rs5c_set_alarm(struct device
+ 	struct rs5c372		*rs5c = i2c_get_clientdata(client);
+ 	int			status, addr, i;
+ 	unsigned char		buf[3];
++	struct rtc_time 	rtc_tm;
++	unsigned long 		rtc_secs, alarm_secs;
+ 
+-	/* only handle up to 24 hours in the future, like RTC_ALM_SET */
+-	if (t->time.tm_mday != -1
+-			|| t->time.tm_mon != -1
+-			|| t->time.tm_year != -1)
++	/* chip only can handle alarms up to one week in the future*/
++	status = rs5c372_rtc_read_time(dev, &rtc_tm);
++	if (status)
++		return status;
++	rtc_secs = rtc_tm_to_time64(&rtc_tm);
++	alarm_secs = rtc_tm_to_time64(&t->time);
++	if (alarm_secs >= rtc_secs + 7 * 86400) {
++		dev_err(dev, "%s: alarm maximum is one week in the future (%d)\n",
++			__func__, status);
+ 		return -EINVAL;
++	}
+ 
+ 	/* REVISIT: round up tm_sec */
+ 
+@@ -443,7 +477,9 @@ static int rs5c_set_alarm(struct device
+ 	/* set alarm */
+ 	buf[0] = bin2bcd(t->time.tm_min);
+ 	buf[1] = rs5c_hr2reg(rs5c, t->time.tm_hour);
+-	buf[2] = 0x7f;	/* any/all days */
++	/* each bit is the day of the week, 0x7f means all days */
++	buf[2] = (t->time.tm_wday >= 0 && t->time.tm_wday < 7) ?
++		  BIT(t->time.tm_wday) : 0x7f;
+ 
+ 	for (i = 0; i < sizeof(buf); i++) {
+ 		addr = RS5C_ADDR(RS5C_REG_ALARM_A_MIN + i);
