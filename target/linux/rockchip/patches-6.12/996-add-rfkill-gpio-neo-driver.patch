@@ -1,0 +1,294 @@
+7diff --git a/net/rfkill/Kconfig b/net/rfkill/Kconfig
+index 83a7af898..b92e702d1 100644
+--- a/net/rfkill/Kconfig
++++ b/net/rfkill/Kconfig
+@@ -32,3 +32,12 @@ config RFKILL_GPIO
+ 	help
+ 	  If you say yes here you get support of a generic gpio RFKILL
+ 	  driver.
++
++config RFKILL_GPIO_NEO
++	tristate "Neo GPIO RFKILL driver"
++	depends on RFKILL_FULL
++	depends on OF_GPIO
++	default n
++	help
++	  If you say yes here you get support of a new generic gpio RFKILL
++	  driver.
+diff --git a/net/rfkill/Makefile b/net/rfkill/Makefile
+index dc47b6174..680302e72 100644
+--- a/net/rfkill/Makefile
++++ b/net/rfkill/Makefile
+@@ -7,3 +7,5 @@ rfkill-y			+= core.o
+ rfkill-$(CONFIG_RFKILL_INPUT)	+= input.o
+ obj-$(CONFIG_RFKILL)		+= rfkill.o
+ obj-$(CONFIG_RFKILL_GPIO)	+= rfkill-gpio.o
++
++obj-$(CONFIG_RFKILL_GPIO_NEO)	+= rfkill-gpio-neo.o
+diff --git a/net/rfkill/rfkill-gpio-neo.c b/net/rfkill/rfkill-gpio-neo.c
+new file mode 100644
+index 000000000..745e417e6
+--- /dev/null
++++ b/net/rfkill/rfkill-gpio-neo.c
+@@ -0,0 +1,261 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (c) 2022, Kyosuke Nekoyashiki <supercatexpert@gmail.com>
++ */
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/rfkill.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <linux/slab.h>
++#include <linux/gpio/consumer.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/delay.h>
++#include <linux/kthread.h>
++#include <linux/property.h>
++
++#define RFKILL_GPIO_NEO_THREADED_RESET 1
++
++struct rfkill_gpio_neo_data {
++	const char		*name;
++	enum rfkill_type	type;
++	struct gpio_desc	*power_gpio;
++	struct gpio_desc	*reset_gpio;
++	struct gpio_desc	*block_gpio;
++
++	u32			power_on_wait_time;
++	u32			reset_active_time;
++	u32			reset_wait_time;
++	bool			reset_working;
++
++	u32			block_state;
++	bool			reset_before_block;
++
++	struct rfkill		*rfkill_dev;
++};
++
++static int rfkill_gpio_neo_set_block(void *data, bool blocked)
++{
++	struct rfkill_gpio_neo_data *rfkill = data;
++
++	rfkill->block_state = blocked ? 1 : 0;
++
++	if (!rfkill->reset_working) {
++		if (rfkill->reset_before_block && rfkill->reset_gpio) {
++			gpiod_set_value(rfkill->reset_gpio, 1);
++			msleep(rfkill->reset_active_time);
++			if (!blocked) {
++				gpiod_set_value(rfkill->reset_gpio, 0);
++				if (rfkill->reset_wait_time > 10) {
++					msleep(rfkill->reset_wait_time);
++				} else {
++					msleep(10);
++				}
++			}
++		}
++		gpiod_set_value_cansleep(rfkill->block_gpio, blocked);
++	}
++
++	return 0;
++}
++
++static const struct rfkill_ops rfkill_gpio_neo_ops = {
++	.set_block = rfkill_gpio_neo_set_block,
++};
++
++
++static int rfkill_gpio_neo_do_reset(void *p) {
++	struct rfkill_gpio_neo_data *rfkill = (struct rfkill_gpio_neo_data *)p;
++
++	if (rfkill->power_on_wait_time > 10) {
++		msleep(rfkill->power_on_wait_time);
++	} else {
++		msleep(10);
++	}
++
++	gpiod_set_value(rfkill->reset_gpio, 1);
++	msleep(rfkill->reset_active_time);
++	gpiod_set_value(rfkill->reset_gpio, 0);
++
++	if (rfkill->reset_wait_time > 10) {
++		msleep(rfkill->reset_wait_time);
++	} else {
++		msleep(10);
++	}
++
++	rfkill->reset_working = 0;
++
++	gpiod_set_value(rfkill->block_gpio, rfkill->block_state);
++
++	return 0;
++}
++
++
++static int rfkill_gpio_neo_probe(struct platform_device *pdev)
++{
++	struct rfkill_gpio_neo_data *rfkill;
++	struct gpio_desc *gpio;
++	const char *type_name;
++	int ret;
++	struct task_struct *tsk;
++
++	rfkill = devm_kzalloc(&pdev->dev, sizeof(*rfkill), GFP_KERNEL);
++	if (!rfkill)
++		return -ENOMEM;
++
++	device_property_read_string(&pdev->dev, "name", &rfkill->name);
++	device_property_read_string(&pdev->dev, "type", &type_name);
++	device_property_read_u32(&pdev->dev, "power-on-wait-time", &rfkill->power_on_wait_time);
++	device_property_read_u32(&pdev->dev, "reset-active-time", &rfkill->reset_active_time);
++	device_property_read_u32(&pdev->dev, "reset-wait-time", &rfkill->reset_wait_time);
++	rfkill->reset_before_block = device_property_read_bool(&pdev->dev, "reset-before-block");
++
++	if (!rfkill->name)
++		rfkill->name = dev_name(&pdev->dev);
++
++	rfkill->type = rfkill_find_type(type_name);
++	rfkill->block_state = 0;
++	rfkill->reset_working = 0;
++
++	if (rfkill->power_on_wait_time > 30000) {
++		rfkill->power_on_wait_time = 0;
++	}
++
++	if (rfkill->reset_active_time < 10 || rfkill->reset_active_time > 1000) {
++		rfkill->reset_active_time = 10;
++	}
++
++	if (rfkill->reset_wait_time > 30000) {
++		rfkill->reset_wait_time = 0;
++	}
++
++	gpio = devm_gpiod_get(&pdev->dev, "power", GPIOD_OUT_LOW);
++	if (IS_ERR(gpio))
++		return PTR_ERR(gpio);
++
++	rfkill->power_gpio = gpio;
++
++	gpio = devm_gpiod_get(&pdev->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(gpio))
++		return PTR_ERR(gpio);
++
++	rfkill->reset_gpio = gpio;
++
++	gpio = devm_gpiod_get(&pdev->dev, "block", GPIOD_OUT_HIGH);
++	if (IS_ERR(gpio))
++		return PTR_ERR(gpio);
++
++	rfkill->block_gpio = gpio;
++
++	/* Make sure at-least one GPIO is defined for this instance */
++	if (!rfkill->block_gpio) {
++		dev_err(&pdev->dev, "invalid platform data\n");
++		return -EINVAL;
++	}
++
++	rfkill->rfkill_dev = rfkill_alloc(rfkill->name, &pdev->dev,
++					  rfkill->type, &rfkill_gpio_neo_ops,
++					  rfkill);
++	if (!rfkill->rfkill_dev)
++		return -ENOMEM;
++
++	ret = rfkill_register(rfkill->rfkill_dev);
++	if (ret < 0)
++		goto err_destroy;
++
++	platform_set_drvdata(pdev, rfkill);
++
++	dev_info(&pdev->dev, "%s device registered.\n", rfkill->name);
++
++	if (rfkill->power_gpio) {
++		gpiod_set_value(rfkill->power_gpio, 1);
++	}
++
++	if (rfkill->reset_gpio) {
++		if (RFKILL_GPIO_NEO_THREADED_RESET && rfkill->power_on_wait_time > 10) {
++			tsk = kthread_run(rfkill_gpio_neo_do_reset, rfkill, "rfkill-gpio-neo");
++			if (IS_ERR(tsk)) {
++				dev_err(&pdev->dev, "Start reset thread failed!\n");
++			} else {
++				rfkill->reset_working = 1;
++			}
++		} else {
++			rfkill_gpio_neo_do_reset(rfkill);
++		}
++	}
++	else {
++		gpiod_set_value(rfkill->block_gpio, 0);
++	}
++
++	return 0;
++
++err_destroy:
++	rfkill_destroy(rfkill->rfkill_dev);
++
++	return ret;
++}
++
++static void rfkill_gpio_neo_remove(struct platform_device *pdev)
++{
++	struct rfkill_gpio_neo_data *rfkill = platform_get_drvdata(pdev);
++
++	if (rfkill->reset_gpio && rfkill->reset_before_block) {
++		gpiod_set_value(rfkill->reset_gpio, 1);
++		msleep(100);
++	}
++
++	gpiod_set_value(rfkill->block_gpio, 1);
++
++	if(rfkill->power_gpio) {
++		gpiod_set_value(rfkill->power_gpio, 0);
++	}
++
++	rfkill_unregister(rfkill->rfkill_dev);
++	rfkill_destroy(rfkill->rfkill_dev);
++}
++
++static void rfkill_gpio_neo_shutdown(struct platform_device *pdev)
++{
++	struct rfkill_gpio_neo_data *rfkill = platform_get_drvdata(pdev);
++
++	if (rfkill->reset_gpio && rfkill->reset_before_block) {
++		gpiod_set_value(rfkill->reset_gpio, 1);
++		msleep(100);
++	}
++
++	gpiod_set_value(rfkill->block_gpio, 1);
++
++	if(rfkill->power_gpio) {
++		gpiod_set_value(rfkill->power_gpio, 0);
++	}
++}
++
++#ifdef CONFIG_OF
++static struct of_device_id rfkill_gpio_neo_of_match[] = {
++	{ .compatible = "rfkill-gpio-neo" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, wlan_platdata_of_match);
++#endif /* CONFIG_OF */
++
++static struct platform_driver rfkill_gpio_neo_driver = {
++	.probe = rfkill_gpio_neo_probe,
++	.remove = rfkill_gpio_neo_remove,
++	.shutdown = rfkill_gpio_neo_shutdown,
++	.driver = {
++		.name = "rfkill-gpio-neo",
++		.owner = THIS_MODULE,
++	        .of_match_table = of_match_ptr(rfkill_gpio_neo_of_match),
++	},
++};
++
++module_platform_driver(rfkill_gpio_neo_driver);
++
++MODULE_DESCRIPTION("Neo GPIO rfkill driver");
++MODULE_AUTHOR("Kyosuke Nekoyashiki <supercatexpert@gmail.com>");
++MODULE_LICENSE("GPL v2");
++MODULE_ALIAS("platform:rfkill-gpio-neo");

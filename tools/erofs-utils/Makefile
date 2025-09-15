@@ -7,14 +7,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=erofs-utils
-PKG_VERSION:=1.8.9
+PKG_VERSION:=1.8.10
 PKG_RELEASE:=1
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
-PKG_MIRROR_HASH:=dfeeca4e3b1337cf05d2b40f6f3956601b98fba0b6a8d7363071ae366a2020e1
-PKG_SOURCE_DATE:=2025-06-26
-PKG_SOURCE_VERSION:=81169bf3cfd26b8f2b3aa3b20da23971168a90a9
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL=https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/snapshot/
+PKG_HASH:=05eb4edebe11decce6ecb34e98d2f80c8cd283c2f2967d8ba7efd58418570514
 
 PKG_FIXUP:=autoreconf
 

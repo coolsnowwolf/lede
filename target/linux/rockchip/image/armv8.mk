@@ -28,6 +28,7 @@ define Device/ariaboard_photonicat2
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-photonicat2
   UBOOT_DEVICE_NAME := evb-rk3576
+  DEVICE_PACKAGES := kmod-aic8800u ath11k-firmware-wcn6855 kmod-ath11k-pci kmod-mt7922-firmware kmod-mt7921-firmware wpad
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
 endef
 TARGET_DEVICES += ariaboard_photonicat2
