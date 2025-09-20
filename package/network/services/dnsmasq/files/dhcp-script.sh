@@ -8,6 +8,15 @@ json_init
 json_add_array env
 hotplugobj=""
 
+oldIFS=$IFS
+IFS=$'\n'
+for var in $(env); do
+	if [ "${var}" != "${var#DNSMASQ_}" ]; then
+		json_add_string "" "${var%%=*}=${var#*=}"
+	fi
+done
+IFS=$oldIFS
+
 case "$1" in
 	add | del | old | arp-add | arp-del)
 		json_add_string "" "MACADDR=$2"

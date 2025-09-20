@@ -12,6 +12,7 @@ ADD_WAN_FQDN=0
 ADD_LOCAL_FQDN=""
 
 BASECONFIGFILE="/var/etc/dnsmasq.conf"
+EXTRACONFFILE="extraconfig.conf"
 BASEHOSTFILE="/tmp/hosts/dhcp"
 TRUSTANCHORSFILE="/usr/share/dnsmasq/trust-anchors.conf"
 TIMEVALIDFILE="/var/state/dnsmasqsec"
@@ -19,7 +20,7 @@ BASEDHCPSTAMPFILE="/var/run/dnsmasq"
 DHCPBOGUSHOSTNAMEFILE="/usr/share/dnsmasq/dhcpbogushostname.conf"
 RFC6761FILE="/usr/share/dnsmasq/rfc6761.conf"
 DHCPSCRIPT="/usr/lib/dnsmasq/dhcp-script.sh"
-DHCPSCRIPT_DEPENDS="/usr/share/libubox/jshn.sh /usr/bin/jshn /bin/ubus"
+DHCPSCRIPT_DEPENDS="/usr/share/libubox/jshn.sh /usr/bin/jshn /bin/ubus /usr/bin/env"
 
 DNSMASQ_DHCP_VER=4
 
@@ -33,6 +34,7 @@ dnsmasq_ignore_opt() {
 		[ "${dnsmasq_features#* DNSSEC }" = "$dnsmasq_features" ] || dnsmasq_has_dnssec=1
 		[ "${dnsmasq_features#* TFTP }" = "$dnsmasq_features" ] || dnsmasq_has_tftp=1
 		[ "${dnsmasq_features#* ipset }" = "$dnsmasq_features" ] || dnsmasq_has_ipset=1
+		[ "${dnsmasq_features#* nftset }" = "$dnsmasq_features" ] || dnsmasq_has_nftset=1
 	fi
 
 	case "$opt" in
@@ -55,6 +57,8 @@ dnsmasq_ignore_opt() {
 			[ -z "$dnsmasq_has_tftp" ] ;;
 		ipset)
 			[ -z "$dnsmasq_has_ipset" ] ;;
+		nftset)
+			[ -z "$dnsmasq_has_nftset" ] ;;
 		*)
 			return 1
 	esac
@@ -65,7 +69,7 @@ xappend() {
 	local opt="${value%%=*}"
 
 	if ! dnsmasq_ignore_opt "$opt"; then
-		echo "$value" >>$CONFIGFILE_TMP
+		echo "$value" >>"$CONFIGFILE_TMP"
 	fi
 }
 
@@ -169,10 +173,6 @@ append_address() {
 	xappend "--address=$1"
 }
 
-append_ipset() {
-	xappend "--ipset=$1"
-}
-
 append_connmark_allowlist() {
 	xappend "--connmark-allowlist=$1"
 }
@@ -205,8 +205,12 @@ ismounted() {
 	return 1
 }
 
-append_addnhosts() {
+append_extramount() {
 	ismounted "$1" || append EXTRA_MOUNT "$1"
+}
+
+append_addnhosts() {
+	append_extramount "$1"
 	xappend "--addn-hosts=$1"
 }
 
@@ -220,6 +224,14 @@ append_pxe_service() {
 
 append_interface_name() {
 	xappend "--interface-name=$1,$2"
+}
+
+append_filter_rr() {
+	xappend "--filter-rr=$1"
+}
+
+append_cache_rr() {
+	xappend "--cache-rr=$1"
 }
 
 filter_dnsmasq() {
@@ -350,7 +362,7 @@ dhcp_host_add() {
 
 	config_get_bool dns "$cfg" dns 0
 	[ "$dns" = "1" ] && [ -n "$ip" ] && [ -n "$name" ] && {
-		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> $HOSTFILE_TMP
+		echo "$ip $name${DOMAIN:+.$DOMAIN}" >> "$HOSTFILE_TMP"
 	}
 
 	config_get mac "$cfg" mac
@@ -499,13 +511,12 @@ dhcp_boot_add() {
 
 	[ -n "$serveraddress" ] && [ ! -n "$servername" ] && return 0
 
-	xappend "--dhcp-boot=${networkid:+net:$networkid,}${filename}${servername:+,$servername}${serveraddress:+,$serveraddress}"
+	xappend "--dhcp-boot=${networkid:+tag:$networkid,}${filename}${servername:+,$servername}${serveraddress:+,$serveraddress}"
 
 	config_get_bool force "$cfg" force 0
 
 	dhcp_option_add "$cfg" "$networkid" "$force"
 }
-
 
 dhcp_add() {
 	local cfg="$1"
@@ -537,8 +548,13 @@ dhcp_add() {
 	# Do not support non-static interfaces for now
 	[ static = "$proto" ] || return 0
 
+	ipaddr="${subnet%%/*}"
+	prefix_or_netmask="${subnet##*/}"
+
 	# Override interface netmask with dhcp config if applicable
-	config_get netmask "$cfg" netmask "${subnet##*/}"
+	config_get netmask "$cfg" netmask
+
+	[ -n "$netmask" ] && prefix_or_netmask="$netmask"
 
 	#check for an already active dhcp server on the interface, unless 'force' is set
 	config_get_bool force "$cfg" force 0
@@ -554,6 +570,8 @@ dhcp_add() {
 	config_get leasetime "$cfg" leasetime 12h
 	config_get options "$cfg" options
 	config_get_bool dynamicdhcp "$cfg" dynamicdhcp 1
+	config_get_bool dynamicdhcpv4 "$cfg" dynamicdhcpv4 $dynamicdhcp
+	config_get_bool dynamicdhcpv6 "$cfg" dynamicdhcpv6 $dynamicdhcp
 
 	config_get dhcpv4 "$cfg" dhcpv4
 	config_get dhcpv6 "$cfg" dhcpv6
@@ -578,22 +596,27 @@ dhcp_add() {
 
 	nettag="${networkid:+set:${networkid},}"
 
-	if [ "$limit" -gt 0 ] ; then
-		limit=$((limit-1))
+	# make sure the DHCP range is not empty
+	if [ "$dhcpv4" != "disabled" ]; then
+		unset START
+		unset END
+		unset NETMASK
+		ipcalc "$ipaddr/$prefix_or_netmask" "$start" "$limit"
+
+		if [ -z "$START" ] || [ -z "$END" ] || [ -z "$NETMASK" ]; then
+			logger -t dnsmasq \
+				"unable to set dhcp-range for dhcp uci config section '$cfg'" \
+				"on interface '$ifname', please check your config"
+		else
+			[ "$dynamicdhcpv4" = "0" ] && END="static"
+			xappend "--dhcp-range=$tags$nettag$START,$END,$NETMASK,$leasetime${options:+ $options}"
+		fi
 	fi
 
-	eval "$(ipcalc.sh "${subnet%%/*}" $netmask $start $limit)"
-
-	if [ "$dynamicdhcp" = "0" ] ; then
-		END="static"
+	if [ "$dynamicdhcpv6" = "0" ] ; then
 		dhcp6range="::,static"
 	else
 		dhcp6range="::1000,::ffff"
-	fi
-
-
-	if [ "$dhcpv4" != "disabled" ] ; then
-		xappend "--dhcp-range=$tags$nettag$START,$END,$NETMASK,$leasetime${options:+ $options}"
 	fi
 
 
@@ -709,7 +732,7 @@ dhcp_domain_add() {
 		record="${record:+$record }$name"
 	done
 
-	echo "$ip $record" >> $HOSTFILE_TMP
+	echo "$ip $record" >> "$HOSTFILE_TMP"
 }
 
 dhcp_srv_add() {
@@ -783,6 +806,29 @@ dhcp_hostrecord_add() {
 	xappend "--host-record=$record"
 }
 
+dhcp_dnsrr_add() {
+	#This adds arbitrary resource record types (of IN class) whose optional data must be hex
+	local cfg="$1"
+	local rrname rrnumber hexdata
+
+	config_get rrname "$cfg" rrname
+	[ -n "$rrname" ] || return 0
+
+	config_get rrnumber "$cfg" rrnumber
+	[ -n "$rrnumber" ] && [ "$rrnumber" -gt 0 ] || return 0
+
+	config_get hexdata "$cfg" hexdata
+
+	# dnsmasq accepts colon XX:XX:.., space XX XX .., or contiguous XXXX.. hex forms or mixtures thereof
+	if [ -n "${hexdata//[0-9a-fA-F\:\ ]/}" ]; then
+		# is invalid hex literal
+		echo "dnsmasq: \"$hexdata\" is malformed hexadecimal (separate hex with colon, space or not at all)." >&2
+		return 1
+	fi
+
+	xappend "--dns-rr=${rrname},${rrnumber}${hexdata:+,$hexdata}"
+}
+
 dhcp_relay_add() {
 	local cfg="$1"
 	local local_addr server_addr interface
@@ -804,30 +850,61 @@ dhcp_relay_add() {
 
 dnsmasq_ipset_add() {
 	local cfg="$1"
-	local ipsets
+	local ipsets nftsets domains
 
 	add_ipset() {
 		ipsets="${ipsets:+$ipsets,}$1"
 	}
 
-	add_domain() {
-		xappend "--ipset=/$1/$ipsets"
+	add_nftset() {
+		local IFS=,
+		for set in $1; do
+			local fam="$family"
+			[ -n "$fam" ] || fam=$(echo "$set" | sed -nre \
+				's#^.*[^0-9]([46])$|^.*[-_]([46])[-_].*$|^([46])[^0-9].*$#\1\2\3#p')
+			[ -n "$fam" ] || \
+				fam=$(nft -t list set "$table_family" "$table" "$set" 2>&1 | sed -nre \
+				's#^\t\ttype .*\bipv([46])_addr\b.*$#\1#p')
+
+			[ -n "$fam" ] || \
+				logger -t dnsmasq "Cannot infer address family from non-existent nftables set '$set'"
+
+			nftsets="${nftsets:+$nftsets,}${fam:+$fam#}$table_family#$table#$set"
+		done
 	}
 
-	config_list_foreach "$cfg" "name" add_ipset
+	add_domain() {
+		# leading '/' is expected
+		domains="$domains/$1"
+	}
 
-	if [ -z "$ipsets" ]; then
+	config_get table "$cfg" table 'fw4'
+	config_get table_family "$cfg" table_family 'inet'
+	if [ "$table_family" = "ip" ] ; then
+		family="4"
+	elif [ "$table_family" = "ip6" ] ; then
+		family="6"
+	else
+		config_get family "$cfg" family
+	fi
+
+	config_list_foreach "$cfg" "name" add_ipset
+	config_list_foreach "$cfg" "name" add_nftset
+	config_list_foreach "$cfg" "domain" add_domain
+
+	if [ -z "$ipsets" ] || [ -z "$nftsets" ] || [ -z "$domains" ]; then
 		return 0
 	fi
 
-	config_list_foreach "$cfg" "domain" add_domain
+	xappend "--ipset=$domains/$ipsets"
+	xappend "--nftset=$domains/$nftsets"
 }
 
 dnsmasq_start()
 {
 	local cfg="$1"
-	local disabled user_dhcpscript
-	local resolvfile resolvdir localuse=0
+	local disabled user_dhcpscript logfacility
+	local resolvfile resolvdir localuse=1
 
 	config_get_bool disabled "$cfg" disabled 0
 	[ "$disabled" -gt 0 ] && return 0
@@ -846,13 +923,13 @@ dnsmasq_start()
 	# before we can call xappend
 	umask u=rwx,g=rx,o=rx
 	mkdir -p /var/run/dnsmasq/
-	mkdir -p $(dirname $CONFIGFILE)
+	mkdir -p "$(dirname "$CONFIGFILE")"
 	mkdir -p "$HOSTFILE_DIR"
 	mkdir -p /var/lib/misc
 	chown dnsmasq:dnsmasq /var/run/dnsmasq
 
-	echo "# auto-generated config file from /etc/config/dhcp" > $CONFIGFILE_TMP
-	echo "# auto-generated config file from /etc/config/dhcp" > $HOSTFILE_TMP
+	echo "# auto-generated config file from /etc/config/dhcp" > "$CONFIGFILE_TMP"
+	echo "# auto-generated config file from /etc/config/dhcp" > "$HOSTFILE_TMP"
 
 	local dnsmasqconffile="/etc/dnsmasq.${cfg}.conf"
 	if [ ! -r "$dnsmasqconffile" ]; then
@@ -938,11 +1015,14 @@ dnsmasq_start()
 	append_bool "$cfg" rapidcommit "--dhcp-rapid-commit"
 	append_bool "$cfg" scriptarp "--script-arp"
 
+	# deprecate or remove filter-X in favor of filter-rr?
 	append_bool "$cfg" filter_aaaa "--filter-AAAA"
 	append_bool "$cfg" filter_a "--filter-A"
+	config_list_foreach "$cfg" filter_rr append_filter_rr
+	config_list_foreach "$cfg" cache_rr append_cache_rr
 
 	append_parm "$cfg" logfacility "--log-facility"
-
+	config_get logfacility "$cfg" "logfacility"
 	append_parm "$cfg" cachesize "--cache-size"
 	append_parm "$cfg" dnsforwardmax "--dns-forward-max"
 	append_parm "$cfg" port "--port"
@@ -957,7 +1037,6 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "server" append_server
 	config_list_foreach "$cfg" "rev_server" append_rev_server
 	config_list_foreach "$cfg" "address" append_address
-	config_list_foreach "$cfg" "ipset" append_ipset
 
 	local connmark_allowlist_enable
 	config_get connmark_allowlist_enable "$cfg" connmark_allowlist_enable 0
@@ -981,7 +1060,14 @@ dnsmasq_start()
 	config_list_foreach "$cfg" "addnhosts" append_addnhosts
 	config_list_foreach "$cfg" "bogusnxdomain" append_bogusnxdomain
 	append_parm "$cfg" "leasefile" "--dhcp-leasefile" "/tmp/dhcp.leases"
-	append_parm "$cfg" "serversfile" "--servers-file"
+
+	local serversfile
+	config_get serversfile "$cfg" "serversfile"
+	[ -n "$serversfile" ] && {
+		xappend "--servers-file=$serversfile"
+		append EXTRA_MOUNT "$serversfile"
+	}
+
 	append_parm "$cfg" "tftp_root" "--tftp-root"
 	append_parm "$cfg" "dhcp_boot" "--dhcp-boot"
 	append_parm "$cfg" "local_ttl" "--local-ttl"
@@ -1018,7 +1104,7 @@ dnsmasq_start()
 		config_get resolvfile "$cfg" resolvfile /tmp/resolv.conf.d/resolv.conf.auto
 		[ -n "$resolvfile" ] && [ ! -e "$resolvfile" ] && touch "$resolvfile"
 		xappend "--resolv-file=$resolvfile"
-		[ "$resolvfile" = "/tmp/resolv.conf.d/resolv.conf.auto" ] && localuse=1
+		[ "$resolvfile" != "/tmp/resolv.conf.d/resolv.conf.auto" ] && localuse=0
 		resolvdir="$(dirname "$resolvfile")"
 	fi
 	config_get_bool localuse "$cfg" localuse "$localuse"
@@ -1067,6 +1153,9 @@ dnsmasq_start()
 		[ "$addmac" = "1" ] && addmac=
 		xappend "--add-mac${addmac:+="$addmac"}"
 	}
+	append_bool "$cfg" stripmac "--strip-mac"
+	append_parm "$cfg" addsubnet "--add-subnet"
+	append_bool "$cfg" stripsubnet "--strip-subnet"
 
 	dhcp_option_add "$cfg" "" 0
 	dhcp_option_add "$cfg" "" 2
@@ -1080,7 +1169,7 @@ dnsmasq_start()
 	[ ! -d "$dnsmasqconfdir" ] && mkdir -p $dnsmasqconfdir
 	xappend "--user=dnsmasq"
 	xappend "--group=dnsmasq"
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 
 	config_get_bool enable_tftp "$cfg" enable_tftp 0
 	[ "$enable_tftp" -gt 0 ] && {
@@ -1089,7 +1178,7 @@ dnsmasq_start()
 	}
 
 	config_foreach filter_dnsmasq host dhcp_host_add "$cfg"
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 
 	config_get_bool dhcpbogushostname "$cfg" dhcpbogushostname 1
 	[ "$dhcpbogushostname" -gt 0 ] && {
@@ -1108,12 +1197,13 @@ dnsmasq_start()
 	config_foreach filter_dnsmasq match dhcp_match_add "$cfg"
 	config_foreach filter_dnsmasq domain dhcp_domain_add "$cfg"
 	config_foreach filter_dnsmasq hostrecord dhcp_hostrecord_add "$cfg"
+	config_foreach filter_dnsmasq dnsrr dhcp_dnsrr_add "$cfg"
 	[ -n "$BOOT" ] || config_foreach filter_dnsmasq relay dhcp_relay_add "$cfg"
 
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 	config_foreach filter_dnsmasq srvhost dhcp_srv_add "$cfg"
 	config_foreach filter_dnsmasq mxhost dhcp_mx_add "$cfg"
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 
 	config_get_bool boguspriv "$cfg" boguspriv 1
 	[ "$boguspriv" -gt 0 ] && {
@@ -1135,16 +1225,16 @@ dnsmasq_start()
 	fi
 
 
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 	config_foreach filter_dnsmasq cname dhcp_cname_add "$cfg"
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 	config_foreach filter_dnsmasq ipset dnsmasq_ipset_add "$cfg"
-	echo >> $CONFIGFILE_TMP
+	echo >> "$CONFIGFILE_TMP"
 
-	mv -f $CONFIGFILE_TMP $CONFIGFILE
-	mv -f $HOSTFILE_TMP $HOSTFILE
+	mv -f "$CONFIGFILE_TMP" "$CONFIGFILE"
+	mv -f "$HOSTFILE_TMP" "$HOSTFILE"
 
 	[ "$localuse" -gt 0 ] && {
 		rm -f /tmp/resolv.conf
@@ -1158,11 +1248,18 @@ dnsmasq_start()
 		done
 	}
 
+	config_list_foreach "$cfg" addnmount append_extramount
+
 	procd_open_instance $cfg
 	procd_set_param command $PROG -C $CONFIGFILE -k -x /var/run/dnsmasq/dnsmasq."${cfg}".pid
 	procd_set_param file $CONFIGFILE
 	[ -n "$user_dhcpscript" ] && procd_set_param env USER_DHCPSCRIPT="$user_dhcpscript"
 	procd_set_param respawn
+
+	local instance_ifc instance_netdev
+	config_get instance_ifc "$cfg" interface
+	[ -n "$instance_ifc" ] && network_get_device instance_netdev "$instance_ifc" &&
+		[ -n "$instance_netdev" ] && procd_set_param netdev $instance_netdev
 
 	procd_add_jail dnsmasq ubus log
 	procd_add_jail_mount $CONFIGFILE $DHCPBOGUSHOSTNAMEFILE $DHCPSCRIPT $DHCPSCRIPT_DEPENDS
@@ -1170,6 +1267,11 @@ dnsmasq_start()
 	procd_add_jail_mount $dnsmasqconffile $dnsmasqconfdir $resolvdir $user_dhcpscript
 	procd_add_jail_mount /etc/passwd /etc/group /etc/TZ /etc/hosts /etc/ethers
 	procd_add_jail_mount_rw /var/run/dnsmasq/ $leasefile
+	case "$logfacility" in */*)
+		[ ! -e "$logfacility" ] && touch "$logfacility"
+		procd_add_jail_mount_rw "$logfacility"
+	esac
+	[ -e "$hostsfile" ] && procd_add_jail_mount $hostsfile
 
 	procd_close_instance
 }
@@ -1177,12 +1279,12 @@ dnsmasq_start()
 dnsmasq_stop()
 {
 	local cfg="$1"
-	local noresolv resolvfile localuse=0
+	local noresolv resolvfile localuse=1
 
 	config_get_bool noresolv "$cfg" noresolv 0
 	config_get resolvfile "$cfg" "resolvfile"
 
-	[ "$noresolv" = 0 ] && [ "$resolvfile" = "/tmp/resolv.conf.d/resolv.conf.auto" ] && localuse=1
+	[ "$noresolv" = 0 ] && [ "$resolvfile" != "/tmp/resolv.conf.d/resolv.conf.auto" ] && localuse=0
 	config_get_bool localuse "$cfg" localuse "$localuse"
 	[ "$localuse" -gt 0 ] && ln -sf "/tmp/resolv.conf.d/resolv.conf.auto" /tmp/resolv.conf
 
@@ -1191,10 +1293,11 @@ dnsmasq_stop()
 
 add_interface_trigger()
 {
-	local interface ignore
+	local interface ifname ignore
 
 	config_get interface "$1" interface
 	config_get_bool ignore "$1" ignore 0
+	network_get_device ifname "$interface" || ignore=0
 
 	[ -n "$interface" ] && [ $ignore -eq 0 ] && procd_add_interface_trigger "interface.*" "$interface" /etc/init.d/dnsmasq reload
 }
