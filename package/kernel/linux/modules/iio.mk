@@ -317,6 +317,24 @@ endef
 
 $(eval $(call KernelPackage,iio-bmp280-spi))
 
+
+define KernelPackage/iio-dps310
+  TITLE:=DPS310/DPS368/DPS422 pressure temperatur sensor
+  DEPENDS:=+kmod-regmap-i2c
+  KCONFIG:=CONFIG_DPS310
+  FILES:=$(LINUX_DIR)/drivers/iio/pressure/dps310.ko
+  AUTOLOAD:=$(call AutoProbe,dps310)
+  $(call AddDepends/iio)
+endef
+
+define KernelPackage/iio-dps310/description
+  Kernel module for Infineon DPS310/DPS368/DPS422 pressure and
+  temperature I2C sensor.
+endef
+
+$(eval $(call KernelPackage,iio-dps310))
+
+
 define KernelPackage/iio-htu21
   DEPENDS:=+kmod-i2c-core
   TITLE:=HTU21 humidity & temperature sensor
