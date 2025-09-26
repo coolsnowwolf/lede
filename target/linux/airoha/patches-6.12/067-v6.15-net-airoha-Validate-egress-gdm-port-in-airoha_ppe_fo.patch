@@ -1,0 +1,100 @@
+From 09bccf56db36501ccb1935d921dc24451e9f57dd Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Tue, 1 Apr 2025 11:42:30 +0200
+Subject: [PATCH] net: airoha: Validate egress gdm port in
+ airoha_ppe_foe_entry_prepare()
+
+Dev pointer in airoha_ppe_foe_entry_prepare routine is not strictly
+a device allocated by airoha_eth driver since it is an egress device
+and the flowtable can contain even wlan, pppoe or vlan devices. E.g:
+
+flowtable ft {
+        hook ingress priority filter
+        devices = { eth1, lan1, lan2, lan3, lan4, wlan0 }
+        flags offload                               ^
+                                                    |
+                     "not allocated by airoha_eth" --
+}
+
+In this case airoha_get_dsa_port() will just return the original device
+pointer and we can't assume netdev priv pointer points to an
+airoha_gdm_port struct.
+Fix the issue validating egress gdm port in airoha_ppe_foe_entry_prepare
+routine before accessing net_device priv pointer.
+
+Fixes: 00a7678310fe ("net: airoha: Introduce flowtable offload support")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20250401-airoha-validate-egress-gdm-port-v4-1-c7315d33ce10@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 13 +++++++++++++
+ drivers/net/ethernet/airoha/airoha_eth.h |  3 +++
+ drivers/net/ethernet/airoha/airoha_ppe.c |  8 ++++++--
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2451,6 +2451,19 @@ static void airoha_metadata_dst_free(str
+ 	}
+ }
+ 
++bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
++			      struct airoha_gdm_port *port)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
++		if (eth->ports[i] == port)
++			return true;
++	}
++
++	return false;
++}
++
+ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
+ 				 struct device_node *np, int index)
+ {
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -532,6 +532,9 @@ u32 airoha_rmw(void __iomem *base, u32 o
+ #define airoha_qdma_clear(qdma, offset, val)			\
+ 	airoha_rmw((qdma)->regs, (offset), (val), 0)
+ 
++bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
++			      struct airoha_gdm_port *port);
++
+ void airoha_ppe_check_skb(struct airoha_ppe *ppe, u16 hash);
+ int airoha_ppe_setup_tc_block_cb(enum tc_setup_type type, void *type_data,
+ 				 void *cb_priv);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -197,7 +197,8 @@ static int airoha_get_dsa_port(struct ne
+ #endif
+ }
+ 
+-static int airoha_ppe_foe_entry_prepare(struct airoha_foe_entry *hwe,
++static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
++					struct airoha_foe_entry *hwe,
+ 					struct net_device *dev, int type,
+ 					struct airoha_flow_data *data,
+ 					int l4proto)
+@@ -225,6 +226,9 @@ static int airoha_ppe_foe_entry_prepare(
+ 		struct airoha_gdm_port *port = netdev_priv(dev);
+ 		u8 pse_port;
+ 
++		if (!airoha_is_valid_gdm_port(eth, port))
++			return -EINVAL;
++
+ 		if (dsa_port >= 0)
+ 			pse_port = port->id == 4 ? FE_PSE_PORT_GDM4 : port->id;
+ 		else
+@@ -633,7 +637,7 @@ static int airoha_ppe_flow_offload_repla
+ 	    !is_valid_ether_addr(data.eth.h_dest))
+ 		return -EINVAL;
+ 
+-	err = airoha_ppe_foe_entry_prepare(&hwe, odev, offload_type,
++	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
+ 					   &data, l4proto);
+ 	if (err)
+ 		return err;

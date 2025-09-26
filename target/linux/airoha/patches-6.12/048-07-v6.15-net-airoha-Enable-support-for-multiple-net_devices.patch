@@ -1,0 +1,144 @@
+From 80369686737fe07c233a1152da0b84372dabdcd6 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 28 Feb 2025 11:54:15 +0100
+Subject: [PATCH 07/15] net: airoha: Enable support for multiple net_devices
+
+In the current codebase airoha_eth driver supports just a single
+net_device connected to the Packet Switch Engine (PSE) lan port (GDM1).
+As shown in commit 23020f049327 ("net: airoha: Introduce ethernet
+support for EN7581 SoC"), PSE can switch packets between four GDM ports.
+Enable the capability to create a net_device for each GDM port of the
+PSE module. Moreover, since the QDMA blocks can be shared between
+net_devices, do not stop TX/RX DMA in airoha_dev_stop() if there are
+active net_devices for this QDMA block.
+This is a preliminary patch to enable flowtable hw offloading for EN7581
+SoC.
+
+Co-developed-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 35 ++++++++++++++----------
+ drivers/net/ethernet/airoha/airoha_eth.h |  4 ++-
+ 2 files changed, 24 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1562,6 +1562,7 @@ static int airoha_dev_open(struct net_de
+ 	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
+ 			GLOBAL_CFG_TX_DMA_EN_MASK |
+ 			GLOBAL_CFG_RX_DMA_EN_MASK);
++	atomic_inc(&qdma->users);
+ 
+ 	return 0;
+ }
+@@ -1577,16 +1578,20 @@ static int airoha_dev_stop(struct net_de
+ 	if (err)
+ 		return err;
+ 
+-	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
+-			  GLOBAL_CFG_TX_DMA_EN_MASK |
+-			  GLOBAL_CFG_RX_DMA_EN_MASK);
++	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++)
++		netdev_tx_reset_subqueue(dev, i);
+ 
+-	for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
+-		if (!qdma->q_tx[i].ndesc)
+-			continue;
++	if (atomic_dec_and_test(&qdma->users)) {
++		airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
++				  GLOBAL_CFG_TX_DMA_EN_MASK |
++				  GLOBAL_CFG_RX_DMA_EN_MASK);
++
++		for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
++			if (!qdma->q_tx[i].ndesc)
++				continue;
+ 
+-		airoha_qdma_cleanup_tx_queue(&qdma->q_tx[i]);
+-		netdev_tx_reset_subqueue(dev, i);
++			airoha_qdma_cleanup_tx_queue(&qdma->q_tx[i]);
++		}
+ 	}
+ 
+ 	return 0;
+@@ -2329,13 +2334,14 @@ static void airoha_metadata_dst_free(str
+ 	}
+ }
+ 
+-static int airoha_alloc_gdm_port(struct airoha_eth *eth, struct device_node *np)
++static int airoha_alloc_gdm_port(struct airoha_eth *eth,
++				 struct device_node *np, int index)
+ {
+ 	const __be32 *id_ptr = of_get_property(np, "reg", NULL);
+ 	struct airoha_gdm_port *port;
+ 	struct airoha_qdma *qdma;
+ 	struct net_device *dev;
+-	int err, index;
++	int err, p;
+ 	u32 id;
+ 
+ 	if (!id_ptr) {
+@@ -2344,14 +2350,14 @@ static int airoha_alloc_gdm_port(struct
+ 	}
+ 
+ 	id = be32_to_cpup(id_ptr);
+-	index = id - 1;
++	p = id - 1;
+ 
+ 	if (!id || id > ARRAY_SIZE(eth->ports)) {
+ 		dev_err(eth->dev, "invalid gdm port id: %d\n", id);
+ 		return -EINVAL;
+ 	}
+ 
+-	if (eth->ports[index]) {
++	if (eth->ports[p]) {
+ 		dev_err(eth->dev, "duplicate gdm port id: %d\n", id);
+ 		return -EINVAL;
+ 	}
+@@ -2399,7 +2405,7 @@ static int airoha_alloc_gdm_port(struct
+ 	port->qdma = qdma;
+ 	port->dev = dev;
+ 	port->id = id;
+-	eth->ports[index] = port;
++	eth->ports[p] = port;
+ 
+ 	err = airoha_metadata_dst_alloc(port);
+ 	if (err)
+@@ -2471,6 +2477,7 @@ static int airoha_probe(struct platform_
+ 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
+ 		airoha_qdma_start_napi(&eth->qdma[i]);
+ 
++	i = 0;
+ 	for_each_child_of_node(pdev->dev.of_node, np) {
+ 		if (!of_device_is_compatible(np, "airoha,eth-mac"))
+ 			continue;
+@@ -2478,7 +2485,7 @@ static int airoha_probe(struct platform_
+ 		if (!of_device_is_available(np))
+ 			continue;
+ 
+-		err = airoha_alloc_gdm_port(eth, np);
++		err = airoha_alloc_gdm_port(eth, np, i++);
+ 		if (err) {
+ 			of_node_put(np);
+ 			goto error_napi_stop;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -13,7 +13,7 @@
+ #include <linux/netdevice.h>
+ #include <linux/reset.h>
+ 
+-#define AIROHA_MAX_NUM_GDM_PORTS	1
++#define AIROHA_MAX_NUM_GDM_PORTS	4
+ #define AIROHA_MAX_NUM_QDMA		2
+ #define AIROHA_MAX_DSA_PORTS		7
+ #define AIROHA_MAX_NUM_RSTS		3
+@@ -212,6 +212,8 @@ struct airoha_qdma {
+ 	u32 irqmask[QDMA_INT_REG_MAX];
+ 	int irq;
+ 
++	atomic_t users;
++
+ 	struct airoha_tx_irq_queue q_tx_irq[AIROHA_NUM_TX_IRQ];
+ 
+ 	struct airoha_queue q_tx[AIROHA_NUM_TX_RING];

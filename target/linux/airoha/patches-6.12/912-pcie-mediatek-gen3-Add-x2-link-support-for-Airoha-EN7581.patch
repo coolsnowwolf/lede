@@ -1,0 +1,244 @@
+From: Ryan Chen <rchen14b@gmail.com>
+Subject: PCI: mediatek-gen3: Add PCIe x2 link support for Airoha EN7581
+
+The Airoha EN7581 SoC supports PCIe x2 mode where two PCIe lanes are
+bonded together for a single x2 link. This requires coordination with
+the NP_SCU system controller for serdes mux routing, PERST management,
+and lane configuration.
+
+The x2 initialization sequence:
+1. Assert serdes reset and PERST before enabling clocks
+2. Configure serdes mux for 2-lane mode
+3. Enable reference clocks, deassert serdes reset
+4. Clear x1 mode bit and write EQ presets on both MACs
+5. Deassert PERST to start link training
+
+After initial link training, if the link negotiates Gen2 instead of
+Gen3, a serdes reset toggle forces the MAC to re-discover the PHY
+Gen3 capability from the Link Capabilities 2 register, allowing the
+link to retrain at Gen3 x2 (8 GT/s).
+
+Signed-off-by: Ryan Chen <rchen14b@gmail.com>
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -61,6 +61,14 @@
+ #define PCIE_LTSSM_STATE(val)		((val & PCIE_LTSSM_STATE_MASK) >> 24)
+ #define PCIE_LTSSM_STATE_L2_IDLE	0x14
+ 
++/* EN7581 x2 mode support */
++#define PCIE_SETTING_REG_X1_MODE	BIT(13)
++
++/* EN7581 NP_SCU register offsets for x2 link init */
++#define NP_SCU_LANE_CFG0		0x830
++#define NP_SCU_LANE_CFG1		0x834
++#define NP_SCU_CTRL_REG			0x88
++
+ #define PCIE_LINK_STATUS_REG		0x154
+ #define PCIE_PORT_LINKUP		BIT(8)
+ 
+@@ -205,6 +213,11 @@ struct mtk_gen3_pcie {
+ 	DECLARE_BITMAP(msi_irq_in_use, PCIE_MSI_IRQS_NUM);
+ 
+ 	const struct mtk_gen3_pcie_pdata *soc;
++
++	/* EN7581 x2 mode support */
++	struct regmap *np_scu;
++	bool x2_mode;
++	void __iomem *sister_base;
+ };
+ 
+ /* LTSSM state in PCIE_LTSSM_STATUS_REG bit[28:24] */
+@@ -925,6 +938,28 @@ static int mtk_pcie_en7581_power_up(stru
+ 	size = lower_32_bits(resource_size(entry->res));
+ 	regmap_write(pbus_regmap, args[1], GENMASK(31, __fls(size)));
+ 
++	/* Lookup NP_SCU regmap for x2 mode support */
++	pcie->np_scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,np-scu");
++	if (IS_ERR(pcie->np_scu)) {
++		dev_dbg(dev, "np_scu not available, x2 mode disabled\n");
++		pcie->np_scu = NULL;
++	}
++
++	/* Check for x2 mode property */
++	pcie->x2_mode = of_property_read_bool(dev->of_node, "airoha,x2-mode");
++	if (pcie->x2_mode)
++		dev_info(dev, "x2 mode enabled\n");
++
++	/* Map sister MAC for x2 mode (MAC1 at +0x20000) */
++	if (pcie->x2_mode) {
++		pcie->sister_base = devm_ioremap(dev,
++			pcie->reg_base + 0x20000, 0x20000);
++		if (!pcie->sister_base)
++			dev_warn(dev, "failed to map sister MAC for x2\n");
++		else
++			dev_info(dev, "x2 mode: sister MAC mapped\n");
++	}
++
+ 	err = phy_set_mode(pcie->phy, PHY_MODE_PCIE);
+ 	if (err) {
+ 		dev_err(dev, "failed to set PHY mode\n");
+@@ -962,17 +997,28 @@ static int mtk_pcie_en7581_power_up(stru
+ 	pm_runtime_enable(dev);
+ 	pm_runtime_get_sync(dev);
+ 
+-	val = FIELD_PREP(PCIE_VAL_LN0_DOWNSTREAM, 0x47) |
+-	      FIELD_PREP(PCIE_VAL_LN1_DOWNSTREAM, 0x47) |
+-	      FIELD_PREP(PCIE_VAL_LN0_UPSTREAM, 0x41) |
+-	      FIELD_PREP(PCIE_VAL_LN1_UPSTREAM, 0x41);
+-	writel_relaxed(val, pcie->base + PCIE_EQ_PRESET_01_REG);
+-
+-	val = PCIE_K_PHYPARAM_QUERY | PCIE_K_QUERY_TIMEOUT |
+-	      FIELD_PREP(PCIE_K_PRESET_TO_USE_16G, 0x80) |
+-	      FIELD_PREP(PCIE_K_PRESET_TO_USE, 0x2) |
+-	      FIELD_PREP(PCIE_K_FINETUNE_MAX, 0xf);
+-	writel_relaxed(val, pcie->base + PCIE_PIPE4_PIE8_REG);
++	/*
++	 * EN7581 x2: Assert PERST and serdes reset before enabling clocks
++	 * so that MAC registers can be configured while devices are held
++	 * in reset, ensuring link trains with the correct x2 settings.
++	 */
++	if (pcie->x2_mode && pcie->np_scu) {
++		/* Assert serdes reset on all lanes */
++		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
++				   BIT(26) | BIT(27), BIT(26) | BIT(27));
++		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
++				   BIT(27), BIT(27));
++		msleep(100);
++
++		/* Assert PERST on all ports */
++		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
++				   BIT(16) | BIT(26) | BIT(29), 0);
++
++		/* Set serdes mux for 2-lane mode (bits[1:0] = 2) */
++		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
++				   BIT(0) | BIT(1), BIT(1));
++		mdelay(1);
++	}
+ 
+ 	err = clk_bulk_prepare_enable(pcie->num_clks, pcie->clks);
+ 	if (err) {
+@@ -981,12 +1027,121 @@ static int mtk_pcie_en7581_power_up(stru
+ 	}
+ 
+ 	/*
+-	 * Airoha EN7581 performs PCIe reset via clk callbacks since it has a
+-	 * hw issue with PCIE_PE_RSTB signal. Add wait for the time needed to
+-	 * complete the PCIe reset.
++	 * Airoha EN7581: clock enable only provides refclk (patch 911).
++	 * For x2, PERST + serdes are already asserted above.
++	 * Wait for refclk to stabilize.
+ 	 */
+ 	msleep(PCIE_T_PVPERL_MS);
+ 
++	if (pcie->x2_mode && pcie->np_scu) {
++		/*
++		 * EN7581 x2: PERST asserted, serdes reset asserted,
++		 * refclk now stable. Complete the init sequence.
++		 */
++		msleep(30);
++
++		/* Deassert serdes reset on all lanes */
++		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
++				   BIT(26) | BIT(27), 0);
++		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
++				   BIT(27), 0);
++
++		/* Clear SETTING_REG bit 13 for x2 mode on both MACs */
++		val = readl_relaxed(pcie->base + PCIE_SETTING_REG);
++		writel_relaxed(val & ~PCIE_SETTING_REG_X1_MODE,
++			       pcie->base + PCIE_SETTING_REG);
++		if (pcie->sister_base) {
++			val = readl_relaxed(pcie->sister_base + 0x80);
++			writel_relaxed(val & ~PCIE_SETTING_REG_X1_MODE,
++				       pcie->sister_base + 0x80);
++		}
++
++		/* EQ presets on both MACs */
++		writel_relaxed(0x41474147, pcie->base + PCIE_EQ_PRESET_01_REG);
++		if (pcie->sister_base)
++			writel_relaxed(0x41474147, pcie->sister_base + 0x100);
++		writel_relaxed(0x1018020f, pcie->base + PCIE_PIPE4_PIE8_REG);
++		if (pcie->sister_base)
++			writel_relaxed(0x1018020f, pcie->sister_base + 0x338);
++
++		/* Deassert PERST for all ports - link training starts */
++		msleep(10);
++		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
++				   BIT(16) | BIT(26) | BIT(29),
++				   BIT(16) | BIT(26) | BIT(29));
++
++		/* Wait for link training to complete */
++		msleep(800);
++
++		/*
++		 * Check if link trained at Gen3. If not, toggle serdes
++		 * reset to force MAC to re-discover PHY Gen3 capability.
++		 * Without this, MAC only advertises Gen1-Gen2 in LnkCap2.
++		 */
++		val = readl_relaxed(pcie->base + PCIE_LINK_STATUS_REG);
++		if (val & PCIE_PORT_LINKUP) {
++			void __iomem *cfg = pcie->base + PCIE_CFG_OFFSET_ADDR;
++			u8 cap_ptr;
++			int speed = 0;
++
++			/* Walk PCI cap list to find PCIe cap (ID=0x10) */
++			cap_ptr = readl_relaxed(cfg + PCI_CAPABILITY_LIST) & 0xFF;
++			while (cap_ptr >= 0x40) {
++				u32 hdr = readl_relaxed(cfg + cap_ptr);
++				if ((hdr & 0xFF) == PCI_CAP_ID_EXP) {
++					u32 lnk = readl_relaxed(cfg + cap_ptr + PCI_EXP_LNKCTL);
++					speed = (lnk >> 16) & PCI_EXP_LNKSTA_CLS;
++					break;
++				}
++				cap_ptr = (hdr >> 8) & 0xFF;
++			}
++
++			if (speed > 0 && speed < 3) {
++				dev_info(dev, "x2: link at Gen%d, toggling serdes for Gen3\n", speed);
++				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
++						   BIT(7) | BIT(8), BIT(7) | BIT(8));
++				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
++						   BIT(26) | BIT(27), BIT(26) | BIT(27));
++				msleep(1000);
++				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
++						   BIT(7) | BIT(8), 0);
++				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
++						   BIT(26) | BIT(27), 0);
++				msleep(2000);
++				dev_info(dev, "x2: serdes toggle done, link retraining\n");
++			} else {
++				dev_info(dev, "x2: link at Gen%d, no toggle needed\n", speed);
++			}
++		} else {
++			dev_info(dev, "x2: link not up after init, skipping speed check\n");
++		}
++
++		dev_info(dev, "x2: init complete, PERST deasserted\n");
++	} else {
++		/*
++		 * Non-x2 mode: standard EQ config then deassert PERST.
++		 */
++		val = FIELD_PREP(PCIE_VAL_LN0_DOWNSTREAM, 0x47) |
++		      FIELD_PREP(PCIE_VAL_LN1_DOWNSTREAM, 0x47) |
++		      FIELD_PREP(PCIE_VAL_LN0_UPSTREAM, 0x41) |
++		      FIELD_PREP(PCIE_VAL_LN1_UPSTREAM, 0x41);
++		writel_relaxed(val, pcie->base + PCIE_EQ_PRESET_01_REG);
++
++		val = PCIE_K_PHYPARAM_QUERY | PCIE_K_QUERY_TIMEOUT |
++		      FIELD_PREP(PCIE_K_PRESET_TO_USE_16G, 0x80) |
++		      FIELD_PREP(PCIE_K_PRESET_TO_USE, 0x2) |
++		      FIELD_PREP(PCIE_K_FINETUNE_MAX, 0xf);
++		writel_relaxed(val, pcie->base + PCIE_PIPE4_PIE8_REG);
++
++		/* Deassert PERST for all ports */
++		if (pcie->np_scu) {
++			regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
++					   BIT(16) | BIT(26) | BIT(29),
++					   BIT(16) | BIT(26) | BIT(29));
++			msleep(100);
++		}
++	}
++
+ 	return 0;
+ 
+ err_clk_prepare_enable:

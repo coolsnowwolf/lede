@@ -1,0 +1,143 @@
+From d76556db10bf41cd3ae1ad1d705245afe077a701 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 22 May 2025 18:53:10 +0200
+Subject: [PATCH 2/3] net: dsa: mt7530: Add AN7583 support
+
+Add Airoha AN7583 Switch support. This is based on Airoha EN7581 that is
+based on Mediatek MT7988 Switch.
+
+Airoha AN7583 require additional tweak to the GEPHY_CONN_CFG register to
+make the internal PHY work.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20250522165313.6411-3-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mt7530-mmio.c |  1 +
+ drivers/net/dsa/mt7530.c      | 24 ++++++++++++++++++++++--
+ drivers/net/dsa/mt7530.h      | 18 ++++++++++++++----
+ 3 files changed, 37 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/dsa/mt7530-mmio.c
++++ b/drivers/net/dsa/mt7530-mmio.c
+@@ -11,6 +11,7 @@
+ #include "mt7530.h"
+ 
+ static const struct of_device_id mt7988_of_match[] = {
++	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
+ 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },
+ 	{ .compatible = "mediatek,mt7988-switch", .data = &mt753x_table[ID_MT7988], },
+ 	{ /* sentinel */ },
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -1153,7 +1153,7 @@ mt753x_cpu_port_enable(struct dsa_switch
+ 	 * is affine to the inbound user port.
+ 	 */
+ 	if (priv->id == ID_MT7531 || priv->id == ID_MT7988 ||
+-	    priv->id == ID_EN7581)
++	    priv->id == ID_EN7581 || priv->id == ID_AN7583)
+ 		mt7530_set(priv, MT7531_CFC, MT7531_CPU_PMAP(BIT(port)));
+ 
+ 	/* CPU port gets connected to all user ports of
+@@ -2589,7 +2589,7 @@ mt7531_setup_common(struct dsa_switch *d
+ 	mt7530_set(priv, MT753X_AGC, LOCAL_EN);
+ 
+ 	/* Enable Special Tag for rx frames */
+-	if (priv->id == ID_EN7581)
++	if (priv->id == ID_EN7581 || priv->id == ID_AN7583)
+ 		mt7530_write(priv, MT753X_CPORT_SPTAG_CFG,
+ 			     CPORT_SW2FE_STAG_EN | CPORT_FE2SW_STAG_EN);
+ 
+@@ -3157,6 +3157,16 @@ static int mt7988_setup(struct dsa_switc
+ 	reset_control_deassert(priv->rstc);
+ 	usleep_range(20, 50);
+ 
++	/* AN7583 require additional tweak to CONN_CFG */
++	if (priv->id == ID_AN7583)
++		mt7530_rmw(priv, AN7583_GEPHY_CONN_CFG,
++			   AN7583_CSR_DPHY_CKIN_SEL |
++			   AN7583_CSR_PHY_CORE_REG_CLK_SEL |
++			   AN7583_CSR_ETHER_AFE_PWD,
++			   AN7583_CSR_DPHY_CKIN_SEL |
++			   AN7583_CSR_PHY_CORE_REG_CLK_SEL |
++			   FIELD_PREP(AN7583_CSR_ETHER_AFE_PWD, 0));
++
+ 	/* Reset the switch PHYs */
+ 	mt7530_write(priv, MT7530_SYS_CTRL, SYS_CTRL_PHY_RST);
+ 
+@@ -3253,6 +3263,16 @@ const struct mt753x_info mt753x_table[]
+ 		.pcs_ops = &mt7530_pcs_ops,
+ 		.sw_setup = mt7988_setup,
+ 		.phy_read_c22 = mt7531_ind_c22_phy_read,
++		.phy_write_c22 = mt7531_ind_c22_phy_write,
++		.phy_read_c45 = mt7531_ind_c45_phy_read,
++		.phy_write_c45 = mt7531_ind_c45_phy_write,
++		.mac_port_get_caps = en7581_mac_port_get_caps,
++	},
++	[ID_AN7583] = {
++		.id = ID_AN7583,
++		.pcs_ops = &mt7530_pcs_ops,
++		.sw_setup = mt7988_setup,
++		.phy_read_c22 = mt7531_ind_c22_phy_read,
+ 		.phy_write_c22 = mt7531_ind_c22_phy_write,
+ 		.phy_read_c45 = mt7531_ind_c45_phy_read,
+ 		.phy_write_c45 = mt7531_ind_c45_phy_write,
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -20,6 +20,7 @@ enum mt753x_id {
+ 	ID_MT7531 = 2,
+ 	ID_MT7988 = 3,
+ 	ID_EN7581 = 4,
++	ID_AN7583 = 5,
+ };
+ 
+ #define	NUM_TRGMII_CTRL			5
+@@ -66,7 +67,8 @@ enum mt753x_id {
+ 
+ #define MT753X_MIRROR_REG(id)		((id == ID_MT7531 || \
+ 					  id == ID_MT7988 || \
+-					  id == ID_EN7581) ? \
++					  id == ID_EN7581 || \
++					  id == ID_AN7583) ? \
+ 					 MT7531_CFC : MT753X_MFC)
+ 
+ #define MT753X_MIRROR_EN(id)		((id == ID_MT7531 || \
+@@ -76,19 +78,22 @@ enum mt753x_id {
+ 
+ #define MT753X_MIRROR_PORT_MASK(id)	((id == ID_MT7531 || \
+ 					  id == ID_MT7988 || \
+-					  id == ID_EN7581) ? \
++					  id == ID_EN7581 || \
++					  id == ID_AN7583) ? \
+ 					 MT7531_MIRROR_PORT_MASK : \
+ 					 MT7530_MIRROR_PORT_MASK)
+ 
+ #define MT753X_MIRROR_PORT_GET(id, val)	((id == ID_MT7531 || \
+ 					  id == ID_MT7988 || \
+-					  id == ID_EN7581) ? \
++					  id == ID_EN7581 || \
++					  id == ID_AN7583) ? \
+ 					 MT7531_MIRROR_PORT_GET(val) : \
+ 					 MT7530_MIRROR_PORT_GET(val))
+ 
+ #define MT753X_MIRROR_PORT_SET(id, val)	((id == ID_MT7531 || \
+ 					  id == ID_MT7988 || \
+-					  id == ID_EN7581) ? \
++					  id == ID_EN7581 || \
++					  id == ID_AN7583) ? \
+ 					 MT7531_MIRROR_PORT_SET(val) : \
+ 					 MT7530_MIRROR_PORT_SET(val))
+ 
+@@ -619,6 +624,11 @@ enum mt7531_xtal_fsel {
+ #define  CPORT_SW2FE_STAG_EN		BIT(1)
+ #define  CPORT_FE2SW_STAG_EN		BIT(0)
+ 
++#define AN7583_GEPHY_CONN_CFG		0x7c14
++#define  AN7583_CSR_DPHY_CKIN_SEL	BIT(31)
++#define  AN7583_CSR_PHY_CORE_REG_CLK_SEL BIT(30)
++#define  AN7583_CSR_ETHER_AFE_PWD	GENMASK(28, 24)
++
+ /* Registers for LED GPIO control (MT7530 only)
+  * All registers follow this pattern:
+  * [ 2: 0]  port 0

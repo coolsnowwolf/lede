@@ -1,0 +1,79 @@
+From 3a1ce9e3d01bbf3912c3e3f81cb554d558eb715b Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 21 May 2025 09:16:38 +0200
+Subject: [PATCH 2/3] net: airoha: Add the capability to allocate hwfd buffers
+ via reserved-memory
+
+In some configurations QDMA blocks require a contiguous block of
+system memory for hwfd buffers queue. Introduce the capability to allocate
+hw buffers forwarding queue via the reserved-memory DTS property instead of
+running dmam_alloc_coherent().
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20250521-airopha-desc-sram-v3-3-a6e9b085b4f0@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 33 +++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -5,6 +5,7 @@
+  */
+ #include <linux/of.h>
+ #include <linux/of_net.h>
++#include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/tcp.h>
+ #include <linux/u64_stats_sync.h>
+@@ -1072,9 +1073,11 @@ static void airoha_qdma_cleanup_tx_queue
+ static int airoha_qdma_init_hfwd_queues(struct airoha_qdma *qdma)
+ {
+ 	struct airoha_eth *eth = qdma->eth;
++	int id = qdma - &eth->qdma[0];
+ 	dma_addr_t dma_addr;
++	const char *name;
++	int size, index;
+ 	u32 status;
+-	int size;
+ 
+ 	size = HW_DSCP_NUM * sizeof(struct airoha_qdma_fwd_desc);
+ 	if (!dmam_alloc_coherent(eth->dev, size, &dma_addr, GFP_KERNEL))
+@@ -1082,10 +1085,34 @@ static int airoha_qdma_init_hfwd_queues(
+ 
+ 	airoha_qdma_wr(qdma, REG_FWD_DSCP_BASE, dma_addr);
+ 
+-	size = AIROHA_MAX_PACKET_SIZE * HW_DSCP_NUM;
+-	if (!dmam_alloc_coherent(eth->dev, size, &dma_addr, GFP_KERNEL))
++	name = devm_kasprintf(eth->dev, GFP_KERNEL, "qdma%d-buf", id);
++	if (!name)
+ 		return -ENOMEM;
+ 
++	index = of_property_match_string(eth->dev->of_node,
++					 "memory-region-names", name);
++	if (index >= 0) {
++		struct reserved_mem *rmem;
++		struct device_node *np;
++
++		/* Consume reserved memory for hw forwarding buffers queue if
++		 * available in the DTS
++		 */
++		np = of_parse_phandle(eth->dev->of_node, "memory-region",
++				      index);
++		if (!np)
++			return -ENODEV;
++
++		rmem = of_reserved_mem_lookup(np);
++		of_node_put(np);
++		dma_addr = rmem->base;
++	} else {
++		size = AIROHA_MAX_PACKET_SIZE * HW_DSCP_NUM;
++		if (!dmam_alloc_coherent(eth->dev, size, &dma_addr,
++					 GFP_KERNEL))
++			return -ENOMEM;
++	}
++
+ 	airoha_qdma_wr(qdma, REG_FWD_BUF_BASE, dma_addr);
+ 
+ 	airoha_qdma_rmw(qdma, REG_HW_FWD_DSCP_CFG,

@@ -1,0 +1,287 @@
+From af3cf757d5c99011b9b94ea8d78aeaccc0153fdc Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 28 Feb 2025 11:54:13 +0100
+Subject: [PATCH 05/15] net: airoha: Move DSA tag in DMA descriptor
+
+Packet Processor Engine (PPE) module reads DSA tags from the DMA descriptor
+and requires untagged DSA packets to properly parse them. Move DSA tag
+in the DMA descriptor on TX side and read DSA tag from DMA descriptor
+on RX side. In order to avoid skb reallocation, store tag in skb_dst on
+RX side.
+This is a preliminary patch to enable netfilter flowtable hw offloading
+on EN7581 SoC.
+
+Tested-by: Sayantan Nandy <sayantan.nandy@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 125 ++++++++++++++++++++--
+ drivers/net/ethernet/airoha/airoha_eth.h  |   7 ++
+ drivers/net/ethernet/airoha/airoha_regs.h |   2 +
+ 3 files changed, 128 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -9,6 +9,7 @@
+ #include <linux/tcp.h>
+ #include <linux/u64_stats_sync.h>
+ #include <net/dsa.h>
++#include <net/dst_metadata.h>
+ #include <net/page_pool/helpers.h>
+ #include <net/pkt_cls.h>
+ #include <uapi/linux/ppp_defs.h>
+@@ -656,6 +657,7 @@ static int airoha_qdma_rx_process(struct
+ 		struct airoha_qdma_desc *desc = &q->desc[q->tail];
+ 		dma_addr_t dma_addr = le32_to_cpu(desc->addr);
+ 		u32 desc_ctrl = le32_to_cpu(desc->ctrl);
++		struct airoha_gdm_port *port;
+ 		struct sk_buff *skb;
+ 		int len, p;
+ 
+@@ -683,6 +685,7 @@ static int airoha_qdma_rx_process(struct
+ 			continue;
+ 		}
+ 
++		port = eth->ports[p];
+ 		skb = napi_build_skb(e->buf, q->buf_size);
+ 		if (!skb) {
+ 			page_pool_put_full_page(q->page_pool,
+@@ -694,10 +697,26 @@ static int airoha_qdma_rx_process(struct
+ 		skb_reserve(skb, 2);
+ 		__skb_put(skb, len);
+ 		skb_mark_for_recycle(skb);
+-		skb->dev = eth->ports[p]->dev;
++		skb->dev = port->dev;
+ 		skb->protocol = eth_type_trans(skb, skb->dev);
+ 		skb->ip_summed = CHECKSUM_UNNECESSARY;
+ 		skb_record_rx_queue(skb, qid);
++
++		if (netdev_uses_dsa(port->dev)) {
++			/* PPE module requires untagged packets to work
++			 * properly and it provides DSA port index via the
++			 * DMA descriptor. Report DSA tag to the DSA stack
++			 * via skb dst info.
++			 */
++			u32 sptag = FIELD_GET(QDMA_ETH_RXMSG_SPTAG,
++					      le32_to_cpu(desc->msg0));
++
++			if (sptag < ARRAY_SIZE(port->dsa_meta) &&
++			    port->dsa_meta[sptag])
++				skb_dst_set_noref(skb,
++						  &port->dsa_meta[sptag]->dst);
++		}
++
+ 		napi_gro_receive(&q->napi, skb);
+ 
+ 		done++;
+@@ -1636,25 +1655,76 @@ static u16 airoha_dev_select_queue(struc
+ 	return queue < dev->num_tx_queues ? queue : 0;
+ }
+ 
++static u32 airoha_get_dsa_tag(struct sk_buff *skb, struct net_device *dev)
++{
++#if IS_ENABLED(CONFIG_NET_DSA)
++	struct ethhdr *ehdr;
++	struct dsa_port *dp;
++	u8 xmit_tpid;
++	u16 tag;
++
++	if (!netdev_uses_dsa(dev))
++		return 0;
++
++	dp = dev->dsa_ptr;
++	if (IS_ERR(dp))
++		return 0;
++
++	if (dp->tag_ops->proto != DSA_TAG_PROTO_MTK)
++		return 0;
++
++	if (skb_cow_head(skb, 0))
++		return 0;
++
++	ehdr = (struct ethhdr *)skb->data;
++	tag = be16_to_cpu(ehdr->h_proto);
++	xmit_tpid = tag >> 8;
++
++	switch (xmit_tpid) {
++	case MTK_HDR_XMIT_TAGGED_TPID_8100:
++		ehdr->h_proto = cpu_to_be16(ETH_P_8021Q);
++		tag &= ~(MTK_HDR_XMIT_TAGGED_TPID_8100 << 8);
++		break;
++	case MTK_HDR_XMIT_TAGGED_TPID_88A8:
++		ehdr->h_proto = cpu_to_be16(ETH_P_8021AD);
++		tag &= ~(MTK_HDR_XMIT_TAGGED_TPID_88A8 << 8);
++		break;
++	default:
++		/* PPE module requires untagged DSA packets to work properly,
++		 * so move DSA tag to DMA descriptor.
++		 */
++		memmove(skb->data + MTK_HDR_LEN, skb->data, 2 * ETH_ALEN);
++		__skb_pull(skb, MTK_HDR_LEN);
++		break;
++	}
++
++	return tag;
++#else
++	return 0;
++#endif
++}
++
+ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
+ 				   struct net_device *dev)
+ {
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+-	u32 nr_frags = 1 + skb_shinfo(skb)->nr_frags;
+-	u32 msg0, msg1, len = skb_headlen(skb);
+ 	struct airoha_qdma *qdma = port->qdma;
++	u32 nr_frags, tag, msg0, msg1, len;
+ 	struct netdev_queue *txq;
+ 	struct airoha_queue *q;
+-	void *data = skb->data;
++	void *data;
+ 	int i, qid;
+ 	u16 index;
+ 	u8 fport;
+ 
+ 	qid = skb_get_queue_mapping(skb) % ARRAY_SIZE(qdma->q_tx);
++	tag = airoha_get_dsa_tag(skb, dev);
++
+ 	msg0 = FIELD_PREP(QDMA_ETH_TXMSG_CHAN_MASK,
+ 			  qid / AIROHA_NUM_QOS_QUEUES) |
+ 	       FIELD_PREP(QDMA_ETH_TXMSG_QUEUE_MASK,
+-			  qid % AIROHA_NUM_QOS_QUEUES);
++			  qid % AIROHA_NUM_QOS_QUEUES) |
++	       FIELD_PREP(QDMA_ETH_TXMSG_SP_TAG_MASK, tag);
+ 	if (skb->ip_summed == CHECKSUM_PARTIAL)
+ 		msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TCO_MASK, 1) |
+ 			FIELD_PREP(QDMA_ETH_TXMSG_UCO_MASK, 1) |
+@@ -1685,6 +1755,8 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	spin_lock_bh(&q->lock);
+ 
+ 	txq = netdev_get_tx_queue(dev, qid);
++	nr_frags = 1 + skb_shinfo(skb)->nr_frags;
++
+ 	if (q->queued + nr_frags > q->ndesc) {
+ 		/* not enough space in the queue */
+ 		netif_tx_stop_queue(txq);
+@@ -1692,7 +1764,10 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
++	len = skb_headlen(skb);
++	data = skb->data;
+ 	index = q->head;
++
+ 	for (i = 0; i < nr_frags; i++) {
+ 		struct airoha_qdma_desc *desc = &q->desc[index];
+ 		struct airoha_queue_entry *e = &q->entry[index];
+@@ -2223,6 +2298,37 @@ static const struct ethtool_ops airoha_e
+ 	.get_rmon_stats		= airoha_ethtool_get_rmon_stats,
+ };
+ 
++static int airoha_metadata_dst_alloc(struct airoha_gdm_port *port)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(port->dsa_meta); i++) {
++		struct metadata_dst *md_dst;
++
++		md_dst = metadata_dst_alloc(0, METADATA_HW_PORT_MUX,
++					    GFP_KERNEL);
++		if (!md_dst)
++			return -ENOMEM;
++
++		md_dst->u.port_info.port_id = i;
++		port->dsa_meta[i] = md_dst;
++	}
++
++	return 0;
++}
++
++static void airoha_metadata_dst_free(struct airoha_gdm_port *port)
++{
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(port->dsa_meta); i++) {
++		if (!port->dsa_meta[i])
++			continue;
++
++		metadata_dst_free(port->dsa_meta[i]);
++	}
++}
++
+ static int airoha_alloc_gdm_port(struct airoha_eth *eth, struct device_node *np)
+ {
+ 	const __be32 *id_ptr = of_get_property(np, "reg", NULL);
+@@ -2295,6 +2401,10 @@ static int airoha_alloc_gdm_port(struct
+ 	port->id = id;
+ 	eth->ports[index] = port;
+ 
++	err = airoha_metadata_dst_alloc(port);
++	if (err)
++		return err;
++
+ 	return register_netdev(dev);
+ }
+ 
+@@ -2387,8 +2497,10 @@ error_hw_cleanup:
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+ 		struct airoha_gdm_port *port = eth->ports[i];
+ 
+-		if (port && port->dev->reg_state == NETREG_REGISTERED)
++		if (port && port->dev->reg_state == NETREG_REGISTERED) {
+ 			unregister_netdev(port->dev);
++			airoha_metadata_dst_free(port);
++		}
+ 	}
+ 	free_netdev(eth->napi_dev);
+ 	platform_set_drvdata(pdev, NULL);
+@@ -2414,6 +2526,7 @@ static void airoha_remove(struct platfor
+ 
+ 		airoha_dev_stop(port->dev);
+ 		unregister_netdev(port->dev);
++		airoha_metadata_dst_free(port);
+ 	}
+ 	free_netdev(eth->napi_dev);
+ 
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -15,6 +15,7 @@
+ 
+ #define AIROHA_MAX_NUM_GDM_PORTS	1
+ #define AIROHA_MAX_NUM_QDMA		2
++#define AIROHA_MAX_DSA_PORTS		7
+ #define AIROHA_MAX_NUM_RSTS		3
+ #define AIROHA_MAX_NUM_XSI_RSTS		5
+ #define AIROHA_MAX_MTU			2000
+@@ -43,6 +44,10 @@
+ #define QDMA_METER_IDX(_n)		((_n) & 0xff)
+ #define QDMA_METER_GROUP(_n)		(((_n) >> 8) & 0x3)
+ 
++#define MTK_HDR_LEN			4
++#define MTK_HDR_XMIT_TAGGED_TPID_8100	1
++#define MTK_HDR_XMIT_TAGGED_TPID_88A8	2
++
+ enum {
+ 	QDMA_INT_REG_IDX0,
+ 	QDMA_INT_REG_IDX1,
+@@ -231,6 +236,8 @@ struct airoha_gdm_port {
+ 	/* qos stats counters */
+ 	u64 cpu_tx_packets;
+ 	u64 fwd_tx_packets;
++
++	struct metadata_dst *dsa_meta[AIROHA_MAX_DSA_PORTS];
+ };
+ 
+ struct airoha_eth {
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -624,6 +624,8 @@
+ #define QDMA_ETH_TXMSG_ACNT_G1_MASK	GENMASK(10, 6)	/* 0x1f do not count */
+ #define QDMA_ETH_TXMSG_ACNT_G0_MASK	GENMASK(5, 0)	/* 0x3f do not count */
+ 
++/* RX MSG0 */
++#define QDMA_ETH_RXMSG_SPTAG		GENMASK(21, 14)
+ /* RX MSG1 */
+ #define QDMA_ETH_RXMSG_DEI_MASK		BIT(31)
+ #define QDMA_ETH_RXMSG_IP6_MASK		BIT(30)

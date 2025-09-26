@@ -1,0 +1,223 @@
+From f45fc18b6de04483643e8aa2ab97737abfe03d59 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 23 Aug 2025 09:56:03 +0200
+Subject: [PATCH 2/3] net: airoha: Add airoha_ppe_dev struct definition
+
+Introduce airoha_ppe_dev struct as container for PPE offload callbacks
+consumed by the MT76 driver during flowtable offload for traffic
+received by the wlan NIC and forwarded to the wired one.
+Add airoha_ppe_setup_tc_block_cb routine to PPE offload ops for MT76
+driver.
+Rely on airoha_ppe_dev pointer in airoha_ppe_setup_tc_block_cb
+signature.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20250823-airoha-en7581-wlan-rx-offload-v3-2-f78600ec3ed8@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  |  4 +-
+ drivers/net/ethernet/airoha/airoha_eth.h  |  4 +-
+ drivers/net/ethernet/airoha/airoha_npu.c  |  1 -
+ drivers/net/ethernet/airoha/airoha_ppe.c  | 67 +++++++++++++++++++++--
+ include/linux/soc/airoha/airoha_offload.h | 35 ++++++++++++
+ 5 files changed, 104 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2601,13 +2601,15 @@ static int airoha_dev_setup_tc_block_cb(
+ 					void *type_data, void *cb_priv)
+ {
+ 	struct net_device *dev = cb_priv;
++	struct airoha_gdm_port *port = netdev_priv(dev);
++	struct airoha_eth *eth = port->qdma->eth;
+ 
+ 	if (!tc_can_offload(dev))
+ 		return -EOPNOTSUPP;
+ 
+ 	switch (type) {
+ 	case TC_SETUP_CLSFLOWER:
+-		return airoha_ppe_setup_tc_block_cb(dev, type_data);
++		return airoha_ppe_setup_tc_block_cb(&eth->ppe->dev, type_data);
+ 	case TC_SETUP_CLSMATCHALL:
+ 		return airoha_dev_tc_matchall(dev, type_data);
+ 	default:
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -13,6 +13,7 @@
+ #include <linux/kernel.h>
+ #include <linux/netdevice.h>
+ #include <linux/reset.h>
++#include <linux/soc/airoha/airoha_offload.h>
+ #include <net/dsa.h>
+ 
+ #define AIROHA_MAX_NUM_GDM_PORTS	4
+@@ -546,6 +547,7 @@ struct airoha_gdm_port {
+ #define AIROHA_RXD4_FOE_ENTRY		GENMASK(15, 0)
+ 
+ struct airoha_ppe {
++	struct airoha_ppe_dev dev;
+ 	struct airoha_eth *eth;
+ 
+ 	void *foe;
+@@ -622,7 +624,7 @@ bool airoha_is_valid_gdm_port(struct air
+ 
+ void airoha_ppe_check_skb(struct airoha_ppe *ppe, struct sk_buff *skb,
+ 			  u16 hash);
+-int airoha_ppe_setup_tc_block_cb(struct net_device *dev, void *type_data);
++int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);
+ int airoha_ppe_init(struct airoha_eth *eth);
+ void airoha_ppe_deinit(struct airoha_eth *eth);
+ void airoha_ppe_init_upd_mem(struct airoha_gdm_port *port);
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -11,7 +11,6 @@
+ #include <linux/of_platform.h>
+ #include <linux/of_reserved_mem.h>
+ #include <linux/regmap.h>
+-#include <linux/soc/airoha/airoha_offload.h>
+ 
+ #include "airoha_eth.h"
+ 
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -6,8 +6,9 @@
+ 
+ #include <linux/ip.h>
+ #include <linux/ipv6.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
+ #include <linux/rhashtable.h>
+-#include <linux/soc/airoha/airoha_offload.h>
+ #include <net/ipv6.h>
+ #include <net/pkt_cls.h>
+ 
+@@ -1282,10 +1283,10 @@ error_npu_put:
+ 	return err;
+ }
+ 
+-int airoha_ppe_setup_tc_block_cb(struct net_device *dev, void *type_data)
++int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data)
+ {
+-	struct airoha_gdm_port *port = netdev_priv(dev);
+-	struct airoha_eth *eth = port->qdma->eth;
++	struct airoha_ppe *ppe = dev->priv;
++	struct airoha_eth *eth = ppe->eth;
+ 	int err = 0;
+ 
+ 	mutex_lock(&flow_offload_mutex);
+@@ -1338,6 +1339,61 @@ void airoha_ppe_init_upd_mem(struct airo
+ 		     PPE_UPDMEM_WR_MASK | PPE_UPDMEM_REQ_MASK);
+ }
+ 
++struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
++{
++	struct platform_device *pdev;
++	struct device_node *np;
++	struct airoha_eth *eth;
++
++	np = of_parse_phandle(dev->of_node, "airoha,eth", 0);
++	if (!np)
++		return ERR_PTR(-ENODEV);
++
++	pdev = of_find_device_by_node(np);
++	if (!pdev) {
++		dev_err(dev, "cannot find device node %s\n", np->name);
++		of_node_put(np);
++		return ERR_PTR(-ENODEV);
++	}
++	of_node_put(np);
++
++	if (!try_module_get(THIS_MODULE)) {
++		dev_err(dev, "failed to get the device driver module\n");
++		goto error_pdev_put;
++	}
++
++	eth = platform_get_drvdata(pdev);
++	if (!eth)
++		goto error_module_put;
++
++	if (!device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_SUPPLIER)) {
++		dev_err(&pdev->dev,
++			"failed to create device link to consumer %s\n",
++			dev_name(dev));
++		goto error_module_put;
++	}
++
++	return &eth->ppe->dev;
++
++error_module_put:
++	module_put(THIS_MODULE);
++error_pdev_put:
++	platform_device_put(pdev);
++
++	return ERR_PTR(-ENODEV);
++}
++EXPORT_SYMBOL_GPL(airoha_ppe_get_dev);
++
++void airoha_ppe_put_dev(struct airoha_ppe_dev *dev)
++{
++	struct airoha_ppe *ppe = dev->priv;
++	struct airoha_eth *eth = ppe->eth;
++
++	module_put(THIS_MODULE);
++	put_device(eth->dev);
++}
++EXPORT_SYMBOL_GPL(airoha_ppe_put_dev);
++
+ int airoha_ppe_init(struct airoha_eth *eth)
+ {
+ 	struct airoha_ppe *ppe;
+@@ -1347,6 +1403,9 @@ int airoha_ppe_init(struct airoha_eth *e
+ 	if (!ppe)
+ 		return -ENOMEM;
+ 
++	ppe->dev.ops.setup_tc_block_cb = airoha_ppe_setup_tc_block_cb;
++	ppe->dev.priv = ppe;
++
+ 	foe_size = PPE_NUM_ENTRIES * sizeof(struct airoha_foe_entry);
+ 	ppe->foe = dmam_alloc_coherent(eth->dev, foe_size, &ppe->foe_dma,
+ 				       GFP_KERNEL);
+--- a/include/linux/soc/airoha/airoha_offload.h
++++ b/include/linux/soc/airoha/airoha_offload.h
+@@ -9,6 +9,41 @@
+ #include <linux/spinlock.h>
+ #include <linux/workqueue.h>
+ 
++struct airoha_ppe_dev {
++	struct {
++		int (*setup_tc_block_cb)(struct airoha_ppe_dev *dev,
++					 void *type_data);
++	} ops;
++
++	void *priv;
++};
++
++#if (IS_BUILTIN(CONFIG_NET_AIROHA) || IS_MODULE(CONFIG_NET_AIROHA))
++struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev);
++void airoha_ppe_put_dev(struct airoha_ppe_dev *dev);
++
++static inline int airoha_ppe_dev_setup_tc_block_cb(struct airoha_ppe_dev *dev,
++						   void *type_data)
++{
++	return dev->ops.setup_tc_block_cb(dev, type_data);
++}
++#else
++static inline struct airoha_ppe_dev *airoha_ppe_get_dev(struct device *dev)
++{
++	return NULL;
++}
++
++static inline void airoha_ppe_put_dev(struct airoha_ppe_dev *dev)
++{
++}
++
++static inline int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev,
++					       void *type_data)
++{
++	return -EOPNOTSUPP;
++}
++#endif
++
+ #define NPU_NUM_CORES		8
+ #define NPU_NUM_IRQ		6
+ #define NPU_RX0_DESC_NUM	512

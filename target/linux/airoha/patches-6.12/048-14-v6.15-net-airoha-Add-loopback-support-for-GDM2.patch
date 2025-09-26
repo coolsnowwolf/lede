@@ -1,0 +1,210 @@
+From 9cd451d414f6e29f507a216fb3b19fa68c011f8c Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 28 Feb 2025 11:54:22 +0100
+Subject: [PATCH 14/15] net: airoha: Add loopback support for GDM2
+
+Enable hw redirection for traffic received on GDM2 port to GDM{3,4}.
+This is required to apply Qdisc offloading (HTB or ETS) for traffic to
+and from GDM{3,4} port.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 71 ++++++++++++++++++++++-
+ drivers/net/ethernet/airoha/airoha_eth.h  |  7 +++
+ drivers/net/ethernet/airoha/airoha_ppe.c  | 12 ++--
+ drivers/net/ethernet/airoha/airoha_regs.h | 29 +++++++++
+ 4 files changed, 111 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1588,14 +1588,81 @@ static int airoha_dev_set_macaddr(struct
+ 	return 0;
+ }
+ 
++static void airhoha_set_gdm2_loopback(struct airoha_gdm_port *port)
++{
++	u32 pse_port = port->id == 3 ? FE_PSE_PORT_GDM3 : FE_PSE_PORT_GDM4;
++	struct airoha_eth *eth = port->qdma->eth;
++	u32 chan = port->id == 3 ? 4 : 0;
++
++	/* Forward the traffic to the proper GDM port */
++	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(2), pse_port);
++	airoha_fe_clear(eth, REG_GDM_FWD_CFG(2), GDM_STRIP_CRC);
++
++	/* Enable GDM2 loopback */
++	airoha_fe_wr(eth, REG_GDM_TXCHN_EN(2), 0xffffffff);
++	airoha_fe_wr(eth, REG_GDM_RXCHN_EN(2), 0xffff);
++	airoha_fe_rmw(eth, REG_GDM_LPBK_CFG(2),
++		      LPBK_CHAN_MASK | LPBK_MODE_MASK | LPBK_EN_MASK,
++		      FIELD_PREP(LPBK_CHAN_MASK, chan) | LPBK_EN_MASK);
++	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(2),
++		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
++		      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
++		      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_MTU));
++
++	/* Disable VIP and IFC for GDM2 */
++	airoha_fe_clear(eth, REG_FE_VIP_PORT_EN, BIT(2));
++	airoha_fe_clear(eth, REG_FE_IFC_PORT_EN, BIT(2));
++
++	if (port->id == 3) {
++		/* FIXME: handle XSI_PCE1_PORT */
++		airoha_fe_wr(eth, REG_PPE_DFT_CPORT0(0),  0x5500);
++		airoha_fe_rmw(eth, REG_FE_WAN_PORT,
++			      WAN1_EN_MASK | WAN1_MASK | WAN0_MASK,
++			      FIELD_PREP(WAN0_MASK, HSGMII_LAN_PCIE0_SRCPORT));
++		airoha_fe_rmw(eth,
++			      REG_SP_DFT_CPORT(HSGMII_LAN_PCIE0_SRCPORT >> 3),
++			      SP_CPORT_PCIE0_MASK,
++			      FIELD_PREP(SP_CPORT_PCIE0_MASK,
++					 FE_PSE_PORT_CDM2));
++	} else {
++		/* FIXME: handle XSI_USB_PORT */
++		airoha_fe_rmw(eth, REG_SRC_PORT_FC_MAP6,
++			      FC_ID_OF_SRC_PORT24_MASK,
++			      FIELD_PREP(FC_ID_OF_SRC_PORT24_MASK, 2));
++		airoha_fe_rmw(eth, REG_FE_WAN_PORT,
++			      WAN1_EN_MASK | WAN1_MASK | WAN0_MASK,
++			      FIELD_PREP(WAN0_MASK, HSGMII_LAN_ETH_SRCPORT));
++		airoha_fe_rmw(eth,
++			      REG_SP_DFT_CPORT(HSGMII_LAN_ETH_SRCPORT >> 3),
++			      SP_CPORT_ETH_MASK,
++			      FIELD_PREP(SP_CPORT_ETH_MASK, FE_PSE_PORT_CDM2));
++	}
++}
++
+ static int airoha_dev_init(struct net_device *dev)
+ {
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+ 	struct airoha_eth *eth = port->qdma->eth;
++	u32 pse_port;
+ 
+ 	airoha_set_macaddr(port, dev->dev_addr);
+-	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(port->id),
+-				    FE_PSE_PORT_PPE1);
++
++	switch (port->id) {
++	case 3:
++	case 4:
++		/* If GDM2 is active we can't enable loopback */
++		if (!eth->ports[1])
++			airhoha_set_gdm2_loopback(port);
++		fallthrough;
++	case 2:
++		pse_port = FE_PSE_PORT_PPE2;
++		break;
++	default:
++		pse_port = FE_PSE_PORT_PPE1;
++		break;
++	}
++
++	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(port->id), pse_port);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -68,6 +68,13 @@ enum {
+ };
+ 
+ enum {
++	HSGMII_LAN_PCIE0_SRCPORT = 0x16,
++	HSGMII_LAN_PCIE1_SRCPORT,
++	HSGMII_LAN_ETH_SRCPORT,
++	HSGMII_LAN_USB_SRCPORT,
++};
++
++enum {
+ 	XSI_PCIE0_VIP_PORT_MASK	= BIT(22),
+ 	XSI_PCIE1_VIP_PORT_MASK	= BIT(23),
+ 	XSI_USB_VIP_PORT_MASK	= BIT(25),
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -216,7 +216,8 @@ static int airoha_ppe_foe_entry_prepare(
+ 	      AIROHA_FOE_IB1_BIND_TTL;
+ 	hwe->ib1 = val;
+ 
+-	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG, 0x1f);
++	val = FIELD_PREP(AIROHA_FOE_IB2_PORT_AG, 0x1f) |
++	      AIROHA_FOE_IB2_PSE_QOS;
+ 	if (dsa_port >= 0)
+ 		val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, dsa_port);
+ 
+@@ -224,14 +225,13 @@ static int airoha_ppe_foe_entry_prepare(
+ 		struct airoha_gdm_port *port = netdev_priv(dev);
+ 		u8 pse_port;
+ 
+-		pse_port = port->id == 4 ? FE_PSE_PORT_GDM4 : port->id;
++		if (dsa_port >= 0)
++			pse_port = port->id == 4 ? FE_PSE_PORT_GDM4 : port->id;
++		else
++			pse_port = 2; /* uplink relies on GDM2 loopback */
+ 		val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port);
+ 	}
+ 
+-	/* FIXME: implement QoS support setting pse_port to 2 (loopback)
+-	 * for uplink and setting qos bit in ib2
+-	 */
+-
+ 	if (is_multicast_ether_addr(data->eth.h_dest))
+ 		val |= AIROHA_FOE_IB2_MULTICAST;
+ 
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -38,6 +38,12 @@
+ #define FE_RST_CORE_MASK		BIT(0)
+ 
+ #define REG_FE_FOE_TS			0x0010
++
++#define REG_FE_WAN_PORT			0x0024
++#define WAN1_EN_MASK			BIT(16)
++#define WAN1_MASK			GENMASK(12, 8)
++#define WAN0_MASK			GENMASK(4, 0)
++
+ #define REG_FE_WAN_MAC_H		0x0030
+ #define REG_FE_LAN_MAC_H		0x0040
+ 
+@@ -126,6 +132,7 @@
+ #define GDM_IP4_CKSUM			BIT(22)
+ #define GDM_TCP_CKSUM			BIT(21)
+ #define GDM_UDP_CKSUM			BIT(20)
++#define GDM_STRIP_CRC			BIT(16)
+ #define GDM_UCFQ_MASK			GENMASK(15, 12)
+ #define GDM_BCFQ_MASK			GENMASK(11, 8)
+ #define GDM_MCFQ_MASK			GENMASK(7, 4)
+@@ -139,6 +146,16 @@
+ #define GDM_SHORT_LEN_MASK		GENMASK(13, 0)
+ #define GDM_LONG_LEN_MASK		GENMASK(29, 16)
+ 
++#define REG_GDM_LPBK_CFG(_n)		(GDM_BASE(_n) + 0x1c)
++#define LPBK_GAP_MASK			GENMASK(31, 24)
++#define LPBK_LEN_MASK			GENMASK(23, 10)
++#define LPBK_CHAN_MASK			GENMASK(8, 4)
++#define LPBK_MODE_MASK			GENMASK(3, 1)
++#define LPBK_EN_MASK			BIT(0)
++
++#define REG_GDM_TXCHN_EN(_n)		(GDM_BASE(_n) + 0x24)
++#define REG_GDM_RXCHN_EN(_n)		(GDM_BASE(_n) + 0x28)
++
+ #define REG_FE_CPORT_CFG		(GDM1_BASE + 0x40)
+ #define FE_CPORT_PAD			BIT(26)
+ #define FE_CPORT_PORT_XFC_MASK		BIT(25)
+@@ -351,6 +368,18 @@
+ 
+ #define REG_MC_VLAN_DATA		0x2108
+ 
++#define REG_SP_DFT_CPORT(_n)		(0x20e0 + ((_n) << 2))
++#define SP_CPORT_PCIE1_MASK		GENMASK(31, 28)
++#define SP_CPORT_PCIE0_MASK		GENMASK(27, 24)
++#define SP_CPORT_USB_MASK		GENMASK(7, 4)
++#define SP_CPORT_ETH_MASK		GENMASK(7, 4)
++
++#define REG_SRC_PORT_FC_MAP6		0x2298
++#define FC_ID_OF_SRC_PORT27_MASK	GENMASK(28, 24)
++#define FC_ID_OF_SRC_PORT26_MASK	GENMASK(20, 16)
++#define FC_ID_OF_SRC_PORT25_MASK	GENMASK(12, 8)
++#define FC_ID_OF_SRC_PORT24_MASK	GENMASK(4, 0)
++
+ #define REG_CDM5_RX_OQ1_DROP_CNT	0x29d4
+ 
+ /* QDMA */

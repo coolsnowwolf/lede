@@ -1,0 +1,257 @@
+From bdcad9ab6b0f071e8492d88064a58323d7155aa7 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 17 Jan 2025 13:23:13 +0100
+Subject: [PATCH] net: airoha: add phylink support for GDM2/4
+
+Add phylink support for GDM2/4 port that require configuration of the
+PCS to make the external PHY or attached SFP cage work.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 133 ++++++++++++++++++++++
+ drivers/net/ethernet/airoha/airoha_eth.h  |   4 +
+ drivers/net/ethernet/airoha/airoha_regs.h |  12 ++
+ 3 files changed, 149 insertions(+)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -8,6 +8,7 @@
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/tcp.h>
++#include <linux/pcs/pcs-airoha.h>
+ #include <linux/u64_stats_sync.h>
+ #include <net/dst_metadata.h>
+ #include <net/page_pool/helpers.h>
+@@ -71,6 +72,11 @@ static void airoha_qdma_irq_disable(stru
+ 	airoha_qdma_set_irqmask(irq_bank, index, mask, 0);
+ }
+ 
++static bool airhoa_is_phy_external(struct airoha_gdm_port *port)
++{
++	return port->id != 1;
++}
++
+ static void airoha_set_macaddr(struct airoha_gdm_port *port, const u8 *addr)
+ {
+ 	struct airoha_eth *eth = port->qdma->eth;
+@@ -1621,6 +1627,17 @@ static int airoha_dev_open(struct net_de
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+ 	struct airoha_qdma *qdma = port->qdma;
+ 
++	if (airhoa_is_phy_external(port)) {
++		err = phylink_of_phy_connect(port->phylink, dev->dev.of_node, 0);
++		if (err) {
++			netdev_err(dev, "%s: could not attach PHY: %d\n", __func__,
++				   err);
++			return err;
++		}
++
++		phylink_start(port->phylink);
++	}
++
+ 	netif_tx_start_all_queues(dev);
+ 	err = airoha_set_vip_for_gdm_port(port, true);
+ 	if (err)
+@@ -1674,6 +1691,11 @@ static int airoha_dev_stop(struct net_de
+ 		}
+ 	}
+ 
++	if (airhoa_is_phy_external(port)) {
++		phylink_stop(port->phylink);
++		phylink_disconnect_phy(port->phylink);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -2816,6 +2838,20 @@ static const struct ethtool_ops airoha_e
+ 	.get_link		= ethtool_op_get_link,
+ };
+ 
++static struct phylink_pcs *airoha_phylink_mac_select_pcs(struct phylink_config *config,
++							 phy_interface_t interface)
++{
++	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
++						    phylink_config);
++
++	return port->pcs;
++}
++
++static void airoha_mac_config(struct phylink_config *config, unsigned int mode,
++			      const struct phylink_link_state *state)
++{
++}
++
+ static int airoha_metadata_dst_alloc(struct airoha_gdm_port *port)
+ {
+ 	int i;
+@@ -2860,6 +2896,99 @@ bool airoha_is_valid_gdm_port(struct air
+ 	return false;
+ }
+ 
++static void airoha_mac_link_up(struct phylink_config *config, struct phy_device *phy,
++			       unsigned int mode, phy_interface_t interface,
++			       int speed, int duplex, bool tx_pause, bool rx_pause)
++{
++	struct airoha_gdm_port *port = container_of(config, struct airoha_gdm_port,
++						    phylink_config);
++	struct airoha_qdma *qdma = port->qdma;
++	struct airoha_eth *eth = qdma->eth;
++	u32 frag_size_tx, frag_size_rx;
++
++	switch (speed) {
++	case SPEED_10000:
++	case SPEED_5000:
++		frag_size_tx = 8;
++		frag_size_rx = 8;
++		break;
++	case SPEED_2500:
++		frag_size_tx = 2;
++		frag_size_rx = 1;
++		break;
++	default:
++		frag_size_tx = 1;
++		frag_size_rx = 0;
++	}
++
++	/* Configure TX/RX frag based on speed */
++	if (port->id == 4) {
++		airoha_fe_rmw(eth, REG_GDMA4_TMBI_FRAG, GDMA4_SGMII0_TX_FRAG_SIZE,
++			      FIELD_PREP(GDMA4_SGMII0_TX_FRAG_SIZE, frag_size_tx));
++
++		airoha_fe_rmw(eth, REG_GDMA4_RMBI_FRAG, GDMA4_SGMII0_RX_FRAG_SIZE,
++			      FIELD_PREP(GDMA4_SGMII0_RX_FRAG_SIZE, frag_size_rx));
++	}
++}
++
++static void airoha_mac_link_down(struct phylink_config *config, unsigned int mode,
++				 phy_interface_t interface)
++{
++}
++
++static const struct phylink_mac_ops airoha_phylink_ops = {
++	.mac_select_pcs = airoha_phylink_mac_select_pcs,
++	.mac_config = airoha_mac_config,
++	.mac_link_up = airoha_mac_link_up,
++	.mac_link_down = airoha_mac_link_down,
++};
++
++static int airoha_setup_phylink(struct net_device *dev)
++{
++	struct airoha_gdm_port *port = netdev_priv(dev);
++	struct device_node *np = dev->dev.of_node;
++	phy_interface_t phy_mode;
++	struct phylink *phylink;
++	int err;
++
++	err = of_get_phy_mode(np, &phy_mode);
++	if (err) {
++		dev_err(&dev->dev, "incorrect phy-mode\n");
++		return err;
++	}
++
++	port->phylink_config.dev = &dev->dev;
++	port->phylink_config.type = PHYLINK_NETDEV;
++	port->phylink_config.mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE |
++						MAC_10 | MAC_100 | MAC_1000 | MAC_2500FD |
++						MAC_5000FD | MAC_10000FD;
++
++	__set_bit(PHY_INTERFACE_MODE_SGMII,
++		  port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_1000BASEX,
++		  port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_2500BASEX,
++		  port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_USXGMII,
++		  port->phylink_config.supported_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_10GBASER,
++		  port->phylink_config.supported_interfaces);
++
++	port->pcs = airoha_pcs_create(&dev->dev);
++	if (IS_ERR(port->pcs))
++		return PTR_ERR(port->pcs);
++
++	phylink = phylink_create(&port->phylink_config,
++				 of_fwnode_handle(np),
++				 phy_mode, &airoha_phylink_ops);
++	if (IS_ERR(phylink))
++		return PTR_ERR(phylink);
++
++	port->phylink = phylink;
++
++	return 0;
++}
++
+ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
+ 				 struct device_node *np, int index)
+ {
+@@ -2938,6 +3067,12 @@ static int airoha_alloc_gdm_port(struct
+ 	if (err)
+ 		return err;
+ 
++	if (airhoa_is_phy_external(port)) {
++		err = airoha_setup_phylink(dev);
++		if (err)
++			goto free_metadata_dst;
++	}
++
+ 	err = register_netdev(dev);
+ 	if (err)
+ 		goto free_metadata_dst;
+@@ -3053,6 +3188,10 @@ error_hw_cleanup:
+ 		if (port && port->dev->reg_state == NETREG_REGISTERED) {
+ 			unregister_netdev(port->dev);
+ 			airoha_metadata_dst_free(port);
++			if (airhoa_is_phy_external(port)) {
++				phylink_destroy(port->phylink);
++				airoha_pcs_destroy(port->pcs);
++			}
+ 		}
+ 	}
+ 	free_netdev(eth->napi_dev);
+@@ -3080,6 +3219,10 @@ static void airoha_remove(struct platfor
+ 		airoha_dev_stop(port->dev);
+ 		unregister_netdev(port->dev);
+ 		airoha_metadata_dst_free(port);
++		if (airhoa_is_phy_external(port)) {
++			phylink_destroy(port->phylink);
++			airoha_pcs_destroy(port->pcs);
++		}
+ 	}
+ 	free_netdev(eth->napi_dev);
+ 
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -536,6 +536,10 @@ struct airoha_gdm_port {
+ 	struct net_device *dev;
+ 	int id;
+ 
++	struct phylink *phylink;
++	struct phylink_config phylink_config;
++	struct phylink_pcs *pcs;
++
+ 	struct airoha_hw_stats stats;
+ 
+ 	DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -359,6 +359,18 @@
+ #define IP_FRAGMENT_PORT_MASK		GENMASK(8, 5)
+ #define IP_FRAGMENT_NBQ_MASK		GENMASK(4, 0)
+ 
++#define REG_GDMA4_TMBI_FRAG		0x2028
++#define GDMA4_SGMII1_TX_WEIGHT		GENMASK(31, 26)
++#define GDMA4_SGMII1_TX_FRAG_SIZE	GENMASK(25, 16)
++#define GDMA4_SGMII0_TX_WEIGHT		GENMASK(15, 10)
++#define GDMA4_SGMII0_TX_FRAG_SIZE	GENMASK(9, 0)
++
++#define REG_GDMA4_RMBI_FRAG		0x202c
++#define GDMA4_SGMII1_RX_WEIGHT		GENMASK(31, 26)
++#define GDMA4_SGMII1_RX_FRAG_SIZE	GENMASK(25, 16)
++#define GDMA4_SGMII0_RX_WEIGHT		GENMASK(15, 10)
++#define GDMA4_SGMII0_RX_FRAG_SIZE	GENMASK(9, 0)
++
+ #define REG_MC_VLAN_EN			0x2100
+ #define MC_VLAN_EN_MASK			BIT(0)
+ 

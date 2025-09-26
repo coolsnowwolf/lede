@@ -1,0 +1,3369 @@
+From ddee0533ac9906ea5a40ac2e0474034135aa074d Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 17 Jan 2025 12:40:32 +0100
+Subject: [PATCH 4/8] net: pcs: airoha: add PCS driver for Airoha AN7581 SoC
+
+Add PCS driver for Airoha AN7581 SoC for ethernet SERDES and permit usage of
+external PHY or connected SFP cage. Supported modes are USXGMII,
+10G-BASER, 2500BASE-X, 1000BASE-X and SGMII.
+
+The driver probe and register the various needed registers and expose
+the pcs_create and pcs_destroy symbol to make them usable by the Airoha
+Ethernet driver.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/pcs/Kconfig                    |    2 +
+ drivers/net/pcs/Makefile                   |    2 +
+ drivers/net/pcs/airoha/Kconfig             |   11 +
+ drivers/net/pcs/airoha/Makefile            |    7 +
+ drivers/net/pcs/airoha/pcs-airoha-common.c | 1033 ++++++++++++++
+ drivers/net/pcs/airoha/pcs-airoha.h        |  822 ++++++++++++
+ drivers/net/pcs/airoha/pcs-an7581.c        | 1419 ++++++++++++++++++++
+ include/linux/pcs/pcs-airoha.h             |    9 +
+ 8 files changed, 3305 insertions(+)
+ create mode 100644 drivers/net/pcs/airoha/Kconfig
+ create mode 100644 drivers/net/pcs/airoha/Makefile
+ create mode 100644 drivers/net/pcs/airoha/pcs-airoha-common.c
+ create mode 100644 drivers/net/pcs/airoha/pcs-airoha.h
+ create mode 100644 drivers/net/pcs/airoha/pcs-an7581.c
+ create mode 100644 include/linux/pcs/pcs-airoha.h
+
+--- a/drivers/net/pcs/Kconfig
++++ b/drivers/net/pcs/Kconfig
+@@ -44,4 +44,6 @@ config PCS_RZN1_MIIC
+ 	  on RZ/N1 SoCs. This PCS converts MII to RMII/RGMII or can be set in
+ 	  pass-through mode for MII.
+ 
++source "drivers/net/pcs/airoha/Kconfig"
++
+ endmenu
+--- a/drivers/net/pcs/Makefile
++++ b/drivers/net/pcs/Makefile
+@@ -9,3 +9,5 @@ obj-$(CONFIG_PCS_LYNX)		+= pcs-lynx.o
+ obj-$(CONFIG_PCS_MTK_LYNXI)	+= pcs-mtk-lynxi.o
+ obj-$(CONFIG_PCS_RZN1_MIIC)	+= pcs-rzn1-miic.o
+ obj-$(CONFIG_PCS_MTK_USXGMII)	+= pcs-mtk-usxgmii.o
++
++obj-$(CONFIG_PCS_AIROHA)	+= airoha/
+--- /dev/null
++++ b/drivers/net/pcs/airoha/Kconfig
+@@ -0,0 +1,11 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++config PCS_AIROHA
++	tristate
++
++config PCS_AIROHA_AN7581
++	tristate "Airoha AN7581 PCS driver"
++	select PCS_AIROHA
++	help
++	  This module provides helper to phylink for managing the Airoha
++	  AN7581 PCS for SoC Ethernet and PON SERDES.
+--- /dev/null
++++ b/drivers/net/pcs/airoha/Makefile
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: GPL-2.0
++
++obj-y				:= pcs-airoha.o
++pcs-airoha-objs			:= pcs-airoha-common.o
++ifdef CONFIG_PCS_AIROHA_AN7581
++pcs-airoha-objs			+= pcs-an7581.o
++endif
+--- /dev/null
++++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
+@@ -0,0 +1,1035 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2024 AIROHA Inc
++ * Author: Christian Marangi <ansuelsmth@gmail.com>
++ */
++
++#include <linux/device.h>
++#include <linux/mfd/syscon.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/pcs/pcs-airoha.h>
++#include <linux/phylink.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++
++#include "pcs-airoha.h"
++
++static void airoha_pcs_setup_scu_eth(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	u32 xsi_sel;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		xsi_sel = AIROHA_SCU_ETH_XSI_HSGMII;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++	default:
++		xsi_sel = AIROHA_SCU_ETH_XSI_USXGMII;
++	}
++
++	regmap_update_bits(priv->scu, AIROHA_SCU_SSR3,
++			   AIROHA_SCU_ETH_XSI_SEL,
++			   xsi_sel);
++}
++
++static void airoha_pcs_setup_scu_pon(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	u32 xsi_sel, wan_sel;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		wan_sel = AIROHA_SCU_WAN_SEL_SGMII;
++		xsi_sel = AIROHA_SCU_PON_XSI_HSGMII;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		wan_sel = AIROHA_SCU_WAN_SEL_HSGMII;
++		xsi_sel = AIROHA_SCU_PON_XSI_HSGMII;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++	default:
++		wan_sel = AIROHA_SCU_WAN_SEL_USXGMII;
++		xsi_sel = AIROHA_SCU_PON_XSI_USXGMII;
++	}
++
++	regmap_update_bits(priv->scu, AIROHA_SCU_SSTR,
++			   AIROHA_SCU_PON_XSI_SEL,
++			   xsi_sel);
++
++	regmap_update_bits(priv->scu, AIROHA_SCU_WAN_CONF,
++			   AIROHA_SCU_WAN_SEL,
++			   wan_sel);
++}
++
++static int airoha_pcs_setup_scu(struct airoha_pcs_priv *priv,
++				phy_interface_t interface)
++{
++	const struct airoha_pcs_match_data *data = priv->data;
++	int ret;
++
++	switch (data->port_type) {
++	case AIROHA_PCS_ETH:
++		airoha_pcs_setup_scu_eth(priv, interface);
++		break;
++	case AIROHA_PCS_PON:
++		airoha_pcs_setup_scu_pon(priv, interface);
++		break;
++	}
++
++	/* TODO better handle reset from MAC */
++	ret = reset_control_bulk_assert(ARRAY_SIZE(priv->rsts),
++					priv->rsts);
++	if (ret)
++		return ret;
++
++	ret = reset_control_bulk_deassert(ARRAY_SIZE(priv->rsts),
++					  priv->rsts);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static void airoha_pcs_init_usxgmii(struct airoha_pcs_priv *priv)
++{
++	regmap_set_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_MSG_RX_CTRL_0,
++			AIROHA_PCS_HSGMII_XFI_SEL);
++
++	/* Disable Hibernation */
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTROL_1,
++			  AIROHA_PCS_USXGMII_SPEED_SEL_H);
++
++	/* FIXME: wait Airoha */
++	/* Avoid PCS sending garbage to MAC in some HW revision (E0) */
++	regmap_write(priv->usxgmii_pcs, AIROHA_PCS_USGMII_VENDOR_DEFINE_116, 0);
++}
++
++static void airoha_pcs_init_hsgmii(struct airoha_pcs_priv *priv)
++{
++	regmap_clear_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_MSG_RX_CTRL_0,
++			  AIROHA_PCS_HSGMII_XFI_SEL);
++
++	regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_1,
++			AIROHA_PCS_TBI_10B_MODE);
++}
++
++static void airoha_pcs_init_sgmii(struct airoha_pcs_priv *priv)
++{
++	regmap_clear_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_MSG_RX_CTRL_0,
++			  AIROHA_PCS_HSGMII_XFI_SEL);
++
++	regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_1,
++			AIROHA_PCS_TBI_10B_MODE);
++
++	regmap_update_bits(priv->hsgmii_rate_adp, AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_6,
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_L,
++			   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_L, 0x07070707));
++
++	regmap_update_bits(priv->hsgmii_rate_adp, AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_8,
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_C,
++			   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_C, 0xff));
++}
++
++static void airoha_pcs_init(struct airoha_pcs_priv *priv,
++			    phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		airoha_pcs_init_sgmii(priv);
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		airoha_pcs_init_hsgmii(priv);
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		airoha_pcs_init_usxgmii(priv);
++		break;
++	default:
++		return;
++	}
++}
++
++static void airoha_pcs_interrupt_init_sgmii(struct airoha_pcs_priv *priv)
++{
++	/* Disable every interrupt */
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_HSGMII_PCS_HSGMII_MODE_INTERRUPT,
++			  AIROHA_PCS_HSGMII_MODE2_REMOVE_FAULT_OCCUR_INT |
++			  AIROHA_PCS_HSGMII_MODE2_AN_CL37_TIMERDONE_INT |
++			  AIROHA_PCS_HSGMII_MODE2_AN_MIS_INT |
++			  AIROHA_PCS_HSGMII_MODE2_RX_SYN_DONE_INT |
++			  AIROHA_PCS_HSGMII_MODE2_AN_DONE_INT);
++
++	/* Clear interrupt */
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_HSGMII_PCS_HSGMII_MODE_INTERRUPT,
++			AIROHA_PCS_HSGMII_MODE2_REMOVE_FAULT_OCCUR_INT_CLEAR |
++			AIROHA_PCS_HSGMII_MODE2_AN_CL37_TIMERDONE_INT_CLEAR |
++			AIROHA_PCS_HSGMII_MODE2_AN_MIS_INT_CLEAR |
++			AIROHA_PCS_HSGMII_MODE2_RX_SYN_DONE_INT_CLEAR |
++			AIROHA_PCS_HSGMII_MODE2_AN_DONE_INT_CLEAR);
++
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_HSGMII_PCS_HSGMII_MODE_INTERRUPT,
++			  AIROHA_PCS_HSGMII_MODE2_REMOVE_FAULT_OCCUR_INT_CLEAR |
++			  AIROHA_PCS_HSGMII_MODE2_AN_CL37_TIMERDONE_INT_CLEAR |
++			  AIROHA_PCS_HSGMII_MODE2_AN_MIS_INT_CLEAR |
++			  AIROHA_PCS_HSGMII_MODE2_RX_SYN_DONE_INT_CLEAR |
++			  AIROHA_PCS_HSGMII_MODE2_AN_DONE_INT_CLEAR);
++}
++
++static void airoha_pcs_interrupt_init_usxgmii(struct airoha_pcs_priv *priv)
++{
++	/* Disable every Interrupt */
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTRL_0,
++			  AIROHA_PCS_USXGMII_T_TYPE_T_INT_EN |
++			  AIROHA_PCS_USXGMII_T_TYPE_D_INT_EN |
++			  AIROHA_PCS_USXGMII_T_TYPE_C_INT_EN |
++			  AIROHA_PCS_USXGMII_T_TYPE_S_INT_EN);
++
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTRL_1,
++			  AIROHA_PCS_USXGMII_R_TYPE_C_INT_EN |
++			  AIROHA_PCS_USXGMII_R_TYPE_S_INT_EN |
++			  AIROHA_PCS_USXGMII_TXPCS_FSM_ENC_ERR_INT_EN |
++			  AIROHA_PCS_USXGMII_T_TYPE_E_INT_EN);
++
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTRL_2,
++			  AIROHA_PCS_USXGMII_RPCS_FSM_DEC_ERR_INT_EN |
++			  AIROHA_PCS_USXGMII_R_TYPE_E_INT_EN |
++			  AIROHA_PCS_USXGMII_R_TYPE_T_INT_EN |
++			  AIROHA_PCS_USXGMII_R_TYPE_D_INT_EN);
++
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTRL_3,
++			  AIROHA_PCS_USXGMII_FAIL_SYNC_XOR_ST_INT_EN |
++			  AIROHA_PCS_USXGMII_RX_BLOCK_LOCK_ST_INT_EN |
++			  AIROHA_PCS_USXGMII_LINK_UP_ST_INT_EN |
++			  AIROHA_PCS_USXGMII_HI_BER_ST_INT_EN);
++
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_CTRL_4,
++			  AIROHA_PCS_USXGMII_LINK_DOWN_ST_INT_EN);
++
++	/* Clear any pending interrupt */
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_INT_STA_2,
++			AIROHA_PCS_USXGMII_RPCS_FSM_DEC_ERR_INT |
++			AIROHA_PCS_USXGMII_R_TYPE_E_INT |
++			AIROHA_PCS_USXGMII_R_TYPE_T_INT |
++			AIROHA_PCS_USXGMII_R_TYPE_D_INT);
++
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_INT_STA_3,
++			AIROHA_PCS_USXGMII_FAIL_SYNC_XOR_ST_INT |
++			AIROHA_PCS_USXGMII_RX_BLOCK_LOCK_ST_INT |
++			AIROHA_PCS_USXGMII_LINK_UP_ST_INT |
++			AIROHA_PCS_USXGMII_HI_BER_ST_INT);
++
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_INT_STA_4,
++			AIROHA_PCS_USXGMII_LINK_DOWN_ST_INT);
++
++	/* Interrupt saddly seems to be not weel supported for Link Down.
++	 * PCS Poll is a must to correctly read and react on Cable Deatch
++	 * as only cable attach interrupt are fired and Link Down interrupt
++	 * are fired only in special case like AN restart.
++	 */
++}
++
++static void airoha_pcs_interrupt_init(struct airoha_pcs_priv *priv,
++				      phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		return airoha_pcs_interrupt_init_sgmii(priv);
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		return airoha_pcs_interrupt_init_usxgmii(priv);
++	default:
++		return;
++	}
++}
++
++static void airoha_pcs_get_state_sgmii(struct airoha_pcs_priv *priv,
++				       struct phylink_link_state *state)
++{
++	u32 bmsr, lpa;
++
++	regmap_read(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_1,
++		    &bmsr);
++	regmap_read(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_5,
++		    &lpa);
++
++	bmsr = (AIROHA_PCS_HSGMII_AN_SGMII_AN_COMPLETE |
++		AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT |
++		AIROHA_PCS_HSGMII_AN_SGMII_AN_ABILITY |
++		AIROHA_PCS_HSGMII_AN_SGMII_LINK_STATUS) & bmsr;
++	lpa = AIROHA_PCS_HSGMII_AN_SGMII_PARTNER_ABILITY & lpa;
++
++	phylink_mii_c22_pcs_decode_state(state, bmsr, lpa);
++}
++
++static void airoha_pcs_get_state_hsgmii(struct airoha_pcs_priv *priv,
++					struct phylink_link_state *state)
++{
++	u32 bmsr;
++
++	regmap_read(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_1,
++		    &bmsr);
++
++	bmsr = (AIROHA_PCS_HSGMII_AN_SGMII_AN_COMPLETE |
++		AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT |
++		AIROHA_PCS_HSGMII_AN_SGMII_AN_ABILITY |
++		AIROHA_PCS_HSGMII_AN_SGMII_LINK_STATUS) & bmsr;
++
++	state->link = !!(bmsr & BMSR_LSTATUS);
++	state->an_complete = !!(bmsr & BMSR_ANEGCOMPLETE);
++	state->speed = SPEED_2500;
++	state->duplex = DUPLEX_FULL;
++}
++
++static void airoha_pcs_get_state_usxgmii(struct airoha_pcs_priv *priv,
++					 struct phylink_link_state *state)
++{
++	const struct airoha_pcs_match_data *data = priv->data;
++	u32 an_done, lpa;
++
++	/* Trigger HW workaround if needed. If an error is reported,
++	 * consider link down and test again later.
++	 */
++	if (data->rxlock_workaround && data->rxlock_workaround(priv)) {
++		state->link = false;
++		return;
++	}
++
++	/* Toggle AN Status */
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6,
++			AIROHA_PCS_USXGMII_TOG_PCS_AUTONEG_STS);
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6,
++			  AIROHA_PCS_USXGMII_TOG_PCS_AUTONEG_STS);
++
++	regmap_read(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_STATS_0, &lpa);
++	regmap_read(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_STATS_2, &an_done);
++
++	state->link = !!(lpa & MDIO_USXGMII_LINK);
++	state->an_complete = !!(an_done & AIROHA_PCS_USXGMII_PCS_AN_COMPLETE);
++
++	phylink_decode_usxgmii_word(state, lpa);
++}
++
++static void airoha_pcs_get_state_10gbaser(struct airoha_pcs_priv *priv,
++					  struct phylink_link_state *state)
++{
++	u32 status, curr_mode;
++
++	/* Toggle AN Status */
++	regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6,
++			AIROHA_PCS_USXGMII_TOG_PCS_AUTONEG_STS);
++	regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6,
++			  AIROHA_PCS_USXGMII_TOG_PCS_AUTONEG_STS);
++
++	regmap_read(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_BASE_R_10GB_T_PCS_STUS_1,
++		    &status);
++	regmap_read(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_STATS_0, &curr_mode);
++
++	state->link = !!(status & AIROHA_PCS_USXGMII_RX_LINK_STUS);
++
++	switch (curr_mode & AIROHA_PCS_USXGMII_CUR_USXGMII_MODE) {
++	case AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_10G:
++		state->speed = SPEED_10000;
++		break;
++	case AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_5G:
++		state->speed = SPEED_5000;
++		break;
++	case AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_2_5G:
++		state->speed = SPEED_2500;
++		break;
++	default:
++		state->speed = SPEED_UNKNOWN;
++		return;
++	}
++
++	state->duplex = DUPLEX_FULL;
++}
++
++static void airoha_pcs_get_state(struct phylink_pcs *pcs,
++				 struct phylink_link_state *state)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++
++	switch (state->interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		airoha_pcs_get_state_sgmii(priv, state);
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		airoha_pcs_get_state_hsgmii(priv, state);
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++		airoha_pcs_get_state_usxgmii(priv, state);
++		break;
++	case PHY_INTERFACE_MODE_10GBASER:
++		airoha_pcs_get_state_10gbaser(priv, state);
++		break;
++	default:
++		return;
++	}
++}
++
++static int airoha_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
++			     phy_interface_t interface,
++			     const unsigned long *advertising,
++			     bool permit_pause_to_mac)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++	const struct airoha_pcs_match_data *data;
++	u32 rate_adapt;
++	int ret;
++
++	priv->interface = interface;
++	data = priv->data;
++
++	/* Apply Analog and Digital configuration for PCS */
++	if (data->bringup) {
++		ret = data->bringup(priv, interface);
++		if (ret)
++			return ret;
++	}
++
++	/* Set final configuration for various modes */
++	airoha_pcs_init(priv, interface);
++
++	/* Configure Interrupt for various modes */
++	airoha_pcs_interrupt_init(priv, interface);
++
++	rate_adapt = AIROHA_PCS_HSGMII_RATE_ADAPT_RX_EN |
++		     AIROHA_PCS_HSGMII_RATE_ADAPT_TX_EN;
++
++	if (interface == PHY_INTERFACE_MODE_SGMII)
++		rate_adapt |= AIROHA_PCS_HSGMII_RATE_ADAPT_RX_BYPASS |
++			      AIROHA_PCS_HSGMII_RATE_ADAPT_TX_BYPASS;
++
++	/* AN Auto Settings (Rate Adaptation) */
++	regmap_update_bits(priv->hsgmii_rate_adp, AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_0,
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_BYPASS |
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_TX_BYPASS |
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_EN |
++			   AIROHA_PCS_HSGMII_RATE_ADAPT_TX_EN, rate_adapt);
++
++	/* FIXME: With an attached Aeonsemi PHY, AN is needed
++	 * even with no inband.
++	 */
++	if (interface == PHY_INTERFACE_MODE_USXGMII ||
++	    interface == PHY_INTERFACE_MODE_10GBASER) {
++		if (interface == PHY_INTERFACE_MODE_USXGMII)
++			regmap_set_bits(priv->usxgmii_pcs,
++					AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
++					AIROHA_PCS_USXGMII_AN_ENABLE);
++		else
++			regmap_clear_bits(priv->usxgmii_pcs,
++					  AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
++					  AIROHA_PCS_USXGMII_AN_ENABLE);
++	}
++
++	/* Clear any force bit that my be set by bootloader */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_1000BASEX ||
++	    interface == PHY_INTERFACE_MODE_2500BASEX) {
++		regmap_clear_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_SGMII_STS_CTRL_0,
++				  AIROHA_PCS_LINK_MODE_P0 |
++				  AIROHA_PCS_FORCE_SPD_MODE_P0 |
++				  AIROHA_PCS_FORCE_LINKDOWN_P0 |
++				  AIROHA_PCS_FORCE_LINKUP_P0);
++	}
++
++	/* Toggle Rate Adaption for SGMII/HSGMII mode */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_1000BASEX ||
++	    interface == PHY_INTERFACE_MODE_2500BASEX) {
++		if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
++			regmap_clear_bits(priv->hsgmii_rate_adp,
++					  AIROHA_PCS_HSGMII_RATE_ADP_P0_CTRL_0,
++					  AIROHA_PCS_HSGMII_P0_DIS_MII_MODE);
++		else
++			regmap_set_bits(priv->hsgmii_rate_adp,
++					AIROHA_PCS_HSGMII_RATE_ADP_P0_CTRL_0,
++					AIROHA_PCS_HSGMII_P0_DIS_MII_MODE);
++	}
++
++	/* Setup AN Link Timer */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_1000BASEX) {
++		u32 an_timer;
++
++		an_timer = phylink_get_link_timer_ns(interface);
++
++		/* Value needs to be shifted by 4, seems value is internally * 16 */
++		regmap_update_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_11,
++				   AIROHA_PCS_HSGMII_AN_SGMII_LINK_TIMER,
++				   FIELD_PREP(AIROHA_PCS_HSGMII_AN_SGMII_LINK_TIMER,
++					      an_timer >> 4));
++
++		regmap_update_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_3,
++				   AIROHA_PCS_HSGMII_PCS_LINK_STSTIME,
++				   FIELD_PREP(AIROHA_PCS_HSGMII_PCS_LINK_STSTIME,
++					      an_timer >> 4));
++	}
++
++	/* Setup SGMII AN and advertisement in DEV_ABILITY */
++	if (interface == PHY_INTERFACE_MODE_SGMII) {
++		if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED) {
++			int advertise = phylink_mii_c22_pcs_encode_advertisement(interface,
++										 advertising);
++			if (advertise < 0)
++				return advertise;
++
++			regmap_update_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_4,
++					   AIROHA_PCS_HSGMII_AN_SGMII_DEV_ABILITY,
++					   FIELD_PREP(AIROHA_PCS_HSGMII_AN_SGMII_DEV_ABILITY,
++						      advertise));
++
++			regmap_set_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
++					AIROHA_PCS_HSGMII_AN_SGMII_RA_ENABLE);
++		} else {
++			regmap_clear_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
++					  AIROHA_PCS_HSGMII_AN_SGMII_RA_ENABLE);
++		}
++	}
++
++	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
++		regmap_clear_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
++				  AIROHA_PCS_HSGMII_AN_SGMII_RA_ENABLE);
++
++		regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
++				AIROHA_PCS_HSGMII_PCS_TX_ENABLE);
++	}
++
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_1000BASEX) {
++		u32 if_mode = AIROHA_PCS_HSGMII_AN_SIDEBAND_EN;
++
++		/* Toggle SGMII or 1000base-x mode */
++		if (interface == PHY_INTERFACE_MODE_SGMII)
++			if_mode |= AIROHA_PCS_HSGMII_AN_SGMII_EN;
++
++		if (neg_mode & PHYLINK_PCS_NEG_INBAND)
++			regmap_set_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_13,
++					AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT_DIS);
++		else
++			regmap_clear_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_13,
++					  AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT_DIS);
++
++		if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED) {
++			/* Clear force speed bits and MAC mode */
++			regmap_clear_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
++					  AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_10 |
++					  AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_100 |
++					  AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_1000 |
++					  AIROHA_PCS_HSGMII_PCS_MAC_MODE |
++					  AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL |
++					  AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT);
++		} else {
++			/* Enable compatibility with MAC PCS Layer */
++			if_mode |= AIROHA_PCS_HSGMII_AN_SGMII_COMPAT_EN;
++
++			/* AN off force rate adaption, speed is set later in Link Up */
++			regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
++					AIROHA_PCS_HSGMII_PCS_MAC_MODE |
++					AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT);
++		}
++
++		regmap_update_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_13,
++				   AIROHA_PCS_HSGMII_AN_SGMII_IF_MODE_5_0, if_mode);
++
++		regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
++				AIROHA_PCS_HSGMII_PCS_TX_ENABLE |
++				AIROHA_PCS_HSGMII_PCS_MODE2_EN);
++	}
++
++	if (interface == PHY_INTERFACE_MODE_1000BASEX &&
++	    neg_mode != PHYLINK_PCS_NEG_INBAND_ENABLED) {
++		regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_1,
++				AIROHA_PCS_SGMII_SEND_AN_ERR_EN);
++
++		regmap_set_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_FORCE_CL37,
++				AIROHA_PCS_HSGMII_AN_FORCE_AN_DONE);
++	}
++
++	/* Configure Flow Control on XFI */
++	regmap_update_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			   AIROHA_PCS_XFI_TX_FC_EN | AIROHA_PCS_XFI_RX_FC_EN,
++			   permit_pause_to_mac ?
++				AIROHA_PCS_XFI_TX_FC_EN | AIROHA_PCS_XFI_RX_FC_EN :
++				0);
++
++	return 0;
++}
++
++static void airoha_pcs_an_restart(struct phylink_pcs *pcs)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++
++	switch (priv->interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		regmap_set_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
++				AIROHA_PCS_HSGMII_AN_SGMII_AN_RESTART);
++		udelay(3);
++		regmap_clear_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0,
++				  AIROHA_PCS_HSGMII_AN_SGMII_AN_RESTART);
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++		regmap_set_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
++				AIROHA_PCS_USXGMII_AN_RESTART);
++		udelay(3);
++		regmap_clear_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
++				  AIROHA_PCS_USXGMII_AN_RESTART);
++	default:
++		return;
++	}
++}
++
++static void airoha_pcs_link_up(struct phylink_pcs *pcs, unsigned int neg_mode,
++			       phy_interface_t interface, int speed, int duplex)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++	const struct airoha_pcs_match_data *data;
++
++	data = priv->data;
++
++	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED) {
++		if (interface == PHY_INTERFACE_MODE_SGMII) {
++			regmap_update_bits(priv->hsgmii_rate_adp,
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_1,
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_WR_THR |
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_RD_THR,
++					   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_WR_THR, 0x0) |
++					   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_RD_THR, 0x0));
++			udelay(1);
++			regmap_update_bits(priv->hsgmii_rate_adp,
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_1,
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_WR_THR |
++					   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_RD_THR,
++					   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_WR_THR, 0xf) |
++					   FIELD_PREP(AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_RD_THR, 0x5));
++		}
++	} else {
++		if (interface == PHY_INTERFACE_MODE_USXGMII ||
++		    interface == PHY_INTERFACE_MODE_10GBASER) {
++			u32 mode;
++			u32 rate_adapt;
++
++			switch (speed) {
++			case SPEED_10000:
++				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_10000;
++				mode = AIROHA_PCS_USXGMII_MODE_10000;
++				break;
++			case SPEED_5000:
++				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_5000;
++				mode = AIROHA_PCS_USXGMII_MODE_5000;
++				break;
++			case SPEED_2500:
++				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_2500;
++				mode = AIROHA_PCS_USXGMII_MODE_2500;
++				break;
++			case SPEED_1000:
++				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_1000;
++				mode = AIROHA_PCS_USXGMII_MODE_1000;
++				break;
++			case SPEED_100:
++				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_100;
++				mode = AIROHA_PCS_USXGMII_MODE_100;
++				break;
++			}
++
++			/* Trigger USXGMII change mode and force selected speed */
++			regmap_update_bits(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_7,
++					   AIROHA_PCS_USXGMII_RATE_UPDATE_MODE |
++					   AIROHA_PCS_USXGMII_MODE,
++					   AIROHA_PCS_USXGMII_RATE_UPDATE_MODE | mode);
++
++			regmap_update_bits(priv->hsgmii_rate_adp, AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_11,
++					   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_EN |
++					   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE,
++					   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_EN |
++					   rate_adapt);
++		}
++
++		if (interface == PHY_INTERFACE_MODE_SGMII ||
++		    interface == PHY_INTERFACE_MODE_1000BASEX) {
++			u32 force_speed;
++			u32 rate_adapt;
++
++			switch (speed) {
++			case SPEED_1000:
++				force_speed = AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_1000;
++				rate_adapt = AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_1000;
++				break;
++			case SPEED_100:
++				force_speed = AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_100;
++				rate_adapt = AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_100;
++				break;
++			case SPEED_10:
++				force_speed = AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_10;
++				rate_adapt = AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_10;
++				break;
++			}
++
++			regmap_update_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
++					   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_10 |
++					   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_100 |
++					   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_1000 |
++					   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL,
++					   force_speed | rate_adapt);
++		}
++
++		if (interface == PHY_INTERFACE_MODE_SGMII ||
++		    interface == PHY_INTERFACE_MODE_2500BASEX) {
++			u32 ck_gen_mode;
++			u32 speed_reg;
++			u32 if_mode;
++
++			switch (speed) {
++			case SPEED_2500:
++				speed_reg = AIROHA_PCS_LINK_MODE_P0_2_5G;
++				break;
++			case SPEED_1000:
++				speed_reg = AIROHA_PCS_LINK_MODE_P0_1G;
++				if_mode = AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_1000;
++				ck_gen_mode = AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_1000;
++				break;
++			case SPEED_100:
++				speed_reg = AIROHA_PCS_LINK_MODE_P0_100M;
++				if_mode = AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_100;
++				ck_gen_mode = AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_100;
++				break;
++			case SPEED_10:
++				speed_reg = AIROHA_PCS_LINK_MODE_P0_100M;
++				if_mode = AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_10;
++				ck_gen_mode = AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_10;
++				break;
++			}
++
++			if (interface == PHY_INTERFACE_MODE_SGMII) {
++				regmap_update_bits(priv->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_13,
++						   AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE,
++						   if_mode);
++
++				regmap_update_bits(priv->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_AN_SGMII_MODE_FORCE,
++						   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE |
++						   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_SEL,
++						   ck_gen_mode |
++						   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_SEL);
++			}
++
++			regmap_update_bits(priv->multi_sgmii, AIROHA_PCS_MULTI_SGMII_SGMII_STS_CTRL_0,
++					   AIROHA_PCS_LINK_MODE_P0 |
++					   AIROHA_PCS_FORCE_SPD_MODE_P0,
++					   speed_reg |
++					   AIROHA_PCS_FORCE_SPD_MODE_P0);
++		}
++	}
++
++	if (data->link_up)
++		data->link_up(priv);
++
++	/* BPI BMI enable */
++	regmap_clear_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			  AIROHA_PCS_XFI_RXMPI_STOP |
++			  AIROHA_PCS_XFI_RXMBI_STOP |
++			  AIROHA_PCS_XFI_TXMPI_STOP |
++			  AIROHA_PCS_XFI_TXMBI_STOP);
++}
++
++static void airoha_pcs_link_down(struct phylink_pcs *pcs)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++
++	/* MPI MBI disable */
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			AIROHA_PCS_XFI_RXMPI_STOP |
++			AIROHA_PCS_XFI_RXMBI_STOP |
++			AIROHA_PCS_XFI_TXMPI_STOP |
++			AIROHA_PCS_XFI_TXMBI_STOP);
++}
++
++static void airoha_pcs_pre_config(struct phylink_pcs *pcs,
++				  phy_interface_t interface)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++
++	/* Select HSGMII or USXGMII in SCU regs */
++	airoha_pcs_setup_scu(priv, interface);
++
++	/* MPI MBI disable */
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			AIROHA_PCS_XFI_RXMPI_STOP |
++			AIROHA_PCS_XFI_RXMBI_STOP |
++			AIROHA_PCS_XFI_TXMPI_STOP |
++			AIROHA_PCS_XFI_TXMBI_STOP);
++
++	/* Write 1 to trigger reset and clear */
++	regmap_clear_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_LOGIC_RST,
++			  AIROHA_PCS_XFI_MAC_LOGIC_RST);
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_LOGIC_RST,
++			AIROHA_PCS_XFI_MAC_LOGIC_RST);
++
++	usleep_range(1000, 2000);
++
++	/* Clear XFI MAC counter */
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_CNT_CLR,
++			AIROHA_PCS_XFI_GLB_CNT_CLR);
++}
++
++static int airoha_pcs_post_config(struct phylink_pcs *pcs,
++				  phy_interface_t interface)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++	struct airoha_pcs_priv *priv = port->priv;
++
++	/* Frag disable */
++	regmap_update_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			   AIROHA_PCS_XFI_RX_FRAG_LEN,
++			   FIELD_PREP(AIROHA_PCS_XFI_RX_FRAG_LEN, 31));
++	regmap_update_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			   AIROHA_PCS_XFI_TX_FRAG_LEN,
++			   FIELD_PREP(AIROHA_PCS_XFI_TX_FRAG_LEN, 31));
++
++	/* IPG NUM */
++	regmap_update_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			   AIROHA_PCS_XFI_IPG_NUM,
++			   FIELD_PREP(AIROHA_PCS_XFI_IPG_NUM, 10));
++
++	/* Enable TX/RX flow control */
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			AIROHA_PCS_XFI_TX_FC_EN);
++	regmap_set_bits(priv->xfi_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
++			AIROHA_PCS_XFI_RX_FC_EN);
++
++	return 0;
++}
++
++static const struct phylink_pcs_ops airoha_pcs_ops = {
++	.pcs_pre_config = airoha_pcs_pre_config,
++	.pcs_post_config = airoha_pcs_post_config,
++	.pcs_get_state = airoha_pcs_get_state,
++	.pcs_config = airoha_pcs_config,
++	.pcs_an_restart = airoha_pcs_an_restart,
++	.pcs_link_up = airoha_pcs_link_up,
++	.pcs_link_down = airoha_pcs_link_down,
++};
++
++struct phylink_pcs *airoha_pcs_create(struct device *dev)
++{
++	struct platform_device *pdev;
++	struct airoha_pcs_port *port;
++	struct device_node *np;
++
++	np = of_parse_phandle(dev->of_node, "pcs", 0);
++	if (!np)
++		return ERR_PTR(-ENODEV);
++
++	if (!of_device_is_available(np)) {
++		of_node_put(np);
++		return ERR_PTR(-ENODEV);
++	}
++
++	pdev = of_find_device_by_node(np);
++	of_node_put(np);
++	if (!pdev || !platform_get_drvdata(pdev)) {
++		if (pdev)
++			put_device(&pdev->dev);
++		return ERR_PTR(-EPROBE_DEFER);
++	}
++
++	port = kzalloc(sizeof(*port), GFP_KERNEL);
++	if (!port)
++		return ERR_PTR(-ENOMEM);
++
++	port->priv = platform_get_drvdata(pdev);
++	port->pcs.ops = &airoha_pcs_ops;
++	port->pcs.neg_mode = true;
++	port->pcs.poll = true;
++
++	return &port->pcs;
++}
++EXPORT_SYMBOL(airoha_pcs_create);
++
++void airoha_pcs_destroy(struct phylink_pcs *pcs)
++{
++	struct airoha_pcs_port *port = to_airoha_pcs_port(pcs);
++
++	kfree(port);
++}
++EXPORT_SYMBOL(airoha_pcs_destroy);
++
++static const struct regmap_config airoha_pcs_regmap_config = {
++	.reg_bits = 32,
++	.val_bits = 32,
++	.reg_stride = 4,
++};
++
++static int airoha_pcs_probe(struct platform_device *pdev)
++{
++	struct regmap_config syscon_config = airoha_pcs_regmap_config;
++	const struct airoha_pcs_match_data *data;
++	struct device *dev = &pdev->dev;
++	struct airoha_pcs_priv *priv;
++	void *base;
++	int ret;
++
++	data = of_device_get_match_data(dev);
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->dev = dev;
++	priv->data = data;
++
++	base = devm_platform_ioremap_resource_byname(pdev, "xfi_mac");
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	syscon_config.name = "xfi_mac";
++	priv->xfi_mac = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->xfi_mac))
++		return PTR_ERR(priv->xfi_mac);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "hsgmii_an");
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	syscon_config.name = "hsgmii_an";
++	priv->hsgmii_an = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->hsgmii_an))
++		return PTR_ERR(priv->hsgmii_an);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "hsgmii_pcs");
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	syscon_config.name = "hsgmii_pcs";
++	priv->hsgmii_pcs = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->hsgmii_pcs))
++		return PTR_ERR(priv->hsgmii_pcs);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "hsgmii_rate_adp");
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	syscon_config.name = "hsgmii_rate_adp";
++	priv->hsgmii_rate_adp = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->hsgmii_rate_adp))
++		return PTR_ERR(priv->hsgmii_rate_adp);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "multi_sgmii");
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	syscon_config.name = "multi_sgmii";
++	priv->multi_sgmii = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->multi_sgmii))
++		return PTR_ERR(priv->multi_sgmii);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "usxgmii");
++	if (IS_ERR(base) && PTR_ERR(base) != -ENOENT)
++		return PTR_ERR(base);
++
++	syscon_config.name = "usxgmii";
++	priv->usxgmii_pcs = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->usxgmii_pcs))
++		return PTR_ERR(priv->usxgmii_pcs);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "xfi_pma");
++	if (IS_ERR(base) && PTR_ERR(base) != -ENOENT)
++		return PTR_ERR(base);
++
++	syscon_config.name = "xfi_pma";
++	priv->xfi_pma = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->xfi_pma))
++		return PTR_ERR(priv->xfi_pma);
++
++	base = devm_platform_ioremap_resource_byname(pdev, "xfi_ana");
++	if (IS_ERR(base) && PTR_ERR(base) != -ENOENT)
++		return PTR_ERR(base);
++
++	syscon_config.name = "xfi_ana";
++	priv->xfi_ana = devm_regmap_init_mmio(dev, base, &syscon_config);
++	if (IS_ERR(priv->xfi_ana))
++		return PTR_ERR(priv->xfi_ana);
++
++	/* SCU is used to toggle XFI or HSGMII in global SoC registers */
++	priv->scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
++	if (IS_ERR(priv->scu))
++		return PTR_ERR(priv->scu);
++
++	priv->rsts[0].id = "mac";
++	priv->rsts[1].id = "phy";
++	ret = devm_reset_control_bulk_get_exclusive(dev, ARRAY_SIZE(priv->rsts),
++						    priv->rsts);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get bulk reset lines\n");
++
++	/* For Ethernet PCS, read the AN7581 SoC revision to check if
++	 * manual rx calibration is needed. This is only limited to
++	 * any SoC revision before E2.
++	 */
++	if (data->port_type == AIROHA_PCS_ETH) {
++		u32 val;
++
++		ret = regmap_read(priv->scu, AIROHA_SCU_PDIDR, &val);
++		if (ret)
++			return ret;
++
++		if (FIELD_GET(AIROHA_SCU_PRODUCT_ID, val) < 0x2)
++			priv->manual_rx_calib = true;
++	}
++
++	platform_set_drvdata(pdev, priv);
++
++	return 0;
++}
++
++static const struct airoha_pcs_match_data an7581_pcs_eth = {
++	.port_type = AIROHA_PCS_ETH,
++	.bringup = an7581_pcs_bringup,
++	.link_up = an7581_pcs_phya_link_up,
++	.rxlock_workaround = an7581_pcs_rxlock_workaround,
++};
++
++static const struct airoha_pcs_match_data an7581_pcs_pon = {
++	.port_type = AIROHA_PCS_PON,
++	.bringup = an7581_pcs_bringup,
++	.link_up = an7581_pcs_phya_link_up,
++};
++
++static const struct of_device_id airoha_pcs_of_table[] = {
++	{ .compatible = "airoha,an7581-pcs-eth", .data = &an7581_pcs_eth },
++	{ .compatible = "airoha,an7581-pcs-pon", .data = &an7581_pcs_pon },
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(of, airoha_pcs_of_table);
++
++static struct platform_driver airoha_pcs_driver = {
++	.driver = {
++		.name	 = "airoha-pcs",
++		.of_match_table = airoha_pcs_of_table,
++	},
++	.probe = airoha_pcs_probe,
++};
++module_platform_driver(airoha_pcs_driver);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("Airoha PCS driver");
++MODULE_AUTHOR("Christian Marangi <ansuelsmth@gmail.com>");
+--- /dev/null
++++ b/drivers/net/pcs/airoha/pcs-airoha.h
+@@ -0,0 +1,822 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2024 AIROHA Inc
++ * Author: Christian Marangi <ansuelsmth@gmail.com>
++ */
++
++#include <linux/bitfield.h>
++#include <linux/phylink.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++
++/* SCU*/
++#define AIROHA_SCU_PDIDR			0x5c
++#define   AIROHA_SCU_PRODUCT_ID			GENMASK(15, 0)
++#define AIROHA_SCU_WAN_CONF			0x70
++#define   AIROHA_SCU_WAN_SEL			GENMASK(7, 0)
++#define   AIROHA_SCU_WAN_SEL_SGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x10)
++#define   AIROHA_SCU_WAN_SEL_HSGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x11)
++#define   AIROHA_SCU_WAN_SEL_USXGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x12)
++#define AIROHA_SCU_SSR3				0x94
++#define   AIROHA_SCU_ETH_XSI_SEL		GENMASK(14, 13)
++#define   AIROHA_SCU_ETH_XSI_USXGMII		FIELD_PREP_CONST(AIROHA_SCU_ETH_XSI_SEL, 0x1)
++#define   AIROHA_SCU_ETH_XSI_HSGMII		FIELD_PREP_CONST(AIROHA_SCU_ETH_XSI_SEL, 0x2)
++#define AIROHA_SCU_SSTR				0x9c
++#define   AIROHA_SCU_PON_XSI_SEL		GENMASK(10, 9)
++#define   AIROHA_SCU_PON_XSI_USXGMII		FIELD_PREP_CONST(AIROHA_SCU_PON_XSI_SEL, 0x1)
++#define   AIROHA_SCU_PON_XSI_HSGMII		FIELD_PREP_CONST(AIROHA_SCU_PON_XSI_SEL, 0x2)
++
++/* XFI_MAC */
++#define AIROHA_PCS_XFI_MAC_XFI_GIB_CFG		0x0
++#define   AIROHA_PCS_XFI_RX_FRAG_LEN		GENMASK(26, 22)
++#define   AIROHA_PCS_XFI_TX_FRAG_LEN		GENMASK(21, 17)
++#define   AIROHA_PCS_XFI_IPG_NUM		GENMASK(15, 10)
++#define   AIROHA_PCS_XFI_TX_FC_EN		BIT(5)
++#define   AIROHA_PCS_XFI_RX_FC_EN		BIT(4)
++#define   AIROHA_PCS_XFI_RXMPI_STOP		BIT(3)
++#define   AIROHA_PCS_XFI_RXMBI_STOP		BIT(2)
++#define   AIROHA_PCS_XFI_TXMPI_STOP		BIT(1)
++#define   AIROHA_PCS_XFI_TXMBI_STOP		BIT(0)
++#define AIROHA_PCS_XFI_MAC_XFI_LOGIC_RST	0x10
++#define   AIROHA_PCS_XFI_MAC_LOGIC_RST		BIT(0)
++#define AIROHA_PCS_XFI_MAC_XFI_MACADDRH		0x60
++#define   AIROHA_PCS_XFI_MAC_MACADDRH		GENMASK(15, 0)
++#define AIROHA_PCS_XFI_MAC_XFI_MACADDRL		0x64
++#define   AIROHA_PCS_XFI_MAC_MACADDRL		GENMASK(31, 0)
++#define AIROHA_PCS_XFI_MAC_XFI_CNT_CLR		0x100
++#define   AIROHA_PCS_XFI_GLB_CNT_CLR		BIT(0)
++
++/* HSGMII_AN */
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_0	0x0
++#define   AIROHA_PCS_HSGMII_AN_SGMII_RA_ENABLE	BIT(12)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_AN_RESTART	BIT(9)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_1	0x4 /* BMSR */
++#define   AIROHA_PCS_HSGMII_AN_SGMII_UNIDIR_ABILITY BIT(6)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_AN_COMPLETE BIT(5)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT BIT(4)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_AN_ABILITY BIT(3)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_LINK_STATUS BIT(2)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_4	0x10
++#define   AIROHA_PCS_HSGMII_AN_SGMII_DEV_ABILITY GENMASK(15, 0)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_5	0x14 /* LPA */
++#define   AIROHA_PCS_HSGMII_AN_SGMII_PARTNER_ABILITY GENMASK(15, 0)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_11	0x2c
++#define   AIROHA_PCS_HSGMII_AN_SGMII_LINK_TIMER	GENMASK(19, 0)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_13	0x34
++#define   AIROHA_PCS_HSGMII_AN_SGMII_REMOTE_FAULT_DIS BIT(8)
++#define   AIROHA_PCS_HSGMII_AN_SGMII_IF_MODE_5_0 GENMASK(5, 0)
++#define     AIROHA_PCS_HSGMII_AN_SGMII_COMPAT_EN BIT(5)
++#define     AIROHA_PCS_HSGMII_AN_DUPLEX_FORCE_MODE BIT(4)
++#define     AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE GENMASK(3, 2)
++#define     AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_1000 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE, 0x2)
++#define     AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_100 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE, 0x1)
++#define     AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_10 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE, 0x0)
++#define     AIROHA_PCS_HSGMII_AN_SIDEBAND_EN	BIT(1)
++#define     AIROHA_PCS_HSGMII_AN_SGMII_EN	BIT(0)
++#define AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_FORCE_CL37 0x60
++#define   AIROHA_PCS_HSGMII_AN_FORCE_AN_DONE	BIT(0)
++
++/* HSGMII_PCS */
++#define AIROHA_PCS_HSGMII_PCS_CTROL_1		0x0
++#define   AIROHA_PCS_TBI_10B_MODE		BIT(30)
++#define   AIROHA_PCS_SGMII_SEND_AN_ERR_EN	BIT(24)
++#define   AIROHA_PCS_REMOTE_FAULT_DIS		BIT(12)
++#define AIROHA_PCS_HSGMII_PCS_CTROL_3		0x8
++#define   AIROHA_PCS_HSGMII_PCS_LINK_STSTIME	GENMASK(19, 0)
++#define AIROHA_PCS_HSGMII_PCS_CTROL_6		0x14
++#define   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_10 BIT(14)
++#define   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_100 BIT(13)
++#define   AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_1000 BIT(12)
++#define   AIROHA_PCS_HSGMII_PCS_MAC_MODE	BIT(8)
++#define   AIROHA_PCS_HSGMII_PCS_TX_ENABLE	BIT(4)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL GENMASK(3, 2)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_1000 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL, 0x0)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_100 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL, 0x1)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_10 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL, 0x2)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT	BIT(1)
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_EN	BIT(0)
++#define AIROHA_PCS_HSGMII_PCS_HSGMII_MODE_INTERRUPT 0x20
++#define   AIROHA_PCS_HSGMII_MODE2_REMOVE_FAULT_OCCUR_INT_CLEAR BIT(11)
++#define   AIROHA_PCS_HSGMII_MODE2_REMOVE_FAULT_OCCUR_INT BIT(10)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_CL37_TIMERDONE_INT_CLEAR BIT(9)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_CL37_TIMERDONE_INT BIT(8)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_MIS_INT_CLEAR BIT(5)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_MIS_INT	BIT(4)
++#define   AIROHA_PCS_HSGMII_MODE2_RX_SYN_DONE_INT_CLEAR BIT(3)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_DONE_INT_CLEAR BIT(2)
++#define   AIROHA_PCS_HSGMII_MODE2_RX_SYN_DONE_INT BIT(1)
++#define   AIROHA_PCS_HSGMII_MODE2_AN_DONE_INT	BIT(0)
++#define AIROHA_PCS_HSGMII_PCS_AN_SGMII_MODE_FORCE 0x24
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE GENMASK(5, 4)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_1000 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE, 0x0)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_100 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE, 0x1)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_10 FIELD_PREP_CONST(AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE, 0x2)
++#define   AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_SEL BIT(0)
++#define ARIOHA_PCS_HSGMII_PCS_STATE_2		0x104
++#define   AIROHA_PCS_HSGMII_PCS_RX_SYNC		BIT(5)
++#define   AIROHA_PCS_HSGMII_PCS_AN_DONE		BIT(0)
++#define AIROHA_PCS_HSGMII_PCS_INT_STATE		0x15c
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_REMOTE_FAULT_OCCUR_INT BIT(4)
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_AN_MLS	BIT(3)
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_AN_CL37_TIMERDONE_INT BIT(2)
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_RX_SYNC	BIT(1)
++#define   AIROHA_PCS_HSGMII_PCS_MODE2_AN_DONE	BIT(0)
++
++/* MULTI_SGMII */
++#define AIROHA_PCS_MULTI_SGMII_INTERRUPT_EN_0	0x14
++#define   AIROHA_PCS_MULTI_SGMII_PCS_INT_EN_0	BIT(0)
++#define AIROHA_PCS_MULTI_SGMII_SGMII_STS_CTRL_0 0x18
++#define   AIROHA_PCS_LINK_MODE_P0		GENMASK(5, 4)
++#define   AIROHA_PCS_LINK_MODE_P0_2_5G		FIELD_PREP_CONST(AIROHA_PCS_LINK_MODE_P0, 0x3)
++#define   AIROHA_PCS_LINK_MODE_P0_1G		FIELD_PREP_CONST(AIROHA_PCS_LINK_MODE_P0, 0x2)
++#define   AIROHA_PCS_LINK_MODE_P0_100M		FIELD_PREP_CONST(AIROHA_PCS_LINK_MODE_P0, 0x1)
++#define   AIROHA_PCS_LINK_MODE_P0_10M		FIELD_PREP_CONST(AIROHA_PCS_LINK_MODE_P0, 0x0)
++#define   AIROHA_PCS_FORCE_SPD_MODE_P0		BIT(2)
++#define   AIROHA_PCS_FORCE_LINKDOWN_P0		BIT(1)
++#define   AIROHA_PCS_FORCE_LINKUP_P0		BIT(0)
++#define AIROHA_PCS_MULTI_SGMII_MSG_RX_CTRL_0	0x100
++#define   AIROHA_PCS_HSGMII_XFI_SEL		BIT(28)
++#define AIROHA_PCS_MULTI_SGMII_INTERRUPT_SEL	0x14c
++#define   AIROHA_PCS_HSGMII_PCS_INT		BIT(0)
++#define AIROHA_PCS_MULTI_SGMII_MSG_RX_STS_15	0x43c
++#define   AIROHA_PCS_LINK_STS_P0		BIT(3)
++#define   AIROHA_PCS_SPEED_STS_P0		GENMASK(2, 0)
++#define   AIROHA_PCS_SPEED_STS_P0_1G		FIELD_PREP_CONST(AIROHA_PCS_SPEED_STS_P0, 0x2)
++#define   AIROHA_PCS_SPEED_STS_P0_100M		FIELD_PREP_CONST(AIROHA_PCS_SPEED_STS_P0, 0x1)
++#define   AIROHA_PCS_SPEED_STS_P0_10M		FIELD_PREP_CONST(AIROHA_PCS_SPEED_STS_P0, 0x0)
++#define AIROHA_PCS_MULTI_SGMII_MSG_RX_STS_18	0x448
++#define   AIROHA_PCS_P0_SGMII_IS_10		BIT(2)
++#define   AIROHA_PCS_P0_SGMII_IS_100		BIT(1)
++#define   AIROHA_PCS_P0_SGMII_IS_1000		BIT(0)
++
++/* HSGMII_RATE_ADP */
++#define AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_0	0x0
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_BYPASS BIT(27)
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_TX_BYPASS BIT(26)
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_EN	BIT(4)
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_TX_EN	BIT(0)
++#define AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_1	0x4
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_WR_THR GENMASK(20, 16)
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_RD_THR GENMASK(28, 24)
++#define AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_6	0x18
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_L GENMASK(31, 0)
++#define AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_8	0x20
++#define   AIROHA_PCS_HSGMII_RATE_ADAPT_RX_AFIFO_DOUT_C GENMASK(7, 0)
++#define AIROHA_PCS_HSGMII_RATE_ADAPT_CTRL_11	0x2c
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_EN BIT(8)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE GENMASK(15, 12)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_10000 \
++	FIELD_PREP_CONST(AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE, 0x0)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_5000 \
++	FIELD_PREP_CONST(AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE, 0x1)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_2500 \
++	FIELD_PREP_CONST(AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE, 0x2)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_1000 \
++	FIELD_PREP_CONST(AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE, 0x4)
++#define   AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_100 \
++	FIELD_PREP_CONST(AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE, 0x6)
++#define AIROHA_PCS_HSGMII_RATE_ADP_P0_CTRL_0	0x100
++#define   AIROHA_PCS_HSGMII_P0_DIS_MII_MODE	BIT(31)
++
++/* USXGMII */
++#define AIROHA_PCS_USXGMII_PCS_CTROL_1		0x0
++#define   AIROHA_PCS_USXGMII_SPEED_SEL_H	BIT(13)
++#define AIROHA_PCS_USXGMII_PCS_STUS_1		0x4
++#define   AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS	BIT(2)
++#define   AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_UP \
++	FIELD_PREP_CONST(AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS, 0x1)
++#define   AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_DOWN \
++	FIELD_PREP_CONST(AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS, 0x0)
++#define AIROHA_PCS_USXGMII_BASE_R_10GB_T_PCS_STUS_1 0x30
++#define   AIROHA_PCS_USXGMII_RX_LINK_STUS	BIT(12)
++#define   AIROHA_PCS_USXGMII_PRBS9_PATT_TST_ABILITY BIT(3)
++#define   AIROHA_PCS_USXGMII_PRBS31_PATT_TST_ABILITY BIT(2)
++#define   AIROHA_PCS_USXGMII_PCS_BLK_LK		BIT(0)
++#define AIROHA_PCS_USGMII_VENDOR_DEFINE_116	0x22c
++#define AIROHA_PCS_USXGMII_PCS_CTRL_0		0x2c0
++#define   AIROHA_PCS_USXGMII_T_TYPE_T_INT_EN	BIT(24)
++#define   AIROHA_PCS_USXGMII_T_TYPE_D_INT_EN	BIT(16)
++#define   AIROHA_PCS_USXGMII_T_TYPE_C_INT_EN	BIT(8)
++#define   AIROHA_PCS_USXGMII_T_TYPE_S_INT_EN	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_CTRL_1		0x2c4
++#define   AIROHA_PCS_USXGMII_R_TYPE_C_INT_EN	BIT(24)
++#define   AIROHA_PCS_USXGMII_R_TYPE_S_INT_EN	BIT(16)
++#define   AIROHA_PCS_USXGMII_TXPCS_FSM_ENC_ERR_INT_EN BIT(8)
++#define   AIROHA_PCS_USXGMII_T_TYPE_E_INT_EN	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_CTRL_2		0x2c8
++#define   AIROHA_PCS_USXGMII_RPCS_FSM_DEC_ERR_INT_EN BIT(24)
++#define   AIROHA_PCS_USXGMII_R_TYPE_E_INT_EN	BIT(16)
++#define   AIROHA_PCS_USXGMII_R_TYPE_T_INT_EN	BIT(8)
++#define   AIROHA_PCS_USXGMII_R_TYPE_D_INT_EN	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_CTRL_3		0x2cc
++#define   AIROHA_PCS_USXGMII_FAIL_SYNC_XOR_ST_INT_EN BIT(24)
++#define   AIROHA_PCS_USXGMII_RX_BLOCK_LOCK_ST_INT_EN BIT(16)
++#define   AIROHA_PCS_USXGMII_LINK_UP_ST_INT_EN	BIT(8)
++#define   AIROHA_PCS_USXGMII_HI_BER_ST_INT_EN	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_INT_STA_2	0x2d8
++#define   AIROHA_PCS_USXGMII_RPCS_FSM_DEC_ERR_INT BIT(24)
++#define   AIROHA_PCS_USXGMII_R_TYPE_E_INT	BIT(16)
++#define   AIROHA_PCS_USXGMII_R_TYPE_T_INT	BIT(8)
++#define   AIROHA_PCS_USXGMII_R_TYPE_D_INT	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_INT_STA_3	0x2dc
++#define   AIROHA_PCS_USXGMII_FAIL_SYNC_XOR_ST_INT BIT(24)
++#define   AIROHA_PCS_USXGMII_RX_BLOCK_LOCK_ST_INT BIT(16)
++#define   AIROHA_PCS_USXGMII_LINK_UP_ST_INT	BIT(8)
++#define   AIROHA_PCS_USXGMII_HI_BER_ST_INT	BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_CTRL_4		0x2e0
++#define   AIROHA_PCS_USXGMII_LINK_DOWN_ST_INT_EN BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_INT_STA_4	0x2e4
++#define   AIROHA_PCS_USXGMII_LINK_DOWN_ST_INT BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0	0x2f8
++#define   AIROHA_PCS_USXGMII_AN_RESTART		BIT(8)
++#define   AIROHA_PCS_USXGMII_AN_ENABLE		BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_AN_STATS_0	0x310
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE	GENMASK(30, 28)
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_10G FIELD_PREP_CONST(AIROHA_PCS_USXGMII_CUR_USXGMII_MODE, 0x0)
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_5G FIELD_PREP_CONST(AIROHA_PCS_USXGMII_CUR_USXGMII_MODE, 0x1)
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_2_5G FIELD_PREP_CONST(AIROHA_PCS_USXGMII_CUR_USXGMII_MODE, 0x2)
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_1G FIELD_PREP_CONST(AIROHA_PCS_USXGMII_CUR_USXGMII_MODE, 0x3)
++#define   AIROHA_PCS_USXGMII_CUR_USXGMII_MODE_100M FIELD_PREP_CONST(AIROHA_PCS_USXGMII_CUR_USXGMII_MODE, 0x4)
++#define   AIROHA_PCS_USXGMII_PARTNER_ABILITY	GENMASK(15, 0)
++#define AIROHA_PCS_USXGMII_PCS_AN_STATS_2	0x318
++#define   AIROHA_PCS_USXGMII_PCS_AN_COMPLETE	BIT(24)
++#define AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6	0x31c
++#define   AIROHA_PCS_USXGMII_TOG_PCS_AUTONEG_STS BIT(0)
++#define AIROHA_PCS_USXGMII_PCS_AN_CONTROL_7	0x320
++#define   AIROHA_PCS_USXGMII_RATE_UPDATE_MODE	BIT(12)
++#define   AIROHA_PCS_USXGMII_MODE		GENMASK(10, 8)
++#define   AIROHA_PCS_USXGMII_MODE_10000		FIELD_PREP_CONST(AIROHA_PCS_USXGMII_MODE, 0x0)
++#define   AIROHA_PCS_USXGMII_MODE_5000		FIELD_PREP_CONST(AIROHA_PCS_USXGMII_MODE, 0x1)
++#define   AIROHA_PCS_USXGMII_MODE_2500		FIELD_PREP_CONST(AIROHA_PCS_USXGMII_MODE, 0x2)
++#define   AIROHA_PCS_USXGMII_MODE_1000		FIELD_PREP_CONST(AIROHA_PCS_USXGMII_MODE, 0x3)
++#define   AIROHA_PCS_USXGMII_MODE_100		FIELD_PREP_CONST(AIROHA_PCS_USXGMII_MODE, 0x4)
++
++/* PMA_PHYA */
++#define AIROHA_PCS_ANA_PXP_CMN_EN		0x0
++#define   AIROHA_PCS_ANA_CMN_EN			BIT(0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_IB_EXT_EN	0x4
++#define   AIROHA_PCS_ANA_JCPLL_CHP_IOFST	GENMASK(29, 24)
++#define   AIROHA_PCS_ANA_JCPLL_CHP_IBIAS	GENMASK(21, 16)
++#define   AIROHA_PCS_ANA_JCPLL_LPF_SHCK_EN	BIT(8)
++#define AIROHA_PCS_ANA_PXP_JCPLL_LPF_BR		0x8
++#define   AIROHA_PCS_ANA_JCPLL_LPF_BWR		GENMASK(28, 24)
++#define   AIROHA_PCS_ANA_JCPLL_LPF_BP		GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_JCPLL_LPF_BC		GENMASK(12, 8)
++#define   AIROHA_PCS_ANA_JCPLL_LPF_BR		GENMASK(4, 0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_LPF_BWC	0xc
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_DIV	GENMASK(26, 24)
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_CODE	GENMASK(23, 16)
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_OPTION	BIT(8)
++#define   AIROHA_PCS_ANA_JCPLL_LPF_BWC		GENMASK(4, 0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_KBAND_KFC	0x10
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_KS		GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_KF		GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_JCPLL_KBAND_KFC	GENMASK(1, 0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_MMD_PREDIV_MODE 0x14
++#define   AIROHA_PCS_ANA_JCPLL_POSTDIV_D5	BIT(24)
++#define   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE	GENMASK(1, 0)
++#define   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE_2 FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE_3 FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE_4 FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE_1 FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE, 0x3)
++#define AIROHA_PCS_ANA_PXP_JCPLL_RST_DLY	0x1c
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS	GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS_2_23	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_DI_LS, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS_2_21	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_DI_LS, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS_2_19	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_DI_LS, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS_2_15	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_DI_LS, 0x3)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_DI_EN	BIT(16)
++#define   AIROHA_PCS_ANA_JCPLL_PLL_RSTB		BIT(8)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY		GENMASK(2, 0)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_20_25	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_40_50	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_80_100	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x3)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_150_200	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x4)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_300_400	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x5)
++#define   AIROHA_PCS_ANA_JCPLL_RST_DLY_600_800	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_RST_DLY, 0x6)
++#define AIROHA_PCS_ANA_PXP_JCPLL_SDM_IFM	0x20
++#define   AIROHA_PCS_ANA_JCPLL_SDM_OUT		BIT(24)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_ORD		GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_ORD_INT	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_ORD, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_ORD_1SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_ORD, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_ORD_2SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_ORD, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_ORD_3SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SDM_ORD, 0x3)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_MODE		GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_IFM		BIT(0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_SDM_HREN	0x24
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_VREF	GENMASK(28, 24)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN	GENMASK(18, 16)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_2	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_4	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_6	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_8	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN, 0x3)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_10	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN, 0x4)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_AMP_EN	BIT(8)
++#define   AIROHA_PCS_ANA_JCPLL_SDM_HREN		BIT(0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_TCL_CMP_EN	0x28
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW	GENMASK(26, 24)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_0_5	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_1	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x1)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_2	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x2)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_4	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x3)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_8	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x4)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_16	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW, 0x6)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_EN	BIT(16)
++#define   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW	GENMASK(26, 24)
++#define AIROHA_PCS_ANA_PXP_JCPLL_VCODIV		0x2c
++#define   AIROHA_PCS_ANA_JCPLL_VCO_SCAPWR	GENMASK(26, 24)
++#define   AIROHA_PCS_ANA_JCPLL_VCO_HALFLSB_EN	BIT(16)
++#define   AIROHA_PCS_ANA_JCPLL_VCO_CFIX		GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_JCPLL_VCODIV		GENMASK(1, 0)
++#define   AIROHA_PCS_ANA_JCPLL_VCODIV_1		FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_VCODIV, 0x0)
++#define   AIROHA_PCS_ANA_JCPLL_VCODIV_2		FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_VCODIV, 0x1)
++#define AIROHA_PCS_ANA_PXP_JCPLL_VCO_TCLVAR	0x30
++#define   AIROHA_PCS_ANA_JCPLL_SSC_PHASE_INI	BIT(17)
++#define   AIROHA_PCS_ANA_JCPLL_SSC_EN		BIT(16)
++#define   AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_L GENMASK(10, 8)
++#define   AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_H GENMASK(5, 3)
++#define   AIROHA_PCS_ANA_JCPLL_VCO_TCLVAR	GENMASK(2, 0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_SSC_TRI_EN	0x34
++#define   AIROHA_PCS_ANA_JCPLL_SSC_DELTA1	GENMASK(23, 8)
++#define   AIROHA_PCS_ANA_JCPLL_SSC_TRI_EN	BIT(0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_SSC_DELTA	0x38
++#define   AIROHA_PCS_ANA_JCPLL_SSC_PERIOD	GENMASK(31, 16)
++#define   AIROHA_PCS_ANA_JCPLL_SSC_DELTA	GENMASK(15, 0)
++#define AIROHA_PCS_ANA_PXP_JCPLL_SPARE_H	0x48
++#define   AIROHA_PCS_ANA_JCPLL_TCL_KBAND_VREF	GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_JCPLL_SPARE_L		GENMASK(15, 8)
++#define     AIROHA_PCS_ANA_JCPLL_SPARE_L_LDO	FIELD_PREP_CONST(AIROHA_PCS_ANA_JCPLL_SPARE_L, BIT(5))
++#define AIROHA_PCS_ANA_PXP_TXPLL_CHP_IBIAS	0x50
++#define   AIROHA_PCS_ANA_TXPLL_LPF_BC		GENMASK(28, 24)
++#define   AIROHA_PCS_ANA_TXPLL_LPF_BR		GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_TXPLL_CHP_IOFST	GENMASK(13, 8)
++#define   AIROHA_PCS_ANA_TXPLL_CHP_IBIAS	GENMASK(5, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_LPF_BP		0x54
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_OPTION	BIT(24)
++#define   AIROHA_PCS_ANA_TXPLL_LPF_BWC		GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_TXPLL_LPF_BWR		GENMASK(12, 8)
++#define   AIROHA_PCS_ANA_TXPLL_LPF_BP		GENMASK(4, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_KBAND_CODE	0x58
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_KF		GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_KFC	GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_DIV	GENMASK(10, 8)
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_CODE	GENMASK(7, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_KBAND_KS	0x5c
++#define   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE	GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE_2 FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE_3 FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE_4 FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE_1 FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE, 0x3)
++#define   AIROHA_PCS_ANA_TXPLL_POSTDIV_EN	BIT(8)
++#define   AIROHA_PCS_ANA_TXPLL_KBAND_KS		GENMASK(1, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_REFIN_INTERNAL	0x64
++#define   AIROHA_PCS_ANA_TXPLL_PLL_RSTB		BIT(24)
++#define   AIROHA_PCS_ANA_TXPLL_RST_DLY		GENMASK(18, 16)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_DIV	GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_DIV_1	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_REFIN_DIV, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_DIV_2	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_REFIN_DIV, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_DIV_3	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_REFIN_DIV, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_DIV_4	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_REFIN_DIV, 0x3)
++#define   AIROHA_PCS_ANA_TXPLL_REFIN_INTERNAL	BIT(0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_SDM_DI_EN	0x68
++#define   AIROHA_PCS_ANA_TXPLL_SDM_MODE		GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_IFM		BIT(16)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS	GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS_2_23	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_DI_LS, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS_2_21	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_DI_LS, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS_2_19	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_DI_LS, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS_2_15	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_DI_LS, 0x3)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_DI_EN	BIT(0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_SDM_ORD	0x6c
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_EN	BIT(24)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_HREN		BIT(16)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_OUT		BIT(8)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_ORD		GENMASK(1, 0)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_ORD_INT	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_ORD, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_ORD_1SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_ORD, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_ORD_2SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_ORD, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_SDM_ORD_3SDM	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_SDM_ORD, 0x3)
++#define AIROHA_PCS_ANA_PXP_TXPLL_TCL_AMP_GAIN	0x70
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_VREF	GENMASK(12, 8)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN	GENMASK(2, 0)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_2	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_2_5	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_3	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_4	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN, 0x3)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_6	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN, 0x4)
++#define AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN	0x74
++#define   AIROHA_PCS_ANA_TXPLL_VCO_CFIX		GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_TXPLL_VCODIV		GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_TXPLL_VCODIV_1		FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_VCODIV, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_VCODIV_2		FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_VCODIV, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW	GENMASK(10, 8)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_0_5	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x0)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_1	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x1)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_2	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x2)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_4	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x3)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_8	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x4)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_16	FIELD_PREP_CONST(AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW, 0x6)
++#define   AIROHA_PCS_ANA_TXPLL_TCL_LPF_EN	BIT(0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_VCO_HALFLSB_EN	0x78
++#define   AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_L GENMASK(29, 27)
++#define   AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_H GENMASK(26, 24)
++#define   AIROHA_PCS_ANA_TXPLL_VCO_TCLVAR	GENMASK(18, 16)
++#define   AIROHA_PCS_ANA_TXPLL_VCO_SCAPWR	GENMASK(10, 8)
++#define   AIROHA_PCS_ANA_TXPLL_VCO_HALFLSB_EN	BIT(0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_SSC_EN		0x7c
++#define   AIROHA_PCS_ANA_TXPLL_SSC_TRI_EN	BIT(16)
++#define   AIROHA_PCS_ANA_TXPLL_SSC_PHASE_INI	BIT(8)
++#define   AIROHA_PCS_ANA_TXPLL_SSC_EN		BIT(0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_SSC_DELTA1	0x80
++#define   AIROHA_PCS_ANA_TXPLL_SSC_DELTA	GENMASK(31, 16)
++#define   AIROHA_PCS_ANA_TXPLL_SSC_DELTA1	GENMASK(15, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_SSC_PERIOD	0x84
++#define   AIROHA_PCS_ANA_TXPLL_LDO_VCO_OUT	GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_TXPLL_LDO_OUT		GENMASK(17, 16)
++#define   AIROHA_PCS_ANA_TXPLL_SSC_PERIOD	GENMASK(15, 0)
++#define AIROHA_PCS_ANA_PXP_TXPLL_TCL_KBAND_VREF	0x94
++#define   AIROHA_PCS_ANA_TXPLL_TCL_KBAND_VREF	GENMASK(4, 0)
++#define AIROHA_PCS_ANA_PXP_TX_CKLDO_EN		0xc4
++#define   AIROHA_PCS_ANA_TX_DMEDGEGEN_EN	BIT(24)
++#define   AIROHA_PCS_ANA_TX_CKLDO_EN		BIT(0)
++#define AIROHA_PCS_ANA_PXP_RX_BUSBIT_SEL	0xcc
++#define    AIROHA_PCS_ANA_RX_PHY_CK_SEL_FORCE	BIT(24)
++#define    AIROHA_PCS_ANA_RX_PHY_CK_SEL		BIT(16)
++#define      AIROHA_PCS_ANA_RX_PHY_CK_SEL_FROM_PR FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_PHY_CK_SEL, 0x0)
++#define      AIROHA_PCS_ANA_RX_PHY_CK_SEL_FROM_DES FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_PHY_CK_SEL, 0x1)
++#define AIROHA_PCS_ANA_PXP_RX_REV_0		0xd4
++#define   AIROHA_PCS_ANA_RX_REV_1		GENMASK(31, 16)
++#define     AIROHA_PCS_ANA_REV_1_FE_EQ_BIAS_CTRL GENMASK(30, 28)
++#define     AIROHA_PCS_ANA_REV_1_FE_BUF1_BIAS_CTRL GENMASK(26, 24)
++#define     AIROHA_PCS_ANA_REV_1_FE_BUF2_BIAS_CTRL GENMASK(22, 20)
++#define     AIROHA_PCS_ANA_REV_1_SIGDET_ILEAK	GENMASK(19, 18)
++#define     AIROHA_PCS_ANA_REV_1_FECUR_PWDB	BIT(16)
++#define AIROHA_PCS_ANA_PXP_RX_PHYCK_DIV		0xd8
++#define   AIROHA_PCS_ANA_RX_TDC_CK_SEL		BIT(24)
++#define   AIROHA_PCS_ANA_RX_PHYCK_RSTB		BIT(16)
++#define   AIROHA_PCS_ANA_RX_PHYCK_SEL		GENMASK(9, 8)
++#define   AIROHA_PCS_ANA_RX_PHYCK_DIV		GENMASK(7, 0)
++#define AIROHA_PCS_ANA_PXP_CDR_PD_PICAL_CKD8_INV 0xdc
++#define   AIROHA_PCS_ANA_CDR_PD_EDGE_DIS	BIT(8)
++#define   AIROHA_PCS_ANA_CDR_PD_PICAL_CKD8_INV	BIT(0)
++#define AIROHA_PCS_ANA_PXP_CDR_LPF_RATIO	0xe8
++#define   AIROHA_PCS_ANA_CDR_LPF_TOP_LIM	GENMASK(26, 8)
++#define   AIROHA_PCS_ANA_CDR_LPF_RATIO		GENMASK(1, 0)
++#define AIROHA_PCS_ANA_PXP_CDR_PR_INJ_MODE	0xf4
++#define   AIROHA_PCS_ANA_CDR_PR_INJ_FORCE_OFF	BIT(24)
++#define AIROHA_PCS_ANA_PXP_CDR_PR_BETA_DAC	0xf8
++#define   AIROHA_PCS_ANA_CDR_PR_KBAND_DIV	GENMASK(26, 24)
++#define   AIROHA_PCS_ANA_CDR_PR_BETA_SEL	GENMASK(19, 16)
++#define   AIROHA_PCS_ANA_CDR_PR_VCOADC_OS	GENMASK(11, 8)
++#define   AIROHA_PCS_ANA_CDR_PR_BETA_DAC	GENMASK(6, 0)
++#define AIROHA_PCS_ANA_PXP_CDR_PR_VREG_IBAND_VAL 0xfc
++#define   AIROHA_PCS_ANA_CDR_PR_FBKSEL		GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_CDR_PR_DAC_BAND	GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_CDR_PR_VREG_CKBUF_VAL	GENMASK(10, 8)
++#define   AIROHA_PCS_ANA_CDR_PR_VREG_IBAND_VAL	GENMASK(2, 0)
++#define AIROHA_PCS_ANA_PXP_CDR_PR_MONPR_EN	0x10c
++#define   AIROHA_PCS_ANA_RX_DAC_MON		GENMASK(28, 24)
++#define   AIROHA_PCS_ANA_CDR_PR_CAP_EN		BIT(19)
++#define   AIROHA_PCS_ANA_CDR_BUF_IN_SR		GENMASK(18, 16)
++#define   AIROHA_PCS_ANA_CDR_PR_XFICK_EN	BIT(2)
++#define   AIROHA_PCS_ANA_CDR_PR_MONDPI_EN	BIT(1)
++#define   AIROHA_PCS_ANA_CDR_PR_MONDPR_EN	BIT(0)
++#define AIROHA_PCS_ANA_PXP_RX_DAC_RANGE		0x110
++#define   AIROHA_PCS_ANA_RX_SIGDET_LPF_CTRL	GENMASK(25, 24)
++#define AIROHA_PCS_ANA_PXP_RX_SIGDET_NOVTH	0x114
++#define   AIROHA_PCS_ANA_RX_FE_50OHMS_SEL	GENMASK(25, 24)
++#define   AIROHA_PCS_ANA_RX_SIGDET_VTH_SEL	GENMASK(20, 16)
++#define   AIROHA_PCS_ANA_RX_SIGDET_PEAK		GENMASK(9, 8)
++#define AIROHA_PCS_ANA_PXP_RX_FE_EQ_HZEN	0x118
++#define   AIROHA_PCS_ANA_RX_FE_VB_EQ3_EN	BIT(24)
++#define   AIROHA_PCS_ANA_RX_FE_VB_EQ2_EN	BIT(16)
++#define   AIROHA_PCS_ANA_RX_FE_VB_EQ1_EN	BIT(8)
++#define   AIROHA_PCS_ANA_RX_FE_EQ_HZEN		BIT(0)
++#define AIROHA_PCS_ANA_PXP_RX_FE_VCM_GEN_PWDB	0x11c
++#define   AIROHA_PCS_ANA_FE_VCM_GEN_PWDB	BIT(0)
++#define AIROHA_PCS_ANA_PXP_RX_OSCAL_WATCH_WNDW	0x120
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE		GENMASK(17, 8)
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA2VOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(0))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA2IOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(1))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA1VOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(2))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA1IOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(3))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE2VOS FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(4))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE2IOS FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(5))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE1VOS FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(6))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE1IOS FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(7))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_LVSH	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(8))
++#define   AIROHA_PCS_ANA_RX_OSCAL_FORCE_COMPOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_RX_OSCAL_FORCE, BIT(9))
++#define AIROHA_PCS_ANA_PXP_AEQ_CFORCE		0x13c
++#define   AIROHA_PCS_ANA_AEQ_OFORCE		GENMASK(19, 8)
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_SAOS	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(0))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP1	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(1))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP2	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(2))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP3	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(3))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP4	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(4))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP5	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(5))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP6	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(6))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_DFETP7	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(7))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_VGA		FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(8))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_CTLE	FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(9))
++#define   AIROHA_PCS_ANA_AEQ_OFORCE_ATT		FIELD_PREP_CONST(AIROHA_PCS_ANA_AEQ_OFORCE, BIT(10))
++#define AIROHA_PCS_ANA_PXP_RX_FE_PEAKING_CTRL_MSB 0x144
++#define   AIROHA_PCS_ANA_RX_DAC_D0_BYPASS_AEQ	BIT(24)
++#define AIROHA_PCS_ANA_PXP_RX_DAC_D1_BYPASS_AEQ	0x148
++#define   AIROHA_PCS_ANA_RX_DAC_EYE_BYPASS_AEQ	BIT(24)
++#define   AIROHA_PCS_ANA_RX_DAC_E1_BYPASS_AEQ	BIT(16)
++#define   AIROHA_PCS_ANA_RX_DAC_E0_BYPASS_AEQ	BIT(8)
++#define   AIROHA_PCS_ANA_RX_DAC_D1_BYPASS_AEQ	BIT(0)
++
++/* PMA_PHYD */
++#define AIROHA_PCS_PMA_SS_LCPLL_PWCTL_SETTING_0	0x0
++#define   AIROHA_PCS_PMA_SW_LCPLL_EN		BIT(24)
++#define AIROHA_PCS_PMA_SS_LCPLL_PWCTL_SETTING_1	0x4
++#define   AIROHA_PCS_PMA_LCPLL_MAN_PWDB		BIT(0)
++#define AIROHA_PCS_PMA_RX_EYE_TOP_EYECNT_CTRL_2	0x88
++#define   AIROHA_PCS_PMA_DATA_SHIFT		BIT(8)
++#define   AIROHA_PCS_PMA_EYECNT_FAST		BIT(0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_0	0x8c
++#define   AIROHA_PCS_PMA_RX_OS_START		GENMASK(23, 8)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT		GENMASK(2, 0)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_05	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x0)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_1	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x1)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_2	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x2)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_4	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x3)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_8	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x4)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_1_6	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x5)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_3_2	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x6)
++#define   AIROHA_PCS_PMA_OSC_SPEED_OPT_6_4	FIELD_PREP_CONST(AIROHA_PCS_PMA_OSC_SPEED_OPT, 0x7)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_1	0x90
++#define   AIROHA_PCS_PMA_RX_PICAL_END		GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_RX_PICAL_START		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_2	0x94
++#define   AIROHA_PCS_PMA_RX_PDOS_END		GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_RX_PDOS_START		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_3	0x98
++#define   AIROHA_PCS_PMA_RX_FEOS_END		GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_RX_FEOS_START		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_4	0x9c
++#define   AIROHA_PCS_PMA_RX_SDCAL_END		GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_RX_SDCAL_START		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_5	0x100
++#define   AIROHA_PCS_PMA_RX_RDY			GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_RX_BLWC_RDY_EN		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_6	0x104
++#define   AIROHA_PCS_PMA_RX_OS_END		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_DISB_CTRL_1 0x10c
++#define   AIROHA_PCS_PMA_DISB_RX_RDY		BIT(24)
++#define AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_FORCE_CTRL_1 0x114
++#define   AIROHA_PCS_PMA_FORCE_RX_RDY		BIT(24)
++#define AIROHA_PCS_PMA_PHY_EQ_CTRL_2		0x120
++#define   AIROHA_PCS_PMA_EQ_DEBUG_SEL		GENMASK(17, 16)
++#define   AIROHA_PCS_PMA_FOM_NUM_ORDER		GENMASK(12, 8)
++#define   AIROHA_PCS_PMA_A_SEL			GENMASK(1, 0)
++#define AIROHA_PCS_PMA_SS_RX_FREQ_DET_1		0x14c
++#define   AIROHA_PCS_PMA_UNLOCK_CYCLECNT	GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_LOCK_CYCLECNT		GENMASK(15, 0)
++#define AIROHA_PCS_PMA_SS_RX_FREQ_DET_2		0x150
++#define   AIROHA_PCS_PMA_LOCK_TARGET_END	GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_LOCK_TARGET_BEG	GENMASK(15, 0)
++#define AIROHA_PCS_PMA_SS_RX_FREQ_DET_3		0x154
++#define   AIROHA_PCS_PMA_UNLOCK_TARGET_END	GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_UNLOCK_TARGET_BEG	GENMASK(15, 0)
++#define AIROHA_PCS_PMA_SS_RX_FREQ_DET_4		0x158
++#define   AIROHA_PCS_PMA_LOCK_UNLOCKTH		GENMASK(15, 12)
++#define   AIROHA_PCS_PMA_LOCK_LOCKTH		GENMASK(11, 8)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN	GENMASK(2, 0)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN_FORCE_0 FIELD_PREP_CONST(AIROHA_PCS_PMA_FREQLOCK_DET_EN, 0x0)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN_FORCE_1 FIELD_PREP_CONST(AIROHA_PCS_PMA_FREQLOCK_DET_EN, 0x1)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN_WAIT	FIELD_PREP_CONST(AIROHA_PCS_PMA_FREQLOCK_DET_EN, 0x2)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN_NORMAL	FIELD_PREP_CONST(AIROHA_PCS_PMA_FREQLOCK_DET_EN, 0x3)
++#define   AIROHA_PCS_PMA_FREQLOCK_DET_EN_RX_STATE FIELD_PREP_CONST(AIROHA_PCS_PMA_FREQLOCK_DET_EN, 0x7)
++#define AIROHA_PCS_PMA_SS_RX_SIGDET_1		0x16c
++#define   AIROHA_PCS_PMA_SIGDET_EN		BIT(0)
++#define AIROHA_PCS_PMA_RX_FLL_1			0x174
++#define   AIROHA_PCS_PMA_LPATH_IDAC		GENMASK(10, 0)
++#define AIROHA_PCS_PMA_RX_FLL_2			0x178
++#define   AIROHA_PCS_PMA_CK_RATE		GENMASK(18, 16)
++#define   AIROHA_PCS_PMA_CK_RATE_20		FIELD_PREP_CONST(AIROHA_PCS_PMA_CK_RATE, 0x0)
++#define   AIROHA_PCS_PMA_CK_RATE_10		FIELD_PREP_CONST(AIROHA_PCS_PMA_CK_RATE, 0x1)
++#define   AIROHA_PCS_PMA_CK_RATE_5		FIELD_PREP_CONST(AIROHA_PCS_PMA_CK_RATE, 0x2)
++#define AIROHA_PCS_PMA_RX_FLL_5			0x184
++#define   AIROHA_PCS_PMA_FLL_IDAC_MIN		GENMASK(26, 16)
++#define   AIROHA_PCS_PMA_FLL_IDAC_MAX		GENMASK(10, 0)
++#define AIROHA_PCS_PMA_RX_FLL_B			0x19c
++#define   AIROHA_PCS_PMA_LOAD_EN		BIT(0)
++#define AIROHA_PCS_PMA_RX_RESET_1		0x208
++#define   AIROHA_PCS_PMA_SIGDET_RST_B		BIT(8)
++#define AIROHA_PCS_PMA_TX_RST_B			0x260
++#define   AIROHA_PCS_PMA_TXCALIB_RST_B		BIT(8)
++#define   AIROHA_PCS_PMA_TX_TOP_RST_B		BIT(0)
++#define AIROHA_PCS_PMA_RX_DISB_MODE_4		0x320
++#define   AIROHA_PCS_PMA_DISB_BLWC_OFFSET	BIT(24)
++#define AIROHA_PCS_PMA_RX_FORCE_MODE_9		0x330
++#define   AIROHA_PCS_PMA_FORCE_FBCK_LOCK	BIT(0)
++#define AIROHA_PCS_PMA_RX_DISB_MODE_8		0x33c
++#define   AIROHA_PCS_PMA_DISB_FBCK_LOCK		BIT(0)
++#define AIROHA_PCS_PMA_SS_DA_XPON_PWDB_0	0x34c
++#define   AIROHA_PCS_PMA_XPON_CDR_PD_PWDB	BIT(24)
++#define   AIROHA_PCS_PMA_XPON_CDR_PR_PIEYE_PWDB	BIT(16)
++#define   AIROHA_PCS_PMA_XPON_CDR_PW_PWDB	BIT(8)
++#define   AIROHA_PCS_PMA_XPON_RX_FE_PWDB	BIT(0)
++#define AIROHA_PCS_PMA_SS_DA_XPON_PWDB_1	0x350
++#define   AIROHA_PCS_PMA_RX_SIDGET_PWDB		BIT(0)
++#define AIROHA_PCS_PMA_DIG_RESERVE_0		0x360
++#define   AIROHA_PCS_TRIGGER_RX_SIDGET_SCAN	GENMASK(17, 16)
++#define AIROHA_PCS_PMA_XPON_RX_RESERVED_1	0x374
++#define   AIROHA_PCS_PMA_XPON_RX_RATE_CTRL	GENMASK(1, 0)
++#define AIROHA_PCS_PMA_DIG_RO_RESERVE_2		0x380
++#define   AIROHA_PCS_RX_SIGDET			BIT(8)
++#define AIROHA_PCS_PMA_RX_SYS_EN_SEL_0		0x38c
++#define   AIROHA_PCS_PMA_RX_SYS_EN_SEL		GENMASK(1, 0)
++#define AIROHA_PCS_PMA_PLL_TDC_FREQDET_0	0x390
++#define   AIROHA_PCS_PMA_PLL_LOCK_CYCLECNT	GENMASK(15, 0)
++#define AIROHA_PCS_PMA_PLL_TDC_FREQDET_1	0x394
++#define   AIROHA_PCS_PMA_PLL_LOCK_TARGET_END	GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_PLL_LOCK_TARGET_BEG	GENMASK(15, 0)
++#define AIROHA_PCS_PMA_PLL_TDC_FREQDET_3	0x39c
++#define   AIROHA_PCS_PMA_PLL_LOCK_LOCKTH	GENMASK(11, 8)
++#define AIROHA_PCS_PMA_SW_RST_SET		0x460
++#define   AIROHA_PCS_PMA_SW_HSG_RXPCS_RST_N	BIT(11)
++#define   AIROHA_PCS_PMA_SW_HSG_TXPCS_RST_N	BIT(10)
++#define   AIROHA_PCS_PMA_SW_XFI_RXPCS_BIST_RST_N BIT(9)
++#define   AIROHA_PCS_PMA_SW_XFI_RXPCS_RST_N	BIT(8)
++#define   AIROHA_PCS_PMA_SW_XFI_TXPCS_RST_N	BIT(7)
++#define   AIROHA_PCS_PMA_SW_TX_FIFO_RST_N	BIT(6)
++#define   AIROHA_PCS_PMA_SW_REF_RST_N		BIT(5)
++#define   AIROHA_PCS_PMA_SW_ALLPCS_RST_N	BIT(4)
++#define   AIROHA_PCS_PMA_SW_PMA_RST_N		BIT(3)
++#define   AIROHA_PCS_PMA_SW_TX_RST_N		BIT(2)
++#define   AIROHA_PCS_PMA_SW_RX_RST_N		BIT(1)
++#define   AIROHA_PCS_PMA_SW_RX_FIFO_RST_N	BIT(0)
++#define AIROHA_PCS_PMA_XPON_INT_EN_3		0x474
++#define   AIROHA_PCS_PMA_RX_SIGDET_INT_EN	BIT(16)
++#define AIROHA_PCS_PMA_XPON_INT_STA_3		0x47c
++#define   AIROHA_PCS_PMA_RX_SIGDET_INT		BIT(16)
++#define AIROHA_PCS_PMA_RX_EXTRAL_CTRL		0x48c
++#define   AIROHA_PCS_PMA_DISB_LEQ		BIT(0)
++#define AIROHA_PCS_PMA_RX_FREQDET		0x530
++#define   AIROHA_PCS_PMA_FL_OUT			GENMASK(31, 16)
++#define   AIROHA_PCS_PMA_FBCK_LOCK		BIT(0)
++#define AIROHA_PCS_PMA_XPON_TX_RATE_CTRL	0x580
++#define   AIROHA_PCS_PMA_PON_TX_RATE_CTRL	GENMASK(1, 0)
++#define AIROHA_PCS_PMA_PXP_JCPLL_SDM_SCAN	0x768
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_PEAKING_CTRL BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_FE_PEAKING_CTRL GENMASK(19, 16)
++#define AIROHA_PCS_PMA_PXP_AEQ_SPEED		0x76c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_OSR_SEL	BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_OSR_SEL	GENMASK(17, 16)
++#define AIROHA_PCS_PMA_PXP_TX_FIR_C0B		0x778
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_CN1 BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_CN1	GENMASK(20, 16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C0B BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C0B	GENMASK(5, 0)
++#define AIROHA_PCS_PMA_PXP_TX_TERM_SEL		0x77c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_DIVISOR BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_DIVISOR GENMASK(19, 16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_TERM_SEL BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_TERM_SEL	GENMASK(2, 0)
++#define AIROHA_PCS_PMA_PXP_TX_FIR_C1		0x780
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C2 BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C2	GENMASK(20, 16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C1 BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C1	GENMASK(5, 0)
++#define AIROHA_PCS_PMA_PXP_TX_RATE_CTRL		0x784
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_RATE_CTRL BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_RATE_CTRL GENMASK(1, 0)
++#define AIROHA_PCS_PMA_PXP_CDR_PR_IDAC		0x794
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_SDM_PCW BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_IDAC BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC	GENMASK(10, 0)
++#define     AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC_MAJOR GENMASK(10, 8)
++#define AIROHA_PCS_PMA_PXP_TXPLL_SDM_PCW	0x798
++#define   AIROHA_PCS_PMA_FORCE_DA_TXPLL_SDM_PCW	GENMASK(30, 0)
++#define AIROHA_PCS_PMA_PXP_RX_FE_VOS		0x79c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_SDM_PCW BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_FE_VOS	BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_FE_VOS	GENMASK(5, 0)
++#define AIROHA_PCS_PMA_PXP_JCPLL_SDM_PCW	0x800
++#define   AIROHA_PCS_PMA_FORCE_DA_JCPLL_SDM_PCW	GENMASK(30, 0)
++#define AIROHA_PCS_PMA_PXP_AEQ_BYPASS		0x80c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_AEQ_CKON	BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_AEQ_CKON	BIT(16)
++#define AIROHA_PCS_PMA_PXP_AEQ_RSTB		0x814
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_INJCK_SEL BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_INJCK_SEL	BIT(16)
++#define AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA	0x818
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_RSTB BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_RSTB	BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_LCK2DATA BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_LCK2DATA BIT(0)
++#define AIROHA_PCS_PMA_PXP_CDR_PD_PWDB		0x81c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_KBAND_RSTB BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_KBAND_RSTB BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PD_PWDB BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PD_PWDB BIT(0)
++#define AIROHA_PCS_PMA_PXP_CDR_PR_LPF_C_EN	0x820
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_R_EN BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_LPF_R_EN BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_C_EN BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_LPF_C_EN BIT(0)
++#define AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB	0x824
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PWDB BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB	BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PIEYE_PWDB BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PIEYE_PWDB BIT(0)
++#define AIROHA_PCS_PMA_PXP_JCPLL_CKOUT_EN	0x828
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_EN	BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_JCPLL_EN	BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_CKOUT_EN BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_JCPLL_CKOUT_EN BIT(0)
++#define AIROHA_PCS_PMA_PXP_RX_SCAN_RST_B	0x84c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_SIGDET_PWDB BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_SIGDET_PWDB BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_SCAN_RST_B BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_SCAN_RST_B	 BIT(0)
++#define AIROHA_PCS_PMA_PXP_TXPLL_CKOUT_EN	0x854
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_EN	BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_TXPLL_EN	BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_CKOUT_EN BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_TXPLL_CKOUT_EN BIT(0)
++#define AIROHA_PCS_PMA_PXP_TX_ACJTAG_EN		0x874
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_SEL BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_SEL	BIT(16)
++#define AIROHA_PCS_PMA_PXP_FE_GAIN_CTRL		0x88c
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_GAIN_CTRL BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_FE_GAIN_CTRL GENMASK(1, 0)
++#define AIROHA_PCS_PMA_PXP_RX_FE_PWDB		0x894
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_PDOSCAL_EN BIT(24)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_PDOSCAL_EN	BIT(16)
++#define   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_PWDB BIT(8)
++#define   AIROHA_PCS_PMA_FORCE_DA_RX_FE_PWDB	 BIT(0)
++
++#define AIROHA_PCS_MAX_CALIBRATION_TRY		50
++#define AIROHA_PCS_MAX_NUM_RSTS			2
++
++enum xfi_port_type {
++	AIROHA_PCS_ETH,
++	AIROHA_PCS_PON,
++};
++
++struct airoha_pcs_priv {
++	struct device *dev;
++	const struct airoha_pcs_match_data *data;
++	phy_interface_t interface;
++
++	struct regmap *scu;
++
++	struct regmap *xfi_mac;
++	struct regmap *hsgmii_an;
++	struct regmap *hsgmii_pcs;
++	struct regmap *hsgmii_rate_adp;
++	struct regmap *multi_sgmii;
++	struct regmap *usxgmii_pcs;
++
++	struct regmap *xfi_pma;
++	struct regmap *xfi_ana;
++
++	struct reset_control_bulk_data rsts[AIROHA_PCS_MAX_NUM_RSTS];
++
++	bool manual_rx_calib;
++};
++
++struct airoha_pcs_port {
++	struct airoha_pcs_priv *priv;
++
++	struct phylink_pcs pcs;
++};
++
++struct airoha_pcs_match_data {
++	enum xfi_port_type port_type;
++
++	int (*bringup)(struct airoha_pcs_priv *priv,
++			phy_interface_t interface);
++	void (*link_up)(struct airoha_pcs_priv *priv);
++	int (*rxlock_workaround)(struct airoha_pcs_priv *priv);
++};
++
++#define to_airoha_pcs_port(n) container_of(n, struct airoha_pcs_port, pcs);
++
++#ifdef CONFIG_PCS_AIROHA_AN7581
++int an7581_pcs_bringup(struct airoha_pcs_priv *priv,
++		       phy_interface_t interface);
++
++void an7581_pcs_phya_link_up(struct airoha_pcs_priv *priv);
++int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv);
++#else
++static inline int an7581_pcs_bringup(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	return -EOPNOTSUPP;
++}
++
++static inline void an7581_pcs_phya_link_up(struct airoha_pcs_priv *priv)
++{
++}
++
++static inline int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv)
++{
++	return 0;
++}
++#endif
+--- /dev/null
++++ b/drivers/net/pcs/airoha/pcs-an7581.c
+@@ -0,0 +1,1419 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (c) 2024 AIROHA Inc
++ * Author: Christian Marangi <ansuelsmth@gmail.com>
++ */
++#include <linux/phylink.h>
++#include <linux/regmap.h>
++
++#include "pcs-airoha.h"
++
++static void an7581_pcs_jcpll_bringup(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	u32 kband_vref;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		kband_vref = 0x10;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		kband_vref = 0xf;
++		break;
++	default:
++		return;
++	}
++
++	/* Setup LDO */
++	usleep_range(200, 300);
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SPARE_H,
++			AIROHA_PCS_ANA_JCPLL_SPARE_L_LDO);
++
++	/* Setup RSTB */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_RST_DLY,
++			   AIROHA_PCS_ANA_JCPLL_RST_DLY,
++			   AIROHA_PCS_ANA_JCPLL_RST_DLY_150_200);
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_RST_DLY,
++			AIROHA_PCS_ANA_JCPLL_PLL_RSTB);
++
++	/* Enable PLL force selection and Force Disable */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_JCPLL_CKOUT_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_JCPLL_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_EN);
++
++	/* Setup SDM */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_RST_DLY,
++			   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS |
++			   AIROHA_PCS_ANA_JCPLL_SDM_DI_EN,
++			   AIROHA_PCS_ANA_JCPLL_SDM_DI_LS_2_23);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SDM_IFM,
++			   AIROHA_PCS_ANA_JCPLL_SDM_OUT |
++			   AIROHA_PCS_ANA_JCPLL_SDM_ORD |
++			   AIROHA_PCS_ANA_JCPLL_SDM_MODE |
++			   AIROHA_PCS_ANA_JCPLL_SDM_IFM,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_SDM_ORD, 0x0) |
++			   AIROHA_PCS_ANA_JCPLL_SDM_ORD_3SDM |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_SDM_MODE, 0x0));
++
++	regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SDM_HREN,
++			  AIROHA_PCS_ANA_JCPLL_SDM_HREN);
++
++	/* Setup SSC */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SSC_DELTA,
++			   AIROHA_PCS_ANA_JCPLL_SSC_PERIOD |
++			   AIROHA_PCS_ANA_JCPLL_SSC_DELTA,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_SSC_PERIOD, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_SSC_DELTA, 0x0));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SSC_TRI_EN,
++			   AIROHA_PCS_ANA_JCPLL_SSC_DELTA1 |
++			   AIROHA_PCS_ANA_JCPLL_SSC_TRI_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_SSC_DELTA1, 0x0));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_VCO_TCLVAR,
++			   AIROHA_PCS_ANA_JCPLL_SSC_PHASE_INI |
++			   AIROHA_PCS_ANA_JCPLL_SSC_EN |
++			   AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_L |
++			   AIROHA_PCS_ANA_JCPLL_VCO_TCLVAR,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_L, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_TCLVAR, 0x0));
++
++	/* Setup LPF */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_IB_EXT_EN,
++			   AIROHA_PCS_ANA_JCPLL_CHP_IOFST |
++			   AIROHA_PCS_ANA_JCPLL_CHP_IBIAS |
++			   AIROHA_PCS_ANA_JCPLL_LPF_SHCK_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_CHP_IOFST, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_CHP_IBIAS, 0x18));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_LPF_BR,
++			   AIROHA_PCS_ANA_JCPLL_LPF_BWR |
++			   AIROHA_PCS_ANA_JCPLL_LPF_BP |
++			   AIROHA_PCS_ANA_JCPLL_LPF_BC |
++			   AIROHA_PCS_ANA_JCPLL_LPF_BR,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_LPF_BWR, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_LPF_BP, 0x10) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_LPF_BC, 0x1f) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_LPF_BR, BIT(3) | BIT(1)));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_LPF_BWC,
++			   AIROHA_PCS_ANA_JCPLL_LPF_BWC,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_LPF_BWC, 0x0));
++
++	/* Setup VCO */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_VCODIV,
++			   AIROHA_PCS_ANA_JCPLL_VCO_SCAPWR |
++			   AIROHA_PCS_ANA_JCPLL_VCO_HALFLSB_EN |
++			   AIROHA_PCS_ANA_JCPLL_VCO_CFIX,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_SCAPWR, 0x4) |
++			   AIROHA_PCS_ANA_JCPLL_VCO_HALFLSB_EN |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_CFIX, 0x1));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_VCO_TCLVAR,
++			   AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_L |
++			   AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_H |
++			   AIROHA_PCS_ANA_JCPLL_VCO_TCLVAR,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_L, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_VCOVAR_BIAS_H, 0x3) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_VCO_TCLVAR, 0x3));
++
++	/* Setup PCW */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_JCPLL_SDM_PCW,
++			   AIROHA_PCS_PMA_FORCE_DA_JCPLL_SDM_PCW,
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_JCPLL_SDM_PCW, 0x25800000));
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_FE_VOS,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_SDM_PCW);
++
++	/* Setup DIV */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_MMD_PREDIV_MODE,
++			   AIROHA_PCS_ANA_JCPLL_POSTDIV_D5 |
++			   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE,
++			   AIROHA_PCS_ANA_JCPLL_MMD_PREDIV_MODE_2);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_VCODIV,
++			   AIROHA_PCS_ANA_JCPLL_VCODIV,
++			   AIROHA_PCS_ANA_JCPLL_VCODIV_1);
++
++	/* Setup KBand */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_KBAND_KFC,
++			   AIROHA_PCS_ANA_JCPLL_KBAND_KS |
++			   AIROHA_PCS_ANA_JCPLL_KBAND_KF |
++			   AIROHA_PCS_ANA_JCPLL_KBAND_KFC,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_KBAND_KS, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_KBAND_KF, 0x3) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_KBAND_KFC, 0x0));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_LPF_BWC,
++			   AIROHA_PCS_ANA_JCPLL_KBAND_DIV |
++			   AIROHA_PCS_ANA_JCPLL_KBAND_CODE |
++			   AIROHA_PCS_ANA_JCPLL_KBAND_OPTION,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_KBAND_DIV, 0x2) |
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_KBAND_CODE, 0xe4));
++
++	/* Setup TCL */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SPARE_H,
++			   AIROHA_PCS_ANA_JCPLL_TCL_KBAND_VREF,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_TCL_KBAND_VREF, kband_vref));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_SDM_HREN,
++			   AIROHA_PCS_ANA_JCPLL_TCL_AMP_VREF |
++			   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN |
++			   AIROHA_PCS_ANA_JCPLL_TCL_AMP_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_JCPLL_TCL_AMP_VREF, 0x5) |
++			   AIROHA_PCS_ANA_JCPLL_TCL_AMP_GAIN_4 |
++			   AIROHA_PCS_ANA_JCPLL_TCL_AMP_EN);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_JCPLL_TCL_CMP_EN,
++			   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW |
++			   AIROHA_PCS_ANA_JCPLL_TCL_LPF_EN,
++			   AIROHA_PCS_ANA_JCPLL_TCL_LPF_BW_1 |
++			   AIROHA_PCS_ANA_JCPLL_TCL_LPF_EN);
++
++	/* Enable PLL */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_JCPLL_CKOUT_EN,
++			AIROHA_PCS_PMA_FORCE_DA_JCPLL_EN);
++
++	/* Enale PLL Output */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_JCPLL_CKOUT_EN,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_JCPLL_CKOUT_EN |
++			AIROHA_PCS_PMA_FORCE_DA_JCPLL_CKOUT_EN);
++}
++
++static void an7581_pcs_txpll_bringup(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	u32 lpf_chp_ibias, lpf_bp, lpf_bwr, lpf_bwc;
++	u32 vco_cfix;
++	u32 pcw;
++	u32 tcl_amp_vref;
++	bool sdm_hren;
++	bool vcodiv;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		lpf_chp_ibias = 0xf;
++		lpf_bp = BIT(1);
++		lpf_bwr = BIT(3) | BIT(1) | BIT(0);
++		lpf_bwc = BIT(4) | BIT(3);
++		vco_cfix = BIT(1) | BIT(0);
++		pcw = BIT(27);
++		tcl_amp_vref = BIT(3) | BIT(1) | BIT(0);
++		vcodiv = false;
++		sdm_hren = false;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		lpf_chp_ibias = 0xa;
++		lpf_bp = BIT(2) | BIT(0);
++		lpf_bwr = 0;
++		lpf_bwc = 0;
++		vco_cfix = 0;
++		pcw = BIT(27) | BIT(25);
++		tcl_amp_vref = BIT(3) | BIT(2) | BIT(0);
++		vcodiv = true;
++		sdm_hren = false;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		lpf_chp_ibias = 0xf;
++		lpf_bp = BIT(1);
++		lpf_bwr = BIT(3) | BIT(1) | BIT(0);
++		lpf_bwc = BIT(4) | BIT(3);
++		vco_cfix = BIT(0);
++		pcw = BIT(27) | BIT(22);
++		tcl_amp_vref = BIT(3) | BIT(1) | BIT(0);
++		vcodiv = false;
++		sdm_hren = true;
++		break;
++	default:
++		return;
++	}
++
++	/* Setup VCO LDO Output */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SSC_PERIOD,
++			   AIROHA_PCS_ANA_TXPLL_LDO_VCO_OUT |
++			   AIROHA_PCS_ANA_TXPLL_LDO_OUT,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LDO_VCO_OUT, 0x1) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LDO_OUT, 0x1));
++
++	/* Setup RSTB */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_REFIN_INTERNAL,
++			   AIROHA_PCS_ANA_TXPLL_PLL_RSTB |
++			   AIROHA_PCS_ANA_TXPLL_RST_DLY |
++			   AIROHA_PCS_ANA_TXPLL_REFIN_DIV |
++			   AIROHA_PCS_ANA_TXPLL_REFIN_INTERNAL,
++			   AIROHA_PCS_ANA_TXPLL_PLL_RSTB |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_RST_DLY, 0x4) |
++			   AIROHA_PCS_ANA_TXPLL_REFIN_DIV_1 |
++			   AIROHA_PCS_ANA_TXPLL_REFIN_INTERNAL);
++
++	/* Enable PLL force selection and Force Disable */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TXPLL_CKOUT_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_TXPLL_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_EN);
++
++	/* Setup SDM */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SDM_DI_EN,
++			   AIROHA_PCS_ANA_TXPLL_SDM_MODE |
++			   AIROHA_PCS_ANA_TXPLL_SDM_IFM |
++			   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS |
++			   AIROHA_PCS_ANA_TXPLL_SDM_DI_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_SDM_MODE, 0) |
++			   AIROHA_PCS_ANA_TXPLL_SDM_DI_LS_2_23);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SDM_ORD,
++			   AIROHA_PCS_ANA_TXPLL_SDM_HREN |
++			   AIROHA_PCS_ANA_TXPLL_SDM_OUT |
++			   AIROHA_PCS_ANA_TXPLL_SDM_ORD,
++			   (sdm_hren ? AIROHA_PCS_ANA_TXPLL_SDM_HREN : 0) |
++			   AIROHA_PCS_ANA_TXPLL_SDM_ORD_3SDM);
++
++	/* Setup SSC */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SSC_DELTA1,
++			   AIROHA_PCS_ANA_TXPLL_SSC_DELTA |
++			   AIROHA_PCS_ANA_TXPLL_SSC_DELTA1,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_SSC_DELTA, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_SSC_DELTA1, 0x0));
++
++	regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SSC_EN,
++			  AIROHA_PCS_ANA_TXPLL_SSC_TRI_EN |
++			  AIROHA_PCS_ANA_TXPLL_SSC_PHASE_INI |
++			  AIROHA_PCS_ANA_TXPLL_SSC_EN);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SSC_PERIOD,
++			   AIROHA_PCS_ANA_TXPLL_SSC_PERIOD,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_SSC_PERIOD, 0x0));
++
++	/* Setup LPF */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_CHP_IBIAS,
++			   AIROHA_PCS_ANA_TXPLL_LPF_BC |
++			   AIROHA_PCS_ANA_TXPLL_LPF_BR |
++			   AIROHA_PCS_ANA_TXPLL_CHP_IOFST |
++			   AIROHA_PCS_ANA_TXPLL_CHP_IBIAS,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LPF_BC, 0x1f) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LPF_BR, 0x5) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_CHP_IOFST, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_CHP_IBIAS, lpf_chp_ibias));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_LPF_BP,
++			   AIROHA_PCS_ANA_TXPLL_LPF_BWC |
++			   AIROHA_PCS_ANA_TXPLL_LPF_BWR |
++			   AIROHA_PCS_ANA_TXPLL_LPF_BP,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LPF_BWC, lpf_bwc) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LPF_BWR, lpf_bwr) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_LPF_BP, lpf_bp));
++
++	/* Setup VCO */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN,
++			   AIROHA_PCS_ANA_TXPLL_VCO_CFIX,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_VCO_CFIX, vco_cfix));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_VCO_HALFLSB_EN,
++			   AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_L |
++			   AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_H |
++			   AIROHA_PCS_ANA_TXPLL_VCO_TCLVAR |
++			   AIROHA_PCS_ANA_TXPLL_VCO_SCAPWR |
++			   AIROHA_PCS_ANA_TXPLL_VCO_HALFLSB_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_L, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_VCO_VCOVAR_BIAS_H, 0x4) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_VCO_TCLVAR, 0x4) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_VCO_SCAPWR, 0x7) |
++			   AIROHA_PCS_ANA_TXPLL_VCO_HALFLSB_EN);
++
++	/* Setup PCW */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TXPLL_SDM_PCW,
++			   AIROHA_PCS_PMA_FORCE_DA_TXPLL_SDM_PCW, pcw);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_IDAC,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_SDM_PCW);
++
++	/* Setup KBand */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_KBAND_CODE,
++			   AIROHA_PCS_ANA_TXPLL_KBAND_KF |
++			   AIROHA_PCS_ANA_TXPLL_KBAND_KFC |
++			   AIROHA_PCS_ANA_TXPLL_KBAND_DIV |
++			   AIROHA_PCS_ANA_TXPLL_KBAND_CODE,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_KBAND_KF, 0x3) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_KBAND_KFC, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_KBAND_DIV, 0x4) |
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_KBAND_CODE, 0xe4));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_KBAND_KS,
++			   AIROHA_PCS_ANA_TXPLL_KBAND_KS,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_KBAND_KS, 0x1));
++
++	regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_LPF_BP,
++			  AIROHA_PCS_ANA_TXPLL_KBAND_OPTION);
++
++	/* Setup DIV */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_KBAND_KS,
++			   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE |
++			   AIROHA_PCS_ANA_TXPLL_POSTDIV_EN,
++			   AIROHA_PCS_ANA_TXPLL_MMD_PREDIV_MODE_2);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN,
++			   AIROHA_PCS_ANA_TXPLL_VCODIV,
++			   vcodiv ? AIROHA_PCS_ANA_TXPLL_VCODIV_2 :
++				    AIROHA_PCS_ANA_TXPLL_VCODIV_1);
++
++	/* Setup TCL */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_TCL_KBAND_VREF,
++			   AIROHA_PCS_ANA_TXPLL_TCL_KBAND_VREF,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_TCL_KBAND_VREF, 0xf));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_TCL_AMP_GAIN,
++			   AIROHA_PCS_ANA_TXPLL_TCL_AMP_VREF |
++			   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN,
++			   FIELD_PREP(AIROHA_PCS_ANA_TXPLL_TCL_AMP_VREF, tcl_amp_vref) |
++			   AIROHA_PCS_ANA_TXPLL_TCL_AMP_GAIN_4);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN,
++			   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW |
++			   AIROHA_PCS_ANA_TXPLL_TCL_LPF_EN,
++			   AIROHA_PCS_ANA_TXPLL_TCL_LPF_BW_0_5 |
++			   AIROHA_PCS_ANA_TXPLL_TCL_LPF_EN);
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TXPLL_SDM_ORD,
++			AIROHA_PCS_ANA_TXPLL_TCL_AMP_EN);
++
++	/* Enable PLL */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TXPLL_CKOUT_EN,
++			AIROHA_PCS_PMA_FORCE_DA_TXPLL_EN);
++
++	/* Enale PLL Output */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TXPLL_CKOUT_EN,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_TXPLL_CKOUT_EN |
++			AIROHA_PCS_PMA_FORCE_DA_TXPLL_CKOUT_EN);
++}
++
++static void an7581_pcs_tx_bringup(struct airoha_pcs_priv *priv,
++				  phy_interface_t interface)
++{
++	u32 tx_rate_ctrl;
++	u32 ckin_divisor;
++	u32 fir_cn1, fir_c0b, fir_c1;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		ckin_divisor = BIT(1);
++		tx_rate_ctrl = BIT(0);
++		fir_cn1 = 0;
++		fir_c0b = 12;
++		fir_c1 = 0;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		ckin_divisor = BIT(2);
++		tx_rate_ctrl = BIT(0);
++		fir_cn1 = 0;
++		fir_c0b = 11;
++		fir_c1 = 1;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		ckin_divisor = BIT(2) | BIT(0);
++		tx_rate_ctrl = BIT(1);
++		fir_cn1 = 1;
++		fir_c0b = 1;
++		fir_c1 = 11;
++		break;
++	default:
++		return;
++	}
++
++	/* Set TX rate ctrl */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_XPON_TX_RATE_CTRL,
++			   AIROHA_PCS_PMA_PON_TX_RATE_CTRL,
++			   FIELD_PREP(AIROHA_PCS_PMA_PON_TX_RATE_CTRL,
++				      tx_rate_ctrl));
++
++	/* Setup TX Config */
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_TX_CKLDO_EN,
++			AIROHA_PCS_ANA_TX_DMEDGEGEN_EN |
++			AIROHA_PCS_ANA_TX_CKLDO_EN);
++
++	udelay(1);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TX_ACJTAG_EN,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_SEL |
++			AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_SEL);
++
++	/* FIXME: Ask Airoha TX term is OK to reset? */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TX_TERM_SEL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_DIVISOR |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_DIVISOR |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_TERM_SEL |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_TERM_SEL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_DIVISOR |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_DIVISOR,
++				      ckin_divisor) |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_TERM_SEL, 0x0));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TX_RATE_CTRL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_RATE_CTRL |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_RATE_CTRL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_RATE_CTRL |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_RATE_CTRL,
++				      tx_rate_ctrl));
++
++	/* Setup TX FIR Load Parameters (Reference 660mV) */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TX_FIR_C0B,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_CN1 |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_CN1 |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C0B |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C0B,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_CN1 |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_FIR_CN1, fir_cn1) |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C0B |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C0B, fir_c0b));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_TX_FIR_C1,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C2 |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C2 |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C1 |
++			   AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C1,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_FIR_C1 |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_FIR_C1, fir_c1));
++
++	/* Reset TX Bar */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_TX_RST_B,
++			AIROHA_PCS_PMA_TXCALIB_RST_B | AIROHA_PCS_PMA_TX_TOP_RST_B);
++}
++
++static void an7581_pcs_rx_bringup(struct airoha_pcs_priv *priv,
++				  phy_interface_t interface)
++{
++	u32 rx_rate_ctrl;
++	u32 osr;
++	u32 pr_cdr_beta_dac;
++	u32 cdr_pr_buf_in_sr;
++	bool cdr_pr_cap_en;
++	u32 sigdet_vth_sel;
++	u32 phyck_div, phyck_sel;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_1000BASEX:
++		osr = BIT(1) | BIT(0); /* 1.25G */
++		pr_cdr_beta_dac = BIT(3);
++		rx_rate_ctrl = 0;
++		cdr_pr_cap_en = false;
++		cdr_pr_buf_in_sr = BIT(2) | BIT(1) | BIT(0);
++		sigdet_vth_sel = BIT(2) | BIT(1);
++		phyck_div = BIT(5) | BIT(3) | BIT(0);
++		phyck_sel = BIT(0);
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		osr = BIT(0); /* 2.5G */
++		pr_cdr_beta_dac = BIT(2) | BIT(1);
++		rx_rate_ctrl = 0;
++		cdr_pr_cap_en = true;
++		cdr_pr_buf_in_sr = BIT(2) | BIT(1);
++		sigdet_vth_sel = BIT(2) | BIT(1);
++		phyck_div = BIT(3) | BIT(1) | BIT(0);
++		phyck_sel = BIT(0);
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++	case PHY_INTERFACE_MODE_10GBASER:
++		osr = 0; /* 10G */
++		cdr_pr_cap_en = false;
++		pr_cdr_beta_dac = BIT(3);
++		rx_rate_ctrl = BIT(1);
++		cdr_pr_buf_in_sr = BIT(2) | BIT(1) | BIT(0);
++		sigdet_vth_sel = BIT(1);
++		phyck_div = BIT(6) | BIT(1);
++		phyck_sel = BIT(1);
++		break;
++	default:
++		return;
++	}
++
++	/* Set RX rate ctrl */
++	if (interface == PHY_INTERFACE_MODE_2500BASEX)
++		regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_FLL_2,
++				   AIROHA_PCS_PMA_CK_RATE,
++				   AIROHA_PCS_PMA_CK_RATE_10);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_XPON_RX_RESERVED_1,
++			   AIROHA_PCS_PMA_XPON_RX_RATE_CTRL,
++			   FIELD_PREP(AIROHA_PCS_PMA_XPON_RX_RATE_CTRL, rx_rate_ctrl));
++
++	/* Setup RX Path */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_FLL_5,
++			   AIROHA_PCS_PMA_FLL_IDAC_MIN |
++			   AIROHA_PCS_PMA_FLL_IDAC_MAX,
++			   FIELD_PREP(AIROHA_PCS_PMA_FLL_IDAC_MIN, 0x400) |
++			   FIELD_PREP(AIROHA_PCS_PMA_FLL_IDAC_MAX, 0x3ff));
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_DAC_D1_BYPASS_AEQ,
++			AIROHA_PCS_ANA_RX_DAC_EYE_BYPASS_AEQ |
++			AIROHA_PCS_ANA_RX_DAC_E1_BYPASS_AEQ |
++			AIROHA_PCS_ANA_RX_DAC_E0_BYPASS_AEQ |
++			AIROHA_PCS_ANA_RX_DAC_D1_BYPASS_AEQ);
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_FE_PEAKING_CTRL_MSB,
++			AIROHA_PCS_ANA_RX_DAC_D0_BYPASS_AEQ);
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_FE_VCM_GEN_PWDB,
++			AIROHA_PCS_ANA_FE_VCM_GEN_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_LCPLL_PWCTL_SETTING_1,
++			AIROHA_PCS_PMA_LCPLL_MAN_PWDB);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_AEQ_CFORCE,
++			   AIROHA_PCS_ANA_AEQ_OFORCE,
++			   AIROHA_PCS_ANA_AEQ_OFORCE_CTLE);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_OSCAL_WATCH_WNDW,
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE,
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA2VOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA2IOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA1VOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_VGA1IOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE2VOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE2IOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE1VOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_CTLE1IOS |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_LVSH |
++			   AIROHA_PCS_ANA_RX_OSCAL_FORCE_COMPOS);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_DISB_MODE_4,
++			  AIROHA_PCS_PMA_DISB_BLWC_OFFSET);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_EXTRAL_CTRL,
++			  AIROHA_PCS_PMA_DISB_LEQ);
++
++	regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PD_PICAL_CKD8_INV,
++			  AIROHA_PCS_ANA_CDR_PD_EDGE_DIS |
++			  AIROHA_PCS_ANA_CDR_PD_PICAL_CKD8_INV);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_AEQ_BYPASS,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_AEQ_CKON |
++			   AIROHA_PCS_PMA_FORCE_DA_AEQ_CKON,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_AEQ_CKON);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_AEQ_RSTB,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_INJCK_SEL |
++			AIROHA_PCS_PMA_FORCE_DA_CDR_INJCK_SEL);
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_MONPR_EN,
++			   AIROHA_PCS_ANA_RX_DAC_MON |
++			   AIROHA_PCS_ANA_CDR_PR_XFICK_EN |
++			   AIROHA_PCS_ANA_CDR_PR_MONDPI_EN |
++			   AIROHA_PCS_ANA_CDR_PR_MONDPR_EN,
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_DAC_MON, 0x0) |
++			   AIROHA_PCS_ANA_CDR_PR_XFICK_EN);
++
++	/* Setup FE Gain and FE Peacking */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_FE_GAIN_CTRL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_GAIN_CTRL |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_FE_GAIN_CTRL,
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_RX_FE_GAIN_CTRL, 0x0));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_JCPLL_SDM_SCAN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_PEAKING_CTRL |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_FE_PEAKING_CTRL,
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_RX_FE_PEAKING_CTRL, 0x0));
++
++	/* Setup FE VOS */
++	if (interface != PHY_INTERFACE_MODE_USXGMII &&
++	    interface != PHY_INTERFACE_MODE_10GBASER)
++		regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_FE_VOS,
++				   AIROHA_PCS_PMA_FORCE_SEL_DA_FE_VOS |
++				   AIROHA_PCS_PMA_FORCE_DA_FE_VOS,
++				   AIROHA_PCS_PMA_FORCE_SEL_DA_FE_VOS |
++				   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_FE_VOS, 0x0));
++
++	/* Setup FLL PR FMeter (no bypass mode)*/
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PLL_TDC_FREQDET_0,
++			   AIROHA_PCS_PMA_PLL_LOCK_CYCLECNT,
++			   FIELD_PREP(AIROHA_PCS_PMA_PLL_LOCK_CYCLECNT, 0x1));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PLL_TDC_FREQDET_1,
++			   AIROHA_PCS_PMA_PLL_LOCK_TARGET_END |
++			   AIROHA_PCS_PMA_PLL_LOCK_TARGET_BEG,
++			   FIELD_PREP(AIROHA_PCS_PMA_PLL_LOCK_TARGET_END, 0xffff) |
++			   FIELD_PREP(AIROHA_PCS_PMA_PLL_LOCK_TARGET_BEG, 0x0));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PLL_TDC_FREQDET_3,
++			   AIROHA_PCS_PMA_PLL_LOCK_LOCKTH,
++			   FIELD_PREP(AIROHA_PCS_PMA_PLL_LOCK_LOCKTH, 0x1));
++
++	/* FIXME: Warn and Ask Airoha about typo in air_eth_xsgmii.c line 1391 */
++	/* AIROHA_PCS_ANA_REV_1_FE_BUF1_BIAS_CTRL is set 0x0 in SDK but seems a typo */
++	/* Setup REV */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_REV_0,
++			   AIROHA_PCS_ANA_REV_1_FE_BUF1_BIAS_CTRL |
++			   AIROHA_PCS_ANA_REV_1_FE_BUF2_BIAS_CTRL |
++			   AIROHA_PCS_ANA_REV_1_SIGDET_ILEAK,
++			   FIELD_PREP(AIROHA_PCS_ANA_REV_1_FE_BUF1_BIAS_CTRL, BIT(2)) |
++			   FIELD_PREP(AIROHA_PCS_ANA_REV_1_FE_BUF2_BIAS_CTRL, BIT(2)) |
++			   FIELD_PREP(AIROHA_PCS_ANA_REV_1_SIGDET_ILEAK, 0x0));
++
++	/* Setup Rdy Timeout */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_5,
++			   AIROHA_PCS_PMA_RX_RDY |
++			   AIROHA_PCS_PMA_RX_BLWC_RDY_EN,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_RDY, 0xa) |
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_BLWC_RDY_EN, 0x5));
++
++	/* Setup CaBoundry Init */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_0,
++			   AIROHA_PCS_PMA_RX_OS_START |
++			   AIROHA_PCS_PMA_OSC_SPEED_OPT,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_OS_START, 0x1) |
++			   AIROHA_PCS_PMA_OSC_SPEED_OPT_0_1);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_6,
++			   AIROHA_PCS_PMA_RX_OS_END,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_OS_END, 0x2));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_1,
++			   AIROHA_PCS_PMA_RX_PICAL_END |
++			   AIROHA_PCS_PMA_RX_PICAL_START,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_PICAL_END, 0x32) |
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_PICAL_START, 0x2));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_4,
++			   AIROHA_PCS_PMA_RX_SDCAL_END |
++			   AIROHA_PCS_PMA_RX_SDCAL_START,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_SDCAL_END, 0x32) |
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_SDCAL_START, 0x2));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_2,
++			   AIROHA_PCS_PMA_RX_PDOS_END |
++			   AIROHA_PCS_PMA_RX_PDOS_START,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_PDOS_END, 0x32) |
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_PDOS_START, 0x2));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_CTRL_SEQUENCE_CTRL_3,
++			   AIROHA_PCS_PMA_RX_FEOS_END |
++			   AIROHA_PCS_PMA_RX_FEOS_START,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_FEOS_END, 0x32) |
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_FEOS_START, 0x2));
++
++	/* Setup By Serdes*/
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_AEQ_SPEED,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_OSR_SEL |
++			   AIROHA_PCS_PMA_FORCE_DA_OSR_SEL,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_OSR_SEL |
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_OSR_SEL, osr));
++
++	/* Setup RX OSR */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PD_PICAL_CKD8_INV,
++			   AIROHA_PCS_ANA_CDR_PD_EDGE_DIS,
++			   osr ? AIROHA_PCS_ANA_CDR_PD_EDGE_DIS : 0);
++
++	/* Setup CDR LPF Ratio */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_LPF_RATIO,
++			   AIROHA_PCS_ANA_CDR_LPF_TOP_LIM |
++			   AIROHA_PCS_ANA_CDR_LPF_RATIO,
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_LPF_TOP_LIM, 0x20000) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_LPF_RATIO, osr));
++
++	/* Setup CDR PR */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_BETA_DAC,
++			   AIROHA_PCS_ANA_CDR_PR_KBAND_DIV |
++			   AIROHA_PCS_ANA_CDR_PR_BETA_SEL |
++			   AIROHA_PCS_ANA_CDR_PR_VCOADC_OS |
++			   AIROHA_PCS_ANA_CDR_PR_BETA_DAC,
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_KBAND_DIV, 0x4) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_BETA_SEL, 0x1) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_VCOADC_OS, 0x8) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_BETA_DAC, pr_cdr_beta_dac));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_VREG_IBAND_VAL,
++			   AIROHA_PCS_ANA_CDR_PR_FBKSEL |
++			   AIROHA_PCS_ANA_CDR_PR_DAC_BAND |
++			   AIROHA_PCS_ANA_CDR_PR_VREG_CKBUF_VAL |
++			   AIROHA_PCS_ANA_CDR_PR_VREG_IBAND_VAL,
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_FBKSEL, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_DAC_BAND, pr_cdr_beta_dac) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_VREG_CKBUF_VAL, 0x6) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_PR_VREG_IBAND_VAL, 0x6));
++
++	/* Setup Eye Mon */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PHY_EQ_CTRL_2,
++			   AIROHA_PCS_PMA_EQ_DEBUG_SEL |
++			   AIROHA_PCS_PMA_FOM_NUM_ORDER |
++			   AIROHA_PCS_PMA_A_SEL,
++			   FIELD_PREP(AIROHA_PCS_PMA_EQ_DEBUG_SEL, 0x0) |
++			   FIELD_PREP(AIROHA_PCS_PMA_FOM_NUM_ORDER, 0x1) |
++			   FIELD_PREP(AIROHA_PCS_PMA_A_SEL, 0x3));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_EYE_TOP_EYECNT_CTRL_2,
++			   AIROHA_PCS_PMA_DATA_SHIFT |
++			   AIROHA_PCS_PMA_EYECNT_FAST,
++			   AIROHA_PCS_PMA_EYECNT_FAST);
++
++	/* Calibration Start */
++
++	/* Enable SYS */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_SYS_EN_SEL_0,
++			   AIROHA_PCS_PMA_RX_SYS_EN_SEL,
++			   FIELD_PREP(AIROHA_PCS_PMA_RX_SYS_EN_SEL, 0x1));
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_LCPLL_PWCTL_SETTING_0,
++			AIROHA_PCS_PMA_SW_LCPLL_EN);
++
++	usleep_range(500, 600);
++
++	/* Setup FLL PR FMeter (bypass mode)*/
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_DISB_MODE_8,
++			  AIROHA_PCS_PMA_DISB_FBCK_LOCK);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_FORCE_MODE_9,
++			AIROHA_PCS_PMA_FORCE_FBCK_LOCK);
++
++	/* Enable CMLEQ */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_FE_EQ_HZEN,
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ3_EN |
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ2_EN |
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ1_EN |
++			   AIROHA_PCS_ANA_RX_FE_EQ_HZEN,
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ3_EN |
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ2_EN |
++			   AIROHA_PCS_ANA_RX_FE_VB_EQ1_EN);
++
++	/* Setup CDR PR */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_MONPR_EN,
++			   AIROHA_PCS_ANA_CDR_PR_CAP_EN |
++			   AIROHA_PCS_ANA_CDR_BUF_IN_SR,
++			   (cdr_pr_cap_en ? AIROHA_PCS_ANA_CDR_PR_CAP_EN : 0) |
++			   FIELD_PREP(AIROHA_PCS_ANA_CDR_BUF_IN_SR, cdr_pr_buf_in_sr));
++
++	/* Setup CDR xxx Pwdb, set force and disable */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PWDB |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PIEYE_PWDB |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PIEYE_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PWDB |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PIEYE_PWDB);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PD_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_KBAND_RSTB |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_KBAND_RSTB |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PD_PWDB |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PD_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PD_PWDB);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_FE_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_PDOSCAL_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_PDOSCAL_EN |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_PWDB |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_FE_PWDB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_FE_PWDB);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_SCAN_RST_B,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_SIGDET_PWDB |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_SIGDET_PWDB |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_SCAN_RST_B |
++			   AIROHA_PCS_PMA_FORCE_DA_RX_SCAN_RST_B,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_RX_SIGDET_PWDB);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_DA_XPON_PWDB_0,
++			  AIROHA_PCS_PMA_XPON_CDR_PD_PWDB |
++			  AIROHA_PCS_PMA_XPON_CDR_PR_PIEYE_PWDB |
++			  AIROHA_PCS_PMA_XPON_CDR_PW_PWDB |
++			  AIROHA_PCS_PMA_XPON_RX_FE_PWDB);
++
++	/* FIXME: Ask Airoha WHY it's cleared? */
++	/* regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_SIGDET_NOVTH,
++	 *		  AIROHA_PCS_ANA_RX_FE_50OHMS_SEL);
++	 */
++
++	/* Setup SigDet */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_SIGDET_NOVTH,
++			   AIROHA_PCS_ANA_RX_SIGDET_VTH_SEL |
++			   AIROHA_PCS_ANA_RX_SIGDET_PEAK,
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_SIGDET_VTH_SEL, sigdet_vth_sel) |
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_SIGDET_PEAK, BIT(1)));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_DAC_RANGE,
++			   AIROHA_PCS_ANA_RX_SIGDET_LPF_CTRL,
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_SIGDET_LPF_CTRL, BIT(1) | BIT(0)));
++
++	/* Disable SigDet Pwdb */
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_DA_XPON_PWDB_1,
++			  AIROHA_PCS_PMA_RX_SIDGET_PWDB);
++
++	/* Setup PHYCK */
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_PHYCK_DIV,
++			   AIROHA_PCS_ANA_RX_TDC_CK_SEL |
++			   AIROHA_PCS_ANA_RX_PHYCK_RSTB |
++			   AIROHA_PCS_ANA_RX_PHYCK_SEL |
++			   AIROHA_PCS_ANA_RX_PHYCK_DIV,
++			   AIROHA_PCS_ANA_RX_PHYCK_RSTB |
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_PHYCK_SEL, phyck_sel) |
++			   FIELD_PREP(AIROHA_PCS_ANA_RX_PHYCK_DIV, phyck_div));
++
++	regmap_update_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_RX_BUSBIT_SEL,
++			   AIROHA_PCS_ANA_RX_PHY_CK_SEL_FORCE |
++			   AIROHA_PCS_ANA_RX_PHY_CK_SEL,
++			   AIROHA_PCS_ANA_RX_PHY_CK_SEL_FORCE);
++
++	usleep_range(100, 200);
++
++	/* Enable CDR xxx Pwdb */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB |
++			AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PIEYE_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PD_PWDB,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PD_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_FE_PWDB,
++			AIROHA_PCS_PMA_FORCE_DA_RX_FE_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_RX_SCAN_RST_B,
++			AIROHA_PCS_PMA_FORCE_DA_RX_SIGDET_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_DA_XPON_PWDB_0,
++			AIROHA_PCS_PMA_XPON_CDR_PD_PWDB |
++			AIROHA_PCS_PMA_XPON_CDR_PR_PIEYE_PWDB |
++			AIROHA_PCS_PMA_XPON_CDR_PW_PWDB |
++			AIROHA_PCS_PMA_XPON_RX_FE_PWDB);
++
++	/* Enable SigDet Pwdb */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_DA_XPON_PWDB_1,
++			AIROHA_PCS_PMA_RX_SIDGET_PWDB);
++}
++
++static unsigned int an7581_pcs_apply_cdr_pr_idac(struct airoha_pcs_priv *priv,
++						 u32 cdr_pr_idac)
++{
++	u32 val;
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_IDAC,
++			   AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC,
++			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC,
++				      cdr_pr_idac));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_4,
++			   AIROHA_PCS_PMA_FREQLOCK_DET_EN,
++			   AIROHA_PCS_PMA_FREQLOCK_DET_EN_FORCE_0);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_4,
++			   AIROHA_PCS_PMA_FREQLOCK_DET_EN,
++			   AIROHA_PCS_PMA_FREQLOCK_DET_EN_NORMAL);
++
++	usleep_range(5000, 7000);
++
++	regmap_read(priv->xfi_pma, AIROHA_PCS_PMA_RX_FREQDET, &val);
++
++	return FIELD_GET(AIROHA_PCS_PMA_FL_OUT, val);
++}
++
++static u32 an7581_pcs_rx_prcal_idac_major(struct airoha_pcs_priv *priv,
++					  u32 target_fl_out)
++{
++	unsigned int fl_out_diff = UINT_MAX;
++	unsigned int prcal_search;
++	u32 cdr_pr_idac = 0;
++
++	for (prcal_search = 0; prcal_search < 8 ; prcal_search++) {
++		unsigned int fl_out_diff_new;
++		unsigned int fl_out;
++		u32 cdr_pr_idac_tmp;
++
++		/* try to find the upper value by setting the last 3 bit */
++		cdr_pr_idac_tmp = FIELD_PREP(AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC_MAJOR,
++					     prcal_search);
++		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac_tmp);
++
++		/* Use absolute values to find the closest one to target */
++		fl_out_diff_new = abs(fl_out - target_fl_out);
++		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
++			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
++		if (fl_out_diff_new < fl_out_diff) {
++			cdr_pr_idac = cdr_pr_idac_tmp;
++			fl_out_diff = fl_out_diff_new;
++		}
++	}
++
++	return cdr_pr_idac;
++}
++
++static u32 an7581_pcs_rx_prcal_idac_minor(struct airoha_pcs_priv *priv, u32 target_fl_out,
++					  u32 cdr_pr_idac_major)
++{
++	unsigned int remaining_prcal_search_bits = 0;
++	u32 cdr_pr_idac = cdr_pr_idac_major;
++	unsigned int fl_out, fl_out_diff;
++	int best_prcal_search_bit = -1;
++	int prcal_search_bit;
++
++	fl_out = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac);
++	fl_out_diff = abs(fl_out - target_fl_out);
++
++	/* Deadline search part.
++	 * We start from top bits to bottom as we progressively decrease the
++	 * signal.
++	 */
++	for (prcal_search_bit = 7; prcal_search_bit >= 0; prcal_search_bit--) {
++		unsigned int fl_out_diff_new;
++		u32 cdr_pr_idac_tmp;
++
++		cdr_pr_idac_tmp = cdr_pr_idac | BIT(prcal_search_bit);
++		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac_tmp);
++
++		/* Use absolute values to find the closest one to target */
++		fl_out_diff_new = abs(fl_out - target_fl_out);
++		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
++			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
++		if (fl_out_diff_new < fl_out_diff) {
++			best_prcal_search_bit = prcal_search_bit;
++			fl_out_diff = fl_out_diff_new;
++		}
++	}
++
++	/* Set the idac with the best value we found and
++	 * reset the search bit to start from bottom to top.
++	 */
++	if (best_prcal_search_bit >= 0) {
++		cdr_pr_idac |= BIT(best_prcal_search_bit);
++		remaining_prcal_search_bits = best_prcal_search_bit;
++		prcal_search_bit = 0;
++	}
++
++	/* Fine tune part.
++	 * Test remaining bits to find an even closer signal level to target
++	 * by increasing the signal.
++	 */
++	while (remaining_prcal_search_bits) {
++		unsigned int fl_out_diff_new;
++		u32 cdr_pr_idac_tmp;
++
++		cdr_pr_idac_tmp = cdr_pr_idac | BIT(prcal_search_bit);
++		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac_tmp);
++
++		/* Use absolute values to find the closest one to target */
++		fl_out_diff_new = abs(fl_out - target_fl_out);
++		/* Assume we found the deadline when the new absolue signal difference
++		 * from target is greater than the previous and the difference is at
++		 * least 10% greater between the old and new value.
++		 * This is to account for signal detection level tollerance making
++		 * sure we are actually over a deadline (AKA we are getting farther
++		 * from target)
++		 */
++		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
++			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
++		if (fl_out_diff_new > fl_out_diff &&
++		    (abs(fl_out_diff_new - fl_out_diff) * 100) / fl_out_diff > 10) {
++			/* Exit early if we are already at the deadline */
++			if (prcal_search_bit == 0)
++				break;
++
++			/* We found the deadline, set the value to the previous
++			 * bit, and reset the loop to fine tune with the
++			 * remaining values.
++			 */
++			cdr_pr_idac |= BIT(prcal_search_bit - 1);
++			remaining_prcal_search_bits = prcal_search_bit - 1;
++			prcal_search_bit = 0;
++		} else {
++			/* Update the signal level diff and try the next bit */
++			fl_out_diff = fl_out_diff_new;
++
++			/* If we didn't found the deadline, set the last bit
++			 * and reset the loop to fine tune with the remainig
++			 * values.
++			 */
++			if (prcal_search_bit == remaining_prcal_search_bits - 1) {
++				cdr_pr_idac |= BIT(prcal_search_bit);
++				remaining_prcal_search_bits = prcal_search_bit;
++				prcal_search_bit = 0;
++			} else {
++				prcal_search_bit++;
++			}
++		}
++	}
++
++	return cdr_pr_idac;
++}
++
++static void an7581_pcs_rx_prcal(struct airoha_pcs_priv *priv,
++				phy_interface_t interface)
++{
++	u32 cdr_pr_idac_major, cdr_pr_idac;
++	unsigned int fl_out, fl_out_diff;
++
++	u32 target_fl_out;
++	u32 cyclecnt;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:  /* DS_1.25G      / US_1.25G  */
++	case PHY_INTERFACE_MODE_1000BASEX:
++		target_fl_out = 0xa3d6;
++		cyclecnt = 32767;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX: /* DS_9.95328G   / US_9.95328G */
++		target_fl_out = 0xa000;
++		cyclecnt = 20000;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII: /* DS_10.3125G  / US_1.25G */
++	case PHY_INTERFACE_MODE_10GBASER:
++		target_fl_out = 0x9edf;
++		cyclecnt = 32767;
++		break;
++	default:
++		return;
++	}
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			AIROHA_PCS_PMA_SW_REF_RST_N);
++
++	usleep_range(100, 200);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_2,
++			   AIROHA_PCS_PMA_LOCK_TARGET_END |
++			   AIROHA_PCS_PMA_LOCK_TARGET_BEG,
++			   FIELD_PREP(AIROHA_PCS_PMA_LOCK_TARGET_END, target_fl_out + 100) |
++			   FIELD_PREP(AIROHA_PCS_PMA_LOCK_TARGET_BEG, target_fl_out - 100));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_1,
++			   AIROHA_PCS_PMA_UNLOCK_CYCLECNT |
++			   AIROHA_PCS_PMA_LOCK_CYCLECNT,
++			   FIELD_PREP(AIROHA_PCS_PMA_UNLOCK_CYCLECNT, cyclecnt) |
++			   FIELD_PREP(AIROHA_PCS_PMA_LOCK_CYCLECNT, cyclecnt));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_4,
++			   AIROHA_PCS_PMA_LOCK_UNLOCKTH |
++			   AIROHA_PCS_PMA_LOCK_LOCKTH,
++			   FIELD_PREP(AIROHA_PCS_PMA_LOCK_UNLOCKTH, 3) |
++			   FIELD_PREP(AIROHA_PCS_PMA_LOCK_LOCKTH, 3));
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SS_RX_FREQ_DET_3,
++			   AIROHA_PCS_PMA_UNLOCK_TARGET_END |
++			   AIROHA_PCS_PMA_UNLOCK_TARGET_BEG,
++			   FIELD_PREP(AIROHA_PCS_PMA_UNLOCK_TARGET_END, target_fl_out + 100) |
++			   FIELD_PREP(AIROHA_PCS_PMA_UNLOCK_TARGET_BEG, target_fl_out - 100));
++
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_INJ_MODE,
++			AIROHA_PCS_ANA_CDR_PR_INJ_FORCE_OFF);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_LPF_C_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_R_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_LPF_R_EN |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_C_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_LPF_C_EN,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_R_EN |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_PR_LPF_R_EN |
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_C_EN);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_IDAC,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_IDAC);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PWDB);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			  AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB);
++
++	/* Calibration logic:
++	 * First check the major value by looping with every
++	 * value in the last 3 bit of CDR_PR_IDAC.
++	 * Get the signal level and save the value that is closer to
++	 * the target.
++	 *
++	 * Then check each remaining 7 bits in search of the deadline
++	 * where the signal gets farther than signal target.
++	 *
++	 * Finally fine tune for the remaining bits to find the one that
++	 * produce the closest signal level.
++	 */
++	cdr_pr_idac_major = an7581_pcs_rx_prcal_idac_major(priv,  target_fl_out);
++
++	cdr_pr_idac = an7581_pcs_rx_prcal_idac_minor(priv, target_fl_out, cdr_pr_idac_major);
++
++	fl_out = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac);
++	fl_out_diff = abs(fl_out - target_fl_out);
++	if (fl_out_diff > 100) {
++		u32 pr_idac_major = FIELD_GET(AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC_MAJOR,
++					      cdr_pr_idac_major);
++		unsigned int fl_out_tmp, fl_out_diff_tmp;
++		u32 cdr_pr_idac_tmp;
++
++		if (pr_idac_major > 0) {
++			cdr_pr_idac_tmp = FIELD_PREP(AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC_MAJOR,
++						     pr_idac_major - 1);
++
++			dev_dbg(priv->dev, "Fl Out is %d far from target %d with Pr Idac %x. Trying with Pr Idac %x.\n",
++				fl_out_diff, target_fl_out, cdr_pr_idac_major, cdr_pr_idac_tmp);
++
++			cdr_pr_idac_tmp = an7581_pcs_rx_prcal_idac_minor(priv, target_fl_out,
++									 cdr_pr_idac_tmp);
++
++			fl_out_tmp = an7581_pcs_apply_cdr_pr_idac(priv, cdr_pr_idac_tmp);
++			fl_out_diff_tmp = abs(fl_out_tmp - target_fl_out);
++			if (fl_out_diff_tmp < fl_out_diff) {
++				fl_out = fl_out_tmp;
++				fl_out_diff = fl_out_diff_tmp;
++				cdr_pr_idac = cdr_pr_idac_tmp;
++			}
++		}
++	}
++	dev_dbg(priv->dev, "Selected CDR Pr Idac: %x Fl Out: %x\n", cdr_pr_idac, fl_out);
++	if (fl_out_diff > 100)
++		dev_dbg(priv->dev, "Fl Out is %d far from target %d on intermediate calibration.\n",
++			 fl_out_diff, target_fl_out);
++
++
++	/* Setup Load Band */
++	regmap_clear_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CDR_PR_INJ_MODE,
++			  AIROHA_PCS_ANA_CDR_PR_INJ_FORCE_OFF);
++
++	/* Disable force of LPF C previously enabled */
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_LPF_C_EN,
++			  AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_LPF_C_EN);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_IDAC,
++			  AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_IDAC);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_FLL_B,
++			AIROHA_PCS_PMA_LOAD_EN);
++
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_RX_FLL_1,
++			   AIROHA_PCS_PMA_LPATH_IDAC,
++			   FIELD_PREP(AIROHA_PCS_PMA_LPATH_IDAC, cdr_pr_idac));
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			  AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_PR_PWDB);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_PR_PIEYE_PWDB,
++			  AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_PR_PWDB);
++
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			  AIROHA_PCS_PMA_SW_REF_RST_N);
++
++	usleep_range(100, 200);
++}
++
++/* This is used to both calibrate and lock to signal (after a previous
++ * calibration) after a global reset.
++ */
++static void an7581_pcs_cdr_reset(struct airoha_pcs_priv *priv,
++				 phy_interface_t interface, bool calibrate)
++{
++	/* Setup LPF L2D force and disable */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_LCK2DATA |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_LCK2DATA,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_LCK2DATA);
++
++	/* Calibrate IDAC and setup Load Band */
++	if (calibrate)
++		an7581_pcs_rx_prcal(priv, interface);
++
++	/* Setup LPF RSTB force and disable */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_RSTB |
++			   AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_RSTB,
++			   AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_RSTB);
++
++	usleep_range(700, 1000);
++
++	/* Force Enable LPF RSTB */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_RSTB);
++
++	usleep_range(100, 200);
++
++	/* Force Enable LPF L2D */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			AIROHA_PCS_PMA_FORCE_DA_CDR_LPF_LCK2DATA);
++
++	/* Disable LPF RSTB force bit */
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			  AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_RSTB);
++
++	/* Disable LPF L2D force bit */
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_PXP_CDR_LPF_LCK_2DATA,
++			  AIROHA_PCS_PMA_FORCE_SEL_DA_CDR_LPF_LCK2DATA);
++}
++
++static int an7581_pcs_phya_bringup(struct airoha_pcs_priv *priv,
++				   phy_interface_t interface)
++{
++	int calibration_try = 0;
++	u32 val;
++
++	an7581_pcs_tx_bringup(priv, interface);
++	an7581_pcs_rx_bringup(priv, interface);
++
++	usleep_range(100, 200);
++
++retry_calibration:
++	an7581_pcs_cdr_reset(priv, interface, priv->manual_rx_calib);
++
++	/* Global reset clear */
++	regmap_update_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			   AIROHA_PCS_PMA_SW_HSG_RXPCS_RST_N |
++			   AIROHA_PCS_PMA_SW_HSG_TXPCS_RST_N |
++			   AIROHA_PCS_PMA_SW_XFI_RXPCS_BIST_RST_N |
++			   AIROHA_PCS_PMA_SW_XFI_RXPCS_RST_N |
++			   AIROHA_PCS_PMA_SW_XFI_TXPCS_RST_N |
++			   AIROHA_PCS_PMA_SW_TX_FIFO_RST_N |
++			   AIROHA_PCS_PMA_SW_REF_RST_N |
++			   AIROHA_PCS_PMA_SW_ALLPCS_RST_N |
++			   AIROHA_PCS_PMA_SW_PMA_RST_N |
++			   AIROHA_PCS_PMA_SW_TX_RST_N |
++			   AIROHA_PCS_PMA_SW_RX_RST_N |
++			   AIROHA_PCS_PMA_SW_RX_FIFO_RST_N,
++			   AIROHA_PCS_PMA_SW_REF_RST_N);
++
++	usleep_range(100, 200);
++
++	/* Global reset */
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			AIROHA_PCS_PMA_SW_HSG_RXPCS_RST_N |
++			AIROHA_PCS_PMA_SW_HSG_TXPCS_RST_N |
++			AIROHA_PCS_PMA_SW_XFI_RXPCS_BIST_RST_N |
++			AIROHA_PCS_PMA_SW_XFI_RXPCS_RST_N |
++			AIROHA_PCS_PMA_SW_XFI_TXPCS_RST_N |
++			AIROHA_PCS_PMA_SW_TX_FIFO_RST_N |
++			AIROHA_PCS_PMA_SW_REF_RST_N |
++			AIROHA_PCS_PMA_SW_ALLPCS_RST_N |
++			AIROHA_PCS_PMA_SW_PMA_RST_N |
++			AIROHA_PCS_PMA_SW_TX_RST_N |
++			AIROHA_PCS_PMA_SW_RX_RST_N |
++			AIROHA_PCS_PMA_SW_RX_FIFO_RST_N);
++
++	usleep_range(5000, 7000);
++
++	an7581_pcs_cdr_reset(priv, interface, false);
++
++	/* Manual RX calibration is required only for SoC before E2
++	 * revision. E2+ SoC autocalibrate RX and only CDR reset is needed.
++	 */
++	if (!priv->manual_rx_calib)
++		return 0;
++
++	/* It was discovered that after a global reset and auto mode gets
++	 * actually enabled, the fl_out from calibration might change and
++	 * might deviates a lot from the expected value it was calibrated for.
++	 * To correctly work, the PCS FreqDet module needs to Lock to the fl_out
++	 * (frequency level output) or no signal can correctly be transmitted.
++	 * This is detected by checking the FreqDet module Lock bit.
++	 *
++	 * If it's detected that the FreqDet module is not locked, retry
++	 * calibration. From observation on real hardware with a 10g SFP module,
++	 * it required a maximum of an additional calibration to actually make
++	 * the FreqDet module to lock. Try 10 times before failing to handle
++	 * really strange case.
++	 */
++	regmap_read(priv->xfi_pma, AIROHA_PCS_PMA_RX_FREQDET, &val);
++	if (!(val & AIROHA_PCS_PMA_FBCK_LOCK)) {
++		if (calibration_try > AIROHA_PCS_MAX_CALIBRATION_TRY) {
++			dev_err(priv->dev, "No FBCK Lock from FreqDet module after %d calibration try. PCS won't work.\n",
++				AIROHA_PCS_MAX_CALIBRATION_TRY);
++			return -EIO;
++		}
++
++		calibration_try++;
++
++		dev_dbg(priv->dev, "No FBCK Lock from FreqDet module, retry calibration.\n");
++		goto retry_calibration;
++	}
++
++	return 0;
++}
++
++static void an7581_pcs_pll_bringup(struct airoha_pcs_priv *priv,
++				   phy_interface_t interface)
++{
++	an7581_pcs_jcpll_bringup(priv, interface);
++
++	usleep_range(200, 300);
++
++	an7581_pcs_txpll_bringup(priv, interface);
++
++	usleep_range(200, 300);
++}
++
++int an7581_pcs_bringup(struct airoha_pcs_priv *priv,
++				     phy_interface_t interface)
++{
++	/* Enable Analog Common Lane */
++	regmap_set_bits(priv->xfi_ana, AIROHA_PCS_ANA_PXP_CMN_EN,
++			AIROHA_PCS_ANA_CMN_EN);
++
++	/* Setup PLL */
++	an7581_pcs_pll_bringup(priv, interface);
++
++	/* Setup PHYA */
++	return an7581_pcs_phya_bringup(priv, interface);
++}
++
++void an7581_pcs_phya_link_up(struct airoha_pcs_priv *priv)
++{
++	/* Reset TXPCS on link up */
++	regmap_clear_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			  AIROHA_PCS_PMA_SW_HSG_TXPCS_RST_N);
++
++	usleep_range(100, 200);
++
++	regmap_set_bits(priv->xfi_pma, AIROHA_PCS_PMA_SW_RST_SET,
++			AIROHA_PCS_PMA_SW_HSG_TXPCS_RST_N);
++}
++
++static bool an7581_pcs_have_rx_signal(struct airoha_pcs_priv *priv)
++{
++	unsigned int count = 0;
++	u32 val;
++	int i;
++
++	regmap_write(priv->xfi_pma, AIROHA_PCS_PMA_DIG_RESERVE_0,
++		     AIROHA_PCS_TRIGGER_RX_SIDGET_SCAN);
++
++	/* Scan 5 times for RX sigdet module to detect RX signal */
++	for (i = 0; i <= 5; i++) {
++		regmap_read(priv->xfi_pma, AIROHA_PCS_PMA_DIG_RO_RESERVE_2,
++			    &val);
++		if (val & AIROHA_PCS_RX_SIGDET)
++			count++;
++	}
++
++	/* Consider signal presence if we detect signal at least 4 times */
++	return count >= 4;
++}
++
++int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv)
++{
++	u32 val;
++
++	/* Check if PCS is UP or Down */
++	regmap_read(priv->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_STUS_1, &val);
++	if (val & AIROHA_PCS_USXGMII_PCS_RX_LINK_STATUS_UP)
++		return 0;
++
++	/* Validate if this is consistent with RX SigDet module */
++	if (!an7581_pcs_have_rx_signal(priv))
++		return 0;
++
++	/* If PCS is down but RX SigDet module detected signal,
++	 * trigger CDR reset.
++	 */
++	an7581_pcs_cdr_reset(priv, PHY_INTERFACE_MODE_NA, false);
++
++	/* Report there is an error with Link Detection and we
++	 * should test again later.
++	 */
++	return -EINVAL;
++}
+--- /dev/null
++++ b/include/linux/pcs/pcs-airoha.h
+@@ -0,0 +1,9 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++
++#ifndef __LINUX_PCS_AIROHA_H
++#define __LINUX_PCS_AIROHA_H
++
++struct phylink_pcs *airoha_pcs_create(struct device *dev);
++void airoha_pcs_destroy(struct phylink_pcs *pcs);
++
++#endif /* __LINUX_PCS_AIROHA_H */

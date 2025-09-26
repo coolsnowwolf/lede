@@ -1,0 +1,54 @@
+From bd5afca115f181c85f992d42a57cd497bc823ccb Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sun, 12 Oct 2025 11:19:44 +0200
+Subject: [PATCH] net: airoha: Take into account out-of-order tx completions in
+ airoha_dev_xmit()
+
+Completion napi can free out-of-order tx descriptors if hw QoS is
+enabled and packets with different priority are queued to same DMA ring.
+Take into account possible out-of-order reports checking if the tx queue
+is full using circular buffer head/tail pointer instead of the number of
+queued packets.
+
+Fixes: 23020f0493270 ("net: airoha: Introduce ethernet support for EN7581 SoC")
+Suggested-by: Simon Horman <horms@kernel.org>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20251012-airoha-tx-busy-queue-v2-1-a600b08bab2d@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1878,6 +1878,20 @@ static u32 airoha_get_dsa_tag(struct sk_
+ #endif
+ }
+ 
++static bool airoha_dev_tx_queue_busy(struct airoha_queue *q, u32 nr_frags)
++{
++	u32 tail = q->tail <= q->head ? q->tail + q->ndesc : q->tail;
++	u32 index = q->head + nr_frags;
++
++	/* completion napi can free out-of-order tx descriptors if hw QoS is
++	 * enabled and packets with different priorities are queued to the same
++	 * DMA ring. Take into account possible out-of-order reports checking
++	 * if the tx queue is full using circular buffer head/tail pointers
++	 * instead of the number of queued packets.
++	 */
++	return index >= tail;
++}
++
+ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
+ 				   struct net_device *dev)
+ {
+@@ -1931,7 +1945,7 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	txq = netdev_get_tx_queue(dev, qid);
+ 	nr_frags = 1 + skb_shinfo(skb)->nr_frags;
+ 
+-	if (q->queued + nr_frags > q->ndesc) {
++	if (airoha_dev_tx_queue_busy(q, nr_frags)) {
+ 		/* not enough space in the queue */
+ 		netif_tx_stop_queue(txq);
+ 		spin_unlock_bh(&q->lock);

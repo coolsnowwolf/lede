@@ -1,0 +1,82 @@
+From c683e378c0907e66cee939145edf936c254ff1e3 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 21 May 2025 09:16:39 +0200
+Subject: [PATCH 3/3] net: airoha: Add the capability to allocate hfwd
+ descriptors in SRAM
+
+In order to improve packet processing and packet forwarding
+performances, EN7581 SoC supports consuming SRAM instead of DRAM for
+hw forwarding descriptors queue.
+For downlink hw accelerated traffic request to consume SRAM memory
+for hw forwarding descriptors queue.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20250521-airopha-desc-sram-v3-4-a6e9b085b4f0@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 11 +----------
+ drivers/net/ethernet/airoha/airoha_eth.h |  9 +++++++++
+ drivers/net/ethernet/airoha/airoha_ppe.c |  6 ++++++
+ 3 files changed, 16 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -71,15 +71,6 @@ static void airoha_qdma_irq_disable(stru
+ 	airoha_qdma_set_irqmask(irq_bank, index, mask, 0);
+ }
+ 
+-static bool airhoa_is_lan_gdm_port(struct airoha_gdm_port *port)
+-{
+-	/* GDM1 port on EN7581 SoC is connected to the lan dsa switch.
+-	 * GDM{2,3,4} can be used as wan port connected to an external
+-	 * phy module.
+-	 */
+-	return port->id == 1;
+-}
+-
+ static void airoha_set_macaddr(struct airoha_gdm_port *port, const u8 *addr)
+ {
+ 	struct airoha_eth *eth = port->qdma->eth;
+@@ -1124,7 +1115,7 @@ static int airoha_qdma_init_hfwd_queues(
+ 			LMGR_INIT_START | LMGR_SRAM_MODE_MASK |
+ 			HW_FWD_DESC_NUM_MASK,
+ 			FIELD_PREP(HW_FWD_DESC_NUM_MASK, HW_DSCP_NUM) |
+-			LMGR_INIT_START);
++			LMGR_INIT_START | LMGR_SRAM_MODE_MASK);
+ 
+ 	return read_poll_timeout(airoha_qdma_rr, status,
+ 				 !(status & LMGR_INIT_START), USEC_PER_MSEC,
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -597,6 +597,15 @@ u32 airoha_rmw(void __iomem *base, u32 o
+ #define airoha_qdma_clear(qdma, offset, val)			\
+ 	airoha_rmw((qdma)->regs, (offset), (val), 0)
+ 
++static inline bool airhoa_is_lan_gdm_port(struct airoha_gdm_port *port)
++{
++	/* GDM1 port on EN7581 SoC is connected to the lan dsa switch.
++	 * GDM{2,3,4} can be used as wan port connected to an external
++	 * phy module.
++	 */
++	return port->id == 1;
++}
++
+ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
+ 			      struct airoha_gdm_port *port);
+ 
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -251,6 +251,12 @@ static int airoha_ppe_foe_entry_prepare(
+ 		else
+ 			pse_port = 2; /* uplink relies on GDM2 loopback */
+ 		val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port);
++
++		/* For downlink traffic consume SRAM memory for hw forwarding
++		 * descriptors queue.
++		 */
++		if (airhoa_is_lan_gdm_port(port))
++			val |= AIROHA_FOE_IB2_FAST_PATH;
+ 	}
+ 
+ 	if (is_multicast_ether_addr(data->eth.h_dest))

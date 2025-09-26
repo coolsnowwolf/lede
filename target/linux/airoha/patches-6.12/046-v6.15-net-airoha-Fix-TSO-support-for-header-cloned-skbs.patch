@@ -1,0 +1,60 @@
+From c6287e1a858e336cc202b484c6138a0fe252c6b3 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 13 Feb 2025 16:34:20 +0100
+Subject: [PATCH] net: airoha: Fix TSO support for header cloned skbs
+
+For GSO packets, skb_cow_head() will reallocate the skb for TSO header
+cloned skbs in airoha_dev_xmit(). For this reason, sinfo pointer can be
+no more valid. Fix the issue relying on skb_shinfo() macro directly in
+airoha_dev_xmit().
+
+The problem exists since
+commit 23020f049327 ("net: airoha: Introduce ethernet support for EN7581 SoC")
+but it is not a user visible, since we can't currently enable TSO
+for DSA user ports since we are missing to initialize net_device
+vlan_features field.
+
+Reviewed-by: Mateusz Polchlopek <mateusz.polchlopek@intel.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20250213-airoha-en7581-flowtable-offload-v4-1-b69ca16d74db@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/airoha_eth.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/airoha_eth.c
++++ b/drivers/net/ethernet/mediatek/airoha_eth.c
+@@ -2548,11 +2548,10 @@ static u16 airoha_dev_select_queue(struc
+ static netdev_tx_t airoha_dev_xmit(struct sk_buff *skb,
+ 				   struct net_device *dev)
+ {
+-	struct skb_shared_info *sinfo = skb_shinfo(skb);
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
++	u32 nr_frags = 1 + skb_shinfo(skb)->nr_frags;
+ 	u32 msg0, msg1, len = skb_headlen(skb);
+ 	struct airoha_qdma *qdma = port->qdma;
+-	u32 nr_frags = 1 + sinfo->nr_frags;
+ 	struct netdev_queue *txq;
+ 	struct airoha_queue *q;
+ 	void *data = skb->data;
+@@ -2575,8 +2574,9 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 		if (skb_cow_head(skb, 0))
+ 			goto error;
+ 
+-		if (sinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6)) {
+-			__be16 csum = cpu_to_be16(sinfo->gso_size);
++		if (skb_shinfo(skb)->gso_type & (SKB_GSO_TCPV4 |
++						 SKB_GSO_TCPV6)) {
++			__be16 csum = cpu_to_be16(skb_shinfo(skb)->gso_size);
+ 
+ 			tcp_hdr(skb)->check = (__force __sum16)csum;
+ 			msg0 |= FIELD_PREP(QDMA_ETH_TXMSG_TSO_MASK, 1);
+@@ -2605,7 +2605,7 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	for (i = 0; i < nr_frags; i++) {
+ 		struct airoha_qdma_desc *desc = &q->desc[index];
+ 		struct airoha_queue_entry *e = &q->entry[index];
+-		skb_frag_t *frag = &sinfo->frags[i];
++		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+ 		dma_addr_t addr;
+ 		u32 val;
+ 

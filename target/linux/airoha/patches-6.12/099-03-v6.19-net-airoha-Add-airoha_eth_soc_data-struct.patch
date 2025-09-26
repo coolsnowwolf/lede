@@ -1,0 +1,152 @@
+From 5863b4e065e2253ef05684f728a04e4972046bcb Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 17 Oct 2025 11:06:13 +0200
+Subject: [PATCH 03/12] net: airoha: Add airoha_eth_soc_data struct
+
+Introduce airoha_eth_soc_data struct to contain differences between
+various SoC. Move XSI reset names in airoha_eth_soc_data. This is a
+preliminary patch to enable AN7583 ethernet controller support in
+airoha-eth driver.
+
+Co-developed-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20251017-an7583-eth-support-v3-4-f28319666667@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 42 +++++++++++++++++++-----
+ drivers/net/ethernet/airoha/airoha_eth.h | 17 ++++++++--
+ 2 files changed, 48 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1392,8 +1392,7 @@ static int airoha_hw_init(struct platfor
+ 	int err, i;
+ 
+ 	/* disable xsi */
+-	err = reset_control_bulk_assert(ARRAY_SIZE(eth->xsi_rsts),
+-					eth->xsi_rsts);
++	err = reset_control_bulk_assert(eth->soc->num_xsi_rsts, eth->xsi_rsts);
+ 	if (err)
+ 		return err;
+ 
+@@ -2927,6 +2926,7 @@ free_metadata_dst:
+ 
+ static int airoha_probe(struct platform_device *pdev)
+ {
++	struct reset_control_bulk_data *xsi_rsts;
+ 	struct device_node *np;
+ 	struct airoha_eth *eth;
+ 	int i, err;
+@@ -2935,6 +2935,10 @@ static int airoha_probe(struct platform_
+ 	if (!eth)
+ 		return -ENOMEM;
+ 
++	eth->soc = of_device_get_match_data(&pdev->dev);
++	if (!eth->soc)
++		return -EINVAL;
++
+ 	eth->dev = &pdev->dev;
+ 
+ 	err = dma_set_mask_and_coherent(eth->dev, DMA_BIT_MASK(32));
+@@ -2959,13 +2963,18 @@ static int airoha_probe(struct platform_
+ 		return err;
+ 	}
+ 
+-	eth->xsi_rsts[0].id = "xsi-mac";
+-	eth->xsi_rsts[1].id = "hsi0-mac";
+-	eth->xsi_rsts[2].id = "hsi1-mac";
+-	eth->xsi_rsts[3].id = "hsi-mac";
+-	eth->xsi_rsts[4].id = "xfp-mac";
++	xsi_rsts = devm_kzalloc(eth->dev,
++				eth->soc->num_xsi_rsts * sizeof(*xsi_rsts),
++				GFP_KERNEL);
++	if (err)
++		return err;
++
++	eth->xsi_rsts = xsi_rsts;
++	for (i = 0; i < eth->soc->num_xsi_rsts; i++)
++		eth->xsi_rsts[i].id = eth->soc->xsi_rsts_names[i];
++
+ 	err = devm_reset_control_bulk_get_exclusive(eth->dev,
+-						    ARRAY_SIZE(eth->xsi_rsts),
++						    eth->soc->num_xsi_rsts,
+ 						    eth->xsi_rsts);
+ 	if (err) {
+ 		dev_err(eth->dev, "failed to get bulk xsi reset lines\n");
+@@ -3052,8 +3061,23 @@ static void airoha_remove(struct platfor
+ 	platform_set_drvdata(pdev, NULL);
+ }
+ 
++static const char * const en7581_xsi_rsts_names[] = {
++	"xsi-mac",
++	"hsi0-mac",
++	"hsi1-mac",
++	"hsi-mac",
++	"xfp-mac",
++};
++
++static const struct airoha_eth_soc_data en7581_soc_data = {
++	.version = 0x7581,
++	.xsi_rsts_names = en7581_xsi_rsts_names,
++	.num_xsi_rsts = ARRAY_SIZE(en7581_xsi_rsts_names),
++	.num_ppe = 2,
++};
++
+ static const struct of_device_id of_airoha_match[] = {
+-	{ .compatible = "airoha,en7581-eth" },
++	{ .compatible = "airoha,en7581-eth", .data = &en7581_soc_data },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, of_airoha_match);
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -21,7 +21,6 @@
+ #define AIROHA_MAX_NUM_IRQ_BANKS	4
+ #define AIROHA_MAX_DSA_PORTS		7
+ #define AIROHA_MAX_NUM_RSTS		3
+-#define AIROHA_MAX_NUM_XSI_RSTS		5
+ #define AIROHA_MAX_MTU			9216
+ #define AIROHA_MAX_PACKET_SIZE		2048
+ #define AIROHA_NUM_QOS_CHANNELS		4
+@@ -556,9 +555,18 @@ struct airoha_ppe {
+ 	struct dentry *debugfs_dir;
+ };
+ 
++struct airoha_eth_soc_data {
++	u16 version;
++	const char * const *xsi_rsts_names;
++	int num_xsi_rsts;
++	int num_ppe;
++};
++
+ struct airoha_eth {
+ 	struct device *dev;
+ 
++	const struct airoha_eth_soc_data *soc;
++
+ 	unsigned long state;
+ 	void __iomem *fe_regs;
+ 
+@@ -568,7 +576,7 @@ struct airoha_eth {
+ 	struct rhashtable flow_table;
+ 
+ 	struct reset_control_bulk_data rsts[AIROHA_MAX_NUM_RSTS];
+-	struct reset_control_bulk_data xsi_rsts[AIROHA_MAX_NUM_XSI_RSTS];
++	struct reset_control_bulk_data *xsi_rsts;
+ 
+ 	struct net_device *napi_dev;
+ 
+@@ -611,6 +619,11 @@ static inline bool airhoa_is_lan_gdm_por
+ 	return port->id == 1;
+ }
+ 
++static inline bool airoha_is_7581(struct airoha_eth *eth)
++{
++	return eth->soc->version == 0x7581;
++}
++
+ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
+ 			      struct airoha_gdm_port *port);
+ 
