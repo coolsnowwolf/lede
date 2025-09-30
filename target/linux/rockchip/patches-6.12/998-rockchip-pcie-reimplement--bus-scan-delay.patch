@@ -1,0 +1,96 @@
+--- a/Documentation/admin-guide/kernel-parameters.txt
++++ b/Documentation/admin-guide/kernel-parameters.txt
+@@ -4967,6 +4967,14 @@
+ 		nomsi	Do not use MSI for native PCIe PME signaling (this makes
+ 			all PCIe root ports use INTx for all services).
+ 
++	pcie_rockchip_host.bus_scan_delay=	[PCIE] Delay in ms before
++			scanning PCIe bus in Rockchip PCIe host driver. Some PCIe
++			cards seem to need delays that can be several hundred ms.
++			If set to greater than or equal to 0 this parameter will
++			override delay that can be set in device tree.
++			Values less than 0 mean that this parameter is ignored.
++			default=-1
++
+ 	pcmv=		[HW,PCMCIA] BadgePAD 4
+ 
+ 	pd_ignore_unused
+--- a/drivers/pci/controller/pcie-rockchip-host.c
++++ b/drivers/pci/controller/pcie-rockchip-host.c
+@@ -32,10 +32,14 @@
+ #include <linux/platform_device.h>
+ #include <linux/reset.h>
+ #include <linux/regmap.h>
++#include <linux/moduleparam.h>
+ 
+ #include "../pci.h"
+ #include "pcie-rockchip.h"
+ 
++static int bus_scan_delay = -1;
++module_param_named(bus_scan_delay, bus_scan_delay, int, S_IRUGO);
++
+ static void rockchip_pcie_enable_bw_int(struct rockchip_pcie *rockchip)
+ {
+ 	u32 status;
+@@ -933,6 +937,7 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
+ 	struct device *dev = &pdev->dev;
+ 	struct pci_host_bridge *bridge;
+ 	int err;
++	u32 delay = 0;
+ 
+ 	if (!dev->of_node)
+ 		return -ENODEV;
+@@ -982,6 +987,26 @@ static int rockchip_pcie_probe(struct platform_device *pdev)
+ 	bridge->sysdata = rockchip;
+ 	bridge->ops = &rockchip_pcie_ops;
+ 
++	/* Checking if bus scan delay was given from command line and prefer
++	 * that over the value in device tree (which defaults to 0 if not set).
++	 */
++	if (bus_scan_delay >= 0) {
++		delay = bus_scan_delay;
++		dev_info(dev, "wait %u ms (from command-line) before bus scan\n", delay);
++	} else {
++		delay = rockchip->bus_scan_delay;
++		dev_info(dev, "wait %u ms (from device tree) before bus scan\n", delay);
++	}
++	/* Workaround for some devices crashing on pci_host_probe / pci_scan_root_bus_bridge
++	 * calls: sleep a bit before bus scan. Call trace gets to rockchip_pcie_rd_conf when
++	 * trying to read vendor id (pci_bus_generic_read_dev_vendor_id is in call stack)
++	 * before panicing. I have no idea why this works or what causes the panic. I just
++	 * found this hack by luck when trying to "make it break differently if possible".
++	 */
++	if (delay > 0) {
++		msleep(delay);
++	}
++
+ 	err = rockchip_pcie_setup_irq(rockchip);
+ 	if (err)
+ 		goto err_remove_irq_domain;
+--- a/drivers/pci/controller/pcie-rockchip.c
++++ b/drivers/pci/controller/pcie-rockchip.c
+@@ -102,6 +102,12 @@ int rockchip_pcie_parse_dt(struct rockchip_pcie *rockchip)
+ 		return dev_err_probe(dev, rockchip->num_clks,
+ 				     "failed to get clocks\n");
+ 
++	err = of_property_read_u32(node, "bus-scan-delay-ms", &rockchip->bus_scan_delay);
++	if (err) {
++		dev_info(dev, "no bus scan delay, default to 0 ms\n");
++		rockchip->bus_scan_delay = 0;
++	}
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(rockchip_pcie_parse_dt);
+--- a/drivers/pci/controller/pcie-rockchip.h
++++ b/drivers/pci/controller/pcie-rockchip.h
+@@ -351,6 +351,8 @@ struct rockchip_pcie {
+ 	phys_addr_t msg_bus_addr;
+ 	bool is_rc;
+ 	struct resource *mem_res;
++	/* Bus scan delay is a workaround for some pcie devices causing crashes */
++	u32 bus_scan_delay;
+ };
+ 
+ static u32 rockchip_pcie_read(struct rockchip_pcie *rockchip, u32 reg)
+ 
