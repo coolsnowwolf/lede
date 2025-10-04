@@ -264,6 +264,65 @@ endif
 endef
 TARGET_DEVICES += bananapi_bpi-r4-poe
 
+define Device/bananapi_bpi-r4-lite
+  DEVICE_VENDOR := Bananapi
+  DEVICE_MODEL := BPi-R4 Lite
+  DEVICE_DTS := mt7987a-bananapi-bpi-r4-lite
+  DEVICE_DTS_OVERLAY:= mt7987a-bananapi-bpi-r4-lite-1pcie-2L \
+		       mt7987a-bananapi-bpi-r4-lite-2pcie-1L \
+		       mt7987a-bananapi-bpi-r4-lite-emmc mt7987a-bananapi-bpi-r4-lite-sd \
+		       mt7987a-bananapi-bpi-r4-lite-nand mt7987a-bananapi-bpi-r4-lite-nor
+  DEVICE_DTS_CONFIG := config-mt7987a-bananapi-bpi-r4-lite
+  DEVICE_DTC_FLAGS := --pad 4096
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_LOADADDR := 0x4ff00000
+  DEVICE_PACKAGES := kmod-eeprom-at24 kmod-gpio-pca953x kmod-i2c-mux-pca954x \
+		     kmod-rtc-pcf8563 kmod-sfp kmod-usb3 e2fsprogs mkf2fs mt7987-2p5g-phy-firmware
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  KERNEL_IN_UBI := 1
+  UBOOTENV_IN_UBI := 1
+  KERNEL_LOADADDR := 0x40000000
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGES := sysupgrade.itb
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  KERNEL_IN_UBI := 1
+  IMAGES := sysupgrade.itb
+  IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-with-rootfs | pad-rootfs | append-metadata
+  ARTIFACTS := \
+	       emmc-preloader.bin emmc-bl31-uboot.fip \
+	       nor-preloader.bin nor-bl31-uboot.fip \
+	       sdcard.img.gz \
+	       snand-preloader.bin snand-bl31-uboot.fip
+  ARTIFACT/emmc-preloader.bin	:= mt7987-bl2 emmc-comb
+  ARTIFACT/emmc-bl31-uboot.fip	:= mt7987-bl31-uboot bananapi_bpi-r4-lite-emmc
+  ARTIFACT/nor-preloader.bin	:= mt7987-bl2 nor-comb
+  ARTIFACT/nor-bl31-uboot.fip	:= mt7987-bl31-uboot bananapi_bpi-r4-lite-nor
+  ARTIFACT/snand-preloader.bin	:= mt7987-bl2 spim-nand2-ubi-comb
+  ARTIFACT/snand-bl31-uboot.fip	:= mt7987-bl31-uboot bananapi_bpi-r4-lite-snand
+  ARTIFACT/sdcard.img.gz	:= mt798x-gpt sdmmc |\
+				   pad-to 17k | mt7987-bl2 sdmmc-comb |\
+				   pad-to 6656k | mt7987-bl31-uboot bananapi_bpi-r4-lite-sdmmc |\
+				$(if $(CONFIG_TARGET_ROOTFS_INITRAMFS),\
+				   pad-to 12M | append-image-stage initramfs-recovery.itb | check-size 44m |\
+				) \
+				   pad-to 44M | mt7987-bl2 spim-nand2-ubi-comb |\
+				   pad-to 45M | mt7987-bl31-uboot bananapi_bpi-r4-lite-snand |\
+				   pad-to 49M | mt7987-bl2 nor-comb |\
+				   pad-to 50M | mt7987-bl31-uboot bananapi_bpi-r4-lite-nor |\
+				   pad-to 51M | mt7987-bl2 emmc-comb |\
+				   pad-to 52M | mt7987-bl31-uboot bananapi_bpi-r4-lite-emmc |\
+				   pad-to 56M | mt798x-gpt emmc |\
+				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS),\
+				   pad-to 64M | append-image squashfs-sysupgrade.itb | check-size |\
+				) \
+				  gzip
+  IMAGE_SIZE := $$(shell expr 64 + $$(CONFIG_TARGET_ROOTFS_PARTSIZE))m
+endef
+TARGET_DEVICES += bananapi_bpi-r4-lite
+
 define Device/cetron_ct3003
   DEVICE_VENDOR := Cetron
   DEVICE_MODEL := CT3003
