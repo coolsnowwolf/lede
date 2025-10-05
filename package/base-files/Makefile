@@ -39,7 +39,11 @@ endif
 define Package/base-files
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=+netifd +libc +jsonfilter +SIGNED_PACKAGES:usign +SIGNED_PACKAGES:openwrt-keyring +NAND_SUPPORT:ubi-utils +fstools +fwtool
+  DEPENDS:= \
+	+netifd +libc +jsonfilter +SIGNED_PACKAGES:usign +SIGNED_PACKAGES:openwrt-keyring \
+	+NAND_SUPPORT:ubi-utils +fstools +fwtool \
+	+SELINUX:procd-selinux +!SELINUX:procd +USE_SECCOMP:procd-seccomp \
+	+SELINUX:busybox-selinux +!SELINUX:busybox
   TITLE:=Base filesystem for LEDE
   URL:=http://openwrt.org/
   VERSION:=$(PKG_RELEASE)-$(REVISION)
@@ -108,6 +112,9 @@ define Build/Prepare
 	mkdir -p $(PKG_BUILD_DIR)
 endef
 
+define Build/Quilt
+endef
+
 define Build/Compile/Default
 
 endef
@@ -135,7 +142,6 @@ ifndef CONFIG_BUILDBOT
   define Package/base-files/install-key
 	mkdir -p $(1)/etc/opkg/keys
 	$(CP) $(BUILD_KEY).pub $(1)/etc/opkg/keys/`$(STAGING_DIR_HOST)/bin/usign -F -p $(BUILD_KEY).pub`
-
   endef
 endif
 endif
@@ -147,17 +153,18 @@ ifeq ($(CONFIG_NAND_SUPPORT),)
   endef
 endif
 
+ifeq ($(CONFIG_EMMC_SUPPORT),)
+  define Package/base-files/emmc-support
+	rm -f $(1)/lib/upgrade/emmc.sh
+  endef
+endif
+
 ifeq ($(CONFIG_LEGACY_SDCARD_SUPPORT),)
   define Package/base-files/legacy-sdcard-support
 	rm -f $(1)/lib/upgrade/legacy-sdcard.sh
   endef
 endif
 
-ifeq ($(CONFIG_EMMC_SUPPORT),)
-  define Package/base-files/emmc-support
-	rm -f $(1)/lib/upgrade/emmc.sh
-  endef
-endif
 
 define Package/base-files/install
 	$(CP) ./files/* $(1)/
@@ -204,7 +211,8 @@ define Package/base-files/install
 		$(1)/usr/lib \
 		$(1)/usr/bin \
 		$(1)/sys \
-		$(1)/www \
+		$(1)/www
+	mkdir -p -m 750 \
 		$(1)/root
 
 	$(LN) /proc/mounts $(1)/etc/mtab
@@ -238,6 +246,13 @@ endif
 		cat $(BIN_DIR)/feeds.buildinfo >>$(1)/etc/build.feeds; \
 		cat $(BIN_DIR)/version.buildinfo >>$(1)/etc/build.version)
 
+	$(if $(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE), \
+		rm -f $(1)/etc/banner.failsafe,)
+
+	if [ ! -f $(TOPDIR)/feeds/luci/package.json ]; then \
+		$(CP) ./luci/* $(1)/; \
+	fi
+
 ifneq ($(CONFIG_USE_APK),)
 	mkdir -p $(1)/etc/apk/repositories.d
 	$(call FeedSourcesAppendAPK,$(1)/etc/apk/repositories.d/distfeeds.list)
@@ -254,13 +269,6 @@ else
 	$(if $(CONFIG_IPK_FILES_CHECKSUMS),, \
 		rm -f $(1)/sbin/pkg_check)
 endif
-
-	$(if $(CONFIG_TARGET_PREINIT_DISABLE_FAILSAFE), \
-		rm -f $(1)/etc/banner.failsafe,)
-
-	if [ -f $(TOPDIR)/feeds/luci/package.json ]; then \
-		$(CP) ./luci2/* $(1)/; \
-	fi
 endef
 
 ifneq ($(DUMP),1)

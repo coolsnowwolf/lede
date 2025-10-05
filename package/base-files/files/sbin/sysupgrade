@@ -24,6 +24,8 @@ export NEED_IMAGE=
 export HELP=0
 export FORCE=0
 export TEST=0
+export USE_CURR_PART=0
+export ADD_PROVISIONING=0
 export UMOUNT_ETCBACKUP_DIR=0
 
 # parse options
@@ -36,12 +38,14 @@ while [ -n "$1" ]; do
 		-c) export SAVE_OVERLAY=1 SAVE_OVERLAY_PATH=/etc;;
 		-o) export SAVE_OVERLAY=1 SAVE_OVERLAY_PATH=/;;
 		-p) export SAVE_PARTITIONS=0;;
+		-P) export ADD_PROVISIONING=1;;
 		-k) export SAVE_INSTALLED_PKGS=1;;
 		-u) export SKIP_UNCHANGED=1;;
 		-b|--create-backup) export CONF_BACKUP="$2" NEED_IMAGE=1; shift;;
 		-r|--restore-backup) export CONF_RESTORE="$2" NEED_IMAGE=1; shift;;
 		-l|--list-backup) export CONF_BACKUP_LIST=1;;
 		-f) export CONF_IMAGE="$2"; shift;;
+		-s) export USE_CURR_PART=1;;
 		-F|--force) export FORCE=1;;
 		-T|--test) export TEST=1;;
 		-h|--help) export HELP=1; break;;
@@ -60,12 +64,10 @@ export CONF_TAR=/tmp/sysupgrade.tgz
 export ETCBACKUP_DIR=/etc/backup
 export INSTALLED_PACKAGES=${ETCBACKUP_DIR}/installed_packages.txt
 
-IMAGE="$1"
-
-[ -z "$IMAGE" -a -z "$NEED_IMAGE" -a $CONF_BACKUP_LIST -eq 0 -o $HELP -gt 0 ] && {
+print_help() {
 	cat <<EOF
 Usage: $0 [<upgrade-option>...] <image file or URL>
-       $0 [-q] [-i] [-c] [-u] [-o] [-k] <backup-command> <file>
+       $0 [-q] [-i] [-c] [-u] [-o] [-k] [-P] <backup-command> <file>
 
 upgrade-option:
 	-f <config>  restore configuration from .tar.gz (file or url)
@@ -78,6 +80,9 @@ upgrade-option:
 	-p           do not attempt to restore the partition table after flash.
 	-k           include in backup a list of current installed packages at
 	             $INSTALLED_PACKAGES
+	-s           stay on current partition (for dual firmware devices)
+	-P           create provisioning partition to keep sensitive data across
+	             factory resets.
 	-T | --test
 	             Verify image and config .tar.gz but do not actually flash.
 	-F | --force
@@ -102,8 +107,19 @@ backup-command:
 	             sysupgrade -b. Does not create a backup file.
 
 EOF
-	exit 1
 }
+
+IMAGE="$1"
+
+if [ $HELP -gt 0 ]; then
+	print_help
+	exit 0
+fi
+
+if [ -z "$IMAGE" -a -z "$NEED_IMAGE" -a $CONF_BACKUP_LIST -eq 0 ]; then
+	print_help
+	exit 1
+fi
 
 [ -n "$IMAGE" -a -n "$NEED_IMAGE" ] && {
 	cat <<-EOF
@@ -143,7 +159,7 @@ list_static_conffiles() {
 		\( -type f -o -type l \) $filter 2>/dev/null
 }
 
-add_conffiles() {
+build_list_of_backup_config_files() {
 	local file="$1"
 
 	( list_static_conffiles "$find_filter"; list_changed_conffiles ) |
@@ -151,7 +167,7 @@ add_conffiles() {
 	return 0
 }
 
-add_overlayfiles() {
+build_list_of_backup_overlay_files() {
 	local file="$1"
 
 	local packagesfiles=$1.packagesfiles
@@ -203,12 +219,12 @@ add_overlayfiles() {
 
 if [ $SAVE_OVERLAY = 1 ]; then
 	[ ! -d /overlay/upper/etc ] && {
-		echo "Cannot find '/overlay/upper/etc', required for '-c'" >&2
+		echo "Cannot find '/overlay/upper/etc', required for '-c' or '-o'" >&2
 		exit 1
 	}
-	sysupgrade_init_conffiles="add_overlayfiles"
+	sysupgrade_init_conffiles="build_list_of_backup_overlay_files"
 else
-	sysupgrade_init_conffiles="add_conffiles"
+	sysupgrade_init_conffiles="build_list_of_backup_config_files"
 fi
 
 find_filter=""
@@ -329,8 +345,9 @@ json_load "$(/usr/libexec/validate_firmware_image "$IMAGE")" || {
 	exit 1
 }
 json_get_var valid "valid"
+json_get_var forceable "forceable"
 [ "$valid" -eq 0 ] && {
-	if [ $FORCE -eq 1 ]; then
+	if [ $FORCE -eq 1 ] && [ "$forceable" -eq 1 ]; then
 		echo "Image check failed but --force given - will update anyway!" >&2
 	else
 		echo "Image check failed." >&2
@@ -378,6 +395,8 @@ else
 	json_add_string command "$COMMAND"
 	json_add_object options
 	json_add_int save_partitions "$SAVE_PARTITIONS"
+	json_add_int add_provisioning "$ADD_PROVISIONING"
+	[ $USE_CURR_PART -eq 1 ] && json_add_boolean use_curr_part 1
 	json_close_object
 
 	ubus call system sysupgrade "$(json_dump)"

@@ -3,6 +3,43 @@
 
 START=96
 
+extra_command "turnon" "Put the LEDs into their default state"
+extra_command "turnoff" "Turn all LEDs off"
+extra_command "blink" "Blink all LEDs"
+
+led_color_set() {
+	local cfg="$1"
+	local sysfs="$2"
+
+	local max_b
+	local colors
+	local color
+	local multi_intensity
+	local value
+	local write
+
+	[ -e /sys/class/leds/${sysfs}/multi_intensity ] || return
+	[ -e /sys/class/leds/${sysfs}/multi_index ] || return
+
+	max_b="$(cat /sys/class/leds/${sysfs}/max_brightness)"
+	colors="$(cat /sys/class/leds/${sysfs}/multi_index | tr " " "\n")"
+	multi_intensity=""
+	for color in $colors; do
+		config_get value $1 "color_${color}" "0"
+		[ "$value" -gt 0 ] && write=1
+		[ "$value" -gt "$max_b" ] && value="$max_b"
+		multi_intensity="${multi_intensity}${value} "
+	done
+
+	# Check if any color is configured
+	[ "$write" = 1 ] || return
+	# Remove last whitespace
+	multi_intensity="${multi_intensity:0:-1}"
+
+	echo "setting '${name}' led color to '${multi_intensity}'"
+	echo "${multi_intensity}" > /sys/class/leds/${sysfs}/multi_intensity
+}
+
 load_led() {
 	local name
 	local sysfs
@@ -14,6 +51,7 @@ load_led() {
 	local delayon
 	local delayoff
 	local interval
+	local brightness
 
 	config_get sysfs $1 sysfs
 	config_get name $1 name "$sysfs"
@@ -30,6 +68,9 @@ load_led() {
 	config_get message $1 message ""
 	config_get gpio $1 gpio "0"
 	config_get_bool inverted $1 inverted "0"
+	config_get brightness $1 brightness
+
+	[ "$2" ] && [ "$sysfs" != "$2" ] && return
 
 	# execute application led trigger
 	[ -f "/usr/libexec/led-trigger/${trigger}" ] && {
@@ -49,21 +90,31 @@ load_led() {
 	[ -e /sys/class/leds/${sysfs}/brightness ] && {
 		echo "setting up led ${name}"
 
-		printf "%s %s %d\n" \
+		printf "%s %s %d" \
 			"$sysfs" \
 			"$(sed -ne 's/^.*\[\(.*\)\].*$/\1/p' /sys/class/leds/${sysfs}/trigger)" \
 			"$(cat /sys/class/leds/${sysfs}/brightness)" \
 				>> /var/run/led.state
+		# Save default color if supported
+		[ -e /sys/class/leds/${sysfs}/multi_intensity ] && {
+			printf " %s" \
+				"$(sed 's/\ /:/g' /sys/class/leds/${sysfs}/multi_intensity)" \
+				>> /var/run/led.state
+		}
+		printf "\n" >> /var/run/led.state
 
 		[ "$default" = 0 ] &&
 			echo 0 >/sys/class/leds/${sysfs}/brightness
 
+		[ "$default" = 1 ] && {
+			[ -z "$brightness" ] && brightness="$(cat /sys/class/leds/${sysfs}/max_brightness)"
+			echo "$brightness" > /sys/class/leds/${sysfs}/brightness
+		}
+
+		led_color_set "$1" "$sysfs"
+
 		echo $trigger > /sys/class/leds/${sysfs}/trigger 2> /dev/null
 		ret="$?"
-
-		[ $default = 1 ] &&
-			cat /sys/class/leds/${sysfs}/max_brightness > /sys/class/leds/${sysfs}/brightness
-
 		[ $ret = 0 ] || {
 			echo >&2 "Skipping trigger '$trigger' for led '$name' due to missing kernel module"
 			return 1
@@ -80,7 +131,7 @@ load_led() {
 					[ -e "/sys/class/leds/${sysfs}/$m" ] && \
 						echo 1 > /sys/class/leds/${sysfs}/$m
 				done
-				echo $interval > /sys/class/leds/${sysfs}/interval
+				echo $interval > /sys/class/leds/${sysfs}/interval 2>/dev/null
 			}
 			;;
 
@@ -125,21 +176,55 @@ load_led() {
 	}
 }
 
+turnoff() {
+	for led in `ls /sys/class/leds/`; do
+		echo 0 > /sys/class/leds/$led/brightness
+	done
+}
+
+turnon() {
+	turnoff
+	. /etc/diag.sh
+	set_state done
+	start
+}
+
+blink() {
+	for led in `ls /sys/class/leds/`; do
+		echo 0 > /sys/class/leds/$led/brightness
+		echo timer > /sys/class/leds/$led/trigger
+	done
+}
+
 start() {
+	[ "$(uci -q get system.@system[-1].leds_off)" = '1' ] && {
+		turnoff
+		exit 0
+	}
 	[ -e /sys/class/leds/ ] && {
 		[ -s /var/run/led.state ] && {
-			local led trigger brightness
-			while read led trigger brightness; do
+			local led trigger brightness color
+			while read led trigger brightness color; do
+				[ "$1" ] && [ "$1" != "$led" ] && continue
 				[ -e "/sys/class/leds/$led/trigger" ] && \
 					echo "$trigger" > "/sys/class/leds/$led/trigger"
 
 				[ -e "/sys/class/leds/$led/brightness" ] && \
 					echo "$brightness" > "/sys/class/leds/$led/brightness"
+
+				[ -e "/sys/class/leds/$led/multi_intensity" ] && \
+					echo "$color" | sed 's/:/\ /g' > \
+						"/sys/class/leds/$led/multi_intensity"
 			done < /var/run/led.state
-			rm /var/run/led.state
+			if [ "$1" ]; then
+				grep -v "^$1 " /var/run/led.state > /var/run/led.state.new
+				mv /var/run/led.state.new /var/run/led.state
+			else
+				rm /var/run/led.state
+			fi
 		}
 
 		config_load system
-		config_foreach load_led led
+		config_foreach load_led led "$1"
 	}
 }
