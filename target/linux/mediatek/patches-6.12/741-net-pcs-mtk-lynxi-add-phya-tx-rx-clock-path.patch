@@ -1,0 +1,89 @@
+From be193994deca7cc3ca6ddedc6efd06182b032f21 Mon Sep 17 00:00:00 2001
+From: Bo-Cun Chen <bc-bocun.chen@mediatek.com>
+Date: Tue, 6 May 2025 12:53:37 +0800
+Subject: [PATCH] net: pcs: mtk-lynxi: add phya tx rx clock path
+
+In NETSYSv3.1, the SGMII hardware introduces a new clock path from PHYA.
+Consequently, users can switch the SGMII PCS to this new clock source
+for better performance on the MT7987.
+
+Signed-off-by: Bo-Cun Chen <bc-bocun.chen@mediatek.com>
+---
+--- a/drivers/net/pcs/pcs-mtk-lynxi.c
++++ b/drivers/net/pcs/pcs-mtk-lynxi.c
+@@ -25,6 +25,7 @@
+ #define SGMSYS_PCS_CONTROL_1		0x0
+ #define SGMII_BMCR			GENMASK(15, 0)
+ #define SGMII_BMSR			GENMASK(31, 16)
++#define SGMII_REF_CK_SEL		BIT(24)
+ 
+ #define SGMSYS_PCS_DEVICE_ID		0x4
+ #define SGMII_LYNXI_DEV_ID		0x4d544950
+@@ -52,6 +53,8 @@
+ #define SGMII_SPEED_1000		FIELD_PREP(SGMII_SPEED_MASK, 2)
+ #define SGMII_DUPLEX_HALF		BIT(4)
+ #define SGMII_REMOTE_FAULT_DIS		BIT(8)
++#define SGMII_TRXBUF_THR_MASK		GENMASK(31, 16)
++#define SGMII_TRXBUF_THR(x)		FIELD_PREP(SGMII_TRXBUF_THR_MASK, (x))
+ 
+ /* Register to reset SGMII design */
+ #define SGMSYS_RESERVED_0		0x34
+@@ -166,7 +169,7 @@ static int mtk_pcs_lynxi_config(struct p
+ {
+ 	struct mtk_pcs_lynxi *mpcs = pcs_to_mtk_pcs_lynxi(pcs);
+ 	bool mode_changed = false, changed;
+-	unsigned int rgc3, sgm_mode, bmcr = 0;
++	unsigned int rgc3, sgm_mode, bmcr = 0, trxbuf_thr = 0x3112;
+ 	int advertise, link_timer;
+ 
+ 	advertise = phylink_mii_c22_pcs_encode_advertisement(interface,
+@@ -193,6 +196,12 @@ static int mtk_pcs_lynxi_config(struct p
+ 			bmcr = BMCR_ANENABLE;
+ 	}
+ 
++	/* Configure SGMII PCS clock source */
++	if (mpcs->flags & MTK_SGMII_FLAG_PHYA_TRX_CK) {
++		bmcr |= SGMII_REF_CK_SEL;
++		trxbuf_thr = 0x2111;
++	}
++
+ 	if (mpcs->interface != interface) {
+ 		link_timer = phylink_get_link_timer_ns(interface);
+ 		if (link_timer < 0)
+@@ -235,12 +244,14 @@ static int mtk_pcs_lynxi_config(struct p
+ 
+ 	/* Update the sgmsys mode register */
+ 	regmap_update_bits(mpcs->regmap, SGMSYS_SGMII_MODE,
++			   SGMII_TRXBUF_THR_MASK |
+ 			   SGMII_REMOTE_FAULT_DIS | SGMII_SPEED_DUPLEX_AN |
+-			   SGMII_IF_MODE_SGMII, sgm_mode);
++			   SGMII_IF_MODE_SGMII,
++			   SGMII_TRXBUF_THR(trxbuf_thr) | sgm_mode);
+ 
+ 	/* Update the BMCR */
+ 	regmap_update_bits(mpcs->regmap, SGMSYS_PCS_CONTROL_1,
+-			   BMCR_ANENABLE, bmcr);
++			   SGMII_REF_CK_SEL | BMCR_ANENABLE, bmcr);
+ 
+ 	/* Release PHYA power down state
+ 	 * Only removing bit SGMII_PHYA_PWD isn't enough.
+@@ -413,6 +424,9 @@ static int mtk_pcs_lynxi_probe(struct pl
+ 	if (of_property_read_bool(np->parent, "mediatek,pnswap"))
+ 		flags |= MTK_SGMII_FLAG_PN_SWAP;
+ 
++	if (of_property_read_bool(np->parent, "mediatek,phya_trx_ck"))
++		flags |= MTK_SGMII_FLAG_PHYA_TRX_CK;
++
+ 	if (of_parse_phandle(np->parent, "resets", 0)) {
+ 		mpcs->rstc = of_reset_control_get_shared(np->parent, NULL);
+ 		if (IS_ERR(mpcs->rstc))
+--- a/include/linux/pcs/pcs-mtk-lynxi.h
++++ b/include/linux/pcs/pcs-mtk-lynxi.h
+@@ -6,6 +6,7 @@
+ #include <linux/regmap.h>
+ 
+ #define MTK_SGMII_FLAG_PN_SWAP BIT(0)
++#define MTK_SGMII_FLAG_PHYA_TRX_CK BIT(2)
+ struct phylink_pcs *mtk_pcs_lynxi_create(struct device *dev,
+ 					 struct regmap *regmap,
+ 					 u32 ana_rgc3, u32 flags);
