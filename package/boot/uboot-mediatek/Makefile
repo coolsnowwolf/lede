@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2024.01
-PKG_HASH:=b99611f1ed237bf3541bdc8434b68c96a6e05967061f992443cb30aabebef5b3
+PKG_VERSION:=2025.10
+PKG_HASH:=b4f032848e56cc8f213ad59f9132c084dbbb632bc29176d024e58220e0efdf4a
 PKG_BUILD_DEPENDS:=!(TARGET_ramips||TARGET_mediatek_mt7623):arm-trusted-firmware-tools/host
 
 include $(INCLUDE_DIR)/u-boot.mk
@@ -85,9 +85,9 @@ define U-Boot/mt7622_linksys_e8450
   BUILD_DEVICES:=linksys_e8450-ubi
   BUILD_SUBTARGET:=mt7622
   UBOOT_IMAGE:=u-boot.fip
-  BL2_BOOTDEV:=snand
+  BL2_BOOTDEV:=snand-ubi
   BL2_DDRBLOB:=1
-  DEPENDS:=+trusted-firmware-a-mt7622-snand-1ddr
+  DEPENDS:=+trusted-firmware-a-mt7622-snand-ubi-1ddr
 endef
 
 define U-Boot/mt7622_bananapi_bpi-r64-emmc
@@ -118,15 +118,39 @@ define U-Boot/mt7622_bananapi_bpi-r64-snand
   BUILD_DEVICES:=bananapi_bpi-r64
   BUILD_SUBTARGET:=mt7622
   UBOOT_IMAGE:=u-boot.fip
-  BL2_BOOTDEV:=snand
+  BL2_BOOTDEV:=snand-ubi
   BL2_DDRBLOB:=2
-  DEPENDS:=+trusted-firmware-a-mt7622-snand-2ddr
+  DEPENDS:=+trusted-firmware-a-mt7622-snand-ubi-2ddr
 endef
 
-define U-Boot/mt7622_ubnt_unifi-6-lr
+define U-Boot/mt7622_ubnt_unifi-6-lr-v1
   NAME:=Ubiquiti UniFi 6 LR
-  UBOOT_CONFIG:=mt7622_ubnt_unifi-6-lr
-  BUILD_DEVICES:=ubnt_unifi-6-lr-v1-ubootmod ubnt_unifi-6-lr-v2-ubootmod
+  UBOOT_CONFIG:=mt7622_ubnt_unifi-6-lr-v1
+  BUILD_DEVICES:=ubnt_unifi-6-lr-v1-ubootmod
+  BUILD_SUBTARGET:=mt7622
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=nor
+  BL2_DDRBLOB:=2
+  DEPENDS:=+trusted-firmware-a-mt7622-nor-2ddr
+  FIP_COMPRESS:=1
+endef
+
+define U-Boot/mt7622_ubnt_unifi-6-lr-v2
+  NAME:=Ubiquiti UniFi 6 LR v2
+  UBOOT_CONFIG:=mt7622_ubnt_unifi-6-lr-v2
+  BUILD_DEVICES:=ubnt_unifi-6-lr-v2-ubootmod
+  BUILD_SUBTARGET:=mt7622
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=nor
+  BL2_DDRBLOB:=2
+  DEPENDS:=+trusted-firmware-a-mt7622-nor-2ddr
+  FIP_COMPRESS:=1
+endef
+
+define U-Boot/mt7622_ubnt_unifi-6-lr-v3
+  NAME:=Ubiquiti UniFi 6 LR v3
+  UBOOT_CONFIG:=mt7622_ubnt_unifi-6-lr-v3
+  BUILD_DEVICES:=ubnt_unifi-6-lr-v3-ubootmod
   BUILD_SUBTARGET:=mt7622
   UBOOT_IMAGE:=u-boot.fip
   BL2_BOOTDEV:=nor
@@ -159,7 +183,7 @@ define U-Boot/mt7628_rfb
   UBOOT_IMAGE:=u-boot-with-spl.bin
 endef
 
-define U-Boot/ravpower_rp-wd009
+define U-Boot/mt7628_ravpower_rp-wd009
   NAME:=RAVPower RP-WD009
   BUILD_TARGET:=ramips
   BUILD_DEVICES:=ravpower_rp-wd009
@@ -205,7 +229,7 @@ define U-Boot/mt7981_rfb-nor
   BUILD_DEVICES:=mediatek_mt7981-rfb
   UBOOT_CONFIG:=mt7981_nor_rfb
   UBOOT_IMAGE:=u-boot.fip
-  BL2_BOOTDEV:=spim-nand
+  BL2_BOOTDEV:=nor
   BL2_SOC:=mt7981
   BL2_DDRTYPE:=ddr3
   DEPENDS:=+trusted-firmware-a-mt7981-nor-ddr3
@@ -296,6 +320,55 @@ define U-Boot/mt7986_bananapi_bpi-r3-nor
   FIP_COMPRESS:=1
 endef
 
+define U-Boot/mt7987_bananapi_bpi-r4-lite-emmc
+  NAME:=BananaPi BPi-R4 Lite
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=bananapi_bpi-r4-lite
+  UBOOT_CONFIG:=mt7987a_bpi-r4-lite-emmc
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=emmc
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-emmc-comb
+endef
+
+define U-Boot/mt7987_bananapi_bpi-r4-lite-sdmmc
+  NAME:=BananaPi BPi-R4 Lite
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=bananapi_bpi-r4-lite
+  UBOOT_CONFIG:=mt7987a_bpi-r4-lite-sd
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=sdmmc
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-sdmmc-comb
+endef
+
+define U-Boot/mt7987_bananapi_bpi-r4-lite-snand
+  NAME:=BananaPi BPi-R4 Lite
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=bananapi_bpi-r4-lite
+  UBOOT_CONFIG:=mt7987a_bpi-r4-lite-snand
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand2-ubi
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-spim-nand2-ubi-comb
+endef
+
+define U-Boot/mt7987_bananapi_bpi-r4-lite-nor
+  NAME:=BananaPi BPi-R4 Lite
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=bananapi_bpi-r4-lite
+  UBOOT_CONFIG:=mt7987a_bpi-r4-lite-nor
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=nor
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-nor-comb
+  FIP_COMPRESS:=1
+endef
+
 define U-Boot/mt7988_bananapi_bpi-r4-emmc
   NAME:=BananaPi BPi-R4
   BUILD_SUBTARGET:=filogic
@@ -366,6 +439,42 @@ define U-Boot/mt7988_bananapi_bpi-r4-poe-snand
   BL2_SOC:=mt7988
   BL2_DDRTYPE:=comb
   DEPENDS:=+trusted-firmware-a-mt7988-spim-nand-ubi-comb
+endef
+
+define U-Boot/mt7987_rfb-emmc
+  NAME:=MT7987 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7987a-rfb
+  UBOOT_CONFIG:=mt7987_emmc_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=sdmmc
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-emmc-comb
+endef
+
+define U-Boot/mt7987_rfb-spim-nand
+  NAME:=MT7987 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7987a-rfb
+  UBOOT_CONFIG:=mt7987_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=spim-nand0-ubi
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-spim-nand0-ubi-comb
+endef
+
+define U-Boot/mt7987_rfb-sd
+  NAME:=MT7987 Reference Board
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=mediatek_mt7987a-rfb
+  UBOOT_CONFIG:=mt7987_sd_rfb
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=sdmmc
+  BL2_SOC:=mt7987
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7987-sdmmc-comb
 endef
 
 define U-Boot/mt7988_rfb-spim-nand
@@ -439,7 +548,9 @@ UBOOT_TARGETS := \
 	mt7622_bananapi_bpi-r64-snand \
 	mt7622_linksys_e8450 \
 	mt7622_rfb1 \
-	mt7622_ubnt_unifi-6-lr \
+	mt7622_ubnt_unifi-6-lr-v1 \
+	mt7622_ubnt_unifi-6-lr-v2 \
+	mt7622_ubnt_unifi-6-lr-v3 \
 	mt7623n_bpir2 \
 	mt7623a_unielec_u7623 \
 	mt7628_rfb \
@@ -455,6 +566,13 @@ UBOOT_TARGETS := \
 	mt7986_bananapi_bpi-r3-snand \
 	mt7986_bananapi_bpi-r3-nor \
 	mt7986_rfb \
+	mt7987_bananapi_bpi-r4-lite-emmc \
+	mt7987_bananapi_bpi-r4-lite-sdmmc \
+	mt7987_bananapi_bpi-r4-lite-snand \
+	mt7987_bananapi_bpi-r4-lite-nor \
+	mt7987_rfb-emmc \
+	mt7987_rfb-sd \
+	mt7987_rfb-spim-nand \
 	mt7988_bananapi_bpi-r4-emmc \
 	mt7988_bananapi_bpi-r4-sdmmc \
 	mt7988_bananapi_bpi-r4-snand \
@@ -466,6 +584,11 @@ UBOOT_TARGETS := \
 	mt7988_rfb-nor \
 	mt7988_rfb-emmc \
 	mt7988_rfb-sd
+
+UBOOT_CUSTOMIZE_CONFIG := \
+	--disable TOOLS_KWBIMAGE \
+	--disable TOOLS_LIBCRYPTO \
+	--disable TOOLS_MKEFICAPSULE
 
 ifdef CONFIG_TARGET_mediatek
 UBOOT_MAKE_FLAGS += $(UBOOT_IMAGE:.fip=.bin)
