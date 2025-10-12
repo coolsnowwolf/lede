@@ -27,7 +27,7 @@ define Device/ariaboard_photonicat2
   DEVICE_MODEL := Photonicat 2
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-photonicat2
-  UBOOT_DEVICE_NAME := evb-rk3576
+  UBOOT_DEVICE_NAME := generic-rk3576
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
   DEVICE_PACKAGES := kmod-aic8800u wpad-openssl
 endef
@@ -59,7 +59,7 @@ define Device/armsom_sige5
   DEVICE_MODEL := Sige5
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-armsom-sige5
-  UBOOT_DEVICE_NAME := evb-rk3576
+  UBOOT_DEVICE_NAME := sige5-rk3576
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
 endef
 TARGET_DEVICES += armsom_sige5
@@ -161,7 +161,7 @@ define Device/friendlyarm_nanopi-m5
   DEVICE_MODEL := NanoPi M5
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-nanopi-m5
-  UBOOT_DEVICE_NAME := evb-rk3576
+  UBOOT_DEVICE_NAME := generic-rk3576
   DEVICE_PACKAGES := kmod-gpio-button-hotplug
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
 endef
@@ -291,7 +291,7 @@ define Device/friendlyarm_nanopi-r76s
   DEVICE_MODEL := NanoPi R76S
   SOC := rk3576
   DEVICE_DTS := rockchip/rk3576-nanopi-r76s
-  UBOOT_DEVICE_NAME := evb-rk3576
+  UBOOT_DEVICE_NAME := generic-rk3576
   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-r8125
   IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3576 | pine64-img | gzip | append-metadata
 endef
