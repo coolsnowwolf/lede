@@ -5,10 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2025.07
+PKG_VERSION:=2025.10
 PKG_RELEASE:=1
 
-PKG_HASH:=0f933f6c5a426895bf306e93e6ac53c60870e4b54cda56d95211bec99e63bec7
+PKG_HASH:=b4f032848e56cc8f213ad59f9132c084dbbb632bc29176d024e58220e0efdf4a
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -345,11 +345,38 @@ define U-Boot/station-p2-rk3568
     firefly_station-p2
 endef
 
+# RK3576 boards
+
+define U-Boot/rk3576/Default
+  BUILD_SUBTARGET:=armv8
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3576 \
+	+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3576
+  ATF:=rk3576_bl31.elf
+  TPL:=rk3576_ddr_lp4_2112MHz_lp5_2736MHz_v1.08.bin
+endef
+
+define U-Boot/generic-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=Generic RK3576
+  BUILD_DEVICES:= \
+    ariaboard_photonicat2 \
+    friendlyarm_nanopi-m5 \
+    friendlyarm_nanopi-r76s
+endef
+
+define U-Boot/sige5-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=Sige5
+  BUILD_DEVICES:= \
+    armsom_sige5
+endef
+
 # RK3588 boards
 
 define U-Boot/rk3588/Default
   BUILD_SUBTARGET:=armv8
-  DEPENDS:=+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3588
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3588 \
+	+PACKAGE_u-boot-$(1):trusted-firmware-a-rk3588
   ATF:=rk3588_bl31.elf
   TPL:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.18.bin
 endef
@@ -442,6 +469,8 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   rock-3b-rk3568 \
   station-p2-rk3568 \
+  generic-rk3576 \
+  sige5-rk3576 \
   generic-rk3588 \
   nanopc-t6-rk3588 \
   orangepi-5-plus-rk3588 \
@@ -477,20 +506,6 @@ UBOOT_MAKE_FLAGS += \
   BL31=$(STAGING_DIR_IMAGE)/$(ATF) \
   PATH=$(STAGING_DIR_HOST)/bin:$(PATH) \
   $(if $(TPL),ROCKCHIP_TPL=$(STAGING_DIR_IMAGE)/$(TPL))
-
-RKBIN_URL:=https://raw.githubusercontent.com/rockchip-linux/rkbin/385bf9f1700cc4b7ab8af1ec96da02f4837c525a
-
-define Download/rk3588-ddr
-  FILE:=rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.18.bin
-  URL:=$(RKBIN_URL)/bin/rk35/
-  HASH:=d89d40a8183b099589bfcffc5cc2ce9d874eb5b1d19b78bdad2cfcf45b9cb68f
-endef
-$(eval $(call Download,rk3588-ddr))
-
-define Build/Prepare
-	$(call Build/Prepare/Default)
-	$(CP) $(DL_DIR)/rk3588_ddr_lp4_2112MHz_lp5_2400MHz_v1.18.bin $(STAGING_DIR_IMAGE)/
-endef
 
 define Build/Configure
 	$(call Build/Configure/U-Boot)
