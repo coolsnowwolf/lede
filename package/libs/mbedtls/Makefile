@@ -8,16 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mbedtls
-PKG_VERSION:=2.28.5
+PKG_VERSION:=3.6.5
 PKG_RELEASE:=1
 PKG_USE_MIPS16:=0
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=https://codeload.github.com/ARMmbed/mbedtls/tar.gz/v$(PKG_VERSION)?
-PKG_HASH:=849e86b626e42ded6bf67197b64aa771daa54e2a7e2868dc67e1e4711959e5e3
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
+PKG_SOURCE_URL=https://github.com/Mbed-TLS/$(PKG_NAME)/releases/download/$(PKG_NAME)-$(PKG_VERSION)
+PKG_HASH:=4a11f1777bb95bf4ad96721cac945a26e04bf19f57d905f241fe77ebeddf46d8
 
 PKG_LICENSE:=GPL-2.0-or-later
-PKG_LICENSE_FILES:=gpl-2.0.txt
+PKG_LICENSE_FILES:=LICENSE
 PKG_CPE_ID:=cpe:/a:arm:mbed_tls
 
 MBEDTLS_BUILD_OPTS_CURVES= \
@@ -37,6 +37,7 @@ MBEDTLS_BUILD_OPTS_CURVES= \
 
 MBEDTLS_BUILD_OPTS_CIPHERS= \
   CONFIG_MBEDTLS_AES_C \
+  CONFIG_MBEDTLS_ARIA_C \
   CONFIG_MBEDTLS_CAMELLIA_C \
   CONFIG_MBEDTLS_CCM_C \
   CONFIG_MBEDTLS_CMAC_C \
@@ -52,15 +53,17 @@ MBEDTLS_BUILD_OPTS_CIPHERS= \
   CONFIG_MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED \
   CONFIG_MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED \
   CONFIG_MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED \
+  CONFIG_MBEDTLS_KEY_EXCHANGE_ECJPAKE_ENABLED \
   CONFIG_MBEDTLS_NIST_KW_C \
   CONFIG_MBEDTLS_RIPEMD160_C \
   CONFIG_MBEDTLS_RSA_NO_CRT \
-  CONFIG_MBEDTLS_XTEA_C
+  CONFIG_MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_ENABLED \
+  CONFIG_MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED \
+  CONFIG_MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_PSK_EPHEMERAL_ENABLED
 
 MBEDTLS_BUILD_OPTS= \
   $(MBEDTLS_BUILD_OPTS_CURVES) \
   $(MBEDTLS_BUILD_OPTS_CIPHERS) \
-  CONFIG_MBEDTLS_CERTS_C \
   CONFIG_MBEDTLS_CIPHER_MODE_OFB \
   CONFIG_MBEDTLS_CIPHER_MODE_XTS \
   CONFIG_MBEDTLS_DEBUG_C \
@@ -69,9 +72,15 @@ MBEDTLS_BUILD_OPTS= \
   CONFIG_MBEDTLS_PLATFORM_C \
   CONFIG_MBEDTLS_SELF_TEST \
   CONFIG_MBEDTLS_SSL_RENEGOTIATION \
-  CONFIG_MBEDTLS_SSL_TRUNCATED_HMAC \
+  CONFIG_MBEDTLS_THREADING_C \
+  CONFIG_MBEDTLS_THREADING_PTHREAD \
   CONFIG_MBEDTLS_VERSION_C \
-  CONFIG_MBEDTLS_VERSION_FEATURES
+  CONFIG_MBEDTLS_VERSION_FEATURES \
+  CONFIG_MBEDTLS_PSA_CRYPTO_CLIENT \
+  CONFIG_MBEDTLS_DEPRECATED_WARNING \
+  CONFIG_MBEDTLS_SSL_PROTO_TLS1_2 \
+  CONFIG_MBEDTLS_SSL_PROTO_TLS1_3 \
+  CONFIG_MBEDTLS_SSL_TLS1_3_COMPATIBILITY_MODE
 
 PKG_CONFIG_DEPENDS := $(MBEDTLS_BUILD_OPTS)
 
@@ -80,7 +89,7 @@ include $(INCLUDE_DIR)/cmake.mk
 
 define Package/mbedtls/Default
   TITLE:=Embedded SSL
-  URL:=https://tls.mbed.org
+  URL:=https://www.trustedfirmware.org/projects/mbed-tls/
 endef
 
 define Package/mbedtls/Default/description
@@ -94,7 +103,7 @@ $(call Package/mbedtls/Default)
   CATEGORY:=Libraries
   SUBMENU:=SSL
   TITLE+= (library)
-  ABI_VERSION:=12
+  ABI_VERSION:=21
   MENU:=1
 endef
 
@@ -136,16 +145,26 @@ define Build/Prepare
        $(if $(strip $(foreach opt,$(MBEDTLS_BUILD_OPTS),$($(opt)))),
 	 $(foreach opt,$(MBEDTLS_BUILD_OPTS),
 	 $(PKG_BUILD_DIR)/scripts/config.py \
-	 -f $(PKG_BUILD_DIR)/include/mbedtls/config.h \
+	 -f $(PKG_BUILD_DIR)/include/mbedtls/mbedtls_config.h \
 	 $(if $($(opt)),set,unset) $(patsubst CONFIG_%,%,$(opt))),)
 endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include
-	$(CP) $(PKG_INSTALL_DIR)/usr/include/mbedtls $(1)/usr/include/
+	$(CP) \
+		$(PKG_INSTALL_DIR)/usr/include/mbedtls \
+		$(PKG_INSTALL_DIR)/usr/include/psa \
+		$(1)/usr/include/
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib*.so* $(1)/usr/lib/
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/lib*.a $(1)/usr/lib/
+	$(CP) $(PKG_INSTALL_DIR)/usr/lib/cmake $(1)/usr/lib/
+	$(INSTALL_DIR) $(1)/usr/lib/pkgconfig
+	$(CP) \
+		$(PKG_INSTALL_DIR)/usr/lib/pkgconfig/mbedcrypto.pc \
+		$(PKG_INSTALL_DIR)/usr/lib/pkgconfig/mbedtls.pc \
+		$(PKG_INSTALL_DIR)/usr/lib/pkgconfig/mbedx509.pc \
+		$(1)/usr/lib/pkgconfig/
 endef
 
 define Package/libmbedtls/install
