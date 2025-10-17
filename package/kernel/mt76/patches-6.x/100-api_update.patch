@@ -150,3 +150,136 @@
  }
  
  static void
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -337,7 +337,7 @@
+ #define mt792x_mutex_release(dev)	\
+ 	mt76_connac_mutex_release(&(dev)->mt76, &(dev)->pm)
+ 
+-void mt792x_stop(struct ieee80211_hw *hw, bool suspend);
++void mt792x_stop(struct ieee80211_hw *hw);
+ void mt792x_pm_wake_work(struct work_struct *work);
+ void mt792x_pm_power_save_work(struct work_struct *work);
+ void mt792x_reset(struct mt76_dev *mdev);
+@@ -457,7 +457,7 @@
+ u32 mt792xu_rmw(struct mt76_dev *dev, u32 addr, u32 mask, u32 val);
+ void mt792xu_copy(struct mt76_dev *dev, u32 offset, const void *data, int len);
+ void mt792xu_disconnect(struct usb_interface *usb_intf);
+-void mt792xu_stop(struct ieee80211_hw *hw, bool suspend);
++void mt792xu_stop(struct ieee80211_hw *hw);
+ 
+ static inline void
+ mt792x_skb_add_usb_sdio_hdr(struct mt792x_dev *dev, struct sk_buff *skb,
+--- a/mt792x_core.c
++++ b/mt792x_core.c
+@@ -117,7 +117,7 @@
+ }
+ EXPORT_SYMBOL_GPL(mt792x_tx);
+ 
+-void mt792x_stop(struct ieee80211_hw *hw, bool suspend)
++void mt792x_stop(struct ieee80211_hw *hw)
+ {
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 	struct mt792x_phy *phy = mt792x_hw_phy(hw);
+--- a/mt792x_usb.c
++++ b/mt792x_usb.c
+@@ -285,12 +285,12 @@
+ }
+ EXPORT_SYMBOL_GPL(mt792xu_init_reset);
+ 
+-void mt792xu_stop(struct ieee80211_hw *hw, bool suspend)
++void mt792xu_stop(struct ieee80211_hw *hw)
+ {
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 
+ 	mt76u_stop_tx(&dev->mt76);
+-	mt792x_stop(hw, false);
++	mt792x_stop(hw);
+ }
+ EXPORT_SYMBOL_GPL(mt792xu_stop);
+ 
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -995,7 +995,7 @@
+ 			continue;
+ 
+ 		data[n_data].link_id = link_id;
+-		data[n_data].band = link_conf->chanreq.oper.chan->band;
++		data[n_data].band = link_conf->chandef.chan->band;
+ 		n_data++;
+ 	}
+ 	rcu_read_unlock();
+@@ -1026,7 +1026,7 @@
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 	struct ieee80211_bss_conf *link_conf =
+ 		mt792x_vif_to_bss_conf(vif, mvif->deflink_id);
+-	struct cfg80211_chan_def *chandef = &link_conf->chanreq.oper;
++	struct cfg80211_chan_def *chandef = &link_conf->chandef;
+ 	enum nl80211_band band = chandef->chan->band, secondary_band;
+ 
+ 	u16 sel_links = mt7925_mac_select_links(mdev, vif);
+@@ -1036,7 +1036,7 @@
+ 		return;
+ 
+ 	link_conf = mt792x_vif_to_bss_conf(vif, secondary_link_id);
+-	secondary_band = link_conf->chanreq.oper.chan->band;
++	secondary_band = link_conf->chandef.chan->band;
+ 
+ 	if (band == NL80211_BAND_2GHZ ||
+ 	    (band == NL80211_BAND_5GHZ && secondary_band == NL80211_BAND_6GHZ)) {
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -1166,7 +1166,7 @@
+ 		if (WARN_ON_ONCE(!link_conf))
+ 			return -EPERM;
+ 
+-		links[i].chan = link_conf->chanreq.oper.chan;
++		links[i].chan = link_conf->chandef.chan;
+ 		if (WARN_ON_ONCE(!links[i].chan))
+ 			return -EPERM;
+ 
+@@ -1597,7 +1597,7 @@
+ 	link_conf = mt792x_vif_to_bss_conf(vif, link_sta->link_id);
+ 	mconf = mt792x_vif_to_link(mvif, link_sta->link_id);
+ 	chandef = mconf->mt76.ctx ? &mconf->mt76.ctx->def :
+-				    &link_conf->chanreq.oper;
++				    &link_conf->chandef;
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_PHY, sizeof(*phy));
+ 	phy = (struct sta_rec_phy *)tlv;
+@@ -1675,7 +1675,7 @@
+ 	link_conf = mt792x_vif_to_bss_conf(vif, link_sta->link_id);
+ 	mconf = mt792x_vif_to_link(mvif, link_sta->link_id);
+ 	chandef = mconf->mt76.ctx ? &mconf->mt76.ctx->def :
+-				    &link_conf->chanreq.oper;
++				    &link_conf->chandef;
+ 	band = chandef->chan->band;
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_RA, sizeof(*ra_info));
+@@ -2169,7 +2169,7 @@
+ 			    struct ieee80211_chanctx_conf *ctx)
+ {
+ 	struct cfg80211_chan_def *chandef = ctx ? &ctx->def :
+-						  &link_conf->chanreq.oper;
++						  &link_conf->chandef;
+ 	int freq1 = chandef->center_freq1, freq2 = chandef->center_freq2;
+ 	enum nl80211_band band = chandef->chan->band;
+ 	struct bss_rlm_tlv *req;
+@@ -2309,7 +2309,7 @@
+ 	struct ieee80211_vif *vif = link_conf->vif;
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	struct cfg80211_chan_def *chandef = ctx ? &ctx->def :
+-						  &link_conf->chanreq.oper;
++						  &link_conf->chandef;
+ 	enum nl80211_band band = chandef->chan->band;
+ 	struct mt76_connac_bss_basic_tlv *basic_req;
+ 	struct mt792x_link_sta *mlink;
+@@ -2436,7 +2436,7 @@
+ 		       struct ieee80211_bss_conf *link_conf)
+ {
+ 	struct cfg80211_chan_def *chandef = ctx ? &ctx->def :
+-						  &link_conf->chanreq.oper;
++						  &link_conf->chandef;
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	enum nl80211_band band = chandef->chan->band;
+ 	struct mt76_vif *mvif = &mconf->mt76;
