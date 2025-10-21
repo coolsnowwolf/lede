@@ -7,14 +7,14 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=opkg
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=1
 PKG_FLAGS:=essential
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/opkg-lede.git
-PKG_SOURCE_DATE:=2022-02-24
-PKG_SOURCE_VERSION:=d038e5b6d155784575f62a66a8bb7e874173e92e
-PKG_MIRROR_HASH:=e5ec4ae93f6529f7f0b9acc22a9a63c1b2f27d3b30b4a82041fcd58b9bc7cdf3
+PKG_SOURCE_DATE:=2024-10-16
+PKG_SOURCE_VERSION:=38eccbb1fd694d4798ac1baf88f9ba83d1eac616
+PKG_MIRROR_HASH:=de58ff1c99c14789f9ba8946623c8c1e58d022e7e2a659d6f97c6fde54f2c4f4
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=COPYING
@@ -27,6 +27,8 @@ PKG_CONFIG_DEPENDS += \
 	CONFIG_TARGET_INIT_PATH
 
 HOST_BUILD_DEPENDS:=libubox/host
+
+PKG_BUILD_FLAGS:=gc-sections
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
@@ -57,7 +59,6 @@ define Package/opkg/conffiles
 /etc/opkg/customfeeds.conf
 endef
 
-TARGET_CFLAGS += -ffunction-sections -fdata-sections
 EXTRA_CFLAGS += $(TARGET_CPPFLAGS)
 
 CMAKE_OPTIONS += \
