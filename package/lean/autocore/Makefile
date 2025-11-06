@@ -68,13 +68,15 @@ endif
 	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
 
-define Package/autocore-autocore-loongarch64/install
+define Package/autocore-loongarch64/install
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/loongarch64/autocore $(1)/etc/init.d/autocore
 	$(INSTALL_BIN) ./files/60-autocore-reload-rpcd $(1)/etc/uci-defaults/
 	$(INSTALL_DIR) $(1)/sbin
-	$(INSTALL_BIN) ./files/arm/sbin/cpuinfo $(1)/sbin/cpuinfo
-	$(INSTALL_BIN) ./files/arm/sbin/tempinfo $(1)/sbin/tempinfo
+	$(INSTALL_BIN) ./files/loongarch64/sbin/cpuinfo $(1)/sbin/cpuinfo
+	$(INSTALL_BIN) ./files/loongarch64/sbin/tempinfo $(1)/sbin/tempinfo
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
