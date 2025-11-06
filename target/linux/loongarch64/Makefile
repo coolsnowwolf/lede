@@ -18,6 +18,7 @@ KERNELNAME:=vmlinuz.efi dtbs
 include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES += \
-	partx-utils blkid e2fsprogs grub2-efi-loongarch64 kmod-yt6801
+	partx-utils blkid e2fsprogs grub2-efi-loongarch64 kmod-yt6801 \
+	kmod-fs-ext4 kmod-fs-f2fs losetup mkf2fs f2fsck e2fsprogs autocore-loongarch64
 
 $(eval $(call BuildTarget))
