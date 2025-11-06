@@ -481,15 +481,14 @@ define KernelPackage/drm-amdgpu
   DEPENDS:=@TARGET_x86 @DISPLAY_SUPPORT +kmod-backlight +kmod-drm-ttm \
 	+kmod-drm-ttm-helper +kmod-drm-kms-helper +kmod-i2c-algo-bit +amdgpu-firmware \
 	+kmod-drm-display-helper +kmod-drm-buddy +kmod-acpi-video \
-	+(LINUX_6_6||LINUX_6_12):kmod-drm-exec +(LINUX_6_6||LINUX_6_12):kmod-drm-suballoc-helper
+	+(LINUX_6_6||LINUX_6_12):kmod-drm-exec +(LINUX_6_6||LINUX_6_12):kmod-drm-suballoc-helper +kmod-drm-sched
   KCONFIG:=CONFIG_DRM_AMDGPU \
 	CONFIG_DRM_AMDGPU_SI=y \
 	CONFIG_DRM_AMDGPU_CIK=y \
 	CONFIG_DRM_AMD_DC=y \
 	CONFIG_DEBUG_KERNEL_DC=n
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/amd/amdgpu/amdgpu.ko \
-	$(LINUX_DIR)/drivers/gpu/drm/amd/amdxcp/amdxcp.ko@ge6.5 \
-	$(LINUX_DIR)/drivers/gpu/drm/scheduler/gpu-sched.ko
+	$(LINUX_DIR)/drivers/gpu/drm/amd/amdxcp/amdxcp.ko@ge6.5
   AUTOLOAD:=$(call AutoProbe,amdgpu)
 endef
 
@@ -753,6 +752,31 @@ define KernelPackage/drm-nouveau/description
 endef
 
 $(eval $(call KernelPackage,drm-nouveau))
+
+
+define KernelPackage/drm-xe
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Intel Xe GPU drm support
+  DEPENDS:=@TARGET_x86 +kmod-drm-buddy +kmod-drm-ttm +kmod-drm-kms-helper +kmod-drm-i915 +i915-firmware \
+	+kmod-drm-display-helper +kmod-acpi-video \
+	+kmod-drm-exec +kmod-drm-suballoc-helper +kmod-drm-sched @LINUX_6_12
+  KCONFIG:= \
+  CONFIG_DRM_GPUVM \
+  CONFIG_DRM_SCHED \
+	CONFIG_DRM_XE
+  FILES:= \
+      $(LINUX_DIR)/drivers/gpu/drm/drm_gpuvm.ko \
+      $(LINUX_DIR)/drivers/gpu/drm/xe/xe.ko
+  AUTOLOAD:=$(call AutoProbe,gpu-sched drm_gpuvm xe)
+endef
+
+define KernelPackage/drm-xe/description
+  The drm/xe driver supports some future GFX cards with rendering, display,
+  compute and media. Support for currently available platforms like TGL, ADL,
+  DG2, etc is provided to prototype the driver.
+endef
+
+$(eval $(call KernelPackage,drm-xe))
 
 #
 # Video Capture
