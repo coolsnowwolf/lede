@@ -1,0 +1,59 @@
+From 0c4558a1bc2df9b6e6fb311de9cab192b0943426 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Sun, 8 Sep 2024 14:55:04 +0000
+Subject: [PATCH] drm/rockchip: Load crtc devices in preferred order
+
+On RK3399 the VOPL is loaded before VOPB and get registered as crtc-0.
+However, on RK3288 and PX30 VOPB is gets registered as crtc-0 instead of
+VOPL.
+
+With VOPL registered as crtc-0 the kernel kms client is not able to
+enable 4K display modes for console use on RK3399.
+
+Load VOPB before VOPL to help kernel kms client make use of 4K display
+modes for console use on RK3399.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20240908145511.3331451-8-jonas@kwiboo.se
+---
+ drivers/gpu/drm/rockchip/rockchip_drm_drv.c | 23 +++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
+@@ -358,11 +358,34 @@ static void rockchip_drm_match_remove(st
+ 		device_link_del(link);
+ }
+ 
++/* list of preferred vop devices */
++static const char *const rockchip_drm_match_preferred[] = {
++	"rockchip,rk3399-vop-big",
++	NULL,
++};
++
+ static struct component_match *rockchip_drm_match_add(struct device *dev)
+ {
+ 	struct component_match *match = NULL;
++	struct device_node *port;
+ 	int i;
+ 
++	/* add preferred vop device match before adding driver device matches */
++	for (i = 0; ; i++) {
++		port = of_parse_phandle(dev->of_node, "ports", i);
++		if (!port)
++			break;
++
++		if (of_device_is_available(port->parent) &&
++		    of_device_compatible_match(port->parent,
++					       rockchip_drm_match_preferred))
++			drm_of_component_match_add(dev, &match,
++						   component_compare_of,
++						   port->parent);
++
++		of_node_put(port);
++	}
++
+ 	for (i = 0; i < num_rockchip_sub_drivers; i++) {
+ 		struct platform_driver *drv = rockchip_sub_drivers[i];
+ 		struct device *p = NULL, *d;

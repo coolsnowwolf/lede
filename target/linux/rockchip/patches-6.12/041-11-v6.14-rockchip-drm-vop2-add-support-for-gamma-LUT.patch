@@ -1,0 +1,334 @@
+From 4f537776340dab2b680a4d8554567f6884240d0b Mon Sep 17 00:00:00 2001
+From: Piotr Zalewski <pZ010001011111@proton.me>
+Date: Fri, 1 Nov 2024 19:01:17 +0000
+Subject: [PATCH] rockchip/drm: vop2: add support for gamma LUT
+
+Add support for gamma LUT in VOP2 driver. The implementation was inspired
+by one found in VOP1 driver. Blue and red channels in gamma LUT register
+write were swapped with respect to how gamma LUT values are written in
+VOP1. Gamma LUT port selection was added before the write of new gamma LUT
+table.
+
+If the current SoC is rk356x, check if no other CRTC has gamma LUT enabled
+in atomic_check (only one video port can use gamma LUT at a time) and
+disable gamma LUT before the LUT table write.
+
+If the current SoC isn't rk356x, "seamless" gamma lut update is performed
+similarly to how it was done in the case of RK3399 in VOP1[1]. In seamless
+update gamma LUT disable before the write isn't necessary, check if no
+other CRTC has gamma LUT enabled is also not necessary, different register
+is being used to select gamma LUT port[2] and after setting DSP_LUT_EN bit,
+GAMMA_UPDATE_EN bit is set[3].
+
+Gamma size is set and drm color management is enabled for each video port's
+CRTC except ones which have no associated device.
+
+Patch was tested on RK3566 (Pinetab2). When using userspace tools
+which set eg. constant color temperature no issues were noticed. When
+using userspace tools which adjust eg. color temperature the slight screen
+flicker is visible probably because of gamma LUT disable needed in the
+case of RK356x before gamma LUT write.
+
+Compare behaviour of eg.:
+```
+gammastep -O 3000
+```
+
+To eg.:
+```
+gammastep -l 53:23 -t 6000:3000
+```
+
+In latter case color temperature is slowly adjusted at the beginning which
+causes screen to slighly flicker. Then it adjusts every few seconds which
+also causes slight screen flicker.
+
+[1] https://lists.infradead.org/pipermail/linux-rockchip/2021-October/028132.html
+[2] https://lore.kernel.org/linux-rockchip/48249708-8c05-40d2-a5d8-23de960c5a77@rock-chips.com/
+[3] https://github.com/radxa/kernel/blob/linux-6.1-stan-rkr1/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c#L3437
+
+Helped-by: Daniel Stone <daniel@fooishbar.org>
+Helped-by: Dragan Simic <dsimic@manjaro.org>
+Helped-by: Diederik de Haas <didi.debian@cknow.org>
+Helped-by: Andy Yan <andy.yan@rock-chips.com>
+Signed-off-by: Piotr Zalewski <pZ010001011111@proton.me>
+Reviewed-by: Andy Yan <andyshrk@163.com>
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20241101185545.559090-3-pZ010001011111@proton.me
+---
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.c | 186 +++++++++++++++++++
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.h |   5 +
+ 2 files changed, 191 insertions(+)
+
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -281,6 +281,15 @@ static u32 vop2_readl(struct vop2 *vop2,
+ 	return val;
+ }
+ 
++static u32 vop2_vp_read(struct vop2_video_port *vp, u32 offset)
++{
++	u32 val;
++
++	regmap_read(vp->vop2->map, vp->data->offset + offset, &val);
++
++	return val;
++}
++
+ static void vop2_win_write(const struct vop2_win *win, unsigned int reg, u32 v)
+ {
+ 	regmap_field_write(win->reg[reg], v);
+@@ -1020,6 +1029,67 @@ static void vop2_disable(struct vop2 *vo
+ 	clk_disable_unprepare(vop2->hclk);
+ }
+ 
++static bool vop2_vp_dsp_lut_is_enabled(struct vop2_video_port *vp)
++{
++	u32 dsp_ctrl = vop2_vp_read(vp, RK3568_VP_DSP_CTRL);
++
++	return dsp_ctrl & RK3568_VP_DSP_CTRL__DSP_LUT_EN;
++}
++
++static void vop2_vp_dsp_lut_disable(struct vop2_video_port *vp)
++{
++	u32 dsp_ctrl = vop2_vp_read(vp, RK3568_VP_DSP_CTRL);
++
++	dsp_ctrl &= ~RK3568_VP_DSP_CTRL__DSP_LUT_EN;
++	vop2_vp_write(vp, RK3568_VP_DSP_CTRL, dsp_ctrl);
++}
++
++static bool vop2_vp_dsp_lut_poll_disabled(struct vop2_video_port *vp)
++{
++	u32 dsp_ctrl;
++	int ret = readx_poll_timeout(vop2_vp_dsp_lut_is_enabled, vp, dsp_ctrl,
++				!dsp_ctrl, 5, 30 * 1000);
++	if (ret) {
++		drm_err(vp->vop2->drm, "display LUT RAM enable timeout!\n");
++		return false;
++	}
++
++	return true;
++}
++
++static void vop2_vp_dsp_lut_enable(struct vop2_video_port *vp)
++{
++	u32 dsp_ctrl = vop2_vp_read(vp, RK3568_VP_DSP_CTRL);
++
++	dsp_ctrl |= RK3568_VP_DSP_CTRL__DSP_LUT_EN;
++	vop2_vp_write(vp, RK3568_VP_DSP_CTRL, dsp_ctrl);
++}
++
++static void vop2_vp_dsp_lut_update_enable(struct vop2_video_port *vp)
++{
++	u32 dsp_ctrl = vop2_vp_read(vp, RK3568_VP_DSP_CTRL);
++
++	dsp_ctrl |= RK3588_VP_DSP_CTRL__GAMMA_UPDATE_EN;
++	vop2_vp_write(vp, RK3568_VP_DSP_CTRL, dsp_ctrl);
++}
++
++static inline bool vop2_supports_seamless_gamma_lut_update(struct vop2 *vop2)
++{
++	return (vop2->data->soc_id != 3566 && vop2->data->soc_id != 3568);
++}
++
++static bool vop2_gamma_lut_in_use(struct vop2 *vop2, struct vop2_video_port *vp)
++{
++	const int nr_vps = vop2->data->nr_vps;
++	int gamma_en_vp_id;
++
++	for (gamma_en_vp_id = 0; gamma_en_vp_id < nr_vps; gamma_en_vp_id++)
++		if (vop2_vp_dsp_lut_is_enabled(&vop2->vps[gamma_en_vp_id]))
++			break;
++
++	return gamma_en_vp_id != nr_vps && gamma_en_vp_id != vp->id;
++}
++
+ static void vop2_crtc_atomic_disable(struct drm_crtc *crtc,
+ 				     struct drm_atomic_state *state)
+ {
+@@ -1511,6 +1581,77 @@ static bool vop2_crtc_mode_fixup(struct
+ 	return true;
+ }
+ 
++static void vop2_crtc_write_gamma_lut(struct vop2 *vop2, struct drm_crtc *crtc)
++{
++	const struct vop2_video_port *vp = to_vop2_video_port(crtc);
++	const struct vop2_video_port_data *vp_data = &vop2->data->vp[vp->id];
++	struct drm_color_lut *lut = crtc->state->gamma_lut->data;
++	unsigned int i, bpc = ilog2(vp_data->gamma_lut_len);
++	u32 word;
++
++	for (i = 0; i < crtc->gamma_size; i++) {
++		word = (drm_color_lut_extract(lut[i].blue, bpc) << (2 * bpc)) |
++		    (drm_color_lut_extract(lut[i].green, bpc) << bpc) |
++		    drm_color_lut_extract(lut[i].red, bpc);
++
++		writel(word, vop2->lut_regs + i * 4);
++	}
++}
++
++static void vop2_crtc_atomic_set_gamma_seamless(struct vop2 *vop2,
++						struct vop2_video_port *vp,
++						struct drm_crtc *crtc)
++{
++	vop2_writel(vop2, RK3568_LUT_PORT_SEL,
++		    FIELD_PREP(RK3588_LUT_PORT_SEL__GAMMA_AHB_WRITE_SEL, vp->id));
++	vop2_vp_dsp_lut_enable(vp);
++	vop2_crtc_write_gamma_lut(vop2, crtc);
++	vop2_vp_dsp_lut_update_enable(vp);
++}
++
++static void vop2_crtc_atomic_set_gamma_rk356x(struct vop2 *vop2,
++					      struct vop2_video_port *vp,
++					      struct drm_crtc *crtc)
++{
++	vop2_vp_dsp_lut_disable(vp);
++	vop2_cfg_done(vp);
++	if (!vop2_vp_dsp_lut_poll_disabled(vp))
++		return;
++
++	vop2_writel(vop2, RK3568_LUT_PORT_SEL, vp->id);
++	vop2_crtc_write_gamma_lut(vop2, crtc);
++	vop2_vp_dsp_lut_enable(vp);
++}
++
++static void vop2_crtc_atomic_try_set_gamma(struct vop2 *vop2,
++					   struct vop2_video_port *vp,
++					   struct drm_crtc *crtc,
++					   struct drm_crtc_state *crtc_state)
++{
++	if (!vop2->lut_regs || !crtc_state->color_mgmt_changed)
++		return;
++
++	if (!crtc_state->gamma_lut) {
++		vop2_vp_dsp_lut_disable(vp);
++		return;
++	}
++
++	if (vop2_supports_seamless_gamma_lut_update(vop2))
++		vop2_crtc_atomic_set_gamma_seamless(vop2, vp, crtc);
++	else
++		vop2_crtc_atomic_set_gamma_rk356x(vop2, vp, crtc);
++}
++
++static inline void vop2_crtc_atomic_try_set_gamma_locked(struct vop2 *vop2,
++							 struct vop2_video_port *vp,
++							 struct drm_crtc *crtc,
++							 struct drm_crtc_state *crtc_state)
++{
++	vop2_lock(vop2);
++	vop2_crtc_atomic_try_set_gamma(vop2, vp, crtc, crtc_state);
++	vop2_unlock(vop2);
++}
++
+ static void vop2_dither_setup(struct drm_crtc *crtc, u32 *dsp_ctrl)
+ {
+ 	struct rockchip_crtc_state *vcstate = to_rockchip_crtc_state(crtc->state);
+@@ -2107,11 +2248,40 @@ static void vop2_crtc_atomic_enable(stru
+ 
+ 	vop2_vp_write(vp, RK3568_VP_DSP_CTRL, dsp_ctrl);
+ 
++	vop2_crtc_atomic_try_set_gamma(vop2, vp, crtc, crtc_state);
++
+ 	drm_crtc_vblank_on(crtc);
+ 
+ 	vop2_unlock(vop2);
+ }
+ 
++static int vop2_crtc_atomic_check_gamma(struct vop2_video_port *vp,
++					struct drm_crtc *crtc,
++					struct drm_atomic_state *state,
++					struct drm_crtc_state *crtc_state)
++{
++	struct vop2 *vop2 = vp->vop2;
++	unsigned int len;
++
++	if (!vp->vop2->lut_regs || !crtc_state->color_mgmt_changed ||
++	    !crtc_state->gamma_lut)
++		return 0;
++
++	len = drm_color_lut_size(crtc_state->gamma_lut);
++	if (len != crtc->gamma_size) {
++		drm_dbg(vop2->drm, "Invalid LUT size; got %d, expected %d\n",
++			len, crtc->gamma_size);
++		return -EINVAL;
++	}
++
++	if (!vop2_supports_seamless_gamma_lut_update(vop2) && vop2_gamma_lut_in_use(vop2, vp)) {
++		drm_info(vop2->drm, "Gamma LUT can be enabled for only one CRTC at a time\n");
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+ static int vop2_crtc_atomic_check(struct drm_crtc *crtc,
+ 				  struct drm_atomic_state *state)
+ {
+@@ -2119,6 +2289,11 @@ static int vop2_crtc_atomic_check(struct
+ 	struct drm_plane *plane;
+ 	int nplanes = 0;
+ 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
++	int ret;
++
++	ret = vop2_crtc_atomic_check_gamma(vp, crtc, state, crtc_state);
++	if (ret)
++		return ret;
+ 
+ 	drm_atomic_crtc_state_for_each_plane(plane, crtc_state)
+ 		nplanes++;
+@@ -2582,7 +2757,13 @@ static void vop2_crtc_atomic_begin(struc
+ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc,
+ 				   struct drm_atomic_state *state)
+ {
++	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+ 	struct vop2_video_port *vp = to_vop2_video_port(crtc);
++	struct vop2 *vop2 = vp->vop2;
++
++	/* In case of modeset, gamma lut update already happened in atomic enable */
++	if (!drm_atomic_crtc_needs_modeset(crtc_state))
++		vop2_crtc_atomic_try_set_gamma_locked(vop2, vp, crtc, crtc_state);
+ 
+ 	vop2_post_config(crtc);
+ 
+@@ -2885,7 +3066,12 @@ static int vop2_create_crtcs(struct vop2
+ 		}
+ 
+ 		drm_crtc_helper_add(&vp->crtc, &vop2_crtc_helper_funcs);
++		if (vop2->lut_regs) {
++			const struct vop2_video_port_data *vp_data = &vop2_data->vp[vp->id];
+ 
++			drm_mode_crtc_set_gamma_size(&vp->crtc, vp_data->gamma_lut_len);
++			drm_crtc_enable_color_mgmt(&vp->crtc, 0, false, vp_data->gamma_lut_len);
++		}
+ 		init_completion(&vp->dsp_hold_completion);
+ 	}
+ 
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.h
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.h
+@@ -404,6 +404,7 @@ enum dst_factor_mode {
+ #define RK3568_REG_CFG_DONE__GLB_CFG_DONE_EN		BIT(15)
+ 
+ #define RK3568_VP_DSP_CTRL__STANDBY			BIT(31)
++#define RK3568_VP_DSP_CTRL__DSP_LUT_EN			BIT(28)
+ #define RK3568_VP_DSP_CTRL__DITHER_DOWN_MODE		BIT(20)
+ #define RK3568_VP_DSP_CTRL__DITHER_DOWN_SEL		GENMASK(19, 18)
+ #define RK3568_VP_DSP_CTRL__DITHER_DOWN_EN		BIT(17)
+@@ -418,6 +419,8 @@ enum dst_factor_mode {
+ #define RK3568_VP_DSP_CTRL__CORE_DCLK_DIV		BIT(4)
+ #define RK3568_VP_DSP_CTRL__OUT_MODE			GENMASK(3, 0)
+ 
++#define RK3588_VP_DSP_CTRL__GAMMA_UPDATE_EN		BIT(22)
++
+ #define RK3588_VP_CLK_CTRL__DCLK_OUT_DIV		GENMASK(3, 2)
+ #define RK3588_VP_CLK_CTRL__DCLK_CORE_DIV		GENMASK(1, 0)
+ 
+@@ -470,6 +473,8 @@ enum dst_factor_mode {
+ #define RK3588_DSP_IF_POL__DP1_PIN_POL			GENMASK(14, 12)
+ #define RK3588_DSP_IF_POL__DP0_PIN_POL			GENMASK(10, 8)
+ 
++#define RK3588_LUT_PORT_SEL__GAMMA_AHB_WRITE_SEL	GENMASK(13, 12)
++
+ #define RK3568_VP0_MIPI_CTRL__DCLK_DIV2_PHASE_LOCK	BIT(5)
+ #define RK3568_VP0_MIPI_CTRL__DCLK_DIV2			BIT(4)
+ 
