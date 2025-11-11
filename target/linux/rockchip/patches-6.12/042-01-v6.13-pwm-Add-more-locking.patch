@@ -1,8 +1,35 @@
-Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
+From 1cc2e1faafb3b5a2be25112559bdb495736b5af7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Uwe=20Kleine-K=C3=B6nig?= <u.kleine-koenig@baylibre.com>
+Date: Fri, 20 Sep 2024 10:57:57 +0200
+Subject: [PATCH] pwm: Add more locking
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This ensures that a pwm_chip that has no corresponding driver isn't used
+and that a driver doesn't go away while a callback is still running.
+
+In the presence of device links this isn't necessary yet (so this is no
+fix) but for pwm character device support this is needed.
+
+To not serialize all pwm_apply_state() calls, this introduces a per chip
+lock. An additional complication is that for atomic chips a mutex cannot
+be used (as pwm_apply_atomic() must not sleep) and a spinlock cannot be
+held while calling an operation for a sleeping chip. So depending on the
+chip being atomic or not a spinlock or a mutex is used.
+
+An additional change implemented here is that on driver remove the
+.free() callback is called for each requested pwm_device. This is the
+right time because later (e.g. when the consumer calls pwm_put()) the
+free function is (maybe) not available any more.
+
+Signed-off-by: Uwe Kleine-K?nig <u.kleine-koenig@baylibre.com>
+Link: https://lore.kernel.org/r/026aa891c8270a11723a1ba7e4256f456f7e1e86.1726819463.git.u.kleine-koenig@baylibre.com
+Signed-off-by: Uwe Kleine-K?nig <ukleinek@kernel.org>
 ---
- drivers/pwm/core.c  | 95 +++++++++++++++++++++++++++++++++++++++++----
- include/linux/pwm.h | 13 +++++++
- 2 files changed, 100 insertions(+), 8 deletions(-)
+ drivers/pwm/core.c  | 100 ++++++++++++++++++++++++++++++++++++++++----
+ include/linux/pwm.h |  13 ++++++
+ 2 files changed, 105 insertions(+), 8 deletions(-)
 
 --- a/drivers/pwm/core.c
 +++ b/drivers/pwm/core.c
@@ -71,8 +98,15 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	return __pwm_apply(pwm, state);
  }
  EXPORT_SYMBOL_GPL(pwm_apply_atomic);
-@@ -340,6 +371,11 @@ static int pwm_capture(struct pwm_device
+@@ -338,8 +369,18 @@ static int pwm_capture(struct pwm_device
+ 	if (!ops->capture)
+ 		return -ENOSYS;
  
++	/*
++	 * Holding the pwm_lock is probably not needed. If you use pwm_capture()
++	 * and you're interested to speed it up, please convince yourself it's
++	 * really not needed, test and then suggest a patch on the mailing list.
++	 */
  	guard(mutex)(&pwm_lock);
  
 +	guard(pwmchip)(chip);
@@ -83,7 +117,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	return ops->capture(chip, pwm, result, timeout);
  }
  
-@@ -372,6 +408,14 @@ static int pwm_device_request(struct pwm
+@@ -372,6 +413,14 @@ static int pwm_device_request(struct pwm
  	if (test_bit(PWMF_REQUESTED, &pwm->flags))
  		return -EBUSY;
  
@@ -98,7 +132,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	if (!try_module_get(chip->owner))
  		return -ENODEV;
  
-@@ -400,7 +444,9 @@ err_get_device:
+@@ -400,7 +449,9 @@ err_get_device:
  		 */
  		struct pwm_state state = { 0, };
  
@@ -109,7 +143,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  		trace_pwm_get(pwm, &state, err);
  
  		if (!err)
-@@ -1024,6 +1070,7 @@ struct pwm_chip *pwmchip_alloc(struct de
+@@ -1024,6 +1075,7 @@ struct pwm_chip *pwmchip_alloc(struct de
  
  	chip->npwm = npwm;
  	chip->uses_pwmchip_alloc = true;
@@ -117,7 +151,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  
  	pwmchip_dev = &chip->dev;
  	device_initialize(pwmchip_dev);
-@@ -1129,6 +1176,11 @@ int __pwmchip_add(struct pwm_chip *chip,
+@@ -1129,6 +1181,11 @@ int __pwmchip_add(struct pwm_chip *chip,
  
  	chip->owner = owner;
  
@@ -129,7 +163,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	guard(mutex)(&pwm_lock);
  
  	ret = idr_alloc(&pwm_chips, chip, 0, 0, GFP_KERNEL);
-@@ -1142,6 +1194,9 @@ int __pwmchip_add(struct pwm_chip *chip,
+@@ -1142,6 +1199,9 @@ int __pwmchip_add(struct pwm_chip *chip,
  	if (IS_ENABLED(CONFIG_OF))
  		of_pwmchip_add(chip);
  
@@ -139,7 +173,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	ret = device_add(&chip->dev);
  	if (ret)
  		goto err_device_add;
-@@ -1149,6 +1204,9 @@ int __pwmchip_add(struct pwm_chip *chip,
+@@ -1149,6 +1209,9 @@ int __pwmchip_add(struct pwm_chip *chip,
  	return 0;
  
  err_device_add:
@@ -149,7 +183,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  	if (IS_ENABLED(CONFIG_OF))
  		of_pwmchip_remove(chip);
  
-@@ -1168,11 +1226,27 @@ void pwmchip_remove(struct pwm_chip *chi
+@@ -1168,11 +1231,27 @@ void pwmchip_remove(struct pwm_chip *chi
  {
  	pwmchip_sysfs_unexport(chip);
  
@@ -165,7 +199,7 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
 +			struct pwm_device *pwm = &chip->pwms[i];
 +
 +			if (test_and_clear_bit(PWMF_REQUESTED, &pwm->flags)) {
-+				dev_alert(&chip->dev, "Freeing requested PWM #%u\n", i);
++				dev_warn(&chip->dev, "Freeing requested PWM #%u\n", i);
 +				if (pwm->chip->ops->free)
 +					pwm->chip->ops->free(pwm->chip, pwm);
 +			}
@@ -180,15 +214,15 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
  
  	device_del(&chip->dev);
  }
-@@ -1542,12 +1616,17 @@ void pwm_put(struct pwm_device *pwm)
+@@ -1542,12 +1621,17 @@ void pwm_put(struct pwm_device *pwm)
  
  	guard(mutex)(&pwm_lock);
  
 -	if (!test_and_clear_bit(PWMF_REQUESTED, &pwm->flags)) {
 +	/*
-+	 * If the chip isn't operational, PWMF_REQUESTED was already cleared. So
-+	 * don't warn in this case. This can only happen if a consumer called
-+	 * pwm_put() twice.
++	 * Trigger a warning if a consumer called pwm_put() twice.
++	 * If the chip isn't operational, PWMF_REQUESTED was already cleared in
++	 * pwmchip_remove(). So don't warn in this case.
 +	 */
 +	if (chip->operational && !test_and_clear_bit(PWMF_REQUESTED, &pwm->flags)) {
  		pr_warn("PWM device already freed\n");
@@ -221,10 +255,10 @@ Signed-off-by: Uwe Kleine-König <u.kleine-koenig@baylibre.com>
 +		/*
 +		 * depending on the chip being atomic or not either the mutex or
 +		 * the spinlock is used. It protects .operational and
-+		 * synchronizes calls to the .ops->apply and .ops->get_state()
++		 * synchronizes the callbacks in .ops
 +		 */
 +		struct mutex nonatomic_lock;
-+		struct spinlock atomic_lock;
++		spinlock_t atomic_lock;
 +	};
  	struct pwm_device pwms[] __counted_by(npwm);
  };

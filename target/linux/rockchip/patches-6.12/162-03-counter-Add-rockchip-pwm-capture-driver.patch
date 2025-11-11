@@ -1,21 +1,30 @@
+From git@z Thu Jan  1 00:00:00 1970
+Subject: [PATCH v3 4/5] counter: Add rockchip-pwm-capture driver
+From: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
+Date: Mon, 27 Oct 2025 18:11:59 +0100
+Message-Id: <20251027-rk3576-pwm-v3-4-654a5cb1e3f8@collabora.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Among many other things, Rockchip's new PWMv4 IP in the RK3576 supports
+PWM capture functionality.
+
+Add a basic driver for this that works to expose HPC/LPC counts and
+state change events to userspace through the counter framework. It's
+quite basic, but works well enough to demonstrate the device function
+exclusion stuff that mfpwm does, in order to eventually support all the
+functions of this device in drivers within their appropriate subsystems,
+without them interfering with each other.
+
 Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 ---
  MAINTAINERS                            |   1 +
  drivers/counter/Kconfig                |  13 ++
  drivers/counter/Makefile               |   1 +
- drivers/counter/rockchip-pwm-capture.c | 341 +++++++++++++++++++++++++++++++++
- 4 files changed, 356 insertions(+)
+ drivers/counter/rockchip-pwm-capture.c | 306 +++++++++++++++++++++++++++++++++
+ 4 files changed, 321 insertions(+)
 
---- a/MAINTAINERS
-+++ b/MAINTAINERS
-@@ -19962,6 +19962,7 @@ L:	linux-rockchip@lists.infradead.org
- L:	linux-pwm@vger.kernel.org
- S:	Maintained
- F:	Documentation/devicetree/bindings/pwm/rockchip,rk3576-pwm.yaml
-+F:	drivers/counter/rockchip-pwm-capture.c
- F:	drivers/pwm/pwm-rockchip-v4.c
- F:	drivers/soc/rockchip/mfpwm.c
- F:	include/soc/rockchip/mfpwm.h
 --- a/drivers/counter/Kconfig
 +++ b/drivers/counter/Kconfig
 @@ -90,6 +90,19 @@ config MICROCHIP_TCB_CAPTURE
@@ -25,7 +34,7 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +config ROCKCHIP_PWM_CAPTURE
 +	tristate "Rockchip PWM Counter Capture driver"
 +	depends on ARCH_ROCKCHIP || COMPILE_TEST
-+	depends on ROCKCHIP_MFPWM
++	depends on MFD_ROCKCHIP_MFPWM
 +	depends on HAS_IOMEM
 +	help
 +	  Generic counter framework driver for the multi-function PWM on
@@ -47,16 +56,16 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +obj-$(CONFIG_ROCKCHIP_PWM_CAPTURE)	+= rockchip-pwm-capture.o
 --- /dev/null
 +++ b/drivers/counter/rockchip-pwm-capture.c
-@@ -0,0 +1,341 @@
+@@ -0,0 +1,306 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * Copyright (c) 2025 Collabora Ltd.
 + *
 + * A counter driver for the Pulse-Width-Modulation (PWM) hardware found on
 + * Rockchip SoCs such as the RK3576, internally referred to as "PWM v4". It
-+ * allows for measuring the period and duty cycle in nanoseconds through the
-+ * generic counter framework, while guaranteeing exclusive use over the MFPWM
-+ * device while the counter is enabled.
++ * allows for measuring the high cycles and low cycles of a PWM signal through
++ * the generic counter framework, while guaranteeing exclusive use over the
++ * MFPWM device while the counter is enabled.
 + *
 + * Authors:
 + *     Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
@@ -66,35 +75,35 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +#include <linux/counter.h>
 +#include <linux/devm-helpers.h>
 +#include <linux/interrupt.h>
-+#include <linux/math.h>
++#include <linux/mfd/rockchip-mfpwm.h>
 +#include <linux/mod_devicetable.h>
++#include <linux/of.h>
 +#include <linux/platform_device.h>
 +#include <linux/spinlock.h>
-+#include <linux/workqueue.h>
-+#include <soc/rockchip/mfpwm.h>
 +
 +#define RKPWMC_INT_MASK			(PWMV4_INT_LPC | PWMV4_INT_HPC)
-+/*
-+ * amount of jiffies between no PWM signal change and us deciding PWM is off.
-+ * PWM signals with a period longer than this won't be detected by us, which is
-+ * the trade-off we make to have a faster response time when a signal is turned
-+ * off.
-+ */
-+#define RKPWMC_CLEAR_DELAY		(max(msecs_to_jiffies(100), 1))
 +
 +struct rockchip_pwm_capture {
 +	struct rockchip_mfpwm_func *pwmf;
++	struct counter_device *counter;
 +	bool is_enabled;
 +	spinlock_t enable_lock;
-+	atomic_t lpc;
-+	atomic_t hpc;
-+	atomic_t captures_left;
-+	struct delayed_work clear_capture;
 +};
 +
++/*
++ * Channel 0 receives a state changed notification whenever the LPC interrupt
++ * fires.
++ *
++ * Channel 1 receives a state changed notification whenever the HPC interrupt
++ * fires.
++ */
 +static struct counter_signal rkpwmc_signals[] = {
 +	{
 +		.id = 0,
++		.name = "Channel 0"
++	},
++	{
++		.id = 1,
 +		.name = "Channel 1"
 +	},
 +};
@@ -109,6 +118,11 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +		.actions_list = rkpwmc_hpc_lpc_actions,
 +		.num_actions = ARRAY_SIZE(rkpwmc_hpc_lpc_actions),
 +		.signal = &rkpwmc_signals[0]
++	},
++	{
++		.actions_list = rkpwmc_hpc_lpc_actions,
++		.num_actions = ARRAY_SIZE(rkpwmc_hpc_lpc_actions),
++		.signal = &rkpwmc_signals[1]
 +	},
 +};
 +
@@ -154,15 +168,18 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +			mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_ENABLE,
 +					 PWMV4_EN(true) | PWMV4_CLK_EN(true));
 +
-+			ret = mfpwm_pwmclk_enable(pc->pwmf);
++			ret = clk_enable(pc->pwmf->core);
 +			if (ret)
 +				goto err_release;
 +
-+			ret = mfpwm_acquire(pc->pwmf);
++			ret = clk_rate_exclusive_get(pc->pwmf->core);
 +			if (ret)
 +				goto err_disable_pwm_clk;
 +
-+			atomic_set(&pc->captures_left, 4);
++			ret = mfpwm_acquire(pc->pwmf);
++			if (ret)
++				goto err_unprotect_pwm_clk;
++
 +			pc->is_enabled = true;
 +		} else {
 +			mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_INT_EN,
@@ -170,14 +187,8 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +					 PWMV4_INT_HPC_W(false));
 +			mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_ENABLE,
 +					 PWMV4_EN(false) | PWMV4_CLK_EN(false));
-+			/*
-+			 * Do not use cancel_delayed_work here unless you want
-+			 * to cause the interrupt handler, which may still be
-+			 * running at this point, to stall. Similarly, don't do
-+			 * flush_delayed_work since it may sleep.
-+			 */
-+			mod_delayed_work(system_bh_wq, &pc->clear_capture, 0);
-+			mfpwm_pwmclk_disable(pc->pwmf);
++			clk_rate_exclusive_put(pc->pwmf->core);
++			clk_disable(pc->pwmf->core);
 +			pc->is_enabled = false;
 +			mfpwm_release(pc->pwmf);
 +		}
@@ -187,8 +198,10 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +
 +	return 0;
 +
++err_unprotect_pwm_clk:
++	clk_rate_exclusive_put(pc->pwmf->core);
 +err_disable_pwm_clk:
-+	mfpwm_pwmclk_disable(pc->pwmf);
++	clk_disable(pc->pwmf->core);
 +err_release:
 +	mfpwm_release(pc->pwmf);
 +
@@ -200,14 +213,14 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +};
 +
 +enum rkpwmc_count_id {
-+	COUNT_PERIOD = 0,
-+	COUNT_DUTY = 1,
++	COUNT_LPC = 0,
++	COUNT_HPC = 1,
 +};
 +
 +static struct counter_count rkpwmc_counts[] = {
 +	{
-+		.id = COUNT_PERIOD,
-+		.name = "Period in nanoseconds",
++		.id = COUNT_LPC,
++		.name = "PWM core clock cycles during which the signal was low",
 +		.functions_list = rkpwmc_functions,
 +		.num_functions = ARRAY_SIZE(rkpwmc_functions),
 +		.synapses = rkpwmc_pwm_synapses,
@@ -216,8 +229,8 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +		.num_ext = ARRAY_SIZE(rkpwmc_ext),
 +	},
 +	{
-+		.id = COUNT_DUTY,
-+		.name = "Duty cycle in nanoseconds",
++		.id = COUNT_HPC,
++		.name = "PWM core clock cycles during which the signal was high",
 +		.functions_list = rkpwmc_functions,
 +		.num_functions = ARRAY_SIZE(rkpwmc_functions),
 +		.synapses = rkpwmc_pwm_synapses,
@@ -231,39 +244,24 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +			     struct counter_count *count, u64 *value)
 +{
 +	struct rockchip_pwm_capture *pc = counter_priv(counter);
-+	unsigned long rate;
-+	u64 period;
-+	u64 lpc;
-+	u64 hpc;
-+	int ret = 0;
 +
-+	if (count->id != COUNT_PERIOD && count->id != COUNT_DUTY)
++	guard(spinlock)(&pc->enable_lock);
++
++	if (!pc->is_enabled) {
++		*value = 0;
++		return 0;
++	}
++
++	switch (count->id) {
++	case COUNT_LPC:
++		*value = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_LPC);
++		return 0;
++	case COUNT_HPC:
++		*value = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_HPC);
++		return 0;
++	default:
 +		return -EINVAL;
-+
-+	ret = mfpwm_acquire(pc->pwmf);
-+	if (ret)
-+		return ret;
-+
-+	rate = mfpwm_clk_get_rate(pc->pwmf->parent);
-+	if (!rate) {
-+		ret = -EINVAL;
-+		goto out_release;
 +	}
-+
-+	hpc = (u32) atomic_read(&pc->hpc);
-+
-+	if (count->id == COUNT_PERIOD) {
-+		lpc = (u32) atomic_read(&pc->lpc);
-+		period = mult_frac((hpc + lpc), NSEC_PER_SEC, rate);
-+		*value = period;
-+	} else {
-+		*value = mult_frac(hpc, NSEC_PER_SEC, rate);
-+	}
-+
-+out_release:
-+	mfpwm_release(pc->pwmf);
-+
-+	return ret;
 +}
 +
 +static const struct counter_ops rkpwmc_ops = {
@@ -275,8 +273,6 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	struct rockchip_pwm_capture *pc = data;
 +	u32 intsts;
 +	u32 clr = 0;
-+	u32 lpc;
-+	u32 hpc;
 +
 +	intsts = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_INTSTS);
 +
@@ -285,41 +281,22 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +
 +	if (intsts & PWMV4_INT_LPC) {
 +		clr |= PWMV4_INT_LPC;
-+		atomic_dec_if_positive(&pc->captures_left);
++		counter_push_event(pc->counter, COUNTER_EVENT_CHANGE_OF_STATE, 0);
 +	}
 +
 +	if (intsts & PWMV4_INT_HPC) {
 +		clr |= PWMV4_INT_HPC;
-+		atomic_dec_if_positive(&pc->captures_left);
-+	}
-+
-+	/* After 4 interrupts, reset to 4 captures left and read the regs */
-+	if (!atomic_cmpxchg(&pc->captures_left, 0, 4)) {
-+		lpc = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_LPC);
-+		hpc = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_HPC);
-+
-+		atomic_set(&pc->lpc, lpc);
-+		atomic_set(&pc->hpc, hpc);
-+		mod_delayed_work(system_bh_wq, &pc->clear_capture,
-+				 RKPWMC_CLEAR_DELAY);
++		counter_push_event(pc->counter, COUNTER_EVENT_CHANGE_OF_STATE, 1);
 +	}
 +
 +	if (clr)
 +		mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_INTSTS, clr);
 +
-+	if (intsts ^ clr)
++	/* If other interrupt status bits are set, they're not for this driver */
++	if (intsts != clr)
 +		return IRQ_NONE;
 +
 +	return IRQ_HANDLED;
-+}
-+
-+static void rkpwmc_clear_capture_worker(struct work_struct *work)
-+{
-+	struct rockchip_pwm_capture *pc = container_of(
-+		work, struct rockchip_pwm_capture, clear_capture.work);
-+
-+	atomic_set(&pc->hpc, 0);
-+	atomic_set(&pc->lpc, 0);
 +}
 +
 +static int rockchip_pwm_capture_probe(struct platform_device *pdev)
@@ -328,6 +305,11 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	struct rockchip_pwm_capture *pc;
 +	struct counter_device *counter;
 +	int ret;
++
++	/* Set our (still unset) OF node to the parent MFD device's OF node */
++	pdev->dev.parent->of_node_reused = true;
++	device_set_node(&pdev->dev,
++			of_fwnode_handle(no_free_ptr(pdev->dev.parent->of_node)));
 +
 +	counter = devm_counter_alloc(&pdev->dev, sizeof(*pc));
 +	if (IS_ERR(counter))
@@ -344,9 +326,6 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	if (ret)
 +		return dev_err_probe(&pdev->dev, ret, "Failed requesting IRQ\n");
 +
-+	ret = devm_delayed_work_autocancel(&pdev->dev, &pc->clear_capture,
-+					   rkpwmc_clear_capture_worker);
-+
 +	counter->name = pdev->name;
 +	counter->signals = rkpwmc_signals;
 +	counter->num_signals = ARRAY_SIZE(rkpwmc_signals);
@@ -354,18 +333,13 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	counter->counts = rkpwmc_counts;
 +	counter->num_counts = ARRAY_SIZE(rkpwmc_counts);
 +
++	pc->counter = counter;
++
 +	ret = devm_counter_add(&pdev->dev, counter);
 +	if (ret < 0)
 +		return dev_err_probe(&pdev->dev, ret, "Failed to add counter\n");
 +
 +	return 0;
-+}
-+
-+static void rockchip_pwm_capture_remove(struct platform_device *pdev)
-+{
-+	struct rockchip_mfpwm_func *pwmf = dev_get_platdata(&pdev->dev);
-+
-+	mfpwm_remove_func(pwmf);
 +}
 +
 +static const struct platform_device_id rockchip_pwm_capture_id_table[] = {
@@ -376,7 +350,6 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +
 +static struct platform_driver rockchip_pwm_capture_driver = {
 +	.probe = rockchip_pwm_capture_probe,
-+	.remove = rockchip_pwm_capture_remove,
 +	.id_table = rockchip_pwm_capture_id_table,
 +	.driver = {
 +		.name = "rockchip-pwm-capture",
@@ -389,3 +362,4 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +MODULE_LICENSE("GPL");
 +MODULE_IMPORT_NS("ROCKCHIP_MFPWM");
 +MODULE_IMPORT_NS("COUNTER");
++MODULE_ALIAS("platform:rockchip-pwm-capture");

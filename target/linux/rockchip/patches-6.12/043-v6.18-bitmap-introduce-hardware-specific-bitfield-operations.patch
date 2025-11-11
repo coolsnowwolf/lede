@@ -1,0 +1,113 @@
+From 21368fcbb124d51b5d8bd8fa0a286a23c34a0888 Mon Sep 17 00:00:00 2001
+From: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
+Date: Mon, 25 Aug 2025 10:28:21 +0200
+Subject: [PATCH] bitmap: introduce hardware-specific bitfield operations
+
+Hardware of various vendors, but very notably Rockchip, often uses
+32-bit registers where the upper 16-bit half of the register is a
+write-enable mask for the lower half.
+
+This type of hardware setup allows for more granular concurrent register
+write access.
+
+Over the years, many drivers have hand-rolled their own version of this
+macro, usually without any checks, often called something like
+HIWORD_UPDATE or FIELD_PREP_HIWORD, commonly with slightly different
+semantics between them.
+
+Clearly there is a demand for such a macro, and thus the demand should
+be satisfied in a common header file. As this is a convention that spans
+across multiple vendors, and similar conventions may also have
+cross-vendor adoption, it's best if it lives in a vendor-agnostic header
+file that can be expanded over time.
+
+Add hw_bitfield.h with two macros: FIELD_PREP_WM16, and
+FIELD_PREP_WM16_CONST. The latter is a version that can be used in
+initializers, like FIELD_PREP_CONST.
+
+Suggested-by: Yury Norov (NVIDIA) <yury.norov@gmail.com>
+Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
+Acked-by: Jakub Kicinski <kuba@kernel.org>
+Acked-by: Heiko Stuebner <heiko@sntech.de>
+Signed-off-by: Yury Norov (NVIDIA) <yury.norov@gmail.com>
+---
+ MAINTAINERS                 |  1 +
+ include/linux/hw_bitfield.h | 62 +++++++++++++++++++++++++++++++++++++
+ 2 files changed, 63 insertions(+)
+ create mode 100644 include/linux/hw_bitfield.h
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3904,6 +3904,7 @@ F:	include/linux/bits.h
+ F:	include/linux/cpumask.h
+ F:	include/linux/cpumask_types.h
+ F:	include/linux/find.h
++F:	include/linux/hw_bitfield.h
+ F:	include/linux/nodemask.h
+ F:	include/linux/nodemask_types.h
+ F:	include/vdso/bits.h
+--- /dev/null
++++ b/include/linux/hw_bitfield.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Copyright (C) 2025, Collabora Ltd.
++ */
++
++#ifndef _LINUX_HW_BITFIELD_H
++#define _LINUX_HW_BITFIELD_H
++
++#include <linux/bitfield.h>
++#include <linux/build_bug.h>
++#include <linux/limits.h>
++
++/**
++ * FIELD_PREP_WM16() - prepare a bitfield element with a mask in the upper half
++ * @_mask: shifted mask defining the field's length and position
++ * @_val:  value to put in the field
++ *
++ * FIELD_PREP_WM16() masks and shifts up the value, as well as bitwise ORs the
++ * result with the mask shifted up by 16.
++ *
++ * This is useful for a common design of hardware registers where the upper
++ * 16-bit half of a 32-bit register is used as a write-enable mask. In such a
++ * register, a bit in the lower half is only updated if the corresponding bit
++ * in the upper half is high.
++ */
++#define FIELD_PREP_WM16(_mask, _val)					     \
++	({								     \
++		typeof(_val) __val = _val;				     \
++		typeof(_mask) __mask = _mask;				     \
++		__BF_FIELD_CHECK(__mask, ((u16)0U), __val,		     \
++				 "HWORD_UPDATE: ");			     \
++		(((typeof(__mask))(__val) << __bf_shf(__mask)) & (__mask)) | \
++		((__mask) << 16);					     \
++	})
++
++/**
++ * FIELD_PREP_WM16_CONST() - prepare a constant bitfield element with a mask in
++ *                           the upper half
++ * @_mask: shifted mask defining the field's length and position
++ * @_val:  value to put in the field
++ *
++ * FIELD_PREP_WM16_CONST() masks and shifts up the value, as well as bitwise ORs
++ * the result with the mask shifted up by 16.
++ *
++ * This is useful for a common design of hardware registers where the upper
++ * 16-bit half of a 32-bit register is used as a write-enable mask. In such a
++ * register, a bit in the lower half is only updated if the corresponding bit
++ * in the upper half is high.
++ *
++ * Unlike FIELD_PREP_WM16(), this is a constant expression and can therefore
++ * be used in initializers. Error checking is less comfortable for this
++ * version.
++ */
++#define FIELD_PREP_WM16_CONST(_mask, _val)				 \
++	(								 \
++		FIELD_PREP_CONST(_mask, _val) |				 \
++		(BUILD_BUG_ON_ZERO(const_true((u64)(_mask) > U16_MAX)) + \
++		 ((_mask) << 16))					 \
++	)
++
++
++#endif /* _LINUX_HW_BITFIELD_H */

@@ -1,0 +1,71 @@
+From 00e53d0f4baedd72196b65f00698b2a5a537dc2b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Uwe=20Kleine-K=C3=B6nig?= <u.kleine-koenig@baylibre.com>
+Date: Sat, 5 Apr 2025 11:27:12 +0200
+Subject: [PATCH] pwm: Let pwm_set_waveform() succeed even if lowlevel driver
+ rounded up
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Waveform parameters are supposed to be rounded down to the next value
+possible for the hardware. However when a requested value is too small,
+.round_waveform_tohw() is supposed to pick the next bigger value and
+return 1. Let pwm_set_waveform() behave in the same way.
+
+This creates consistency between pwm_set_waveform_might_sleep() with
+exact=false and pwm_round_waveform_might_sleep() +
+pwm_set_waveform_might_sleep() with exact=true.
+
+The PWM_DEBUG rounding check has to be adapted to only trigger if no
+uprounding happend.
+
+Signed-off-by: Uwe Kleine-K?nig <u.kleine-koenig@baylibre.com>
+Tested-by: Trevor Gamblin <tgamblin@baylibre.com>
+Link: https://lore.kernel.org/r/353dc6ae31be815e41fd3df89c257127ca0d1a09.1743844730.git.u.kleine-koenig@baylibre.com
+Signed-off-by: Uwe Kleine-K?nig <ukleinek@kernel.org>
+---
+ drivers/pwm/core.c | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+--- a/drivers/pwm/core.c
++++ b/drivers/pwm/core.c
+@@ -322,7 +322,7 @@ static int __pwm_set_waveform(struct pwm
+ 	const struct pwm_ops *ops = chip->ops;
+ 	char wfhw[WFHWSIZE];
+ 	struct pwm_waveform wf_rounded;
+-	int err;
++	int err, ret_tohw;
+ 
+ 	BUG_ON(WFHWSIZE < ops->sizeof_wfhw);
+ 
+@@ -332,16 +332,16 @@ static int __pwm_set_waveform(struct pwm
+ 	if (!pwm_wf_valid(wf))
+ 		return -EINVAL;
+ 
+-	err = __pwm_round_waveform_tohw(chip, pwm, wf, &wfhw);
+-	if (err)
+-		return err;
++	ret_tohw = __pwm_round_waveform_tohw(chip, pwm, wf, &wfhw);
++	if (ret_tohw < 0)
++		return ret_tohw;
+ 
+ 	if ((IS_ENABLED(CONFIG_PWM_DEBUG) || exact) && wf->period_length_ns) {
+ 		err = __pwm_round_waveform_fromhw(chip, pwm, &wfhw, &wf_rounded);
+ 		if (err)
+ 			return err;
+ 
+-		if (IS_ENABLED(CONFIG_PWM_DEBUG) && !pwm_check_rounding(wf, &wf_rounded))
++		if (IS_ENABLED(CONFIG_PWM_DEBUG) && ret_tohw == 0 && !pwm_check_rounding(wf, &wf_rounded))
+ 			dev_err(&chip->dev, "Wrong rounding: requested %llu/%llu [+%llu], result %llu/%llu [+%llu]\n",
+ 				wf->duty_length_ns, wf->period_length_ns, wf->duty_offset_ns,
+ 				wf_rounded.duty_length_ns, wf_rounded.period_length_ns, wf_rounded.duty_offset_ns);
+@@ -382,7 +382,8 @@ static int __pwm_set_waveform(struct pwm
+ 				wf_rounded.duty_length_ns, wf_rounded.period_length_ns, wf_rounded.duty_offset_ns,
+ 				wf_set.duty_length_ns, wf_set.period_length_ns, wf_set.duty_offset_ns);
+ 	}
+-	return 0;
++
++	return ret_tohw;
+ }
+ 
+ /**

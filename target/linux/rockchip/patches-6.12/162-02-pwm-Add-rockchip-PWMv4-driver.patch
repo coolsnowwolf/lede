@@ -1,32 +1,42 @@
+From git@z Thu Jan  1 00:00:00 1970
+Subject: [PATCH v3 3/5] pwm: Add rockchip PWMv4 driver
+From: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
+Date: Mon, 27 Oct 2025 18:11:58 +0100
+Message-Id: <20251027-rk3576-pwm-v3-3-654a5cb1e3f8@collabora.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+The Rockchip RK3576 brings with it a new PWM IP, in downstream code
+referred to as "v4". This new IP is different enough from the previous
+Rockchip IP that I felt it necessary to add a new driver for it, instead
+of shoehorning it in the old one.
+
+Add this new driver, based on the PWM core's waveform APIs. Its platform
+device is registered by the parent mfpwm driver, from which it also
+receives a little platform data struct, so that mfpwm can guarantee that
+all the platform device drivers spread across different subsystems for
+this specific hardware IP do not interfere with each other.
+
 Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 ---
  MAINTAINERS                   |   1 +
  drivers/pwm/Kconfig           |  13 ++
  drivers/pwm/Makefile          |   1 +
- drivers/pwm/pwm-rockchip-v4.c | 336 ++++++++++++++++++++++++++++++++++++++++++
- 4 files changed, 351 insertions(+)
+ drivers/pwm/pwm-rockchip-v4.c | 353 ++++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 368 insertions(+)
 
---- a/MAINTAINERS
-+++ b/MAINTAINERS
-@@ -19962,6 +19962,7 @@ L:	linux-rockchip@lists.infradead.org
- L:	linux-pwm@vger.kernel.org
- S:	Maintained
- F:	Documentation/devicetree/bindings/pwm/rockchip,rk3576-pwm.yaml
-+F:	drivers/pwm/pwm-rockchip-v4.c
- F:	drivers/soc/rockchip/mfpwm.c
- F:	include/soc/rockchip/mfpwm.h
- 
 --- a/drivers/pwm/Kconfig
 +++ b/drivers/pwm/Kconfig
-@@ -540,6 +540,19 @@ config PWM_ROCKCHIP
- 	  Generic PWM framework driver for the PWM controller found on
- 	  Rockchip SoCs.
+@@ -551,6 +551,19 @@ config PWM_RZ_MTU3
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called pwm-rz-mtu3.
  
 +config PWM_ROCKCHIP_V4
 +	tristate "Rockchip PWM v4 support"
 +	depends on ARCH_ROCKCHIP || COMPILE_TEST
-+	depends on ROCKCHIP_MFPWM
 +	depends on HAS_IOMEM
++	depends on MFD_ROCKCHIP_MFPWM
 +	help
 +	  Generic PWM framework driver for the PWM controller found on
 +	  later Rockchip SoCs such as the RK3576.
@@ -35,9 +45,9 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	  to guarantee fearlessly concurrent operation with other functions of
 +	  the same device implemented by drivers in other subsystems.
 +
- config PWM_RZ_MTU3
- 	tristate "Renesas RZ/G2L MTU3a PWM Timer support"
- 	depends on RZ_MTU3
+ config PWM_SAMSUNG
+ 	tristate "Samsung PWM support"
+ 	depends on PLAT_SAMSUNG || ARCH_S5PV210 || ARCH_EXYNOS || COMPILE_TEST
 --- a/drivers/pwm/Makefile
 +++ b/drivers/pwm/Makefile
 @@ -49,6 +49,7 @@ obj-$(CONFIG_PWM_RASPBERRYPI_POE)	+= pwm
@@ -50,7 +60,7 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
  obj-$(CONFIG_PWM_SIFIVE)	+= pwm-sifive.o
 --- /dev/null
 +++ b/drivers/pwm/pwm-rockchip-v4.c
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,353 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * Copyright (c) 2025 Collabora Ltd.
@@ -61,13 +71,32 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 + * other functions of the device from different drivers interfering with its
 + * operation while it's active.
 + *
++ * Technical Reference Manual: Chapter 31 of the RK3506 TRM Part 1, a SoC which
++ * uses the same PWM hardware and has a publicly available TRM.
++ * https://opensource.rock-chips.com/images/3/36/Rockchip_RK3506_TRM_Part_1_V1.2-20250811.pdf
++ *
 + * Authors:
 + *     Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
++ *
++ * Limitations:
++ * - When the output is disabled, it will end abruptly without letting the
++ *   current period complete.
++ *   TODO: This can be fixed in the driver in the future by having the enable-
++ *         to-disable transition switch to oneshot mode with one repetition,
++ *         and then disable the pwmclk and release mfpwm when the oneshot
++ *         complete interrupt fires.
++ * - When the output is disabled, the pin will remain driven to whatever state
++ *   it last had.
++ * - Adjustments to the duty cycle will only take effect during the next period.
++ * - Adjustments to the period length will only take effect during the next
++ *   period.
++ * - offset should be between 0 and (period - duty)
 + */
 +
++#include <linux/math64.h>
++#include <linux/mfd/rockchip-mfpwm.h>
 +#include <linux/platform_device.h>
 +#include <linux/pwm.h>
-+#include <soc/rockchip/mfpwm.h>
 +
 +struct rockchip_pwm_v4 {
 +	struct rockchip_mfpwm_func *pwmf;
@@ -90,29 +119,18 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 + * rockchip_pwm_v4_round_single - convert a PWM parameter to hardware
 + * @rate: clock rate of the PWM clock, as per clk_get_rate
 + * @in_val: parameter in nanoseconds to convert
-+ * @out_val: pointer to location where converted result should be stored.
 + *
-+ * If @out_val is %NULL, no calculation is performed.
-+ *
-+ * Return:
-+ * * %0          - Success
-+ * * %-EOVERFLOW - Result too large for target type
++ * Returns the rounded value, saturating at U32_MAX if too large
 + */
-+static int rockchip_pwm_v4_round_single(unsigned long rate, u64 in_val,
-+					u32 *out_val)
++static u32 rockchip_pwm_v4_round_single(unsigned long rate, u64 in_val)
 +{
 +	u64 tmp;
 +
-+	if (!out_val)
-+		return 0;
-+
-+	tmp = mult_frac(rate, in_val, NSEC_PER_SEC);
++	tmp = mul_u64_u64_div_u64(rate, in_val, NSEC_PER_SEC);
 +	if (tmp > U32_MAX)
-+		return -EOVERFLOW;
++		tmp = U32_MAX;
 +
-+	*out_val = tmp;
-+
-+	return 0;
++	return (u32)tmp;
 +}
 +
 +/**
@@ -122,42 +140,27 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 + * @period: PWM period in nanoseconds
 + * @offset: PWM offset in nanoseconds
 + * @out_duty: pointer to where the rounded duty value should be stored
-+ *            if NULL, don't calculate or store it
 + * @out_period: pointer to where the rounded period value should be stored
-+ *              if NULL, don't calculate or store it
 + * @out_offset: pointer to where the rounded offset value should be stored
-+ *              if NULL, don't calculate or store it
 + *
 + * Convert nanosecond-based duty/period/offset parameters to the PWM hardware's
-+ * native rounded representation in number of cycles at clock rate @rate. If an
-+ * out_ parameter is a NULL pointer, the corresponding parameter will not be
-+ * calculated or stored. Should an overflow error occur for any of the
-+ * parameters, assume the data at all the out_ locations is invalid and may not
-+ * even have been touched at all.
-+ *
-+ * Return:
-+ * * %0          - Success
-+ * * %-EOVERFLOW - One of the results is too large for the PWM hardware
++ * native rounded representation in number of cycles at clock rate @rate. Should
++ * any of the input parameters be out of range for the hardware, the
++ * corresponding output parameter is the maximum permissible value for said
++ * parameter with considerations to the others.
 + */
-+static int rockchip_pwm_v4_round_params(unsigned long rate, u64 duty,
++static void rockchip_pwm_v4_round_params(unsigned long rate, u64 duty,
 +					u64 period, u64 offset, u32 *out_duty,
 +					u32 *out_period, u32 *out_offset)
 +{
-+	int ret;
++	*out_period = rockchip_pwm_v4_round_single(rate, period);
 +
-+	ret = rockchip_pwm_v4_round_single(rate, duty, out_duty);
-+	if (ret)
-+		return ret;
++	*out_duty = rockchip_pwm_v4_round_single(rate, duty);
 +
-+	ret = rockchip_pwm_v4_round_single(rate, period, out_period);
-+	if (ret)
-+		return ret;
-+
-+	ret = rockchip_pwm_v4_round_single(rate, offset, out_offset);
-+	if (ret)
-+		return ret;
-+
-+	return 0;
++	/* As per TRM, PWM_OFFSET: "The value ranges from 0 to (period-duty)" */
++	*out_offset = rockchip_pwm_v4_round_single(rate, offset);
++	if (*out_offset > (*out_period - *out_duty))
++		*out_offset = *out_period - *out_duty;
 +}
 +
 +static int rockchip_pwm_v4_round_wf_tohw(struct pwm_chip *chip,
@@ -168,30 +171,24 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	struct rockchip_pwm_v4 *pc = to_rockchip_pwm_v4(chip);
 +	struct rockchip_pwm_v4_wf *wfhw = _wfhw;
 +	unsigned long rate;
-+	int ret = 0;
 +
-+	/* We do not want chosen_clk to change out from under us here */
-+	ret = mfpwm_acquire(pc->pwmf);
-+	if (ret)
-+		return ret;
++	rate = clk_get_rate(pc->pwmf->core);
 +
-+	rate = mfpwm_clk_get_rate(pc->pwmf->parent);
-+
-+	ret = rockchip_pwm_v4_round_params(rate, wf->duty_length_ns,
-+					   wf->period_length_ns,
-+					   wf->duty_offset_ns, &wfhw->duty,
-+					   &wfhw->period, &wfhw->offset);
++	rockchip_pwm_v4_round_params(rate, wf->duty_length_ns,
++				     wf->period_length_ns, wf->duty_offset_ns,
++				     &wfhw->duty, &wfhw->period, &wfhw->offset);
 +
 +	if (wf->period_length_ns > 0)
 +		wfhw->enable = PWMV4_EN_BOTH_MASK;
 +	else
 +		wfhw->enable = 0;
 +
-+	dev_dbg(&chip->dev, "tohw: duty = %u, period = %u, offset = %u, rate %lu\n",
-+		wfhw->duty, wfhw->period, wfhw->offset, rate);
++	dev_dbg(&chip->dev,
++		"tohw: duty %llu -> %u, period %llu -> %u, offset %llu -> %u, rate %lu\n",
++		wf->duty_length_ns, wfhw->duty, wf->period_length_ns,
++		wfhw->period, wf->duty_offset_ns, wfhw->offset, rate);
 +
-+	mfpwm_release(pc->pwmf);
-+	return ret;
++	return 0;
 +}
 +
 +static int rockchip_pwm_v4_round_wf_fromhw(struct pwm_chip *chip,
@@ -202,37 +199,28 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	struct rockchip_pwm_v4 *pc = to_rockchip_pwm_v4(chip);
 +	const struct rockchip_pwm_v4_wf *wfhw = _wfhw;
 +	unsigned long rate;
-+	int ret = 0;
 +
-+	/* We do not want chosen_clk to change out from under us here */
-+	ret = mfpwm_acquire(pc->pwmf);
-+	if (ret)
-+		return ret;
++	rate = clk_get_rate(pc->pwmf->core);
 +
-+	rate = mfpwm_clk_get_rate(pc->pwmf->parent);
++	if (rockchip_pwm_v4_is_enabled(wfhw->enable)) {
++		if (!rate)
++			return -EINVAL;
 +
-+	/* Let's avoid a cool division-by-zero if the clock's busted. */
-+	if (!rate) {
-+		ret = -EINVAL;
-+		goto out_mfpwm_release;
++		wf->period_length_ns = (u64)wfhw->period * NSEC_PER_SEC / rate;
++		wf->duty_length_ns = (u64)wfhw->duty * NSEC_PER_SEC / rate;
++		wf->duty_offset_ns = (u64)wfhw->offset * NSEC_PER_SEC / rate;
++	} else {
++		wf->period_length_ns = 0;
++		wf->duty_length_ns = 0;
++		wf->duty_offset_ns = 0;
 +	}
 +
-+	wf->duty_length_ns = mult_frac(wfhw->duty, NSEC_PER_SEC, rate);
++	dev_dbg(&chip->dev,
++		"fromhw: duty %u -> %llu, period %u -> %llu, offset %u -> %llu, rate %lu\n",
++		wfhw->duty, wf->duty_length_ns, wfhw->period,
++		wf->period_length_ns, wfhw->offset, wf->duty_offset_ns, rate);
 +
-+	if (pwmv4_is_enabled(wfhw->enable))
-+		wf->period_length_ns = mult_frac(wfhw->period, NSEC_PER_SEC,
-+						 rate);
-+	else
-+		wf->period_length_ns = 0;
-+
-+	wf->duty_offset_ns = mult_frac(wfhw->offset, NSEC_PER_SEC, rate);
-+
-+	dev_dbg(&chip->dev, "fromhw: duty = %llu, period = %llu, offset = %llu\n",
-+		wf->duty_length_ns, wf->period_length_ns, wf->duty_offset_ns);
-+
-+out_mfpwm_release:
-+	mfpwm_release(pc->pwmf);
-+	return ret;
++	return 0;
 +}
 +
 +static int rockchip_pwm_v4_read_wf(struct pwm_chip *chip, struct pwm_device *pwm,
@@ -269,8 +257,8 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	if (ret)
 +		return ret;
 +
-+	was_enabled = pwmv4_is_enabled(mfpwm_reg_read(pc->pwmf->base,
-+						      PWMV4_REG_ENABLE));
++	was_enabled = rockchip_pwm_v4_is_enabled(mfpwm_reg_read(pc->pwmf->base,
++								PWMV4_REG_ENABLE));
 +
 +	/*
 +	 * "But Nicolas", you ask with valid concerns, "why would you enable the
@@ -285,7 +273,7 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	 * use relaxed writes; it's not worth the footgun.
 +	 */
 +	mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_ENABLE,
-+			REG_UPDATE_WE(wfhw->enable, 0, 1));
++			FIELD_PREP_WM16(PWMV4_EN_BOTH_MASK, wfhw->enable));
 +
 +	mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_PERIOD, wfhw->period);
 +	mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_DUTY, wfhw->duty);
@@ -295,14 +283,19 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +
 +	/* Commit new configuration to hardware output. */
 +	mfpwm_reg_write(pc->pwmf->base, PWMV4_REG_ENABLE,
-+			PWMV4_CTRL_UPDATE_EN(1));
++			PWMV4_CTRL_UPDATE_EN);
 +
-+	if (pwmv4_is_enabled(wfhw->enable)) {
++	if (rockchip_pwm_v4_is_enabled(wfhw->enable)) {
 +		if (!was_enabled) {
-+			dev_dbg(&chip->dev, "enabling PWM output\n");
-+			ret = mfpwm_pwmclk_enable(pc->pwmf);
++			dev_dbg(&chip->dev, "Enabling PWM output\n");
++			ret = clk_enable(pc->pwmf->core);
 +			if (ret)
 +				goto err_mfpwm_release;
++			ret = clk_rate_exclusive_get(pc->pwmf->core);
++			if (ret) {
++				clk_disable(pc->pwmf->core);
++				goto err_mfpwm_release;
++			}
 +
 +			/*
 +			 * Output should be on now, acquire device to guarantee
@@ -313,8 +306,9 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +				goto err_mfpwm_release;
 +		}
 +	} else if (was_enabled) {
-+		dev_dbg(&chip->dev, "disabling PWM output\n");
-+		mfpwm_pwmclk_disable(pc->pwmf);
++		dev_dbg(&chip->dev, "Disabling PWM output\n");
++		clk_rate_exclusive_put(pc->pwmf->core);
++		clk_disable(pc->pwmf->core);
 +		/* Output is off now, extra release to balance extra acquire */
 +		mfpwm_release(pc->pwmf);
 +	}
@@ -325,7 +319,6 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	return ret;
 +}
 +
-+/* We state the PWM chip is atomic, so none of these functions should sleep. */
 +static const struct pwm_ops rockchip_pwm_v4_ops = {
 +	.sizeof_wfhw = sizeof(struct rockchip_pwm_v4_wf),
 +	.round_waveform_tohw = rockchip_pwm_v4_round_wf_tohw,
@@ -334,37 +327,71 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +	.write_waveform = rockchip_pwm_v4_write_wf,
 +};
 +
++static bool rockchip_pwm_v4_on_and_continuous(struct rockchip_pwm_v4 *pc)
++{
++	bool en;
++	u32 val;
++
++	en = rockchip_pwm_v4_is_enabled(mfpwm_reg_read(pc->pwmf->base,
++						       PWMV4_REG_ENABLE));
++	val = mfpwm_reg_read(pc->pwmf->base, PWMV4_REG_CTRL);
++
++	return en && ((val & PWMV4_MODE_MASK) == PWMV4_MODE_CONT);
++}
++
 +static int rockchip_pwm_v4_probe(struct platform_device *pdev)
 +{
 +	struct rockchip_mfpwm_func *pwmf = dev_get_platdata(&pdev->dev);
 +	struct rockchip_pwm_v4 *pc;
 +	struct pwm_chip *chip;
++	struct device *dev = &pdev->dev;
 +	int ret;
 +
-+	chip = devm_pwmchip_alloc(&pdev->dev, 1, sizeof(*pc));
++	/*
++	 * For referencing the PWM in the DT to work, we need the parent MFD
++	 * device's OF node. Code shamelessly adapted from `drivers/pci/of.c`'s
++	 * pci_set_of_node(), which does this for bus reasons.
++	 */
++	dev->parent->of_node_reused = true;
++	device_set_node(dev,
++			of_fwnode_handle(no_free_ptr(dev->parent->of_node)));
++
++	chip = devm_pwmchip_alloc(dev, 1, sizeof(*pc));
 +	if (IS_ERR(chip))
 +		return PTR_ERR(chip);
 +
 +	pc = to_rockchip_pwm_v4(chip);
 +	pc->pwmf = pwmf;
 +
-+	platform_set_drvdata(pdev, pc);
++	ret = mfpwm_acquire(pwmf);
++	if (ret == -EBUSY)
++		dev_warn(dev, "PWM hardware already in use, can't check initial state\n");
++	else if (ret < 0)
++		return dev_err_probe(dev, ret, "Couldn't acquire mfpwm in probe\n");
++
++	if (!rockchip_pwm_v4_on_and_continuous(pc))
++		mfpwm_release(pwmf);
++	else {
++		dev_dbg(dev, "PWM was already on at probe time\n");
++		ret = clk_enable(pwmf->core);
++		if (ret)
++			return dev_err_probe(dev, ret, "Enabling pwm clock failed\n");
++		ret = clk_rate_exclusive_get(pc->pwmf->core);
++		if (ret) {
++			clk_disable(pwmf->core);
++			return dev_err_probe(dev, ret, "Protecting pwm clock failed\n");
++		}
++	}
++
++	platform_set_drvdata(pdev, chip);
 +
 +	chip->ops = &rockchip_pwm_v4_ops;
-+	chip->atomic = true;
 +
-+	ret = pwmchip_add(chip);
++	ret = devm_pwmchip_add(dev, chip);
 +	if (ret)
-+		return dev_err_probe(&pdev->dev, ret, "failed to add PWM chip\n");
++		return dev_err_probe(dev, ret, "Failed to add PWM chip\n");
 +
 +	return 0;
-+}
-+
-+static void rockchip_pwm_v4_remove(struct platform_device *pdev)
-+{
-+	struct rockchip_pwm_v4 *pc = platform_get_drvdata(pdev);
-+
-+	mfpwm_remove_func(pc->pwmf);
 +}
 +
 +static const struct platform_device_id rockchip_pwm_v4_ids[] = {
@@ -375,7 +402,6 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +
 +static struct platform_driver rockchip_pwm_v4_driver = {
 +	.probe = rockchip_pwm_v4_probe,
-+	.remove = rockchip_pwm_v4_remove,
 +	.driver = {
 +		.name = "pwm-rockchip-v4",
 +	},
@@ -387,3 +413,4 @@ Signed-off-by: Nicolas Frattaroli <nicolas.frattaroli@collabora.com>
 +MODULE_DESCRIPTION("Rockchip PWMv4 Driver");
 +MODULE_LICENSE("GPL");
 +MODULE_IMPORT_NS("ROCKCHIP_MFPWM");
++MODULE_ALIAS("platform:pwm-rockchip-v4");
