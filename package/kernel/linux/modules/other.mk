@@ -757,11 +757,25 @@ endef
 
 $(eval $(call KernelPackage,rtc-x1205))
 
+
+define KernelPackage/mfd
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=Multifunction device drivers
+  HIDDEN:=1
+  KCONFIG:=CONFIG_MFD_CORE
+  FILES:=$(LINUX_DIR)/drivers/mfd/mfd-core.ko
+  AUTOLOAD:=$(call AutoLoad,10,mfd-core)
+endef
+
+$(eval $(call KernelPackage,mfd))
+
+
 define KernelPackage/mtdtests
   SUBMENU:=$(OTHER_MENU)
   TITLE:=MTD subsystem tests
   KCONFIG:=CONFIG_MTD_TESTS
   FILES:=\
+	$(LINUX_DIR)/drivers/mtd/tests/mtd_nandbiterrs.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_nandecctest.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_oobtest.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_pagetest.ko \
@@ -769,6 +783,7 @@ define KernelPackage/mtdtests
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_speedtest.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_stresstest.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_subpagetest.ko \
+	$(LINUX_DIR)/drivers/mtd/tests/mtd_test.ko \
 	$(LINUX_DIR)/drivers/mtd/tests/mtd_torturetest.ko
 endef
 
@@ -972,6 +987,11 @@ $(eval $(call KernelPackage,ikconfig))
 
 define KernelPackage/zram
   SUBMENU:=$(OTHER_MENU)
+  DEPENDS:= \
+	+(KERNEL_ZRAM_BACKEND_LZO||KERNEL_ZRAM_DEF_COMP_LZORLE||KERNEL_ZRAM_DEF_COMP_LZO):kmod-lib-lzo \
+	+(KERNEL_ZRAM_BACKEND_LZ4||KERNEL_ZRAM_DEF_COMP_LZ4):kmod-lib-lz4 \
+	+(KERNEL_ZRAM_BACKEND_LZ4HC||KERNEL_ZRAM_DEF_COMP_LZ4HC):kmod-lib-lz4hc \
+	+(KERNEL_ZRAM_BACKEND_ZSTD||KERNEL_ZRAM_DEF_COMP_ZSTD):kmod-lib-zstd
   TITLE:=ZRAM
   KCONFIG:= \
 	CONFIG_ZSMALLOC \
@@ -991,29 +1011,49 @@ endef
 
 define KernelPackage/zram/config
   if PACKAGE_kmod-zram
+    if LINUX_6_12
+        config KERNEL_ZRAM_BACKEND_LZO
+                bool "lzo and lzo-rle compression support"
+
+        config KERNEL_ZRAM_BACKEND_LZ4
+                bool "lz4 compression support"
+
+        config KERNEL_ZRAM_BACKEND_LZ4HC
+                bool "lz4hc compression support"
+
+        config KERNEL_ZRAM_BACKEND_ZSTD
+                bool "zstd compression support"
+
+        config KERNEL_ZRAM_BACKEND_FORCE_LZO
+                def_bool !KERNEL_ZRAM_BACKEND_LZ4 && \
+                         !KERNEL_ZRAM_BACKEND_LZ4HC && \
+                         !KERNEL_ZRAM_BACKEND_ZSTD
+                select KERNEL_ZRAM_BACKEND_LZO
+
+    endif
     choice
       prompt "ZRAM Default compressor"
-      default ZRAM_DEF_COMP_LZORLE
+      default KERNEL_ZRAM_DEF_COMP_LZORLE
 
-    config ZRAM_DEF_COMP_LZORLE
+    config KERNEL_ZRAM_DEF_COMP_LZORLE
             bool "lzo-rle"
-            select PACKAGE_kmod-lib-lzo
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZO
+    config KERNEL_ZRAM_DEF_COMP_LZO
             bool "lzo"
-            select PACKAGE_kmod-lib-lzo
+            depends on KERNEL_ZRAM_BACKEND_LZO || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZ4
+    config KERNEL_ZRAM_DEF_COMP_LZ4
             bool "lz4"
-            select PACKAGE_kmod-lib-lz4
+            depends on KERNEL_ZRAM_BACKEND_LZ4 || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_LZ4HC
+    config KERNEL_ZRAM_DEF_COMP_LZ4HC
             bool "lz4-hc"
-            select PACKAGE_kmod-lib-lz4hc
+            depends on KERNEL_ZRAM_BACKEND_LZ4HC || !LINUX_6_12
 
-    config ZRAM_DEF_COMP_ZSTD
+    config KERNEL_ZRAM_DEF_COMP_ZSTD
             bool "zstd"
-            select PACKAGE_kmod-lib-zstd
+            depends on KERNEL_ZRAM_BACKEND_ZSTD || !LINUX_6_12
 
     endchoice
   endif
@@ -1214,7 +1254,10 @@ define KernelPackage/tpm
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM Hardware Support
   DEPENDS:= +kmod-random-core +kmod-asn1-decoder \
-	  +kmod-asn1-encoder +kmod-oid-registry
+	  +kmod-asn1-encoder +kmod-oid-registry \
+	  +LINUX_6_12:kmod-crypto-ecdh \
+	  +LINUX_6_12:kmod-crypto-kpp \
+	  +LINUX_6_12:kmod-crypto-lib-aescfb
   KCONFIG:= CONFIG_TCG_TPM
   FILES:= $(LINUX_DIR)/drivers/char/tpm/tpm.ko
   AUTOLOAD:=$(call AutoLoad,10,tpm,1)
@@ -1229,7 +1272,7 @@ $(eval $(call KernelPackage,tpm))
 define KernelPackage/tpm-tis
   SUBMENU:=$(OTHER_MENU)
   TITLE:=TPM TIS 1.2 Interface / TPM 2.0 FIFO Interface
-	DEPENDS:= @TARGET_x86 +kmod-tpm
+	DEPENDS:= @(TARGET_x86||TARGET_armsr) +kmod-tpm
   KCONFIG:= CONFIG_TCG_TIS
   FILES:= \
 	$(LINUX_DIR)/drivers/char/tpm/tpm_tis.ko \
@@ -1315,7 +1358,7 @@ $(eval $(call KernelPackage,itco-wdt))
 define KernelPackage/mhi-bus
   SUBMENU:=$(OTHER_MENU)
   TITLE:=MHI bus
-  DEPENDS:=@(LINUX_5_15||LINUX_6_1||LINUX_6_6)
+  DEPENDS:=@!(LINUX_5_4||LINUX_5_10)
   KCONFIG:=CONFIG_MHI_BUS \
            CONFIG_MHI_BUS_DEBUG=y
   FILES:=$(LINUX_DIR)/drivers/bus/mhi/host/mhi.ko

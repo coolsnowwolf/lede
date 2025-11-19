@@ -1,0 +1,79 @@
+From: Qingfang Deng <dqfext@gmail.com>
+Date: Sat, 1 Mar 2025 21:55:16 +0800
+Subject: [PATCH] ppp: use IFF_NO_QUEUE in virtual interfaces
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+For PPPoE, PPTP, and PPPoL2TP, the start_xmit() function directly
+forwards packets to the underlying network stack and never returns
+anything other than 1. So these interfaces do not require a qdisc,
+and the IFF_NO_QUEUE flag should be set.
+
+Introduces a direct_xmit flag in struct ppp_channel to indicate when
+IFF_NO_QUEUE should be applied. The flag is set in ppp_connect_channel()
+for relevant protocols.
+
+While at it, remove the usused latency member from struct ppp_channel.
+
+Signed-off-by: Qingfang Deng <dqfext@gmail.com>
+Reviewed-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Link: https://patch.msgid.link/20250301135517.695809-1-dqfext@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -3504,6 +3504,10 @@ ppp_connect_channel(struct channel *pch,
+ 		ret = -ENOTCONN;
+ 		goto outl;
+ 	}
++	if (pch->chan->direct_xmit)
++		ppp->dev->priv_flags |= IFF_NO_QUEUE;
++	else
++		ppp->dev->priv_flags &= ~IFF_NO_QUEUE;
+ 	spin_unlock_bh(&pch->downl);
+ 	if (pch->file.hdrlen > ppp->file.hdrlen)
+ 		ppp->file.hdrlen = pch->file.hdrlen;
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -693,6 +693,7 @@ static int pppoe_connect(struct socket *
+ 		po->chan.mtu = dev->mtu - sizeof(struct pppoe_hdr) - 2;
+ 		po->chan.private = sk;
+ 		po->chan.ops = &pppoe_chan_ops;
++		po->chan.direct_xmit = true;
+ 
+ 		error = ppp_register_net_channel(dev_net(dev), &po->chan);
+ 		if (error) {
+--- a/drivers/net/ppp/pptp.c
++++ b/drivers/net/ppp/pptp.c
+@@ -469,6 +469,7 @@ static int pptp_connect(struct socket *s
+ 	po->chan.mtu -= PPTP_HEADER_OVERHEAD;
+ 
+ 	po->chan.hdrlen = 2 + sizeof(struct pptp_gre_header);
++	po->chan.direct_xmit = true;
+ 	error = ppp_register_channel(&po->chan);
+ 	if (error) {
+ 		pr_err("PPTP: failed to register PPP channel (%d)\n", error);
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -42,8 +42,7 @@ struct ppp_channel {
+ 	int		hdrlen;		/* amount of headroom channel needs */
+ 	void		*ppp;		/* opaque to channel */
+ 	int		speed;		/* transfer rate (bytes/second) */
+-	/* the following is not used at present */
+-	int		latency;	/* overhead time in milliseconds */
++	bool		direct_xmit;	/* no qdisc, xmit directly */
+ };
+ 
+ #ifdef __KERNEL__
+--- a/net/l2tp/l2tp_ppp.c
++++ b/net/l2tp/l2tp_ppp.c
+@@ -796,6 +796,7 @@ static int pppol2tp_connect(struct socke
+ 	po->chan.private = sk;
+ 	po->chan.ops	 = &pppol2tp_chan_ops;
+ 	po->chan.mtu	 = pppol2tp_tunnel_mtu(tunnel);
++	po->chan.direct_xmit	= true;
+ 
+ 	error = ppp_register_net_channel(sock_net(sk), &po->chan);
+ 	if (error) {

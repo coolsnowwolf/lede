@@ -49,6 +49,7 @@ $(call Package/iptables/Default)
   TITLE:=IP firewall administration tool
   MENU:=1
   DEPENDS+= +kmod-ipt-core +libip4tc +IPV6:libip6tc +libxtables
+  PROVIDES:=iptables-legacy iptables-zz-legacy
 endef
 
 define Package/iptables/config
@@ -58,11 +59,6 @@ define Package/iptables/config
 	help
 		This enable connlabel support in iptables.
 
-  config IPTABLES_NFTABLES
-	bool "Enable Nftables support"
-	default n
-	help
-		This enable nftables support in iptables.
 endef
 
 define Package/iptables/description
@@ -444,6 +440,7 @@ endef
 define Package/ip6tables
 $(call Package/iptables/Default)
   DEPENDS:=@IPV6 +kmod-ip6tables +iptables
+  PROVIDES:=ip6tables-legacy ip6tables-zz-legacy
   CATEGORY:=Network
   TITLE:=IPv6 firewall administration tool
   MENU:=1

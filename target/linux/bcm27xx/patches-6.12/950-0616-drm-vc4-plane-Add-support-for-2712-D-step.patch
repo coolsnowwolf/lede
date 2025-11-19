@@ -1,0 +1,162 @@
+From 7b8a50da2c20de8edd45d6599635653691e447ce Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 25 Oct 2024 18:15:55 +0100
+Subject: [PATCH] drm/vc4: plane: Add support for 2712 D-step.
+
+There are a few minor changes in the display list generation
+for the D-step of the chip, so add them.
+
+Reviewed-by: Maxime Ripard <mripard@kernel.org>
+Link: https://patchwork.freedesktop.org/patch/msgid/20241025-drm-vc4-2712-support-v2-24-35efa83c8fc0@raspberrypi.com
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 72 ++++++++++++++++++++++++---------
+ drivers/gpu/drm/vc4/vc4_regs.h  |  9 ++++-
+ 2 files changed, 60 insertions(+), 21 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -1134,25 +1134,53 @@ static u32 vc4_hvs4_get_alpha_blend_mode
+ 
+ static u32 vc4_hvs5_get_alpha_blend_mode(struct drm_plane_state *state)
+ {
+-	if (!state->fb->format->has_alpha)
+-		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
+-				     SCALER5_CTL2_ALPHA_MODE);
+-
+-	switch (state->pixel_blend_mode) {
+-	case DRM_MODE_BLEND_PIXEL_NONE:
+-		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
+-				     SCALER5_CTL2_ALPHA_MODE);
++	struct drm_device *dev = state->state->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++
++	switch (vc4->gen) {
+ 	default:
+-	case DRM_MODE_BLEND_PREMULTI:
+-		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
+-				     SCALER5_CTL2_ALPHA_MODE) |
+-			SCALER5_CTL2_ALPHA_PREMULT;
+-	case DRM_MODE_BLEND_COVERAGE:
+-		return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
+-				     SCALER5_CTL2_ALPHA_MODE);
++	case VC4_GEN_5:
++	case VC4_GEN_6_C:
++		if (!state->fb->format->has_alpha)
++			return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
++					     SCALER5_CTL2_ALPHA_MODE);
++
++		switch (state->pixel_blend_mode) {
++		case DRM_MODE_BLEND_PIXEL_NONE:
++			return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_FIXED,
++					     SCALER5_CTL2_ALPHA_MODE);
++		default:
++		case DRM_MODE_BLEND_PREMULTI:
++			return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
++					     SCALER5_CTL2_ALPHA_MODE) |
++				SCALER5_CTL2_ALPHA_PREMULT;
++		case DRM_MODE_BLEND_COVERAGE:
++			return VC4_SET_FIELD(SCALER5_CTL2_ALPHA_MODE_PIPELINE,
++					     SCALER5_CTL2_ALPHA_MODE);
++		}
++	case VC4_GEN_6_D:
++		/* 2712-D configures fixed alpha mode in CTL0 */
++		return state->pixel_blend_mode == DRM_MODE_BLEND_PREMULTI ?
++			SCALER5_CTL2_ALPHA_PREMULT : 0;
+ 	}
+ }
+ 
++static u32 vc4_hvs6_get_alpha_mask_mode(struct drm_plane_state *state)
++{
++	struct drm_device *dev = state->state->dev;
++	struct vc4_dev *vc4 = to_vc4_dev(dev);
++
++	WARN_ON_ONCE(vc4->gen != VC4_GEN_6_C && vc4->gen != VC4_GEN_6_D);
++
++	if (vc4->gen == VC4_GEN_6_D &&
++	    (!state->fb->format->has_alpha ||
++	     state->pixel_blend_mode == DRM_MODE_BLEND_PIXEL_NONE))
++		return VC4_SET_FIELD(SCALER6D_CTL0_ALPHA_MASK_FIXED,
++				     SCALER6_CTL0_ALPHA_MASK);
++
++	return VC4_SET_FIELD(SCALER6_CTL0_ALPHA_MASK_NONE, SCALER6_CTL0_ALPHA_MASK);
++}
++
+ /* Writes out a full display list for an active plane to the plane's
+  * private dlist state.
+  */
+@@ -1645,14 +1673,13 @@ static int vc4_plane_mode_set(struct drm
+ static u32 vc6_plane_get_csc_mode(struct vc4_plane_state *vc4_state)
+ {
+ 	struct drm_plane_state *state = &vc4_state->base;
++	struct vc4_dev *vc4 = to_vc4_dev(state->plane->dev);
+ 	u32 ret = 0;
+ 
+ 	if (vc4_state->is_yuv) {
+ 		enum drm_color_encoding color_encoding = state->color_encoding;
+ 		enum drm_color_range color_range = state->color_range;
+ 
+-		ret |= SCALER6_CTL2_CSC_ENABLE;
+-
+ 		/* CSC pre-loaded with:
+ 		 * 0 = BT601 limited range
+ 		 * 1 = BT709 limited range
+@@ -1666,8 +1693,15 @@ static u32 vc6_plane_get_csc_mode(struct
+ 		if (color_range > DRM_COLOR_YCBCR_FULL_RANGE)
+ 			color_range = DRM_COLOR_YCBCR_LIMITED_RANGE;
+ 
+-		ret |= VC4_SET_FIELD(color_encoding + (color_range * 3),
+-				     SCALER6_CTL2_BRCM_CFC_CONTROL);
++		if (vc4->gen == VC4_GEN_6_C) {
++			ret |= SCALER6C_CTL2_CSC_ENABLE;
++			ret |= VC4_SET_FIELD(color_encoding + (color_range * 3),
++					     SCALER6C_CTL2_BRCM_CFC_CONTROL);
++		} else {
++			ret |= SCALER6D_CTL2_CSC_ENABLE;
++			ret |= VC4_SET_FIELD(color_encoding + (color_range * 3),
++					     SCALER6D_CTL2_BRCM_CFC_CONTROL);
++		}
+ 	}
+ 
+ 	return ret;
+@@ -1880,7 +1914,7 @@ static int vc6_plane_mode_set(struct drm
+ 	vc4_dlist_write(vc4_state,
+ 			SCALER6_CTL0_VALID |
+ 			VC4_SET_FIELD(tiling, SCALER6_CTL0_ADDR_MODE) |
+-			VC4_SET_FIELD(0, SCALER6_CTL0_ALPHA_MASK) |
++			vc4_hvs6_get_alpha_mask_mode(state) |
+ 			(vc4_state->is_unity ? SCALER6_CTL0_UNITY : 0) |
+ 			VC4_SET_FIELD(format->pixel_order_hvs5, SCALER6_CTL0_ORDERRGBA) |
+ 			VC4_SET_FIELD(scl1, SCALER6_CTL0_SCL1_MODE) |
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -1194,6 +1194,9 @@ enum hvs_pixel_format {
+ #define SCALER5_CTL2_ALPHA_MASK			VC4_MASK(15, 4)
+ #define SCALER5_CTL2_ALPHA_SHIFT		4
+ 
++#define SCALER6D_CTL2_CSC_ENABLE		BIT(19)
++#define SCALER6D_CTL2_BRCM_CFC_CONTROL_MASK	VC4_MASK(22, 20)
++
+ #define SCALER_POS1_SCL_HEIGHT_MASK		VC4_MASK(27, 16)
+ #define SCALER_POS1_SCL_HEIGHT_SHIFT		16
+ 
+@@ -1347,6 +1350,8 @@ enum hvs_pixel_format {
+ #define SCALER6_CTL0_ADDR_MODE_UIF		4
+ 
+ #define SCALER6_CTL0_ALPHA_MASK_MASK		VC4_MASK(19, 18)
++#define SCALER6_CTL0_ALPHA_MASK_NONE		0
++#define SCALER6D_CTL0_ALPHA_MASK_FIXED		3
+ #define SCALER6_CTL0_UNITY			BIT(15)
+ #define SCALER6_CTL0_ORDERRGBA_MASK		VC4_MASK(14, 13)
+ #define SCALER6_CTL0_SCL1_MODE_MASK		VC4_MASK(10, 8)
+@@ -1361,8 +1366,8 @@ enum hvs_pixel_format {
+ #define SCALER6_CTL2_ALPHA_PREMULT		BIT(29)
+ #define SCALER6_CTL2_ALPHA_MIX			BIT(28)
+ #define SCALER6_CTL2_BFG			BIT(26)
+-#define SCALER6_CTL2_CSC_ENABLE			BIT(25)
+-#define SCALER6_CTL2_BRCM_CFC_CONTROL_MASK	VC4_MASK(18, 16)
++#define SCALER6C_CTL2_CSC_ENABLE		BIT(25)
++#define SCALER6C_CTL2_BRCM_CFC_CONTROL_MASK	VC4_MASK(18, 16)
+ #define SCALER6_CTL2_ALPHA_MASK			VC4_MASK(15, 4)
+ 
+ #define SCALER6_POS1_SCL_LINES_MASK		VC4_MASK(28, 16)

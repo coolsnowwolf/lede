@@ -304,7 +304,7 @@ mtk_bmt_get_mapping_mask(void)
 	unsigned long *used;
 	int i, k;
 
-	used = kcalloc(sizeof(unsigned long), BIT_WORD(bmtd.bmt_blk_idx) + 1, GFP_KERNEL);
+	used = kcalloc(BIT_WORD(bmtd.bmt_blk_idx) + 1, sizeof(unsigned long), GFP_KERNEL);
 	if (!used)
 		return NULL;
 
@@ -443,7 +443,7 @@ static int mtk_bmt_init_v2(struct device_node *np)
 	 * of whole flash
 	 */
 	bmtd.bbt = NULL;
-	for (u16 block = bmtd.total_blks - 1; !bmtd.bbt && block >= bmtd.pool_lba; block--) {
+	for (block = bmtd.total_blks - 1; !bmtd.bbt && block >= bmtd.pool_lba; block--) {
 		u8 fdm[4];
 
 		if (bbt_nand_read(blk_pg(block), bmtd.bbt_buf, bufsz, fdm, sizeof(fdm))) {

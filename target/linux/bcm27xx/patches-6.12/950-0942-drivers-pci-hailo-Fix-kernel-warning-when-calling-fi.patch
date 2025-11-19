@@ -1,0 +1,71 @@
+From bc0a2321ad552ac92dc4be6552ea8a4fc7adf8b8 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Thu, 3 Apr 2025 10:44:50 +0100
+Subject: [PATCH] drivers: pci: hailo: Fix kernel warning when calling
+ find_vdma()
+
+Calling this function without holding the mmap_read_lock causes the
+kernel to throw an error message, spamming the dmesg logs when running
+the Hailo hardware.
+
+Fix it by adding the approprite lock/unlock functions around find_vdma().
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/pci/hailo/vdma/memory.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/pci/hailo/vdma/memory.c
++++ b/drivers/media/pci/hailo/vdma/memory.c
+@@ -163,13 +163,14 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+         goto cleanup;
+     }
+ 
++    mmap_read_lock(current->mm);
+     if (HAILO_DMA_DMABUF_BUFFER != buffer_type) {
+         vma = find_vma(current->mm, user_address);
+         if (IS_ENABLED(HAILO_SUPPORT_MMIO_DMA_MAPPING)) {
+             if (NULL == vma) {
+                 dev_err(dev, "no vma for virt_addr/size = 0x%08lx/0x%08zx\n", user_address, size);
+                 ret = -EFAULT;
+-                goto cleanup;
++                goto unlock_cleanup;
+             }
+         }
+ 
+@@ -179,7 +180,7 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+             ret = create_fd_from_vma(dev, vma);
+             if (ret < 0) {
+                 dev_err(dev, "Failed creating fd from vma in given dmabuf\n");
+-                goto cleanup;
++                goto unlock_cleanup;
+             }
+             // Override user address with fd to the dmabuf - like normal dmabuf flow
+             user_address = ret;
+@@ -212,7 +213,7 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+         ret = hailo_map_dmabuf(dev, user_address, direction, &sgt, &dmabuf_info);
+         if (ret < 0) {
+             dev_err(dev, "Failed mapping dmabuf\n");
+-            goto cleanup;
++            goto unlock_cleanup;
+         }
+         // If created dmabuf fd from vma need to decrement refcount and release fd
+         if (created_dmabuf_fd_from_vma) {
+@@ -234,6 +235,8 @@ struct hailo_vdma_buffer *hailo_vdma_buf
+         }
+     }
+ 
++    mmap_read_unlock(current->mm);
++
+     kref_init(&mapped_buffer->kref);
+     mapped_buffer->device = dev;
+     mapped_buffer->user_address = user_address;
+@@ -249,6 +252,8 @@ clear_sg_table:
+     clear_sg_table(&sgt);
+ free_buffer_struct:
+     kfree(mapped_buffer);
++unlock_cleanup:
++    mmap_read_unlock(current->mm);
+ cleanup:
+     return ERR_PTR(ret);
+ }

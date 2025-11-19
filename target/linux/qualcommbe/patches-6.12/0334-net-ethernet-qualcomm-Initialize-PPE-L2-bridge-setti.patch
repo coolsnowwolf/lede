@@ -1,0 +1,193 @@
+From cf7282d1e5712953516fa1cc0ffaae405491b3ca Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Sun, 9 Feb 2025 22:29:46 +0800
+Subject: [PATCH] net: ethernet: qualcomm: Initialize PPE L2 bridge settings
+
+Initialize the L2 bridge settings for the PPE ports to only enable
+L2 frame forwarding between CPU port and PPE Ethernet ports.
+
+The per-port L2 bridge settings are initialized as follows:
+For PPE CPU port, the PPE bridge TX is enabled and FDB learning is
+disabled. For PPE physical ports, the default L2 forwarding action
+is initialized to forward to CPU port only.
+
+L2/FDB learning and forwarding will not be enabled for PPE physical
+ports yet, since the port's VSI (Virtual Switch Instance) and VSI
+membership are not yet configured, which are required for FDB
+forwarding. The VSI and FDB forwarding will later be enabled when
+switchdev is enabled.
+
+Signed-off-by: Lei Wei <quic_leiwei@quicinc.com>
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 80 ++++++++++++++++++-
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  | 50 ++++++++++++
+ 2 files changed, 129 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -1888,6 +1888,80 @@ static int ppe_queues_to_ring_init(struc
+ 	return ppe_ring_queue_map_set(ppe_dev, 0, queue_bmap);
+ }
+ 
++/* Initialize PPE bridge settings to only enable L2 frame receive and
++ * transmit between CPU port and PPE Ethernet ports.
++ */
++static int ppe_bridge_init(struct ppe_device *ppe_dev)
++{
++	u32 reg, mask, port_cfg[4], vsi_cfg[2];
++	int ret, i;
++
++	/* Configure the following settings for CPU port0:
++	 * a.) Enable Bridge TX
++	 * b.) Disable FDB new address learning
++	 * c.) Disable station move address learning
++	 */
++	mask = PPE_PORT_BRIDGE_TXMAC_EN;
++	mask |= PPE_PORT_BRIDGE_NEW_LRN_EN;
++	mask |= PPE_PORT_BRIDGE_STA_MOVE_LRN_EN;
++	ret = regmap_update_bits(ppe_dev->regmap,
++				 PPE_PORT_BRIDGE_CTRL_ADDR,
++				 mask,
++				 PPE_PORT_BRIDGE_TXMAC_EN);
++	if (ret)
++		return ret;
++
++	for (i = 1; i < ppe_dev->num_ports; i++) {
++		/* Enable invalid VSI forwarding for all the physical ports
++		 * to CPU port0, in case no VSI is assigned to the physical
++		 * port.
++		 */
++		reg = PPE_L2_VP_PORT_TBL_ADDR + PPE_L2_VP_PORT_TBL_INC * i;
++		ret = regmap_bulk_read(ppe_dev->regmap, reg,
++				       port_cfg, ARRAY_SIZE(port_cfg));
++
++		if (ret)
++			return ret;
++
++		PPE_L2_PORT_SET_INVALID_VSI_FWD_EN(port_cfg, true);
++		PPE_L2_PORT_SET_DST_INFO(port_cfg, 0);
++
++		ret = regmap_bulk_write(ppe_dev->regmap, reg,
++					port_cfg, ARRAY_SIZE(port_cfg));
++		if (ret)
++			return ret;
++	}
++
++	for (i = 0; i < PPE_VSI_TBL_ENTRIES; i++) {
++		/* Set the VSI forward membership to include only CPU port0.
++		 * FDB learning and forwarding take place only after switchdev
++		 * is supported later to create the VSI and join the physical
++		 * ports to the VSI port member.
++		 */
++		reg = PPE_VSI_TBL_ADDR + PPE_VSI_TBL_INC * i;
++		ret = regmap_bulk_read(ppe_dev->regmap, reg,
++				       vsi_cfg, ARRAY_SIZE(vsi_cfg));
++		if (ret)
++			return ret;
++
++		PPE_VSI_SET_MEMBER_PORT_BITMAP(vsi_cfg, BIT(0));
++		PPE_VSI_SET_UUC_BITMAP(vsi_cfg, BIT(0));
++		PPE_VSI_SET_UMC_BITMAP(vsi_cfg, BIT(0));
++		PPE_VSI_SET_BC_BITMAP(vsi_cfg, BIT(0));
++		PPE_VSI_SET_NEW_ADDR_LRN_EN(vsi_cfg, true);
++		PPE_VSI_SET_NEW_ADDR_FWD_CMD(vsi_cfg, PPE_ACTION_FORWARD);
++		PPE_VSI_SET_STATION_MOVE_LRN_EN(vsi_cfg, true);
++		PPE_VSI_SET_STATION_MOVE_FWD_CMD(vsi_cfg, PPE_ACTION_FORWARD);
++
++		ret = regmap_bulk_write(ppe_dev->regmap, reg,
++					vsi_cfg, ARRAY_SIZE(vsi_cfg));
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+ {
+ 	int ret;
+@@ -1920,5 +1994,9 @@ int ppe_hw_config(struct ppe_device *ppe
+ 	if (ret)
+ 		return ret;
+ 
+-	return ppe_queues_to_ring_init(ppe_dev);
++	ret = ppe_queues_to_ring_init(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_bridge_init(ppe_dev);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -117,6 +117,14 @@
+ #define PPE_EG_SERVICE_SET_TX_CNT_EN(tbl_cfg, value)	\
+ 	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_EG_SERVICE_W1_TX_CNT_EN)
+ 
++/* PPE port bridge configuration */
++#define PPE_PORT_BRIDGE_CTRL_ADDR		0x60300
++#define PPE_PORT_BRIDGE_CTRL_ENTRIES		8
++#define PPE_PORT_BRIDGE_CTRL_INC		4
++#define PPE_PORT_BRIDGE_NEW_LRN_EN		BIT(0)
++#define PPE_PORT_BRIDGE_STA_MOVE_LRN_EN		BIT(3)
++#define PPE_PORT_BRIDGE_TXMAC_EN		BIT(16)
++
+ /* PPE port control configurations for the traffic to the multicast queues. */
+ #define PPE_MC_MTU_CTRL_TBL_ADDR		0x60a00
+ #define PPE_MC_MTU_CTRL_TBL_ENTRIES		8
+@@ -125,6 +133,36 @@
+ #define PPE_MC_MTU_CTRL_TBL_MTU_CMD		GENMASK(15, 14)
+ #define PPE_MC_MTU_CTRL_TBL_TX_CNT_EN		BIT(16)
+ 
++/* PPE VSI configurations */
++#define PPE_VSI_TBL_ADDR			0x63800
++#define PPE_VSI_TBL_ENTRIES			64
++#define PPE_VSI_TBL_INC				0x10
++#define PPE_VSI_W0_MEMBER_PORT_BITMAP		GENMASK(7, 0)
++#define PPE_VSI_W0_UUC_BITMAP			GENMASK(15, 8)
++#define PPE_VSI_W0_UMC_BITMAP			GENMASK(23, 16)
++#define PPE_VSI_W0_BC_BITMAP			GENMASK(31, 24)
++#define PPE_VSI_W1_NEW_ADDR_LRN_EN		BIT(0)
++#define PPE_VSI_W1_NEW_ADDR_FWD_CMD		GENMASK(2, 1)
++#define PPE_VSI_W1_STATION_MOVE_LRN_EN		BIT(3)
++#define PPE_VSI_W1_STATION_MOVE_FWD_CMD		GENMASK(5, 4)
++
++#define PPE_VSI_SET_MEMBER_PORT_BITMAP(tbl_cfg, value)		\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_VSI_W0_MEMBER_PORT_BITMAP)
++#define PPE_VSI_SET_UUC_BITMAP(tbl_cfg, value)			\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_VSI_W0_UUC_BITMAP)
++#define PPE_VSI_SET_UMC_BITMAP(tbl_cfg, value)			\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_VSI_W0_UMC_BITMAP)
++#define PPE_VSI_SET_BC_BITMAP(tbl_cfg, value)			\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_VSI_W0_BC_BITMAP)
++#define PPE_VSI_SET_NEW_ADDR_LRN_EN(tbl_cfg, value)		\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_VSI_W1_NEW_ADDR_LRN_EN)
++#define PPE_VSI_SET_NEW_ADDR_FWD_CMD(tbl_cfg, value)		\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_VSI_W1_NEW_ADDR_FWD_CMD)
++#define PPE_VSI_SET_STATION_MOVE_LRN_EN(tbl_cfg, value)		\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_VSI_W1_STATION_MOVE_LRN_EN)
++#define PPE_VSI_SET_STATION_MOVE_FWD_CMD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_VSI_W1_STATION_MOVE_FWD_CMD)
++
+ /* PPE port control configurations for the traffic to the unicast queues. */
+ #define PPE_MRU_MTU_CTRL_TBL_ADDR		0x65000
+ #define PPE_MRU_MTU_CTRL_TBL_ENTRIES		256
+@@ -163,6 +201,18 @@
+ #define PPE_IN_L2_SERVICE_TBL_RX_CNT_EN		BIT(30)
+ #define PPE_IN_L2_SERVICE_TBL_TX_CNT_EN		BIT(31)
+ 
++/* L2 Port configurations */
++#define PPE_L2_VP_PORT_TBL_ADDR			0x98000
++#define PPE_L2_VP_PORT_TBL_ENTRIES		256
++#define PPE_L2_VP_PORT_TBL_INC			0x10
++#define PPE_L2_VP_PORT_W0_INVALID_VSI_FWD_EN	BIT(0)
++#define PPE_L2_VP_PORT_W0_DST_INFO		GENMASK(9, 2)
++
++#define PPE_L2_PORT_SET_INVALID_VSI_FWD_EN(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_L2_VP_PORT_W0_INVALID_VSI_FWD_EN)
++#define PPE_L2_PORT_SET_DST_INFO(tbl_cfg, value)		\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_L2_VP_PORT_W0_DST_INFO)
++
+ /* PPE service code configuration for the tunnel packet. */
+ #define PPE_TL_SERVICE_TBL_ADDR			0x306000
+ #define PPE_TL_SERVICE_TBL_ENTRIES		256

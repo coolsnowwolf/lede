@@ -16,17 +16,13 @@ ifneq ($(CONFIG_GRUB_CONSOLE),)
   GRUB_TERMINALS += console
 endif
 
-GRUB_SERIAL:=$(call qstrip,$(CONFIG_GRUB_SERIAL))
+GRUB_SERIAL:=$(call qstrip,$(CONFIG_TARGET_SERIAL))
 
-ifneq ($(GRUB_SERIAL),)
-  GRUB_CONSOLE_CMDLINE += console=$(GRUB_SERIAL),$(CONFIG_GRUB_BAUDRATE)n8$(if $(CONFIG_GRUB_FLOWCONTROL),r,)
-  GRUB_SERIAL_CONFIG := serial --unit=0 --speed=$(CONFIG_GRUB_BAUDRATE) --word=8 --parity=no --stop=1 --rtscts=$(if $(CONFIG_GRUB_FLOWCONTROL),on,off)
-  GRUB_TERMINALS += serial
-endif
+GRUB_CONSOLE_CMDLINE += console=$(GRUB_SERIAL),$(CONFIG_GRUB_BAUDRATE)n8$(if $(CONFIG_GRUB_FLOWCONTROL),r,)
+GRUB_SERIAL_CONFIG := serial --unit=0 --speed=$(CONFIG_GRUB_BAUDRATE) --word=8 --parity=no --stop=1 --rtscts=$(if $(CONFIG_GRUB_FLOWCONTROL),on,off)
+GRUB_TERMINALS += serial
 
-ifneq ($(GRUB_TERMINALS),)
-  GRUB_TERMINAL_CONFIG := terminal_input $(GRUB_TERMINALS); terminal_output $(GRUB_TERMINALS)
-endif
+GRUB_TERMINAL_CONFIG := terminal_input $(GRUB_TERMINALS); terminal_output $(GRUB_TERMINALS)
 
 ROOTPART:=$(call qstrip,$(CONFIG_TARGET_ROOTFS_PARTNAME))
 ROOTPART:=$(if $(ROOTPART),$(ROOTPART),PARTUUID=$(IMG_PART_SIGNATURE)-02)

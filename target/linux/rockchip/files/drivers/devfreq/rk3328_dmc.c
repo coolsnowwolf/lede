@@ -817,7 +817,11 @@ err_free_opp:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
 static int rk3328_dmcfreq_remove(struct platform_device *pdev)
+#else
+static void rk3328_dmcfreq_remove(struct platform_device *pdev)
+#endif
 {
 	struct rk3328_dmcfreq *dmcfreq = dev_get_drvdata(&pdev->dev);
 
@@ -827,7 +831,9 @@ static int rk3328_dmcfreq_remove(struct platform_device *pdev)
 	devm_devfreq_unregister_opp_notifier(dmcfreq->dev, dmcfreq->devfreq);
 	dev_pm_opp_of_remove_table(dmcfreq->dev);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
 	return 0;
+#endif
 }
 
 static const struct of_device_id rk3328dmc_devfreq_of_match[] = {
@@ -838,7 +844,11 @@ MODULE_DEVICE_TABLE(of, rk3328dmc_devfreq_of_match);
 
 static struct platform_driver rk3328_dmcfreq_driver = {
 	.probe	= rk3328_dmcfreq_probe,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
 	.remove = rk3328_dmcfreq_remove,
+#else
+	.remove_new = rk3328_dmcfreq_remove,
+#endif
 	.driver = {
 		.name	= "rk3328-dmc-freq",
 		.pm	= &rk3328_dmcfreq_pm,

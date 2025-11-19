@@ -1,0 +1,59 @@
+From 382dd29fca98d79687d89454eddf5978a9dd2953 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 5 Apr 2024 17:34:09 +0100
+Subject: [PATCH] drm/vc4: Add option to call from crtc to encoder on vblank
+
+DSI0 is misbehaving and needs to action things on vblank to
+work around it.
+Add a new hook to call across during vblank.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 12 +++++++++++-
+ drivers/gpu/drm/vc4/vc4_drv.h  |  1 +
+ 2 files changed, 12 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -811,12 +811,15 @@ static void vc4_disable_vblank(struct dr
+ {
+ 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+ 	struct drm_device *dev = crtc->dev;
++	struct drm_encoder *encoder = vc4_get_crtc_encoder(crtc, crtc->state);
++	struct vc4_encoder *vc4_encoder = to_vc4_encoder(encoder);
+ 	int idx;
+ 
+ 	if (!drm_dev_enter(dev, &idx))
+ 		return;
+ 
+-	CRTC_WRITE(PV_INTEN, 0);
++	if (!vc4_encoder || vc4_encoder->type != VC4_ENCODER_TYPE_DSI0)
++		CRTC_WRITE(PV_INTEN, 0);
+ 
+ 	drm_dev_exit(idx);
+ }
+@@ -861,7 +864,14 @@ static void vc4_crtc_handle_page_flip(st
+ 
+ void vc4_crtc_handle_vblank(struct vc4_crtc *crtc)
+ {
++	struct drm_encoder *encoder = vc4_get_crtc_encoder(&crtc->base, crtc->base.state);
++	struct vc4_encoder *vc4_encoder = to_vc4_encoder(encoder);
++
+ 	crtc->t_vblank = ktime_get();
++
++	if (vc4_encoder && vc4_encoder->vblank)
++		vc4_encoder->vblank(encoder);
++
+ 	drm_crtc_handle_vblank(&crtc->base);
+ 	vc4_crtc_handle_page_flip(crtc);
+ }
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -512,6 +512,7 @@ struct vc4_encoder {
+ 
+ 	void (*post_crtc_disable)(struct drm_encoder *encoder, struct drm_atomic_state *state);
+ 	void (*post_crtc_powerdown)(struct drm_encoder *encoder, struct drm_atomic_state *state);
++	void (*vblank)(struct drm_encoder *encoder);
+ };
+ 
+ #define to_vc4_encoder(_encoder)				\

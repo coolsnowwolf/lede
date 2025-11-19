@@ -46,6 +46,57 @@ endef
 $(eval $(call KernelPackage,iio-kfifo-buf))
 
 
+define KernelPackage/industrialio-backend
+  TITLE:=IIO Backend support
+  KCONFIG=CONFIG_IIO_BACKEND
+  FILES:=$(LINUX_DIR)/drivers/iio/industrialio-backend.ko
+  AUTOLOAD:=$(call AutoProbe,industrialio-backend)
+  $(call AddDepends/iio)
+endef
+
+define KernelPackage/industrialio-backend/description
+  Framework to handle complex IIO aggregate devices. The typical
+  architecture that can make use of this framework is to have one
+  device as the frontend device which can be "linked" against one or
+  multiple backend devices. The framework then makes it easy to get
+  and control such backend devices.
+endef
+
+$(eval $(call KernelPackage,industrialio-backend))
+
+
+define KernelPackage/industrialio-hw-consumer
+  TITLE:=Provides a bonding way to an other device in hardware
+  KCONFIG:=CONFIG_IIO_BUFFER_HW_CONSUMER
+  FILES:=$(LINUX_DIR)/drivers/iio/buffer/industrialio-hw-consumer.ko
+  AUTOLOAD:=$(call AutoLoad,55,industrialio-hw-consumer)
+  $(call AddDepends/iio,+kmod-iio-kfifo-buf)
+endef
+
+define KernelPackage/industrialio-hw-consumer/description
+ Provides a way to bonding when an IIO device has a direct connection
+ to another device in hardware. In this case buffers for data transfers
+ are handled by hardware.
+endef
+
+$(eval $(call KernelPackage,industrialio-hw-consumer))
+
+
+define KernelPackage/industrialio-buffer-cb
+  TITLE:=Provides callback buffer used for push in-kernel interfaces
+  KCONFIG:=CONFIG_IIO_BUFFER_CB
+  FILES:=$(LINUX_DIR)/drivers/iio/buffer/industrialio-buffer-cb.ko
+  AUTOLOAD:=$(call AutoLoad,55,industrialio-triggered-buffer-cb)
+  $(call AddDepends/iio)
+endef
+
+define KernelPackage/industrialio-buffer-cb/description
+ Should be selected by any drivers that do in-kernel push usage.
+endef
+
+$(eval $(call KernelPackage,industrialio-buffer-cb))
+
+
 define KernelPackage/industrialio-triggered-buffer
   TITLE:=Provides helper functions for setting up triggered buffers.
   DEPENDS:=+kmod-iio-kfifo-buf
@@ -220,7 +271,7 @@ $(eval $(call KernelPackage,iio-bme680-spi))
 
 define KernelPackage/iio-bmp280
   TITLE:=BMP180/BMP280/BME280 pressure/temperatur sensor
-  DEPENDS:=+kmod-regmap-core
+  DEPENDS:=+kmod-regmap-core +LINUX_6_12:kmod-industrialio-triggered-buffer
   KCONFIG:=CONFIG_BMP280
   FILES:=$(LINUX_DIR)/drivers/iio/pressure/bmp280.ko
   $(call AddDepends/iio)
@@ -265,6 +316,24 @@ define KernelPackage/iio-bmp280-spi/description
 endef
 
 $(eval $(call KernelPackage,iio-bmp280-spi))
+
+
+define KernelPackage/iio-dps310
+  TITLE:=DPS310/DPS368/DPS422 pressure temperatur sensor
+  DEPENDS:=+kmod-regmap-i2c
+  KCONFIG:=CONFIG_DPS310
+  FILES:=$(LINUX_DIR)/drivers/iio/pressure/dps310.ko
+  AUTOLOAD:=$(call AutoProbe,dps310)
+  $(call AddDepends/iio)
+endef
+
+define KernelPackage/iio-dps310/description
+  Kernel module for Infineon DPS310/DPS368/DPS422 pressure and
+  temperature I2C sensor.
+endef
+
+$(eval $(call KernelPackage,iio-dps310))
+
 
 define KernelPackage/iio-htu21
   DEPENDS:=+kmod-i2c-core
@@ -383,7 +452,7 @@ $(eval $(call KernelPackage,iio-st_accel-spi))
 
 
 define KernelPackage/iio-lsm6dsx
-  DEPENDS:=+kmod-iio-kfifo-buf +kmod-regmap-core +LINUX_6_6:kmod-industrialio-triggered-buffer
+  DEPENDS:=+kmod-iio-kfifo-buf +kmod-regmap-core +LINUX_6_6||LINUX_6_12:kmod-industrialio-triggered-buffer
   TITLE:=ST LSM6DSx driver for IMU MEMS sensors
   KCONFIG:=CONFIG_IIO_ST_LSM6DSX
   FILES:=$(LINUX_DIR)/drivers/iio/imu/st_lsm6dsx/st_lsm6dsx.ko

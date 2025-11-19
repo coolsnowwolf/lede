@@ -1,0 +1,81 @@
+From d4f5efb9139cad34823f265053c57baf6af3c70c Mon Sep 17 00:00:00 2001
+From: Heiko Stuebner <heiko.stuebner@cherry.de>
+Date: Tue, 4 Mar 2025 13:44:16 +0100
+Subject: [PATCH] drm/rockchip: lvds: move pclk preparation in with clk_get
+
+The LVDS block needs a separate pclk only on some socs, so currently
+requests and prepares it in the soc-specific probe function, but common
+code is required to unprepare it in the error path or on driver remove.
+
+While this works because clk_unprepare just does nothing if clk is NULL,
+this mismatch of who is responsible still is not very nice.
+The clock-framework already has a helper for clk-get-and-prepare even
+with devres support in devm_clk_get_prepared().
+
+This will get and prepare the clock and also unprepare it on driver
+removal, saving the driver from having to handle it "manually".
+
+Reviewed-by: Quentin Schulz <quentin.schulz@cherry.de>
+Reviewed-by: Andy Yan <andy.yan@rock-chips.com>
+Signed-off-by: Heiko Stuebner <heiko.stuebner@cherry.de>
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20250304124418.111061-2-heiko@sntech.de
+---
+ drivers/gpu/drm/rockchip/rockchip_lvds.c | 19 +++----------------
+ 1 file changed, 3 insertions(+), 16 deletions(-)
+
+--- a/drivers/gpu/drm/rockchip/rockchip_lvds.c
++++ b/drivers/gpu/drm/rockchip/rockchip_lvds.c
+@@ -448,15 +448,13 @@ struct drm_encoder_helper_funcs px30_lvd
+ static int rk3288_lvds_probe(struct platform_device *pdev,
+ 			     struct rockchip_lvds *lvds)
+ {
+-	int ret;
+-
+ 	lvds->regs = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(lvds->regs))
+ 		return PTR_ERR(lvds->regs);
+ 
+-	lvds->pclk = devm_clk_get(lvds->dev, "pclk_lvds");
++	lvds->pclk = devm_clk_get_prepared(lvds->dev, "pclk_lvds");
+ 	if (IS_ERR(lvds->pclk)) {
+-		DRM_DEV_ERROR(lvds->dev, "could not get pclk_lvds\n");
++		DRM_DEV_ERROR(lvds->dev, "could not get or prepare pclk_lvds\n");
+ 		return PTR_ERR(lvds->pclk);
+ 	}
+ 
+@@ -480,12 +478,6 @@ static int rk3288_lvds_probe(struct plat
+ 		}
+ 	}
+ 
+-	ret = clk_prepare(lvds->pclk);
+-	if (ret < 0) {
+-		DRM_DEV_ERROR(lvds->dev, "failed to prepare pclk_lvds\n");
+-		return ret;
+-	}
+-
+ 	return 0;
+ }
+ 
+@@ -728,20 +720,15 @@ static int rockchip_lvds_probe(struct pl
+ 	dev_set_drvdata(dev, lvds);
+ 
+ 	ret = component_add(&pdev->dev, &rockchip_lvds_component_ops);
+-	if (ret < 0) {
++	if (ret < 0)
+ 		DRM_DEV_ERROR(dev, "failed to add component\n");
+-		clk_unprepare(lvds->pclk);
+-	}
+ 
+ 	return ret;
+ }
+ 
+ static void rockchip_lvds_remove(struct platform_device *pdev)
+ {
+-	struct rockchip_lvds *lvds = platform_get_drvdata(pdev);
+-
+ 	component_del(&pdev->dev, &rockchip_lvds_component_ops);
+-	clk_unprepare(lvds->pclk);
+ }
+ 
+ struct platform_driver rockchip_lvds_driver = {

@@ -68,6 +68,7 @@ ifneq ($(CONFIG_mips)$(CONFIG_mipsel),)
 		$(HOST_BUILD_DIR)/arch/mips/include/asm/asm.h \
 		$(HOST_BUILD_DIR)/arch/mips/include/asm/regdef.h \
 		$(HOST_BUILD_DIR)/arch/mips/include/asm/asm-eva.h \
+		$(HOST_BUILD_DIR)/arch/mips/include/asm/isa-rev.h \
 		$(BUILD_DIR_TOOLCHAIN)/linux-dev/include/asm/
   endef
 endif

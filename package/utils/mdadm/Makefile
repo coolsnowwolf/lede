@@ -8,17 +8,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mdadm
-PKG_VERSION:=4.2
-PKG_RELEASE:=2
+PKG_VERSION:=4.4
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/raid/mdadm
-PKG_HASH:=461c215670864bb74a4d1a3620684aa2b2f8296dffa06743f26dda5557acf01d
+PKG_HASH:=9b488f35ed153df99924b5fe41eed380e8512de8f18a118628cacdd681b1d573
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_CPE_ID:=cpe:/a:mdadm_project:mdadm
 
 PKG_BUILD_PARALLEL:=1
+PKG_BUILD_FLAGS:=gc-sections
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -43,7 +44,6 @@ define Package/mdadm/conffiles
 endef
 
 TARGET_CFLAGS += \
-	-ffunction-sections -fdata-sections \
 	-DHAVE_STDINT_H -DNO_COROSYNC -DNO_DLM -DUSE_PTHREADS \
 	-DCONFFILE='\"/var/etc/mdadm.conf\"' \
 	-DMAP_DIR='\"/var/run/mdadm\"' \
@@ -53,8 +53,6 @@ TARGET_CFLAGS += \
 	-D_LARGEFILE64_SOURCE
 
 TARGET_CXFLAGS = -DNO_LIBUDEV
-
-TARGET_LDFLAGS += -Wl,--gc-sections
 
 MAKE_FLAGS += \
 		CHECK_RUN_DIR=0 \

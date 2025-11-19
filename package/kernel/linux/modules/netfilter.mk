@@ -315,7 +315,7 @@ define KernelPackage/ipt-ipopt
   KCONFIG:=$(KCONFIG_IPT_IPOPT)
   FILES:=$(foreach mod,$(IPT_IPOPT-m),$(LINUX_DIR)/net/$(mod).ko)
   AUTOLOAD:=$(call AutoProbe,$(notdir $(IPT_IPOPT-m)))
-  $(call AddDepends/ipt)
+  $(call AddDepends/ipt,+kmod-nf-conntrack)
 endef
 
 define KernelPackage/ipt-ipopt/description
@@ -1218,6 +1218,7 @@ define KernelPackage/nft-netdev
   DEPENDS:=+kmod-nft-core
   KCONFIG:= \
 	CONFIG_NETFILTER_INGRESS=y \
+	CONFIG_NETFILTER_EGRESS=y \
 	CONFIG_NF_TABLES_NETDEV \
 	CONFIG_NF_DUP_NETDEV \
 	CONFIG_NFT_DUP_NETDEV \

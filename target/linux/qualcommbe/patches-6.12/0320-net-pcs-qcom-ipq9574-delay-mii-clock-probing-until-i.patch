@@ -1,0 +1,82 @@
+From 5b2f02ccca7b9496f0a8da6ade063b82810c75e7 Mon Sep 17 00:00:00 2001
+From: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+Date: Mon, 12 May 2025 09:27:17 -0500
+Subject: [PATCH] net: pcs: qcom-ipq9574: delay mii clock probing until
+ ipq_pcs_get()
+
+NSSCC generates the SYS and AHB clocks for the PCS block The PCS then
+feeds the uniphy clocks back to the NSSCC, which are in turn, used to
+feed the PCS MII clocks. This works fine in hardware:
+
+    GCC -> NSSCC -> PCS -> NSSCC -> PCS(MII)
+
+However, when the PCS MII clocks are probed within the .probe() of
+the PCS block, it creates a circular dependency. The MII clocks depend
+on the uniphy clocks, which depend on the PCS block being probed.
+Since we are in the process of probing the PCS block, this results in
+both blocks returning with -EPROBE_DEFER:
+
+    platform 39b00000.clock-controller: deferred probe pending: platform: supplier 7a00000.ethernet-pcs not ready
+    mdio_bus 90000.mdio-1:18: deferred probe pending: mdio_bus: supplier 7a20000.ethernet-pcs not ready
+    mdio_bus 90000.mdio-1:00: deferred probe pending: mdio_bus: supplier 90000.mdio-1:18 not ready
+    mdio_bus 90000.mdio-1:01: deferred probe pending: mdio_bus: supplier 90000.mdio-1:18 not ready
+    mdio_bus 90000.mdio-1:02: deferred probe pending: mdio_bus: supplier 90000.mdio-1:18 not ready
+    mdio_bus 90000.mdio-1:03: deferred probe pending: mdio_bus: supplier 90000.mdio-1:18 not ready
+    platform 7a00000.ethernet-pcs: deferred probe pending: ipq9574_pcs: Failed to get MII 0 RX clock
+    platform 7a20000.ethernet-pcs: deferred probe pending: ipq9574_pcs: Failed to get MII 0 RX clock
+    platform 3a000000.qcom-ppe: deferred probe pending: platform: supplier 39b00000.clock-controller not ready
+
+To break this dependency, let the PCS block probe, and only probe the
+PCS MII clocks from ipq_pcs_get().
+
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ drivers/net/pcs/pcs-qcom-ipq9574.c | 30 ++++++++++++++++--------------
+ 1 file changed, 16 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -580,20 +580,6 @@ static int ipq_pcs_create_miis(struct ip
+ 		qpcs_mii->pcs.neg_mode = true;
+ 		qpcs_mii->pcs.poll = true;
+ 
+-		qpcs_mii->rx_clk = devm_get_clk_from_child(dev, mii_np, "rx");
+-		if (IS_ERR(qpcs_mii->rx_clk)) {
+-			of_node_put(mii_np);
+-			return dev_err_probe(dev, PTR_ERR(qpcs_mii->rx_clk),
+-					     "Failed to get MII %d RX clock\n", index);
+-		}
+-
+-		qpcs_mii->tx_clk = devm_get_clk_from_child(dev, mii_np, "tx");
+-		if (IS_ERR(qpcs_mii->tx_clk)) {
+-			of_node_put(mii_np);
+-			return dev_err_probe(dev, PTR_ERR(qpcs_mii->tx_clk),
+-					     "Failed to get MII %d TX clock\n", index);
+-		}
+-
+ 		qpcs->qpcs_mii[index] = qpcs_mii;
+ 	}
+ 
+@@ -848,6 +834,22 @@ struct phylink_pcs *ipq_pcs_get(struct d
+ 		return ERR_PTR(-ENOENT);
+ 	}
+ 
++	qpcs_mii->rx_clk = devm_get_clk_from_child(&pdev->dev, np, "rx");
++	if (IS_ERR(qpcs_mii->rx_clk)) {
++		put_device(&pdev->dev);
++		return dev_err_ptr_probe(&pdev->dev, PTR_ERR(qpcs_mii->rx_clk),
++					 "Failed to get MII %d RX clock\n",
++					 index);
++	}
++
++	qpcs_mii->tx_clk = devm_get_clk_from_child(&pdev->dev, np, "tx");
++	if (IS_ERR(qpcs_mii->tx_clk)) {
++		put_device(&pdev->dev);
++		return dev_err_ptr_probe(&pdev->dev, PTR_ERR(qpcs_mii->tx_clk),
++					 "Failed to get MII %d TX clock\n",
++					 index);
++	}
++
+ 	return &qpcs_mii->pcs;
+ }
+ EXPORT_SYMBOL(ipq_pcs_get);

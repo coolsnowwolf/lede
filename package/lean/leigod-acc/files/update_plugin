@@ -1,0 +1,175 @@
+#!/usr/bin/lua
+
+local util   = require "luci.util"
+local string = require "string"
+local io     = require "io"
+local json   = require "luci.jsonc"
+local uci    = require "luci.model.uci".cursor()
+local client = require "luci.httpclient"
+local helper = require "luci.helper"
+
+-- get cloud version
+function get_cloud_version()
+  -- get cloud url
+  local url = uci:get("easyupdate", "main", "domain")
+  -- get request channel
+  local channel = uci:get("easyupdate", "main", "channel")
+  -- appid
+  local appid = uci:get("easyupdate", "main", "appid")
+  -- read brand and model from file
+  local brand, model = helper.get_board_info()
+  -- platfrom
+  local platform = 11
+  -- create http request options 
+  local options = {}
+  -- create http request method
+  options.method = "POST"
+  -- create http request headers
+  options.headers = {}
+  options.headers['appId'] = appid
+  options.headers['reqChannel'] = channel
+  options.headers['Content-Type'] = 'application/json'
+  -- create http request body
+  local body = {
+    -- 
+    ['appId'] = 'spRouterPlugin_fhem2shgq9s5',
+    ['brand'] = brand,
+    ['model'] = model,
+    ['platform'] = platform,
+  }
+  -- marshal to json
+  local buf = util.serialize_json(body)
+  options.body = buf
+  -- begin to query
+  local status, _, buffer, _ = client.request_raw(url, options)
+  -- check if query success
+  if not status then
+    io.write("status is nil \n")
+    return ""
+  end
+  -- check if request success
+  if status ~= 200 and status ~=206 then
+    io.write("status is not success, status: " .. status .. "\n")
+    return ""
+  end
+  -- begin to parse response
+  local info = json.parse(buffer)
+  -- get ret data
+  local data = info['retData']
+  -- check if data is nil
+  if data == nil then
+    io.write("response ret data is nil \n")
+    return ""
+  end
+  -- store url in config
+  local fw_url = data['url']
+  local version = data['versionName']
+  io.write("fw_url: " .. fw_url .. ", version: " .. version .. "\n")
+  -- get version success
+  return version, fw_url
+end
+
+-- get local version
+function get_local_version()
+  -- run command to get acc version
+  local cmd = 'opkg info acc'
+  local buf = util.exec(cmd)
+  -- check exec result
+  if buf == nil then
+    io.write("exec command failed \n")
+    return ""
+  end
+  io.write("buf: " .. buf .. "\n")
+  -- read line 
+  for line in string.gmatch(buf, "[^\r\n]+") do
+    io.write("read line: " .. line .. "\n")
+    line = string.gsub(line, " ", "")
+    local valueSl = string.gmatch(line, "[^:]+")
+    local key = valueSl()
+    local value = valueSl()
+    if key == "Version" then
+      io.write("get local version: " .. value .. "\n")
+      return value
+    end
+  end
+  io.write("local version cant found \n")
+end
+
+-- get file base name
+function get_file_base_name(filepath)
+  local name = string.gmatch(filepath, "([^/]+)$")
+  io.write("get file base name: " .. name .. "\n")
+  return name
+end
+
+-- download cloud version
+function download_cloud_app(url, name)
+  io.write("download app, url: " .. url .. ", name: " .. name .. "\n")
+  -- run download 
+  local cmd = 'curl -s -o /tmp/' .. name ..' -w %{http_code}' .. ' ' .. url
+  -- exec download 
+  local code = util.exec(cmd)
+  if code ~= "200" then
+    io.write("download cloud app failed, code: " .. code .. "\n")
+    return false
+  end
+  io.write("download cloud app success \n")
+  return code
+end
+
+-- install package name in tmp dir
+function install_package(name)
+  io.write("install package, package name: " .. name .. "\n")
+  local cmd = "opkg install " .. "/tmp/" .. name .. " " .. "--force-overwrite"
+  local code = util.exec(cmd)
+  io.write("install package finish, package name: " .. name .. "\n")
+  return code
+end
+
+-- remove pkg
+function remove_pkg(name)
+  io.write("remove package, package name: " .. name .. "\n")
+  local cmd = "rm -rf " .. "/tmp/" .. name
+  local code = util.exec(cmd)
+  io.write("remove package finish, package name: " .. name .. "\n")
+  return code
+end
+
+-- check network state
+io.write("check network state \n")
+while true do
+  local state_code = helper.get_network_state()
+  if state_code == 200 then
+    io.write("network available \n")
+    break
+  end
+  if state_code ~= nil then
+    io.write("network is not available, code: " .. state_code .. "\n")
+  end
+end
+io.write("network success")
+
+-- exec command
+local local_version = get_local_version()
+local cloud_version, url = get_cloud_version()
+-- check if need update
+if local_version >= cloud_version then
+  io.write("local version is new, dont need update, local ver: " .. local_version ..
+    ", cloud version:" .. cloud_version .. "\n")
+  return
+end
+
+-- need update
+io.write("local version is lower, need update, local version: " .. local_version ..
+  ", cloud version: " .. cloud_version .. "\n")
+
+-- download url
+local name = "acc.ipk"
+local result = download_cloud_app(url, name)
+if not result then
+  return
+end
+
+-- install package
+install_package(name)
+remove_pkg(name)

@@ -1,0 +1,64 @@
+From 5e1b44294aaba0be77b8a9aa7a56456315ae4337 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Mon, 23 Sep 2024 10:55:11 -0300
+Subject: [PATCH] drm/v3d: Reduce the alignment of the node allocation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 8dd6074d4719644b676adf9f07d71292bee28e3a upstream
+
+Currently, we are using an alignment of 128 kB to insert a node, which
+ends up wasting memory as we perform plenty of small BOs allocations
+(<= 4 kB). We require that allocations are aligned to 128Kb so for any
+allocation smaller than that, we are wasting the difference.
+
+This implies that we cannot effectively use the whole 4 GB address space
+available for the GPU in the RPi 4. Currently, we can allocate up to
+32000 BOs of 4 kB (~140 MB) and 3000 BOs of 400 kB (~1,3 GB). This can be
+quite limiting for applications that have a high memory requirement, such
+as vkoverhead [1].
+
+By reducing the page alignment to 4 kB, we can allocate up to 1000000 BOs
+of 4 kB (~4 GB) and 10000 BOs of 400 kB (~4 GB). Moreover, by performing
+benchmarks, we were able to attest that reducing the page alignment to
+4 kB can provide a general performance improvement in OpenGL
+applications (e.g. glmark2).
+
+Therefore, this patch reduces the alignment of the node allocation to 4
+kB, which will allow RPi users to explore the whole 4GB virtual
+address space provided by the hardware. Also, this patch allow users to
+fully run vkoverhead in the RPi 4/5, solving the issue reported in [1].
+
+[1] https://github.com/zmike/vkoverhead/issues/14
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+Reviewed-by: Iago Toral Quiroga <itoral@igalia.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20240923141348.2422499-8-mcanal@igalia.com
+---
+ drivers/gpu/drm/v3d/v3d_bo.c  | 2 +-
+ drivers/gpu/drm/v3d/v3d_drv.h | 2 --
+ 2 files changed, 1 insertion(+), 3 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_bo.c
++++ b/drivers/gpu/drm/v3d/v3d_bo.c
+@@ -123,7 +123,7 @@ v3d_bo_create_finish(struct drm_gem_obje
+ 	 */
+ 	ret = drm_mm_insert_node_generic(&v3d->mm, &bo->node,
+ 					 obj->size >> V3D_MMU_PAGE_SHIFT,
+-					 GMP_GRANULARITY >> V3D_MMU_PAGE_SHIFT, 0, 0);
++					 SZ_4K >> V3D_MMU_PAGE_SHIFT, 0, 0);
+ 	spin_unlock(&v3d->mm_lock);
+ 	if (ret)
+ 		return ret;
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -19,8 +19,6 @@ struct clk;
+ struct platform_device;
+ struct reset_control;
+ 
+-#define GMP_GRANULARITY (128 * 1024)
+-
+ #define V3D_MMU_PAGE_SHIFT 12
+ 
+ #define V3D_MAX_QUEUES (V3D_CPU + 1)

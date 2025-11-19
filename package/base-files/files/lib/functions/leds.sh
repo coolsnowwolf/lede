@@ -11,6 +11,36 @@ get_dt_led_path() {
 	echo "$ledpath"
 }
 
+get_dt_led_color_func() {
+	local enum
+	local func
+	local idx
+	local label
+
+	[ -e "$1/function" ] && func=$(cat "$1/function")
+	[ -e "$1/color" ] && idx=$((0x$(hexdump -n 4 -e '4/1 "%02x"' "$1/color")))
+	[ -e "$1/function-enumerator" ] && \
+		enum=$((0x$(hexdump -n 4 -e '4/1 "%02x"' "$1/function-enumerator")))
+
+	[ -z "$idx" ] && [ -z "$func" ] && return 2
+
+	if [ -n "$idx" ]; then
+		for color in "white" "red" "green" "blue" "amber" \
+			     "violet" "yellow" "ir" "multicolor" "rgb" \
+			     "purple" "orange" "pink" "cyan" "lime"
+		do
+			[ $idx -eq 0 ] && label="$color" && break
+			idx=$((idx-1))
+		done
+	fi
+
+	label="$label:$func"
+	[ -n "$enum" ] && label="$label-$enum"
+	echo "$label"
+
+	return 0
+}
+
 get_dt_led() {
 	local label
 	local ledpath=$(get_dt_led_path $1)
@@ -18,6 +48,7 @@ get_dt_led() {
 	[ -n "$ledpath" ] && \
 		label=$(cat "$ledpath/label" 2>/dev/null) || \
 		label=$(cat "$ledpath/chan-name" 2>/dev/null) || \
+		label=$(get_dt_led_color_func "$ledpath") || \
 		label=$(basename "$ledpath")
 
 	echo "$label"

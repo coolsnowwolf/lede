@@ -1,14 +1,16 @@
-
 /*
- * Copyright (c) 2012  Bjørn Mork <bjorn@mork.no>
- *
- * The probing code is heavily inspired by cdc_ether, which is:
- * Copyright (C) 2003-2005 by David Brownell
- * Copyright (C) 2006 by Ole Andre Vadla Ravnas (ActiveSync)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
+    Copyright (c) Bjørn Mork of author <bjorn@mork.no>
+
+    This program is free software; you can redistribute it and/ormodify it under the terms of the GNU General
+    Public licenseas published byFree Software Foundation; either version 2theof the License,(at your option)
+    any later version.O1
+    This program isdistributed in the hope that it will be useful,but WITHOUT ANY WARRANTY; without even the
+    implied warranty ofOr FITNESS FOR A PARTICULAR PURPOSE.MERCHANTABILITYSee theGNU General Public License
+    for more details.
+    You should have received a copy of the GNU General Public licensealong withthis program; if not, write to
+    the Free SoftwareFoundation, Inc.r51 Franklin Street, Fifth Floor，Boston，MA 02110-1301，USA.
+
+    Based on version modification, the author is Quectel <fae-support@quectel.com>
  */
 
 #include <linux/module.h>
@@ -63,8 +65,10 @@ static struct rmnet_nss_cb __read_mostly *nss_cb = NULL;
 #if defined(CONFIG_PINCTRL_IPQ807x) || defined(CONFIG_PINCTRL_IPQ5018)
 #ifdef CONFIG_RMNET_DATA
 #define CONFIG_QCA_NSS_DRV
-/* define at qsdk/qca/src/linux-4.4/net/rmnet_data/rmnet_data_main.c */
+/* define at qsdk/qca/src/linux-4.4/net/rmnet_data/rmnet_data_main.c */ //for spf11.x
+/* define at qsdk/qca/src/datarmnet/core/rmnet_config.c */ //for spf12.x
 /* set at qsdk/qca/src/data-kernel/drivers/rmnet-nss/rmnet_nss.c */
+/* need add DEPENDS:= kmod-rmnet-core in feeds/makefile */
 extern struct rmnet_nss_cb *rmnet_nss_callbacks __rcu __read_mostly;
 #endif
 #endif
@@ -92,7 +96,7 @@ extern struct rmnet_nss_cb *rmnet_nss_callbacks __rcu __read_mostly;
  * These devices may alternatively/additionally be configured using AT
  * commands on a serial interface
  */
-#define VERSION_NUMBER "V1.2.2"
+#define VERSION_NUMBER "V1.2.9"
 #define QUECTEL_WWAN_VERSION "Quectel_Linux&Android_QMI_WWAN_Driver_"VERSION_NUMBER
 static const char driver_name[] = "qmi_wwan_q";
 
@@ -116,6 +120,7 @@ static const u8 default_modem_addr[ETH_ALEN] = {0x02, 0x50, 0xf3};
     1 - QMAP (Aggregation protocol)
     X - QMAP (Multiplexing and Aggregation protocol)
 */
+//#define CONFIG_CLEAR_HALT
 #define QUECTEL_WWAN_QMAP 4 //MAX is 7
 
 #if defined(QUECTEL_WWAN_QMAP)
@@ -217,7 +222,7 @@ struct qmap_priv {
 	struct timespec64 agg_time;
 	struct hrtimer agg_hrtimer;
 	struct work_struct agg_wq;
-	
+
 #ifdef QUECTEL_BRIDGE_MODE
 	uint bridge_mode;
 	uint bridge_ipv4;
@@ -226,7 +231,7 @@ struct qmap_priv {
     unsigned char bridge_self_mac[ETH_ALEN];
 #endif
 #endif
-	uint use_qca_nss;	
+	uint use_qca_nss;
 };
 
 struct qmap_hdr {
@@ -320,10 +325,10 @@ static int bridge_arp_reply(struct net_device *net, struct sk_buff *skb, uint br
             reply->ip_summed = CHECKSUM_UNNECESSARY;
             reply->pkt_type = PACKET_HOST;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
-            netif_rx_ni(reply);
-#else
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,18,0 ))
             netif_rx(reply);
+#else
+            netif_rx_ni(reply);
 #endif
         }
         return 1;
@@ -358,14 +363,14 @@ static struct sk_buff *bridge_mode_tx_fixup(struct net_device *net, struct sk_bu
 				bridge_mac[0], bridge_mac[1], bridge_mac[2], bridge_mac[3], bridge_mac[4], bridge_mac[5]);
 		}
 	}
-	
+
 #ifdef CONFIG_BRIDGE_LAN
 	//bridge Lan IP 192.168.0.0
 	if (ehdr->h_proto == htons(ETH_P_IP) && (iph->daddr & 0xFFFF) == 0xA8C0)
 	{
 	    struct sk_buff *reply = skb_copy(skb, GFP_ATOMIC);
 	    ehdr = eth_hdr(reply);
-		
+
 		memcpy(ehdr->h_source, default_modem_addr, ETH_ALEN);
 		if(is_qmap_netdev(net))
 	    {
@@ -379,20 +384,16 @@ static struct sk_buff *bridge_mode_tx_fixup(struct net_device *net, struct sk_bu
 			sQmiWwanQmap *pQmapDev = (sQmiWwanQmap *)info->unused;
 	        memcpy(ehdr->h_dest, pQmapDev->bridge_self_mac, ETH_ALEN);
 	    }
-		
+
 		//pr_info("%s br rx pkt addr: %02x:%02x:%02x:%02x:%02x:%02x -> %02x:%02x:%02x:%02x:%02x:%02x\n", netdev_name(net),
         //    ehdr->h_source[0], ehdr->h_source[1], ehdr->h_source[2], ehdr->h_source[3], ehdr->h_source[4], ehdr->h_source[5],
         //    ehdr->h_dest[0], ehdr->h_dest[1], ehdr->h_dest[2], ehdr->h_dest[3], ehdr->h_dest[4], ehdr->h_dest[5]);
-		
+
 		skb_reset_mac_header(reply);
         __skb_pull(reply, skb_network_offset(reply));
         reply->ip_summed = CHECKSUM_UNNECESSARY;
         reply->pkt_type = PACKET_HOST;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
         netif_rx_ni(reply);
-#else
-        netif_rx(reply);
-#endif
 		return NULL;
 	}
 #endif
@@ -408,7 +409,7 @@ static void bridge_mode_rx_fixup(sQmiWwanQmap *pQmapDev, struct net_device *net,
 	uint bridge_mode = 0;
 	unsigned char *bridge_mac;
 
-	if (pQmapDev->qmap_mode > 1 || pQmapDev->use_rmnet_usb == 1) {
+	if (pQmapDev->qmap_mode > 1 || ((pQmapDev->use_rmnet_usb == 1) && !one_card_mode)) {
 		struct qmap_priv *priv = netdev_priv(net);
 		bridge_mode = priv->bridge_mode;
 		bridge_mac = priv->bridge_mac;
@@ -511,7 +512,7 @@ static ssize_t link_state_store(struct device *dev, struct device_attribute *att
 			}
 		}
 
-		if (usbnetdev->net->flags & IFF_UP) { 
+		if (usbnetdev->net->flags & IFF_UP) {
 			if (!pQmapDev->link_state) {
 				netif_carrier_off(usbnetdev->net);
 			}
@@ -684,7 +685,7 @@ static void qmap_wake_queue(sQmiWwanQmap *pQmapDev)
 
 	if (!pQmapDev || !pQmapDev->use_rmnet_usb)
 		return;
-		
+
 	for (i = 0; i < pQmapDev->qmap_mode; i++) {
 		struct net_device *qmap_net = pQmapDev->mpQmapNetDev[i];
 
@@ -694,7 +695,7 @@ static void qmap_wake_queue(sQmiWwanQmap *pQmapDev)
 	}
 }
 
-static struct sk_buff * add_qhdr(struct sk_buff *skb, u8 mux_id) {
+static struct sk_buff * add_qhdr(struct sk_buff *skb, u8 mux_id, int *hdr_data, int ip_offset) {
 	struct qmap_hdr *qhdr;
 	int pad = 0;
 
@@ -702,44 +703,55 @@ static struct sk_buff * add_qhdr(struct sk_buff *skb, u8 mux_id) {
 	if (pad) {
 		pad = 4 - pad;
 		if (skb_tailroom(skb) < pad) {
-			printk("skb_tailroom small!\n");
+			//printk("skb_tailroom small!\n");
 			pad = 0;
 		}
 		if (pad)
 			__skb_put(skb, pad);
 	}
-					
-	qhdr = (struct qmap_hdr *)skb_push(skb, sizeof(struct qmap_hdr));
+
+	if (hdr_data) {
+		qhdr = (struct qmap_hdr *)hdr_data;
+		qhdr->pkt_len = cpu_to_be16(skb->len - ip_offset);
+	}
+	else {
+		qhdr = (struct qmap_hdr *)skb_push(skb, sizeof(struct qmap_hdr));
+		qhdr->pkt_len = cpu_to_be16(skb->len - sizeof(struct qmap_hdr));
+	}
 	qhdr->cd_rsvd_pad = pad;
 	qhdr->mux_id = mux_id;
-	qhdr->pkt_len = cpu_to_be16(skb->len - sizeof(struct qmap_hdr));
 
 	return skb;
 }
 
-static struct sk_buff * add_qhdr_v5(struct sk_buff *skb, u8 mux_id) {
+static struct sk_buff * add_qhdr_v5(struct sk_buff *skb, u8 mux_id, int *hdr_data, int ip_offset) {
 	struct rmnet_map_header *map_header;
 	struct rmnet_map_v5_csum_header *ul_header;
-	u32 padding, map_datalen;
+	int pad = 0;
 
-	map_datalen = skb->len;
-	padding = map_datalen%4;
-	if (padding) {
-		padding = 4 - padding;
-		if (skb_tailroom(skb) < padding) {
-			printk("skb_tailroom small!\n");
-			padding = 0;
+	pad = (skb->len - ip_offset) %4;
+	if (pad) {
+		pad = 4 - pad;
+		if (skb_tailroom(skb) < pad) {
+			//printk("skb_tailroom small!\n");
+			pad = 0;
 		}
-		if (padding)
-			__skb_put(skb, padding);
+		if (pad)
+			__skb_put(skb, pad);
 	}
-					
-	map_header = (struct rmnet_map_header *)skb_push(skb, (sizeof(struct rmnet_map_header) + sizeof(struct rmnet_map_v5_csum_header)));
+
+	if (hdr_data) {
+		map_header = (struct rmnet_map_header *)hdr_data;
+		map_header->pkt_len = htons(skb->len - ip_offset);
+	}
+	else {
+		map_header = (struct rmnet_map_header *)skb_push(skb, (sizeof(struct rmnet_map_header) + sizeof(struct rmnet_map_v5_csum_header)));
+		map_header->pkt_len = htons(skb->len - (sizeof(struct rmnet_map_header) + sizeof(struct rmnet_map_v5_csum_header)));
+	}
 	map_header->cd_bit = 0;
 	map_header->next_hdr = 1;
-	map_header->pad_len = padding;
+	map_header->pad_len = pad;
 	map_header->mux_id = mux_id;
-	map_header->pkt_len = htons(map_datalen + padding);
 
 	ul_header = (struct rmnet_map_v5_csum_header *)(map_header + 1);
 	memset(ul_header, 0, sizeof(*ul_header));
@@ -762,48 +774,38 @@ static void rmnet_vnd_update_rx_stats(struct net_device *net,
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(dev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 6,0,0 ))
 	stats64->rx_packets += rx_packets;
 	stats64->rx_bytes += rx_bytes;
 #else
-	u64_stats_add(&stats64->rx_packets, rx_packets);
-	u64_stats_add(&stats64->rx_bytes, rx_bytes);
+    u64_stats_add(&stats64->rx_packets, rx_packets);
+    u64_stats_add(&stats64->rx_bytes, rx_bytes);
 #endif
 	u64_stats_update_end(&stats64->syncp);
 #else
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
 	net->stats.rx_packets += rx_packets;
 	net->stats.rx_bytes += rx_bytes;
-#else
-	u64_stats_add(&net->stats.rx_packets, rx_packets);
-	u64_stats_add(&net->stats.rx_bytes, rx_bytes);
-#endif
 #endif
 }
 
 static void rmnet_vnd_update_tx_stats(struct net_device *net,
-			unsigned tx_packets, unsigned tx_bytes) {	
+			unsigned tx_packets, unsigned tx_bytes) {
 #if defined(MHI_NETDEV_STATUS64)
 	struct qmap_priv *dev = netdev_priv(net);
 	struct pcpu_sw_netstats *stats64 = this_cpu_ptr(dev->stats64);
 
 	u64_stats_update_begin(&stats64->syncp);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 6,0,0 ))
 	stats64->tx_packets += tx_packets;
 	stats64->tx_bytes += tx_bytes;
 #else
-	u64_stats_add(&stats64->tx_packets, tx_packets);
-	u64_stats_add(&stats64->tx_bytes, tx_bytes);
+    u64_stats_add(&stats64->tx_packets, tx_packets);
+    u64_stats_add(&stats64->tx_bytes, tx_bytes);
 #endif
 	u64_stats_update_end(&stats64->syncp);
 #else
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
 	net->stats.tx_packets += tx_packets;
 	net->stats.tx_bytes += tx_bytes;
-#else
-	u64_stats_add(&net->stats.tx_packets, tx_packets);
-	u64_stats_add(&net->tx_bytes, tx_bytes);
-#endif
 #endif
 }
 
@@ -823,32 +825,43 @@ static struct rtnl_link_stats64 *_rmnet_vnd_get_stats64(struct net_device *net, 
 
 	for_each_possible_cpu(cpu) {
 		struct pcpu_sw_netstats *stats64;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 6,1,0 ))
 		u64 rx_packets, rx_bytes;
 		u64 tx_packets, tx_bytes;
+#else
+		u64_stats_t rx_packets, rx_bytes;
+		u64_stats_t tx_packets, tx_bytes;
+#endif
 
 		stats64 = per_cpu_ptr(dev->stats64, cpu);
 
 		do {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 6,6,0 ))
+			start = u64_stats_fetch_begin(&stats64->syncp);
+#else
 			start = u64_stats_fetch_begin_irq(&stats64->syncp);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+#endif
 			rx_packets = stats64->rx_packets;
 			rx_bytes = stats64->rx_bytes;
 			tx_packets = stats64->tx_packets;
 			tx_bytes = stats64->tx_bytes;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 6,6,0 ))
+		} while (u64_stats_fetch_retry(&stats64->syncp, start));
 #else
-			rx_packets = u64_stats_read(&stats64->rx_packets);
-			rx_bytes = u64_stats_read(&stats64->rx_bytes);
-			tx_packets = u64_stats_read(&stats64->tx_packets);
-			tx_bytes = u64_stats_read(&stats64->tx_bytes);
-#endif
 		} while (u64_stats_fetch_retry_irq(&stats64->syncp, start));
+#endif
 
-
+#if (LINUX_VERSION_CODE < KERNEL_VERSION( 6,1,0 ))
 		stats->rx_packets += rx_packets;
 		stats->rx_bytes += rx_bytes;
 		stats->tx_packets += tx_packets;
 		stats->tx_bytes += tx_bytes;
-
+#else
+        stats->rx_packets += u64_stats_read(&rx_packets);
+		stats->rx_bytes += u64_stats_read(&rx_bytes);
+		stats->tx_packets += u64_stats_read(&tx_packets);
+		stats->tx_bytes += u64_stats_read(&tx_bytes);
+#endif
 	}
 
 	return stats;
@@ -898,7 +911,7 @@ static void rmnet_usb_tx_skb_destructor(struct sk_buff *skb) {
 
 	if (pQmapDev && pQmapDev->use_rmnet_usb) {
 		int i;
-		
+
 		for (i = 0; i < pQmapDev->qmap_mode; i++) {
 			struct net_device *qmap_net = pQmapDev->mpQmapNetDev[i];
 
@@ -968,7 +981,7 @@ static void rmnet_usb_tx_agg_work(struct work_struct *work)
 		ktime_get_ts64(&priv->agg_time);
 	}
 	spin_unlock_irqrestore(&priv->agg_lock, flags);
-	
+
 	if (skb) {
 		int err;
 #if 0
@@ -999,7 +1012,7 @@ static long agg_bypass_time __read_mostly = 10000000L;
 module_param(agg_bypass_time, long, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(agg_bypass_time, "Skip agg when apart spaced more than this");
 
-static int rmnet_usb_tx_agg(struct sk_buff *skb, struct qmap_priv *priv) {
+static int rmnet_usb_tx_agg(struct sk_buff *skb, struct qmap_priv *priv, int *hdr_data, int hdr_len, int ip_offset) {
 	struct qmi_wwan_state *info = (void *)&priv->dev->data;
 	sQmiWwanQmap *pQmapDev = (sQmiWwanQmap *)info->unused;
 	struct tx_agg_ctx *ctx = &pQmapDev->tx_ctx;
@@ -1022,15 +1035,22 @@ static int rmnet_usb_tx_agg(struct sk_buff *skb, struct qmap_priv *priv) {
 	rmnet_vnd_update_tx_stats(pNet, 1, skb->len);
 
 	if (ctx->ul_data_aggregation_max_datagrams == 1) {
-		skb->protocol = htons(ETH_P_MAP);
-		skb->dev = priv->real_dev;
+		agg_skb = alloc_skb(skb->len + hdr_len, GFP_ATOMIC);
+		if (agg_skb) {
+			memcpy(skb_put(agg_skb, hdr_len), hdr_data, hdr_len);
+			memcpy(skb_put(agg_skb, skb->len - ip_offset), skb->data + ip_offset, skb->len - ip_offset);
+			agg_skb->protocol = htons(ETH_P_MAP);
+			agg_skb->dev = priv->real_dev;
 #if 0
-		if (!skb->destructor)
-			skb->destructor = rmnet_usb_tx_skb_destructor;
+			if (!agg_skb->destructor)
+				agg_skb->destructor = rmnet_usb_tx_skb_destructor;
 #endif
-		err = dev_queue_xmit(skb);
-		if (err != NET_XMIT_SUCCESS)		
+		err = dev_queue_xmit(agg_skb);
+		if (err != NET_XMIT_SUCCESS)
 			pNet->stats.tx_errors++;
+		}
+		dev_kfree_skb_any(skb);
+		skb = NULL;
 		return NET_XMIT_SUCCESS;
 	}
 
@@ -1042,8 +1062,9 @@ new_packet:
 	diff = timespec64_sub(now, priv->agg_time);
 
 	if (priv->agg_skb) {
-		if ((priv->agg_skb->len + skb->len) < ctx->ul_data_aggregation_max_size) {
-			memcpy(skb_put(priv->agg_skb, skb->len), skb->data, skb->len);
+		if ((priv->agg_skb->len + skb->len + hdr_len) < ctx->ul_data_aggregation_max_size) {
+			memcpy(skb_put(priv->agg_skb, hdr_len), hdr_data, hdr_len);
+			memcpy(skb_put(priv->agg_skb, skb->len - ip_offset), skb->data + ip_offset, skb->len - ip_offset);
 			priv->agg_count++;
 
 			if (diff.tv_sec > 0 || diff.tv_nsec > agg_time_limit) {
@@ -1053,14 +1074,14 @@ new_packet:
 				ready2send = 1;
 			}
 			else if (xmit_more == 0) {
-				struct rmnet_map_header *map_header = (struct rmnet_map_header *)skb->data;
+				struct rmnet_map_header *map_header = (struct rmnet_map_header *)hdr_data;
 				size_t offset = sizeof(struct rmnet_map_header);
 				if (map_header->next_hdr)
 					offset += sizeof(struct rmnet_map_v5_csum_header);
 
 				ready2send = rmnet_usb_tx_agg_skip(skb, offset);
 			}
-			
+
 			dev_kfree_skb_any(skb);
 			skb = NULL;
 		}
@@ -1079,7 +1100,7 @@ new_packet:
 			ready2send = 1;
 		}
 		else if (xmit_more == 0) {
-			struct rmnet_map_header *map_header = (struct rmnet_map_header *)skb->data;
+			struct rmnet_map_header *map_header = (struct rmnet_map_header *)hdr_data;
 			size_t offset = sizeof(struct rmnet_map_header);
 			if (map_header->next_hdr)
 				offset += sizeof(struct rmnet_map_v5_csum_header);
@@ -1091,7 +1112,8 @@ new_packet:
 			priv->agg_skb = alloc_skb(ctx->ul_data_aggregation_max_size, GFP_ATOMIC);
 			if (priv->agg_skb) {
 				skb_reset_network_header(priv->agg_skb); //protocol da1a is buggy, dev wwan0
-				memcpy(skb_put(priv->agg_skb, skb->len), skb->data, skb->len);
+				memcpy(skb_put(priv->agg_skb, hdr_len), hdr_data, hdr_len);
+				memcpy(skb_put(priv->agg_skb, skb->len - ip_offset), skb->data + ip_offset, skb->len - ip_offset);
 				priv->agg_count++;
 				dev_kfree_skb_any(skb);
 				skb = NULL;
@@ -1102,7 +1124,12 @@ new_packet:
 		}
 
 		if (ready2send) {
-			agg_skb = skb;
+			agg_skb = alloc_skb(skb->len + hdr_len, GFP_ATOMIC);
+			if (agg_skb) {
+				memcpy(skb_put(agg_skb, hdr_len), hdr_data, hdr_len);
+				memcpy(skb_put(agg_skb, skb->len - ip_offset), skb->data + ip_offset, skb->len - ip_offset);
+			}
+			dev_kfree_skb_any(skb);
 			skb = NULL;
 		}
 	}
@@ -1143,6 +1170,9 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 {
 	int err;
 	struct qmap_priv *priv = netdev_priv(pNet);
+	int qmap_hdr[2];
+	int hdr_len = 0;
+	int ip_offset = 0;
 
 	if (netif_queue_stopped(priv->real_dev)) {
 		netif_stop_queue(pNet);
@@ -1160,18 +1190,24 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 		}
 #endif
 
+#if 1
+		ip_offset = ETH_HLEN;
+#else
 		if (skb_pull(skb, ETH_HLEN) == NULL) {
 			dev_kfree_skb_any (skb);
 			return NETDEV_TX_OK;
 		}
+#endif
 	}
 	//printk("%s 2 skb=%p, len=%d, protocol=%x, hdr_len=%d\n", __func__, skb, skb->len, skb->protocol, skb->hdr_len);
 
 	if (priv->qmap_version == 5) {
-		add_qhdr(skb, priv->mux_id);
+		add_qhdr(skb, priv->mux_id, qmap_hdr, ip_offset);
+		hdr_len = 4;
 	}
 	else if (priv->qmap_version == 9) {
-		add_qhdr_v5(skb, priv->mux_id);
+		add_qhdr_v5(skb, priv->mux_id, qmap_hdr, ip_offset);
+		hdr_len = 8;
 	}
 	else {
 		dev_kfree_skb_any (skb);
@@ -1179,7 +1215,7 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 	}
 	//printk("%s skb=%p, len=%d, protocol=%x, hdr_len=%d\n", __func__, skb, skb->len, skb->protocol, skb->hdr_len);
 
-	err = rmnet_usb_tx_agg(skb, priv);
+	err = rmnet_usb_tx_agg(skb, priv, qmap_hdr, hdr_len, ip_offset);
 
 	return err;
 }
@@ -1247,7 +1283,7 @@ static rx_handler_result_t qca_nss_rx_handler(struct sk_buff **pskb)
 
 	if (!skb)
 		return RX_HANDLER_CONSUMED;
-	
+
 	//printk("%s skb=%p, len=%d, protocol=%x, hdr_len=%d\n", __func__, skb, skb->len, skb->protocol, skb->hdr_len);
 
 	if (skb->pkt_type == PACKET_LOOPBACK)
@@ -1296,10 +1332,10 @@ static int qmap_register_device(sQmiWwanQmap * pDev, u8 offset_id)
     priv->dev = pDev->mpNetDev;
     priv->qmap_version = pDev->qmap_version;
     priv->mux_id = QUECTEL_QMAP_MUX_ID + offset_id;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0)
-    memcpy (qmap_net->dev_addr, real_dev->dev_addr, ETH_ALEN);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,17,0)
+    __dev_addr_set(qmap_net, real_dev->dev_addr, ETH_ALEN);
 #else
-    eth_hw_addr_set (real_dev, qmap_net->dev_addr);
+    memcpy (qmap_net->dev_addr, real_dev->dev_addr, ETH_ALEN);
 #endif
 
 #ifdef QUECTEL_BRIDGE_MODE
@@ -1315,7 +1351,9 @@ static int qmap_register_device(sQmiWwanQmap * pDev, u8 offset_id)
 	if (nss_cb && use_qca_nss) {
 		rmnet_usb_rawip_setup(qmap_net);
 	}
-
+#ifdef CONFIG_PINCTRL_IPQ9574
+	rmnet_usb_rawip_setup(qmap_net);
+#endif
 	priv->agg_skb = NULL;
 	priv->agg_count = 0;
 	hrtimer_init(&priv->agg_hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -1351,7 +1389,7 @@ static int qmap_register_device(sQmiWwanQmap * pDev, u8 offset_id)
 			netdev_info(qmap_net, "NSS context created\n");
 			rtnl_lock();
 			netdev_rx_handler_register(qmap_net, qca_nss_rx_handler, NULL);
-			rtnl_unlock();			
+			rtnl_unlock();
 		}
 	}
 
@@ -1380,7 +1418,7 @@ static void qmap_unregister_device(sQmiWwanQmap * pDev, u8 offset_id) {
 		pDev->mpQmapNetDev[offset_id] = NULL;
 		netif_carrier_off( qmap_net );
 		netif_stop_queue( qmap_net );
-		
+
 		hrtimer_cancel(&priv->agg_hrtimer);
 		cancel_work_sync(&priv->agg_wq);
 		spin_lock_irqsave(&priv->agg_lock, flags);
@@ -1422,6 +1460,8 @@ typedef struct {
 } BRMAC_SETTING;
 #endif
 
+static int qma_setting_store(struct device *dev, QMAP_SETTING *qmap_settings, size_t size);
+
 int qma_setting_store(struct device *dev, QMAP_SETTING *qmap_settings, size_t size) {
 	struct net_device *netdev = to_net_dev(dev);
 	struct usbnet * usbnetdev = netdev_priv( netdev );
@@ -1461,7 +1501,11 @@ static int qmap_ndo_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 #ifdef CONFIG_BRIDGE_LAN
  	BRMAC_SETTING brmac_settings = {0};
 #endif
- 
+#ifdef CONFIG_CLEAR_HALT
+  uint clear_halt = 0;
+#endif
+
+
 	switch (cmd) {
 	case 0x89F1: //SIOCDEVPRIVATE
 		rc = copy_from_user(&link_state, ifr->ifr_ifru.ifru_data, sizeof(link_state));
@@ -1494,7 +1538,7 @@ static int qmap_ndo_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			rc = copy_to_user(ifr->ifr_ifru.ifru_data, &pQmapDev->rmnet_info, sizeof(pQmapDev->rmnet_info));
 		}
 	break;
-	
+
 #ifdef CONFIG_BRIDGE_LAN
     case 0x89F4: //SIOCDEVPRIVATE
         rc = copy_from_user(&brmac_settings, ifr->ifr_ifru.ifru_data, sizeof(brmac_settings));
@@ -1515,6 +1559,16 @@ static int qmap_ndo_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		    rc = -1;
 		}
 	break;
+#endif
+#ifdef CONFIG_CLEAR_HALT
+    case 0x89F5: //SIOCDEVPRIVATE
+        rc = copy_from_user(&clear_halt, ifr->ifr_ifru.ifru_data, sizeof(clear_halt));
+        if (rc == 0 && clear_halt == 1) {
+            usb_clear_halt(usbnetdev->udev,usbnetdev->in);
+            usb_clear_halt(usbnetdev->udev,usbnetdev->out);
+            pr_info("usb_clear_halt EPIN EPOUT\n");
+        }
+    break;
 #endif
 
 	default:
@@ -1658,9 +1712,9 @@ static struct sk_buff *qmap_qmi_wwan_tx_fixup(struct usbnet *dev, struct sk_buff
 
 			if (skb) {
 				if(pQmapDev->qmap_version == 5)
-					add_qhdr(skb, QUECTEL_QMAP_MUX_ID);
+					add_qhdr(skb, QUECTEL_QMAP_MUX_ID, NULL, 0);
 				else
-					add_qhdr_v5(skb, QUECTEL_QMAP_MUX_ID);                
+					add_qhdr_v5(skb, QUECTEL_QMAP_MUX_ID, NULL, 0);
 			}
 			else {
 				return NULL;
@@ -1691,7 +1745,7 @@ static void qmap_packet_decode(sQmiWwanQmap *pQmapDev,
 	while (skb_in->len > sizeof(struct qmap_hdr)) {
 		struct rmnet_map_header *map_header = (struct rmnet_map_header *)skb_in->data;
 		struct rmnet_map_v5_csum_header *ul_header = NULL;
-		size_t hdr_size = sizeof(struct rmnet_map_header);	
+		size_t hdr_size = sizeof(struct rmnet_map_header);
 		struct net_device *qmap_net;
 		int pkt_len = ntohs(map_header->pkt_len);
 		int skb_len;
@@ -1703,7 +1757,7 @@ static void qmap_packet_decode(sQmiWwanQmap *pQmapDev,
 			ul_header = (struct rmnet_map_v5_csum_header *)(map_header + 1);
 			hdr_size += sizeof(struct rmnet_map_v5_csum_header);
 		}
-		
+
 		skb_len = pkt_len - (map_header->pad_len&0x3F);
 		skb_len -= dl_minimum_padding;
 
@@ -1718,7 +1772,7 @@ static void qmap_packet_decode(sQmiWwanQmap *pQmapDev,
 			dev_info(dev, "drop qmap unknow mux_id %x\n", map_header->mux_id);
 			goto skip_pkt;
 		}
-    
+
 		if (skb_len > qmap_net->mtu) {
 			dev_info(dev, "drop skb_len=%x larger than mtu=%d\n", skb_len, qmap_net->mtu);
 			goto error_pkt;
@@ -1761,7 +1815,7 @@ static void qmap_packet_decode(sQmiWwanQmap *pQmapDev,
 				dev_info(dev, "unknow skb->protocol %02x\n", skb_in->data[hdr_size]);
 				goto error_pkt;
 		}
-		
+
 		qmap_skb = netdev_alloc_skb(qmap_net, skb_len);
 		if (qmap_skb) {
 			skb_put(qmap_skb, skb_len);
@@ -1816,7 +1870,7 @@ static int qmap_qmi_wwan_rx_fixup(struct usbnet *dev, struct sk_buff *skb_in)
 	sQmiWwanQmap *pQmapDev = (sQmiWwanQmap *)info->unused;
 	struct sk_buff *qmap_skb;
 	struct sk_buff_head skb_chain;
-		
+
 	if (pQmapDev->qmap_mode == 0)
 		return qmi_wwan_rx_fixup(dev, skb_in);
 
@@ -1863,7 +1917,7 @@ static void (*_usbnet_get_stats64)(struct net_device *net, struct rtnl_link_stat
 static void qmi_wwan_get_stats64(struct net_device *net, struct rtnl_link_stats64 *stats) {
 	if (_usbnet_get_stats64) ////c8b5d129ee293bcf972e7279ac996bb8a138505c
 		return _usbnet_get_stats64(net, stats);
-	
+
 	netdev_stats_to_stats64(stats, &net->stats);
 }
 #else
@@ -1872,7 +1926,7 @@ static struct rtnl_link_stats64 * (*_usbnet_get_stats64)(struct net_device *net,
 static struct rtnl_link_stats64 * qmi_wwan_get_stats64(struct net_device *net, struct rtnl_link_stats64 *stats) {
 	if (_usbnet_get_stats64)
 		return _usbnet_get_stats64(net, stats);
-	
+
 	netdev_stats_to_stats64(stats, &net->stats);
 	return stats;
 }
@@ -1897,7 +1951,7 @@ static int qmi_wwan_open (struct net_device *net) {
 }
 
 static netdev_tx_t qmi_wwan_start_xmit (struct sk_buff *skb,
-				     struct net_device *net) 
+				     struct net_device *net)
 {
 	struct usbnet * usbnetdev = netdev_priv( net );
 	struct qmi_wwan_state *info = (void *)&usbnetdev->data;
@@ -1908,7 +1962,7 @@ static netdev_tx_t qmi_wwan_start_xmit (struct sk_buff *skb,
 
 	if (netif_queue_stopped(net) && pQmapDev && pQmapDev->use_rmnet_usb) {
 		int i;
-		
+
 		for (i = 0; i < pQmapDev->qmap_mode; i++) {
 			struct net_device *qmap_net = pQmapDev->mpQmapNetDev[i];
 			if (qmap_net) {
@@ -1950,8 +2004,14 @@ static void ql_net_get_drvinfo(struct net_device *net, struct ethtool_drvinfo *i
 {
 	/* Inherit standard device info */
 	usbnet_get_drvinfo(net, info);
+	/* strlcpy() is deprecated in kernel 6.8.0+, using strscpy instead */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,8,0))
 	strlcpy(info->driver, driver_name, sizeof(info->driver));
 	strlcpy(info->version, VERSION_NUMBER, sizeof(info->version));
+#else
+	strscpy(info->driver, driver_name, sizeof(info->driver));
+	strscpy(info->version, VERSION_NUMBER, sizeof(info->version));
+#endif
 }
 
 static struct ethtool_ops ql_net_ethtool_ops;
@@ -2016,7 +2076,7 @@ static int qmi_wwan_register_subdriver(struct usbnet *dev)
 	atomic_set(&info->pmcount, 0);
 
 	/* register subdriver */
-#if (LINUX_VERSION_CODE > KERNEL_VERSION( 5,12,0 )) //cac6fb015f719104e60b1c68c15ca5b734f57b9c
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION( 5,14,0 )) //cac6fb015f719104e60b1c68c15ca5b734f57b9c
 	subdriver = usb_cdc_wdm_register(info->control, &dev->status->desc,
 					 4096, WWAN_PORT_QMI, &qmi_wwan_cdc_wdm_manage_power);
 #else
@@ -2067,17 +2127,17 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 
 	/* make MAC addr easily distinguishable from an IP header */
 	if (possibly_iphdr(dev->net->dev_addr)) {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,17,0)
+		u8 temp_addr[ETH_ALEN];
+		memcpy(temp_addr, dev->net->dev_addr, ETH_ALEN);
+		temp_addr[0] |= 0x02;	/* set local assignment bit */
+		temp_addr[0] &= 0xbf;	/* clear "IP" bit */
+		__dev_addr_set(dev->net, temp_addr, ETH_ALEN);
+#else
 		dev->net->dev_addr[0] |= 0x02;	/* set local assignment bit */
 		dev->net->dev_addr[0] &= 0xbf;	/* clear "IP" bit */
-#else
-		u8 addr = dev->net->dev_addr[0];
-
-		addr |= 0x02;	/* set local assignment bit */
-		addr &= 0xbf;	/* clear "IP" bit */
-		dev_addr_mod(dev->net, 0, &addr, 1);
 #endif
-	}
+		}
 	if (!_usbnet_get_stats64)
 		_usbnet_get_stats64 = dev->net->netdev_ops->ndo_get_stats64;
 	dev->net->netdev_ops = &qmi_wwan_netdev_ops;
@@ -2110,6 +2170,9 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 			NULL, 0, 100);
 	}
 
+	usb_clear_halt(dev->udev,dev->in);
+	usb_clear_halt(dev->udev,dev->out);
+
 	//to advoid module report mtu 1460, but rx 1500 bytes IP packets, and cause the customer's system crash
 	//next setting can make usbnet.c:usbnet_change_mtu() do not modify rx_urb_size according to hard mtu
 	dev->rx_urb_size = ETH_DATA_LEN + ETH_HLEN + 6;
@@ -2141,12 +2204,13 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 			int qmap_version = (dev->driver_info->data>>8)&0xFF;
 			int qmap_size = (dev->driver_info->data)&0xFF;
 			int idProduct = le16_to_cpu(dev->udev->descriptor.idProduct);
-			int lte_a = (idProduct == 0x0306 || idProduct == 0x030B || idProduct == 0x0512 || idProduct == 0x0620 || idProduct == 0x0800 || idProduct == 0x0801);
+			int lte_a = (idProduct == 0x0306 || idProduct == 0x030B || idProduct == 0x0512 || idProduct == 0x0620 ||
+							idProduct == 0x0800 || idProduct == 0x0801 || idProduct == 0x0122 || idProduct == 0x0316);
 
 			if (qmap_size > 4096 || dev->udev->speed >= USB_SPEED_SUPER) { //if meet this requirements, must be LTE-A or 5G
 				lte_a = 1;
 			}
-			
+
 			pQmapDev->qmap_mode = qmap_mode;
 			if (lte_a && pQmapDev->qmap_mode == 0) {
 				pQmapDev->qmap_mode = 1; //force use QMAP
@@ -2163,17 +2227,19 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 
 				if (pQmapDev->qmap_mode > 1)
 					pQmapDev->use_rmnet_usb = 1;
-				else if (idProduct == 0x0800 || idProduct == 0x0801)
+				else if (idProduct == 0x0800 || idProduct == 0x0801 || idProduct == 0x0122)
 					pQmapDev->use_rmnet_usb = 1; //benefit for ul data agg
 #ifdef QMI_NETDEV_ONE_CARD_MODE
 				if(pQmapDev->use_rmnet_usb == 1 && pQmapDev->qmap_mode == 1)
 					one_card_mode = 1;
 				pQmapDev->rmnet_info.mux_id[0] = QUECTEL_QMAP_MUX_ID;
-#endif	
+#endif
 				pQmapDev->rmnet_info.size = sizeof(RMNET_INFO);
 				pQmapDev->rmnet_info.rx_urb_size = pQmapDev->qmap_size;
 				pQmapDev->rmnet_info.ep_type = 2; //DATA_EP_TYPE_HSUSB
-				pQmapDev->rmnet_info.iface_id = 4;
+				pQmapDev->rmnet_info.iface_id = 4;//Interface ID
+				if(idProduct == 0x0316)
+					pQmapDev->rmnet_info.iface_id = 3;// SDX35 Interface ID
 				pQmapDev->rmnet_info.qmap_mode = pQmapDev->qmap_mode;
 				pQmapDev->rmnet_info.qmap_version = pQmapDev->qmap_version;
 				pQmapDev->rmnet_info.dl_minimum_padding = 0;
@@ -2183,7 +2249,7 @@ static int qmi_wwan_bind(struct usbnet *dev, struct usb_interface *intf)
 				pQmapDev->tx_ctx.ul_data_aggregation_max_size = 1500;
 #endif
 
-				if (pQmapDev->use_rmnet_usb && !one_card_mode) {					
+				if (pQmapDev->use_rmnet_usb && !one_card_mode) {
 					pQmapDev->driver_info = rmnet_usb_info;
 					pQmapDev->driver_info.data = dev->driver_info->data;
 					dev->driver_info = &pQmapDev->driver_info;
@@ -2351,7 +2417,7 @@ static int rmnet_usb_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 
 		return 1;
 	}
-	
+
 	return 0;
 }
 
@@ -2412,7 +2478,7 @@ static const struct driver_info	qmi_wwan_info = {
 };
 
 #define qmi_wwan_raw_ip_info \
-	.description	= "WWAN/QMI device", \
+	.description	= "WWAN/QMI Raw IP device", \
 	.flags		= FLAG_WWAN | FLAG_RX_ASSEMBLE | FLAG_NOARP | FLAG_SEND_ZLP, \
 	.bind		= qmi_wwan_bind, \
 	.unbind		= qmi_wwan_unbind, \
@@ -2460,6 +2526,7 @@ static const struct usb_device_id products[] = {
 	{ QMI_FIXED_INTF(0x05C6, 0x9215, 4) },  /* Quectel EC20 (MDM9215) */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0125, 4, mdm9x07) },  /* Quectel EC20 (MDM9X07)/EC25/EG25 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0121, 4, mdm9x07) },  /* Quectel EC21 */
+	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x030E, 4, mdm9x07) },  /* Quectel EM05G */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0191, 4, mdm9x07) },  /* Quectel EG91 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0195, 4, mdm9x07) },  /* Quectel EG95 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0700, 3, mdm9x07) },  /* Quectel BG95 (at+qcfgext="usbnet","rmnet") */
@@ -2469,8 +2536,10 @@ static const struct usb_device_id products[] = {
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0296, 4, mdm9x07) },  /* Quectel BG96 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0435, 4, mdm9x07) },  /* Quectel AG35 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0620, 4, mdm9x40) },  /* Quectel EG20 */
+	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0316, 3, mdm9x40) },  /* Quectel RG255 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0800, 4, sdx55) },  /* Quectel RG500 */
 	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0801, 4, sdx55) },  /* Quectel RG520 */
+	{ QMI_FIXED_RAWIP_INTF(0x2C7C, 0x0122, 4, sdx55) },  /* Quectel RG650 */
 	{ }					/* END */
 };
 MODULE_DEVICE_TABLE(usb, products);
@@ -2577,11 +2646,11 @@ static void qmap_qmi_wwan_disconnect(struct usb_interface *intf)
 	}
 
 	tasklet_kill(&pQmapDev->txq);
-	
+
 	usbnet_disconnect(intf);
 	/* struct usbnet *dev had free by usbnet_disconnect()->free_netdev().
 	    so we should access info. */
-	//info->unused = 0;	
+	//info->unused = 0;
 	kfree(pQmapDev);
 }
 #endif

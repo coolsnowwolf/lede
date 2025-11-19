@@ -254,7 +254,7 @@ static int __rtl8366_smi_read_reg(struct rtl8366_smi *smi, u32 addr, u32 *data)
 #define MDC_MDIO_WRITE_OP		0x0003
 #define MDC_REALTEK_PHY_ADDR		0x0
 
-int __rtl8366_mdio_read_reg(struct rtl8366_smi *smi, u32 addr, u32 *data)
+static int __rtl8366_mdio_read_reg(struct rtl8366_smi *smi, u32 addr, u32 *data)
 {
 	u32 phy_id = smi->phy_id;
 	struct mii_bus *mbus = smi->ext_mbus;
@@ -1527,7 +1527,7 @@ static void rtl8366_smi_reset(struct rtl8366_smi *smi, bool active)
 		reset_control_deassert(smi->reset);
 }
 
-int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
+static int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8366_smi *smi)
 {
 	int sck = of_get_named_gpio(pdev->dev.of_node, "gpio-sck", 0);
 	int sda = of_get_named_gpio(pdev->dev.of_node, "gpio-sda", 0);
@@ -1577,7 +1577,7 @@ static inline int rtl8366_smi_probe_of(struct platform_device *pdev, struct rtl8
 }
 #endif
 
-int rtl8366_smi_probe_plat(struct platform_device *pdev, struct rtl8366_smi *smi)
+static int rtl8366_smi_probe_plat(struct platform_device *pdev, struct rtl8366_smi *smi)
 {
 	struct rtl8366_platform_data *pdata = pdev->dev.platform_data;
 

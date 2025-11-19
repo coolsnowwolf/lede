@@ -10,13 +10,12 @@ REQUIRE_IMAGE_METADATA=1
 platform_check_image() {
 	case "$(board_name)" in
 	globalscale,mochabin|\
-	qnap,qhora-321|\
-	qnap,qhora-322|\
 	iei,puzzle-m901|\
 	iei,puzzle-m902|\
 	marvell,armada8040-mcbin-doubleshot|\
 	marvell,armada8040-mcbin-singleshot|\
-	marvell,armada8040-clearfog-gt-8k)
+	marvell,armada8040-clearfog-gt-8k|\
+	solidrun,clearfog-pro)
 		legacy_sdcard_check_image "$1"
 		;;
 	*)
@@ -27,8 +26,6 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
-	qnap,qhora-321|\
-	qnap,qhora-322|\
 	iei,puzzle-m901|\
 	iei,puzzle-m902)
 		platform_do_upgrade_emmc "$1"
@@ -36,8 +33,12 @@ platform_do_upgrade() {
 	globalscale,mochabin|\
 	marvell,armada8040-mcbin-doubleshot|\
 	marvell,armada8040-mcbin-singleshot|\
-	marvell,armada8040-clearfog-gt-8k)
+	marvell,armada8040-clearfog-gt-8k|\
+	solidrun,clearfog-pro)
 		legacy_sdcard_do_upgrade "$1"
+		;;
+	mikrotik,rb5009)
+		nand_do_upgrade "$1"
 		;;
 	*)
 		default_do_upgrade "$1"
@@ -47,13 +48,12 @@ platform_do_upgrade() {
 platform_copy_config() {
 	case "$(board_name)" in
 	globalscale,mochabin|\
-	qnap,qhora-321|\
-	qnap,qhora-322|\
 	iei,puzzle-m901|\
 	iei,puzzle-m902|\
 	marvell,armada8040-mcbin-doubleshot|\
 	marvell,armada8040-mcbin-singleshot|\
-	marvell,armada8040-clearfog-gt-8k)
+	marvell,armada8040-clearfog-gt-8k|\
+	solidrun,clearfog-pro)
 		legacy_sdcard_copy_config
 		;;
 	esac

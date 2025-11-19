@@ -308,6 +308,15 @@ define Device/alfa-network_tube-2hq
 endef
 TARGET_DEVICES += alfa-network_tube-2hq
 
+define Device/alibaba_ap121-db
+  SOC := qca9563
+  DEVICE_VENDOR := Alibaba
+  DEVICE_MODEL := AP121-DB
+  IMAGE_SIZE := 16000k
+  DEVICE_PACKAGES := kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += alibaba_ap121-db
+
 define Device/allnet_all-wap02860ac
   $(Device/senao_loader_okli)
   SOC := qca9558
@@ -2557,6 +2566,15 @@ define Device/zbtlink_zbt-wd323
 	kmod-usb-serial-cp210x uqmi
 endef
 TARGET_DEVICES += zbtlink_zbt-wd323
+
+define Device/zte_e8820
+  SOC := qca9563
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := E8820
+  IMAGE_SIZE := 16000k
+  DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport kmod-ath10k-ct-smallbuffers ath10k-firmware-qca988x-ct
+endef
+TARGET_DEVICES += zte_e8820
 
 define Device/zyxel_nbg6616
   SOC := qca9557

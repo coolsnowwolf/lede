@@ -1,0 +1,177 @@
+From ed77dd28c05346df7531c5008b07191f3660e1e6 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 19 Jan 2022 17:26:22 +0000
+Subject: [PATCH] pwm: raspberrypi-poe: Add option of being created by MFD or
+ FW
+
+The firmware can only use I2C0 if the kernel isn't, therefore
+with libcamera and DRM using it the PoE HAT fan control needs
+to move to the kernel.
+
+Add the option for the driver to be created by the PoE HAT core
+MFD driver, and use the I2C regmap that provides to control fan
+functions.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/pwm/pwm-raspberrypi-poe.c | 88 +++++++++++++++++++------------
+ 1 file changed, 55 insertions(+), 33 deletions(-)
+
+--- a/drivers/pwm/pwm-raspberrypi-poe.c
++++ b/drivers/pwm/pwm-raspberrypi-poe.c
+@@ -16,6 +16,7 @@
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pwm.h>
++#include <linux/regmap.h>
+ 
+ #include <soc/bcm2835/raspberrypi-firmware.h>
+ #include <dt-bindings/pwm/raspberrypi,firmware-poe-pwm.h>
+@@ -27,6 +28,10 @@
+ 
+ struct raspberrypi_pwm {
+ 	struct rpi_firmware *firmware;
++
++	struct regmap *regmap;
++	u32 offset;
++
+ 	unsigned int duty_cycle;
+ };
+ 
+@@ -42,7 +47,7 @@ struct raspberrypi_pwm *raspberrypi_pwm_
+ 	return pwmchip_get_drvdata(chip);
+ }
+ 
+-static int raspberrypi_pwm_set_property(struct rpi_firmware *firmware,
++static int raspberrypi_pwm_set_property(struct raspberrypi_pwm *pwm,
+ 					u32 reg, u32 val)
+ {
+ 	struct raspberrypi_pwm_prop msg = {
+@@ -51,17 +56,19 @@ static int raspberrypi_pwm_set_property(
+ 	};
+ 	int ret;
+ 
+-	ret = rpi_firmware_property(firmware, RPI_FIRMWARE_SET_POE_HAT_VAL,
+-				    &msg, sizeof(msg));
+-	if (ret)
+-		return ret;
+-	if (msg.ret)
+-		return -EIO;
++	if (pwm->firmware) {
++		ret = rpi_firmware_property(pwm->firmware, RPI_FIRMWARE_SET_POE_HAT_VAL,
++					    &msg, sizeof(msg));
++		if (!ret && msg.ret)
++			ret = -EIO;
++	} else {
++		ret = regmap_write(pwm->regmap, pwm->offset + reg, val);
++	}
+ 
+-	return 0;
++	return ret;
+ }
+ 
+-static int raspberrypi_pwm_get_property(struct rpi_firmware *firmware,
++static int raspberrypi_pwm_get_property(struct raspberrypi_pwm *pwm,
+ 					u32 reg, u32 *val)
+ {
+ 	struct raspberrypi_pwm_prop msg = {
+@@ -69,16 +76,17 @@ static int raspberrypi_pwm_get_property(
+ 	};
+ 	int ret;
+ 
+-	ret = rpi_firmware_property(firmware, RPI_FIRMWARE_GET_POE_HAT_VAL,
+-				    &msg, sizeof(msg));
+-	if (ret)
+-		return ret;
+-	if (msg.ret)
+-		return -EIO;
+-
+-	*val = le32_to_cpu(msg.val);
++	if (pwm->firmware) {
++		ret = rpi_firmware_property(pwm->firmware, RPI_FIRMWARE_GET_POE_HAT_VAL,
++					    &msg, sizeof(msg));
++		if (!ret && msg.ret)
++			ret = -EIO;
++		*val = le32_to_cpu(msg.val);
++	} else {
++		ret = regmap_read(pwm->regmap, pwm->offset + reg, val);
++	}
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ static int raspberrypi_pwm_get_state(struct pwm_chip *chip,
+@@ -118,7 +126,7 @@ static int raspberrypi_pwm_apply(struct
+ 	if (duty_cycle == rpipwm->duty_cycle)
+ 		return 0;
+ 
+-	ret = raspberrypi_pwm_set_property(rpipwm->firmware, RPI_PWM_CUR_DUTY_REG,
++	ret = raspberrypi_pwm_set_property(rpipwm, RPI_PWM_CUR_DUTY_REG,
+ 					   duty_cycle);
+ 	if (ret) {
+ 		dev_err(pwmchip_parent(chip), "Failed to set duty cycle: %pe\n",
+@@ -145,28 +153,41 @@ static int raspberrypi_pwm_probe(struct
+ 	struct raspberrypi_pwm *rpipwm;
+ 	int ret;
+ 
+-	firmware_node = of_get_parent(dev->of_node);
+-	if (!firmware_node) {
+-		dev_err(dev, "Missing firmware node\n");
+-		return -ENOENT;
+-	}
+-
+-	firmware = devm_rpi_firmware_get(&pdev->dev, firmware_node);
+-	of_node_put(firmware_node);
+-	if (!firmware)
+-		return dev_err_probe(dev, -EPROBE_DEFER,
+-				     "Failed to get firmware handle\n");
+-
+ 	chip = devm_pwmchip_alloc(&pdev->dev, RASPBERRYPI_FIRMWARE_PWM_NUM,
+ 				  sizeof(*rpipwm));
+ 	if (IS_ERR(chip))
+ 		return PTR_ERR(chip);
+ 	rpipwm = raspberrypi_pwm_from_chip(chip);
+ 
+-	rpipwm->firmware = firmware;
++	if (!rpipwm)
++		return -ENOMEM;
++
++	if (pdev->dev.parent)
++		rpipwm->regmap = dev_get_regmap(pdev->dev.parent, NULL);
++
++	if (rpipwm->regmap) {
++		ret = device_property_read_u32(&pdev->dev, "reg", &rpipwm->offset);
++		if (ret)
++			return -EINVAL;
++	} else {
++		firmware_node = of_get_parent(dev->of_node);
++		if (!firmware_node) {
++			dev_err(dev, "Missing firmware node\n");
++			return -ENOENT;
++		}
++
++		firmware = devm_rpi_firmware_get(&pdev->dev, firmware_node);
++		of_node_put(firmware_node);
++		if (!firmware)
++			return dev_err_probe(dev, -EPROBE_DEFER,
++					     "Failed to get firmware handle\n");
++
++		rpipwm->firmware = firmware;
++	}
++
+ 	chip->ops = &raspberrypi_pwm_ops;
+ 
+-	ret = raspberrypi_pwm_get_property(rpipwm->firmware, RPI_PWM_CUR_DUTY_REG,
++	ret = raspberrypi_pwm_get_property(rpipwm, RPI_PWM_CUR_DUTY_REG,
+ 					   &rpipwm->duty_cycle);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to get duty cycle: %pe\n", ERR_PTR(ret));
+@@ -178,6 +199,7 @@ static int raspberrypi_pwm_probe(struct
+ 
+ static const struct of_device_id raspberrypi_pwm_of_match[] = {
+ 	{ .compatible = "raspberrypi,firmware-poe-pwm", },
++	{ .compatible = "raspberrypi,poe-pwm", },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, raspberrypi_pwm_of_match);

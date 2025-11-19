@@ -20,14 +20,35 @@ endif
 export TMP_DIR:=$(TOPDIR)/tmp
 export TMPDIR:=$(TMP_DIR)
 
+##@
+# @brief Strip quotes `"` and pounds `#` from string.
+#
+# @param 1: String.
+##
 qstrip=$(strip $(subst ",,$(1)))
 #"))
 
 empty:=
 space:= $(empty) $(empty)
 comma:=,
+pound:=\#
+##@
+# @brief Merge strings by removing spaces.
+#
+# @param 1: String.
+##
 merge=$(subst $(space),,$(1))
+##@
+# @brief Get hash sum of variable list.
+#
+# @param 1: List of variable names.
+##
 confvar=$(shell echo '$(foreach v,$(1),$(v)=$(subst ','\'',$($(v))))' | $(MKHASH) md5)
+##@
+# @brief Strip last extension from file name.
+#
+# @param 1: File name.
+##
 strip_last=$(patsubst %.$(lastword $(subst .,$(space),$(1))),%,$(1))
 
 paren_left = (
@@ -50,9 +71,18 @@ __tr_head = $(subst $(paren_left)subst,$(paren_left)subst$(space),$(__tr_head_st
 __tr_tail = $(subst $(space),,$(foreach cv,$(1),$(paren_right)))
 __tr_template = $(__tr_head)$$(1)$(__tr_tail)
 
+##@
+# @brief Convert string characters to upper.
+##
 $(eval toupper = $(call __tr_template,$(chars_lower),$(chars_upper)))
+##@
+# @brief Convert string characters to lower.
+##
 $(eval tolower = $(call __tr_template,$(chars_upper),$(chars_lower)))
 
+##@
+# @brief Abbreviate version. Truncate to 8 characters.
+##
 version_abbrev = $(if $(if $(CHECK),,$(DUMP)),$(1),$(shell printf '%.8s' $(1)))
 
 _SINGLE=export MAKEFLAGS=$(space);
@@ -101,6 +131,13 @@ endif
 
 DEFAULT_SUBDIR_TARGETS:=clean download prepare compile update refresh prereq dist distcheck configure check check-depends
 
+##@
+# @brief Create default targets.
+#
+# Targets are created from @DEFAULT_SUBDIR_TARGETS and input argument lists.
+#
+# @param 1: Additional targets list.
+##
 define DefaultTargets
 $(foreach t,$(DEFAULT_SUBDIR_TARGETS) $(1),
   .$(t):
@@ -140,8 +177,8 @@ ifeq ($(or $(CONFIG_EXTERNAL_TOOLCHAIN),$(CONFIG_TARGET_uml)),)
   iremap = -f$(if $(CONFIG_REPRODUCIBLE_DEBUG_INFO),file,macro)-prefix-map=$(1)=$(2)
 endif
 
-PACKAGE_DIR:=$(BIN_DIR)/packages
-PACKAGE_DIR_ALL:=$(TOPDIR)/staging_dir/packages/$(BOARD)
+PACKAGE_DIR?=$(BIN_DIR)/packages
+PACKAGE_DIR_ALL?=$(TOPDIR)/staging_dir/packages/$(BOARD)
 BUILD_DIR:=$(BUILD_DIR_BASE)/$(TARGET_DIR_NAME)
 STAGING_DIR:=$(TOPDIR)/staging_dir/$(TARGET_DIR_NAME)
 BUILD_DIR_TOOLCHAIN:=$(BUILD_DIR_BASE)/$(TOOLCHAIN_DIR_NAME)
@@ -184,33 +221,38 @@ ifndef DUMP
     -include $(TOOLCHAIN_DIR)/info.mk
     export GCC_HONOUR_COPTS:=0
     TARGET_CROSS:=$(if $(TARGET_CROSS),$(TARGET_CROSS),$(OPTIMIZE_FOR_CPU)-openwrt-linux$(if $(TARGET_SUFFIX),-$(TARGET_SUFFIX))-)
+    TOOLCHAIN_ROOT_DIR:=$(TOPDIR)/staging_dir/$(TOOLCHAIN_DIR_NAME)
+    TOOLCHAIN_BIN_DIRS:=$(TOOLCHAIN_ROOT_DIR)/bin
+    TOOLCHAIN_INC_DIRS:=$(TOOLCHAIN_ROOT_DIR)/usr/include $(TOOLCHAIN_ROOT_DIR)/include
+    TOOLCHAIN_LIB_DIRS:=$(TOOLCHAIN_ROOT_DIR)/usr/lib $(TOOLCHAIN_ROOT_DIR)/lib
     TARGET_CFLAGS+= -fhonour-copts
-    TARGET_CPPFLAGS+= -I$(TOOLCHAIN_DIR)/usr/include
     ifeq ($(CONFIG_USE_MUSL),y)
-      TARGET_CPPFLAGS+= -I$(TOOLCHAIN_DIR)/include/fortify
+      TOOLCHAIN_INC_DIRS+= $(TOOLCHAIN_DIR)/include/fortify
     endif
-    TARGET_CPPFLAGS+= -I$(TOOLCHAIN_DIR)/include
-    TARGET_LDFLAGS+= -L$(TOOLCHAIN_DIR)/usr/lib -L$(TOOLCHAIN_DIR)/lib
-    TARGET_PATH:=$(TOOLCHAIN_DIR)/bin:$(TARGET_PATH)
   else
     ifeq ($(CONFIG_NATIVE_TOOLCHAIN),)
+      -include $(TOOLCHAIN_DIR)/info.mk
       TARGET_CROSS:=$(call qstrip,$(CONFIG_TOOLCHAIN_PREFIX))
       TOOLCHAIN_ROOT_DIR:=$(call qstrip,$(CONFIG_TOOLCHAIN_ROOT))
       TOOLCHAIN_BIN_DIRS:=$(patsubst ./%,$(TOOLCHAIN_ROOT_DIR)/%,$(call qstrip,$(CONFIG_TOOLCHAIN_BIN_PATH)))
       TOOLCHAIN_INC_DIRS:=$(patsubst ./%,$(TOOLCHAIN_ROOT_DIR)/%,$(call qstrip,$(CONFIG_TOOLCHAIN_INC_PATH)))
       TOOLCHAIN_LIB_DIRS:=$(patsubst ./%,$(TOOLCHAIN_ROOT_DIR)/%,$(call qstrip,$(CONFIG_TOOLCHAIN_LIB_PATH)))
-      ifneq ($(TOOLCHAIN_BIN_DIRS),)
-        TARGET_PATH:=$(subst $(space),:,$(TOOLCHAIN_BIN_DIRS)):$(TARGET_PATH)
-      endif
-      ifneq ($(TOOLCHAIN_INC_DIRS),)
-        TARGET_CPPFLAGS+= $(patsubst %,-I%,$(TOOLCHAIN_INC_DIRS))
-      endif
-      ifneq ($(TOOLCHAIN_LIB_DIRS),)
-        TARGET_LDFLAGS+= $(patsubst %,-L%,$(TOOLCHAIN_LIB_DIRS))
-      endif
     endif
   endif
+  ifneq ($(TOOLCHAIN_BIN_DIRS),)
+    TARGET_PATH:=$(subst $(space),:,$(TOOLCHAIN_BIN_DIRS)):$(TARGET_PATH)
+  endif
+  ifneq ($(TOOLCHAIN_INC_DIRS),)
+    TARGET_CPPFLAGS+= $(patsubst %,-I%,$(TOOLCHAIN_INC_DIRS))
+  endif
+  ifneq ($(TOOLCHAIN_LIB_DIRS),)
+    TARGET_LDFLAGS+= $(patsubst %,-L%,$(TOOLCHAIN_LIB_DIRS))
+  endif
 endif
+
+TARGET_LINKER?=bfd
+TARGET_LDFLAGS+= -fuse-ld=$(TARGET_LINKER)
+
 TARGET_PATH_PKG:=$(STAGING_DIR)/host/bin:$(STAGING_DIR_HOSTPKG)/bin:$(TARGET_PATH)
 
 ifeq ($(CONFIG_SOFT_FLOAT),y)
@@ -227,6 +269,7 @@ else
   endif
 endif
 
+export ORIG_PATH:=$(if $(ORIG_PATH),$(ORIG_PATH),$(PATH))
 export PATH:=$(TARGET_PATH)
 export STAGING_DIR STAGING_DIR_HOST STAGING_DIR_HOSTPKG
 export SH_FUNC:=. $(INCLUDE_DIR)/shell.sh;
@@ -235,14 +278,16 @@ PKG_CONFIG:=$(STAGING_DIR_HOST)/bin/pkg-config
 
 export PKG_CONFIG
 
-HOSTCC:=gcc
-HOSTCXX:=g++
+HOSTCC:=$(STAGING_DIR_HOST)/bin/gcc
+HOSTCXX:=$(STAGING_DIR_HOST)/bin/g++
 HOST_CPPFLAGS:=-I$(STAGING_DIR_HOST)/include $(if $(IS_PACKAGE_BUILD),-I$(STAGING_DIR_HOSTPKG)/include -I$(STAGING_DIR)/host/include)
-HOST_CXXFLAGS:=
 HOST_CFLAGS:=-O2 $(HOST_CPPFLAGS)
+HOST_CXXFLAGS:=$(HOST_CFLAGS)
 HOST_LDFLAGS:=-L$(STAGING_DIR_HOST)/lib $(if $(IS_PACKAGE_BUILD),-L$(STAGING_DIR_HOSTPKG)/lib -L$(STAGING_DIR)/host/lib)
 
 BUILD_KEY=$(TOPDIR)/key-build
+BUILD_KEY_APK_SEC=$(TOPDIR)/private-key.pem
+BUILD_KEY_APK_PUB=$(TOPDIR)/public-key.pem
 
 FAKEROOT:=$(STAGING_DIR_HOST)/bin/fakeroot
 
@@ -251,7 +296,9 @@ TARGET_RANLIB:=$(TARGET_CROSS)gcc-ranlib
 TARGET_NM:=$(TARGET_CROSS)gcc-nm
 TARGET_CC:=$(TARGET_CROSS)gcc
 TARGET_CXX:=$(TARGET_CROSS)g++
+TARGET_LD:=$(TARGET_CROSS)ld.$(TARGET_LINKER)
 KPATCH:=$(SCRIPT_DIR)/patch-kernel.sh
+FILECMD:=$(STAGING_DIR_HOST)/bin/file
 SED:=$(STAGING_DIR_HOST)/bin/sed -i -e
 ESED:=$(STAGING_DIR_HOST)/bin/sed -E -i -e
 MKHASH:=$(STAGING_DIR_HOST)/bin/mkhash
@@ -266,6 +313,14 @@ TAR:=tar
 FIND:=find
 PATCH:=patch
 PYTHON:=python3
+
+ifeq ($(HOST_OS),Darwin)
+  TRUE:=/usr/bin/env gtrue
+  FALSE:=/usr/bin/env gfalse
+else
+  TRUE:=/usr/bin/env true
+  FALSE:=/usr/bin/env false
+endif
 
 INSTALL_BIN:=install -m0755
 INSTALL_SUID:=install -m4755
@@ -283,8 +338,8 @@ export HOSTCC_NOCACHE
 export HOSTCXX_NOCACHE
 
 ifneq ($(CONFIG_CCACHE),)
-  TARGET_CC:= ccache_cc
-  TARGET_CXX:= ccache_cxx
+  TARGET_CC:= ccache $(TARGET_CC)
+  TARGET_CXX:= ccache $(TARGET_CXX)
   HOSTCC:= ccache $(HOSTCC)
   HOSTCXX:= ccache $(HOSTCXX)
   export CCACHE_BASEDIR:=$(TOPDIR)
@@ -295,7 +350,7 @@ endif
 TARGET_CONFIGURE_OPTS = \
   AR="$(TARGET_AR)" \
   AS="$(TARGET_CC) -c $(TARGET_ASFLAGS)" \
-  LD=$(TARGET_CROSS)ld \
+  LD="$(TARGET_LD)" \
   NM="$(TARGET_NM)" \
   CC="$(TARGET_CC)" \
   GCC="$(TARGET_CC)" \
@@ -315,7 +370,7 @@ else
     STRIP:=$(TARGET_CROSS)strip $(call qstrip,$(CONFIG_STRIP_ARGS))
   else
     ifneq ($(CONFIG_USE_SSTRIP),)
-      STRIP:=$(STAGING_DIR_HOST)/bin/sstrip $(call qstrip,$(CONFIG_SSTRIP_ARGS))
+      STRIP:=$(STAGING_DIR_HOST)/bin/sstrip $(if $(CONFIG_SSTRIP_DISCARD_TRAILING_ZEROES),-z)
     endif
   endif
   RSTRIP= \
@@ -349,19 +404,48 @@ ifeq ($(CONFIG_BUILD_LOG),y)
 endif
 
 export BISON_PKGDATADIR:=$(STAGING_DIR_HOST)/share/bison
+export HOST_GNULIB_SRCDIR:=$(STAGING_DIR_HOST)/share/gnulib
 export M4:=$(STAGING_DIR_HOST)/bin/m4
 
+##@
+# @brief Slugify variable name and prepend suffix.
+##
 define shvar
 V_$(subst .,_,$(subst -,_,$(subst /,_,$(1))))
 endef
 
+##@
+# @brief Create and export variable, set to function result.
+#
+# @param 1: Function name. Used as variable name, prepended with `V_`.
+##
 define shexport
 export $(call shvar,$(1))=$$(call $(1))
 endef
 
-# Execute commands under flock
-# $(1) => The shell expression.
-# $(2) => The lock name. If not given, the global lock will be used.
+##@
+# @brief Support 64 bit tine in C code.
+#
+# Test support for 64-bit time with C code from largefile.m4 provided by GNU Gnulib
+# the value is `y` when successful and `` otherwise
+##
+define YEAR_2038
+$(shell \
+  mkdir -p $(TMP_DIR); \
+  echo '$(pound) include <time.h>' > $(TMP_DIR)/year2038.c; \
+  echo '$(pound) define LARGE_TIME_T ((time_t) (((time_t) 1 << 30) - 1 + 3 * ((time_t) 1 << 30)))' >> $(TMP_DIR)/year2038.c; \
+  echo 'int verify_time_t_range[(LARGE_TIME_T / 65537 == 65535 && LARGE_TIME_T % 65537 == 0) ? 1 : -1];' >> $(TMP_DIR)/year2038.c; \
+  echo 'int main (void) {return 0;}' >> $(TMP_DIR)/year2038.c; \
+  $(HOSTCC) $(TMP_DIR)/year2038.c -o /dev/null 2>/dev/null && echo y && rm -f $(TMP_DIR)/year2038.c || rm -f $(TMP_DIR)/year2038.c; \
+)
+endef
+
+##@
+# @brief Execute commands under flock
+#
+# @param 1: The shell expression.
+# @param 2: The lock name. If not given, the global lock will be used.
+##
 ifneq ($(wildcard $(STAGING_DIR_HOST)/bin/flock),)
   define locked
 	SHELL= \
@@ -373,10 +457,14 @@ else
   locked=$(1)
 endif
 
-# Recursively copy paths into another directory, purge dangling
+
+##@
+# @brief Recursively copy paths into another directory, purge dangling
 # symlinks before.
-# $(1) => File glob expression
-# $(2) => Destination directory
+#
+# @param 1: File glob expression.
+# @param 1: Destination directory.
+##
 define file_copy
 	for src_dir in $(sort $(foreach d,$(wildcard $(1)),$(dir $(d)))); do \
 		( cd $$src_dir; find -type f -or -type d ) | \
@@ -391,19 +479,30 @@ define file_copy
 	$(CP) $(1) $(2)
 endef
 
-# Calculate sha256sum of any plain file within a given directory
-# $(1) => Input directory
-# $(2) => If set, recurse into subdirectories
+##@
+# @brief Calculate sha256sum of any plain file within a given directory.
+#
+# @param 1: Input directory.
+# @param 2: If set, recurse into subdirectories.
+##
 define sha256sums
 	(cd $(1); find . $(if $(2),,-maxdepth 1) -type f -not -name 'sha256sums' -printf "%P\n" | sort | \
 		xargs -r $(MKHASH) -n sha256 | sed -ne 's!^\(.*\) \(.*\)$$!\1 *\2!p' > sha256sums)
 endef
 
-# file extension
+##@
+# @brief Retrieve file extension.
+#
+# @param 1: File name.
+##
 ext=$(word $(words $(subst ., ,$(1))),$(subst ., ,$(1)))
 
-# Count Git commits of a package
-# $(1) => if non-empty: count commits since last ": [uU]pdate to " or ": [bB]ump to " in commit message
+##@
+# @brief Count Git commits of a package.
+#
+# @param 1: if non-empty: count commits since last ": [uU]pdate to "
+#           or ": [bB]ump to " in commit message.
+##
 define commitcount
 $(shell \
   if git log -1 >/dev/null 2>/dev/null; then \
@@ -425,6 +524,11 @@ $(shell \
 )
 endef
 
+##@
+# @brief Get ABI version string, stripping `-`, `_` and `.`.
+#
+# @param 1: Version string.
+##
 abi_version_str = $(subst -,,$(subst _,,$(subst .,,$(1))))
 
 COMMITCOUNT = $(if $(DUMP),0,$(call commitcount))

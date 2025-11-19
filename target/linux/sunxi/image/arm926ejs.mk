@@ -8,6 +8,7 @@
 KERNEL_LOADADDR=0x81000000
 
 define Device/licheepi-nano
+  $(call Device/FitImageGzip)
   DEVICE_VENDOR := LicheePi
   DEVICE_MODEL := Nano
   DEVICE_PACKAGES := kmod-rtc-sunxi
@@ -16,6 +17,7 @@ endef
 TARGET_DEVICES += licheepi-nano
 
 define Device/popstick-v1.1
+  $(call Device/FitImageGzip)
   DEVICE_VENDOR := PopStick
   DEVICE_MODEL := v1.1
   DEVICE_PACKAGES := kmod-rtc-sunxi

@@ -1,0 +1,93 @@
+From f0b0e5392bd7bce16c86d4ed3fc66394db16eb7d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jo=C3=A3o=20M=C3=A1rio=20Domingos?=
+ <joao.mario@tecnico.ulisboa.pt>
+Date: Tue, 16 Nov 2021 15:48:09 +0000
+Subject: [PATCH 27/55] RISC-V: Create unique identification for SoC PMU
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The SBI PMU platform driver did not provide any identification for
+perf events matching. This patch introduces a new sysfs file inside the
+platform device (soc:pmu/id) for pmu identification.
+
+The identification is a 64-bit value generated as:
+[63-32]: mvendorid;
+[31]: marchid[MSB];
+[30-16]: marchid[15-0];
+[15-0]: mimpid[15MSBs];
+
+The CSRs are detailed in the RISC-V privileged spec [1].
+The marchid is split in MSB + 15LSBs, due to the MSB being used for
+open-source architecture identification.
+
+[1] https://github.com/riscv/riscv-isa-manual
+
+Signed-off-by: João Mário Domingos <joao.mario@tecnico.ulisboa.pt>
+---
+ drivers/perf/riscv_pmu_sbi.c | 47 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 47 insertions(+)
+
+--- a/drivers/perf/riscv_pmu_sbi.c
++++ b/drivers/perf/riscv_pmu_sbi.c
+@@ -1326,6 +1326,46 @@ static struct ctl_table sbi_pmu_sysctl_t
+ 	},
+ };
+ 
++static uint64_t pmu_sbi_get_pmu_id(void)
++{
++	union sbi_pmu_id {
++		uint64_t value;
++		struct {
++			uint16_t imp:16;
++			uint16_t arch:16;
++			uint32_t vendor:32;
++		};
++	} pmuid;
++
++	pmuid.value = 0;
++	pmuid.vendor = (uint32_t) sbi_get_mvendorid();
++	pmuid.arch = (sbi_get_marchid() >> (63 - 15) & (1 << 15)) | (sbi_get_marchid() & 0x7FFF);
++	pmuid.imp = (sbi_get_mimpid() >> 16);
++
++	return pmuid.value;
++}
++
++static ssize_t pmu_sbi_id_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	int len;
++
++	len = sprintf(buf, "0x%llx\n", pmu_sbi_get_pmu_id());
++	if (len <= 0)
++		dev_err(dev, "mydrv: Invalid sprintf len: %dn", len);
++
++	return len;
++}
++
++static DEVICE_ATTR(id, S_IRUGO | S_IWUSR, pmu_sbi_id_show, 0);
++
++static struct attribute *pmu_sbi_attrs[] = {
++	&dev_attr_id.attr,
++	NULL
++};
++
++ATTRIBUTE_GROUPS(pmu_sbi);
++
+ static int pmu_sbi_device_probe(struct platform_device *pdev)
+ {
+ 	struct riscv_pmu *pmu = NULL;
+@@ -1375,6 +1415,13 @@ static int pmu_sbi_device_probe(struct p
+ 	pmu->event_unmapped = pmu_sbi_event_unmapped;
+ 	pmu->csr_index = pmu_sbi_csr_index;
+ 
++	ret = sysfs_create_group(&pdev->dev.kobj, &pmu_sbi_group);
++	if (ret) {
++		dev_err(&pdev->dev, "sysfs creation failed\n");
++		return ret;
++	}
++	pdev->dev.groups = pmu_sbi_groups;
++
+ 	ret = riscv_pm_pmu_register(pmu);
+ 	if (ret)
+ 		goto out_unregister;

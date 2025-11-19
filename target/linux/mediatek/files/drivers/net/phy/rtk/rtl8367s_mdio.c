@@ -10,7 +10,7 @@
  * GNU General Public License for more details.
  *
  */
- 
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -19,12 +19,14 @@
 #include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
+#include <linux/platform_device.h>
 
 
 #include  "./rtl8367c/include/rtk_switch.h"
 #include  "./rtl8367c/include/port.h"
 #include  "./rtl8367c/include/vlan.h"
 #include  "./rtl8367c/include/rtl8367c_asicdrv_port.h"
+#include  "./rtl8367c/include/rtl8367c_asicdrv_mii_mgr.h"
 
 struct rtk_gsw {
  	struct device           *dev;
@@ -33,13 +35,6 @@ struct rtk_gsw {
 };
 
 static struct rtk_gsw *_gsw;
-
-extern int gsw_debug_proc_init(void);
-extern void gsw_debug_proc_exit(void);
-
-#ifdef CONFIG_SWCONFIG
-extern int rtl8367s_swconfig_init( void (*reset_func)(void) );
-#endif
 
 /*mii_mgr_read/mii_mgr_write is the callback API for rtl8367 driver*/
 unsigned int mii_mgr_read(unsigned int phy_addr,unsigned int phy_register,unsigned int *read_data)
@@ -64,7 +59,7 @@ unsigned int mii_mgr_write(unsigned int phy_addr,unsigned int phy_register,unsig
 	bus->write(bus, phy_addr, phy_register, write_data);
 
 	mutex_unlock(&bus->mdio_lock);
-	
+
 	return 0;
 }
 
@@ -89,7 +84,7 @@ static int rtl8367s_hw_reset(void)
 static int rtl8367s_vlan_config(int want_at_p0)
 {
 	rtk_vlan_cfg_t vlan1, vlan2;
-	
+
 	/* Set LAN/WAN VLAN partition */
 	memset(&vlan1, 0x00, sizeof(rtk_vlan_cfg_t));
 
@@ -101,7 +96,7 @@ static int rtl8367s_vlan_config(int want_at_p0)
 	RTK_PORTMASK_PORT_SET(vlan1.untag, UTP_PORT1);
 	RTK_PORTMASK_PORT_SET(vlan1.untag, UTP_PORT2);
 	RTK_PORTMASK_PORT_SET(vlan1.untag, UTP_PORT3);
-  
+
 	 if (want_at_p0) {
 		RTK_PORTMASK_PORT_SET(vlan1.mbr, UTP_PORT4);
 		RTK_PORTMASK_PORT_SET(vlan1.untag, UTP_PORT4);
@@ -111,11 +106,11 @@ static int rtl8367s_vlan_config(int want_at_p0)
         }
 
 	vlan1.ivl_en = 1;
-	
+
 	rtk_vlan_set(1, &vlan1);
-	
+
 	memset(&vlan2, 0x00, sizeof(rtk_vlan_cfg_t));
-	
+
 	RTK_PORTMASK_PORT_SET(vlan2.mbr, EXT_PORT1);
 	RTK_PORTMASK_PORT_SET(vlan2.untag, EXT_PORT1);
 
@@ -144,7 +139,7 @@ static int rtl8367s_vlan_config(int want_at_p0)
 		rtk_vlan_portPvid_set(UTP_PORT4, 2, 0);
 	}
 
-	return 0;	
+	return 0;
 }
 
 static int rtl8367s_hw_init(void)
@@ -201,10 +196,10 @@ static void set_rtl8367s_rgmii(void)
 	rtk_port_macForceLinkExt_set(EXT_PORT1, mode, &mac_cfg);
 	rtk_port_rgmiiDelayExt_set(EXT_PORT1, 1, 3);
 	rtk_port_phyEnableAll_set(ENABLED);
-	
+
 }
 
-void init_gsw(void)
+static void init_gsw(void)
 {
 	rtl8367s_hw_init();
 	set_rtl8367s_sgmii();
@@ -239,9 +234,9 @@ static int rtk_gsw_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 
 	gsw = devm_kzalloc(&pdev->dev, sizeof(struct rtk_gsw), GFP_KERNEL);
-	
+
 	if (!gsw)
-		return -ENOMEM;	
+		return -ENOMEM;
 
 	gsw->dev = &pdev->dev;
 
@@ -263,12 +258,12 @@ static int rtk_gsw_probe(struct platform_device *pdev)
 						"mediatek,port_map", &pm)) {
 
 		if (!strcasecmp(pm, "wllll"))
-			rtl8367s_vlan_config(1); 
+			rtl8367s_vlan_config(1);
 		else
 			rtl8367s_vlan_config(0);
-		
+
 		} else {
-#ifdef CONFIG_SWCONFIG		
+#ifdef CONFIG_SWCONFIG
 		rtl8367s_swconfig_init(&init_gsw);
 #else
 		rtl8367s_vlan_config(0);
@@ -280,23 +275,20 @@ static int rtk_gsw_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, gsw);
 
 	return 0;
-	
+
 }
 
-static int rtk_gsw_remove(struct platform_device *pdev)
+static void rtk_gsw_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 	gsw_debug_proc_exit();
-
-	return 0;
 }
 
 static struct platform_driver gsw_driver = {
 	.probe = rtk_gsw_probe,
-	.remove = rtk_gsw_remove,
+	.remove_new = rtk_gsw_remove,
 	.driver = {
 		.name = "rtk-gsw",
-		.owner = THIS_MODULE,
 		.of_match_table = rtk_gsw_match,
 	},
 };

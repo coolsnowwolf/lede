@@ -28,15 +28,15 @@
 #define RTL8367C_SW_CPU_PORT    6
 
  //RTL8367C_PHY_PORT_NUM + ext0 + ext1
-#define RTL8367C_NUM_PORTS 7 
-#define RTL8367C_NUM_VIDS  4096   
+#define RTL8367C_NUM_PORTS 7
+#define RTL8367C_NUM_VIDS  4096
 
 struct rtl8367_priv {
 	struct switch_dev	swdev;
 	bool			global_vlan_enable;
 };
 
-struct rtl8367_mib_counter {	
+struct rtl8367_mib_counter {
 	const char *name;
 };
 
@@ -72,13 +72,13 @@ static  struct rtl8367_mib_counter  rtl8367c_mib_counters[] = {
 	{"etherStatsPkts256to511Octets"},
 	{"etherStatsPkts512to1023Octets"},
 	{"etherStatsPkts1024toMaxOctets"},
-	{"etherStatsMcastPkts"}, 
+	{"etherStatsMcastPkts"},
 	{"etherStatsBcastPkts"},
 	{"ifOutOctets"},
 	{"dot3StatsSingleCollisionFrames"},
 	{"dot3StatsMultipleCollisionFrames"},
 	{"dot3StatsDeferredTransmissions"},
-	{"dot3StatsLateCollisions"}, 
+	{"dot3StatsLateCollisions"},
 	{"etherStatsCollisions"},
 	{"dot3StatsExcessiveCollisions"},
 	{"dot3OutPauseFrames"},
@@ -131,7 +131,7 @@ static inline unsigned int rtl8367c_portmask_phy_to_sw(rtk_portmask_t phy_portma
 		if(RTK_PORTMASK_IS_PORT_SET(phy_portmask,rtl8367c_sw_to_phy_port(i))) {
 			RTK_PORTMASK_PORT_CLEAR(phy_portmask,rtl8367c_sw_to_phy_port(i));
 			RTK_PORTMASK_PORT_SET(phy_portmask,i);
-		}		
+		}
 
 	}
 	return (unsigned int)phy_portmask.bits[0];
@@ -155,7 +155,7 @@ static int rtl8367c_get_mibs_num(void)
 
 static const char *rtl8367c_get_mib_name(int idx)
 {
-	
+
 	return rtl8367c_mib_counters[idx].name;
 }
 
@@ -166,7 +166,7 @@ static int rtl8367c_get_port_mib_counter(int idx, int port, unsigned long long *
 
 static int rtl8367c_is_vlan_valid(unsigned int vlan)
 {
-	unsigned max = RTL8367C_NUM_VIDS;	
+	unsigned max = RTL8367C_NUM_VIDS;
 
 	if (vlan == 0 || vlan >= max)
 		return 0;
@@ -175,37 +175,37 @@ static int rtl8367c_is_vlan_valid(unsigned int vlan)
 }
 
 static int rtl8367c_get_vlan( unsigned short vid, struct rtl8367_vlan_info *vlan)
-{	
+{
 	rtk_vlan_cfg_t vlan_cfg;
 
 	memset(vlan, '\0', sizeof(struct rtl8367_vlan_info));
 
 	if (vid >= RTL8367C_NUM_VIDS)
-		return -EINVAL;	
+		return -EINVAL;
 
 	if(rtk_vlan_get(vid,&vlan_cfg))
-       	return -EINVAL;		
-	
+       	return -EINVAL;
+
 	vlan->vid = vid;
-	vlan->member = rtl8367c_portmask_phy_to_sw(vlan_cfg.mbr);	
-	vlan->untag = rtl8367c_portmask_phy_to_sw(vlan_cfg.untag);	
+	vlan->member = rtl8367c_portmask_phy_to_sw(vlan_cfg.mbr);
+	vlan->untag = rtl8367c_portmask_phy_to_sw(vlan_cfg.untag);
 	vlan->fid = vlan_cfg.fid_msti;
 
 	return 0;
 }
 
 static int rtl8367c_set_vlan( unsigned short vid, u32 mbr, u32 untag, u8 fid)
-{	
+{
 	rtk_vlan_cfg_t vlan_cfg;
 	int i;
 
-	memset(&vlan_cfg, 0x00, sizeof(rtk_vlan_cfg_t));	
+	memset(&vlan_cfg, 0x00, sizeof(rtk_vlan_cfg_t));
 
 	for (i = 0; i < RTL8367C_NUM_PORTS; i++) {
 		if (mbr & (1 << i)) {
 			RTK_PORTMASK_PORT_SET(vlan_cfg.mbr, rtl8367c_sw_to_phy_port(i));
 			if(untag & (1 << i))
-				RTK_PORTMASK_PORT_SET(vlan_cfg.untag, rtl8367c_sw_to_phy_port(i));			
+				RTK_PORTMASK_PORT_SET(vlan_cfg.untag, rtl8367c_sw_to_phy_port(i));
 		}
 	}
 	vlan_cfg.fid_msti=fid;
@@ -217,9 +217,9 @@ static int rtl8367c_set_vlan( unsigned short vid, u32 mbr, u32 untag, u8 fid)
 static int rtl8367c_get_pvid( int port, int *pvid)
 {
 	u32 prio=0;
-	
+
 	if (port >= RTL8367C_NUM_PORTS)
-		return -EINVAL;		
+		return -EINVAL;
 
 	return rtk_vlan_portPvid_get(rtl8367c_sw_to_phy_port(port),pvid,&prio);
 }
@@ -228,16 +228,16 @@ static int rtl8367c_get_pvid( int port, int *pvid)
 static int rtl8367c_set_pvid( int port, int pvid)
 {
 	u32 prio=0;
-	
+
 	if (port >= RTL8367C_NUM_PORTS)
-		return -EINVAL;		
+		return -EINVAL;
 
 	return rtk_vlan_portPvid_set(rtl8367c_sw_to_phy_port(port),pvid,prio);
 }
 
 static int rtl8367c_get_port_link(int port, int *link, int *speed, int *duplex)
 {
-	
+
 	if(rtk_port_phyStatus_get(rtl8367c_sw_to_phy_port(port),(rtk_port_linkStatus_t *)link,
 					(rtk_port_speed_t *)speed,(rtk_port_duplex_t *)duplex))
 		return -EINVAL;
@@ -252,7 +252,7 @@ rtl8367_sw_set_vlan_enable(struct switch_dev *dev,
 			   const struct switch_attr *attr,
 			   struct switch_val *val)
 {
-	struct rtl8367_priv *priv = container_of(dev, struct rtl8367_priv, swdev);	
+	struct rtl8367_priv *priv = container_of(dev, struct rtl8367_priv, swdev);
 
 	priv->global_vlan_enable = val->value.i ;
 
@@ -295,7 +295,7 @@ static int rtl8367_sw_reset_port_mibs(struct switch_dev *dev,
 static int rtl8367_sw_get_port_mib(struct switch_dev *dev,
 			    const struct switch_attr *attr,
 			    struct switch_val *val)
-{	
+{
 	int i, len = 0;
 	unsigned long long counter = 0;
 	static char mib_buf[4096];
@@ -305,7 +305,7 @@ static int rtl8367_sw_get_port_mib(struct switch_dev *dev,
 
 	len += snprintf(mib_buf + len, sizeof(mib_buf) - len,
 			"Port %d MIB counters\n",
-			val->port_vlan);	
+			val->port_vlan);
 
 	for (i = 0; i <rtl8367c_get_mibs_num(); ++i) {
 		len += snprintf(mib_buf + len, sizeof(mib_buf) - len,
@@ -328,7 +328,7 @@ static int rtl8367_sw_get_port_mib(struct switch_dev *dev,
 static int rtl8367_sw_get_vlan_info(struct switch_dev *dev,
 			     const struct switch_attr *attr,
 			     struct switch_val *val)
-{	
+{
 	int i;
 	u32 len = 0;
 	struct rtl8367_vlan_info vlan;
@@ -370,8 +370,8 @@ static int rtl8367_sw_get_vlan_ports(struct switch_dev *dev, struct switch_val *
 {
 	struct switch_port *port;
 	struct rtl8367_vlan_info vlan;
-	int i;	
-	
+	int i;
+
 	if (!rtl8367c_is_vlan_valid(val->port_vlan))
 		return -EINVAL;
 
@@ -401,8 +401,8 @@ static int rtl8367_sw_set_vlan_ports(struct switch_dev *dev, struct switch_val *
 	u32 untag = 0;
 	u8 fid=0;
 	int err;
-	int i;	
-	
+	int i;
+
 	if (!rtl8367c_is_vlan_valid(val->port_vlan))
 		return -EINVAL;
 
@@ -430,7 +430,7 @@ static int rtl8367_sw_set_vlan_ports(struct switch_dev *dev, struct switch_val *
 
 	//pr_info("[%s] vid=%d , mem=%x,untag=%x,fid=%d \n",__func__,val->port_vlan,member,untag,fid);
 
-	return rtl8367c_set_vlan(val->port_vlan, member, untag, fid);	
+	return rtl8367c_set_vlan(val->port_vlan, member, untag, fid);
 
 }
 
@@ -442,7 +442,7 @@ static int rtl8367_sw_get_port_pvid(struct switch_dev *dev, int port, int *val)
 
 
 static int rtl8367_sw_set_port_pvid(struct switch_dev *dev, int port, int val)
-{	
+{
 	return rtl8367c_set_pvid(port, val);
 }
 
@@ -459,17 +459,17 @@ static int rtl8367_sw_reset_switch(struct switch_dev *dev)
 
 static int rtl8367_sw_get_port_link(struct switch_dev *dev, int port,
 				    struct switch_port_link *link)
-{	
+{
 	int speed;
 
 	if (port >= RTL8367C_NUM_PORTS)
 		return -EINVAL;
 
 	if(rtl8367c_get_port_link(port,(int *)&link->link,(int *)&speed,(int *)&link->duplex))
-		return -EINVAL;		
+		return -EINVAL;
 
 	if (!link->link)
-		return 0;	
+		return 0;
 
 	switch (speed) {
 	case 0:
@@ -497,8 +497,8 @@ static struct switch_attr rtl8367_globals[] = {
 		.description = "Enable VLAN mode",
 		.set = rtl8367_sw_set_vlan_enable,
 		.get = rtl8367_sw_get_vlan_enable,
-		.max = 1,		
-	}, {		
+		.max = 1,
+	}, {
 		.type = SWITCH_TYPE_NOVAL,
 		.name = "reset_mibs",
 		.description = "Reset all MIB counters",
@@ -562,8 +562,8 @@ int rtl8367s_swconfig_init(void (*reset_func)(void))
 	int err=0;
 
 	rtl8367_switch_reset_func = reset_func ;
-	
-	memset(priv, 0, sizeof(struct rtl8367_priv));	
+
+	memset(priv, 0, sizeof(struct rtl8367_priv));
 	priv->global_vlan_enable =0;
 
 	dev->name = "RTL8367C";
@@ -571,7 +571,7 @@ int rtl8367s_swconfig_init(void (*reset_func)(void))
 	dev->ports = RTL8367C_NUM_PORTS;
 	dev->vlans = RTL8367C_NUM_VIDS;
 	dev->ops = &rtl8367_sw_ops;
-	dev->alias = "RTL8367C";		
+	dev->alias = "RTL8367C";
 	err = register_switch(dev, NULL);
 
 	pr_info("[%s]\n",__func__);

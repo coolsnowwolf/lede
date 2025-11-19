@@ -70,7 +70,7 @@ caldata_extract_reverse() {
 	local caldata
 
 	mtd=$(find_mtd_chardev "$part")
-	reversed=$(hexdump -v -s $offset -n $count -e '/1 "%02x "' $mtd)
+	reversed=$(hexdump -v -s $offset -n $count -e '1/1 "%02x "' $mtd)
 
 	for byte in $reversed; do
 		caldata="\x${byte}${caldata}"
@@ -122,49 +122,43 @@ caldata_valid() {
 	return $?
 }
 
-caldata_patch_chksum() {
-	local mac=$1
-	local mac_offset=$(($2))
-	local chksum_offset=$(($3))
+caldata_patch_data() {
+	local data=$1
+	local data_count=$((${#1} / 2))
+	[ -n "$2" ] && local data_offset=$(($2))
+	[ -n "$3" ] && local chksum_offset=$(($3))
 	local target=$4
-	local xor_mac
-	local xor_fw_mac
-	local xor_fw_chksum
+	local fw_data
+	local fw_chksum
 
-	xor_mac=${mac//:/}
-	xor_mac="${xor_mac:0:4} ${xor_mac:4:4} ${xor_mac:8:4}"
-
-	xor_fw_mac=$(hexdump -v -n 6 -s $mac_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
-	xor_fw_mac="${xor_fw_mac:0:4} ${xor_fw_mac:4:4} ${xor_fw_mac:8:4}"
-
-	xor_fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '/1 "%02x"' /lib/firmware/$FIRMWARE)
-	xor_fw_chksum=$(xor $xor_fw_chksum $xor_fw_mac $xor_mac)
-
-	printf "%b" "\x${xor_fw_chksum:0:2}\x${xor_fw_chksum:2:2}" | \
-		dd of=$target conv=notrunc bs=1 seek=$chksum_offset count=2
-}
-
-caldata_patch_mac() {
-	local mac=$1
-	local mac_offset=$(($2))
-	local chksum_offset=$3
-	local target=$4
-
-	[ -z "$mac" -o -z "$mac_offset" ] && return
+	[ -z "$data" -o -z "$data_offset" ] && return
 
 	[ -n "$target" ] || target=/lib/firmware/$FIRMWARE
 
-	[ -n "$chksum_offset" ] && caldata_patch_chksum "$mac" "$mac_offset" "$chksum_offset" "$target"
+	fw_data=$(hexdump -v -n $data_count -s $data_offset -e '1/1 "%02x"' $target)
 
-	macaddr_2bin $mac | dd of=$target conv=notrunc oflag=seek_bytes bs=6 seek=$mac_offset count=1 || \
-		caldata_die "failed to write MAC address to eeprom file"
+	if [ "$data" != "$fw_data" ]; then
+
+		if [ -n "$chksum_offset" ]; then
+			fw_chksum=$(hexdump -v -n 2 -s $chksum_offset -e '1/1 "%02x"' $target)
+			fw_chksum=$(xor $fw_chksum $(data_2xor_val $fw_data) $(data_2xor_val $data))
+
+			data_2bin $fw_chksum | \
+				dd of=$target conv=notrunc bs=1 seek=$chksum_offset count=2 || \
+				caldata_die "failed to write chksum to eeprom file"
+		fi
+
+		data_2bin $data | \
+			dd of=$target conv=notrunc bs=1 seek=$data_offset count=$data_count || \
+			caldata_die "failed to write data to eeprom file"
+	fi
 }
 
 ath9k_patch_mac() {
 	local mac=$1
 	local target=$2
 
-	caldata_patch_mac "$mac" 0x2 "" "$target"
+	caldata_patch_data "${mac//:/}" 0x2 "" "$target"
 }
 
 ath9k_patch_mac_crc() {
@@ -173,12 +167,52 @@ ath9k_patch_mac_crc() {
 	local chksum_offset=$((mac_offset - 10))
 	local target=$4
 
-	caldata_patch_mac "$mac" "$mac_offset" "$chksum_offset" "$target"
+	caldata_patch_data "${mac//:/}" "$mac_offset" "$chksum_offset" "$target"
 }
 
 ath10k_patch_mac() {
 	local mac=$1
 	local target=$2
 
-	caldata_patch_mac "$mac" 0x6 0x2 "$target"
+	caldata_patch_data "${mac//:/}" 0x6 0x2 "$target"
+}
+
+ath11k_patch_mac() {
+	local mac=$1
+	# mac_id from 0 to 5
+	local mac_id=$2
+	local target=$3
+
+	[ -z "$mac_id" ] && return
+
+	caldata_patch_data "${mac//:/}" $(printf "0x%x" $(($mac_id * 0x6 + 0xe))) 0xa "$target"
+}
+
+ath10k_remove_regdomain() {
+	local target=$1
+
+	caldata_patch_data "0000" 0xc 0x2 "$target"
+}
+
+ath11k_remove_regdomain() {
+	local target=$1
+	local regdomain
+	local regdomain_data
+
+	regdomain=$(hexdump -v -n 2 -s 0x34 -e '1/1 "%02x"' $target)
+	caldata_patch_data "0000" 0x34 0xa "$target"
+
+	for offset in 0x450 0x458 0x500 0x5a8; do
+		regdomain_data=$(hexdump -v -n 2 -s $offset -e '1/1 "%02x"' $target)
+
+		if [ "$regdomain" == "$regdomain_data" ]; then
+			caldata_patch_data "0000" $offset 0xa "$target"
+		fi
+	done
+}
+
+ath11k_set_macflag() {
+	local target=$1
+
+	caldata_patch_data "0100" 0x3e 0xa "$target"
 }

@@ -1,0 +1,215 @@
+From 63af46200da794acda25cf8083bde0c1576b0859 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Sun, 9 Feb 2025 22:29:43 +0800
+Subject: [PATCH] net: ethernet: qualcomm: Initialize PPE port control settings
+
+1. Enable port specific counters in PPE.
+2. Configure the default action as drop when the packet size
+   is more than the configured MTU of physical port.
+
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ .../net/ethernet/qualcomm/ppe/ppe_config.c    | 86 ++++++++++++++++++-
+ .../net/ethernet/qualcomm/ppe/ppe_config.h    | 15 ++++
+ drivers/net/ethernet/qualcomm/ppe/ppe_regs.h  | 47 ++++++++++
+ 3 files changed, 147 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.c
+@@ -1153,6 +1153,44 @@ int ppe_sc_config_set(struct ppe_device
+ 	return regmap_write(ppe_dev->regmap, reg, val);
+ }
+ 
++/**
++ * ppe_counter_enable_set - Set PPE port counter enabled
++ * @ppe_dev: PPE device
++ * @port: PPE port ID
++ *
++ * Enable PPE counters on the given port for the unicast packet, multicast
++ * packet and VLAN packet received and transmitted by PPE.
++ *
++ * Return: 0 on success, negative error code on failure.
++ */
++int ppe_counter_enable_set(struct ppe_device *ppe_dev, int port)
++{
++	u32 reg, mru_mtu_val[3];
++	int ret;
++
++	reg = PPE_MRU_MTU_CTRL_TBL_ADDR + PPE_MRU_MTU_CTRL_TBL_INC * port;
++	ret = regmap_bulk_read(ppe_dev->regmap, reg,
++			       mru_mtu_val, ARRAY_SIZE(mru_mtu_val));
++	if (ret)
++		return ret;
++
++	PPE_MRU_MTU_CTRL_SET_RX_CNT_EN(mru_mtu_val, true);
++	PPE_MRU_MTU_CTRL_SET_TX_CNT_EN(mru_mtu_val, true);
++	ret = regmap_bulk_write(ppe_dev->regmap, reg,
++				mru_mtu_val, ARRAY_SIZE(mru_mtu_val));
++	if (ret)
++		return ret;
++
++	reg = PPE_MC_MTU_CTRL_TBL_ADDR + PPE_MC_MTU_CTRL_TBL_INC * port;
++	ret = regmap_set_bits(ppe_dev->regmap, reg, PPE_MC_MTU_CTRL_TBL_TX_CNT_EN);
++	if (ret)
++		return ret;
++
++	reg = PPE_PORT_EG_VLAN_TBL_ADDR + PPE_PORT_EG_VLAN_TBL_INC * port;
++
++	return regmap_set_bits(ppe_dev->regmap, reg, PPE_PORT_EG_VLAN_TBL_TX_COUNTING_EN);
++}
++
+ static int ppe_config_bm_threshold(struct ppe_device *ppe_dev, int bm_port_id,
+ 				   const struct ppe_bm_port_config port_cfg)
+ {
+@@ -1579,6 +1617,48 @@ static int ppe_servcode_init(struct ppe_
+ 	return ppe_sc_config_set(ppe_dev, PPE_EDMA_SC_BYPASS_ID, sc_cfg);
+ }
+ 
++/* Initialize PPE port configurations. */
++static int ppe_port_config_init(struct ppe_device *ppe_dev)
++{
++	u32 reg, val, mru_mtu_val[3];
++	int i, ret;
++
++	/* MTU and MRU settings are not required for CPU port 0. */
++	for (i = 1; i < ppe_dev->num_ports; i++) {
++		/* Enable Ethernet port counter */
++		ret = ppe_counter_enable_set(ppe_dev, i);
++		if (ret)
++			return ret;
++
++		reg = PPE_MRU_MTU_CTRL_TBL_ADDR + PPE_MRU_MTU_CTRL_TBL_INC * i;
++		ret = regmap_bulk_read(ppe_dev->regmap, reg,
++				       mru_mtu_val, ARRAY_SIZE(mru_mtu_val));
++		if (ret)
++			return ret;
++
++		/* Drop the packet when the packet size is more than
++		 * the MTU or MRU of the physical interface.
++		 */
++		PPE_MRU_MTU_CTRL_SET_MRU_CMD(mru_mtu_val, PPE_ACTION_DROP);
++		PPE_MRU_MTU_CTRL_SET_MTU_CMD(mru_mtu_val, PPE_ACTION_DROP);
++		ret = regmap_bulk_write(ppe_dev->regmap, reg,
++					mru_mtu_val, ARRAY_SIZE(mru_mtu_val));
++		if (ret)
++			return ret;
++
++		reg = PPE_MC_MTU_CTRL_TBL_ADDR + PPE_MC_MTU_CTRL_TBL_INC * i;
++		val = FIELD_PREP(PPE_MC_MTU_CTRL_TBL_MTU_CMD, PPE_ACTION_DROP);
++		ret = regmap_update_bits(ppe_dev->regmap, reg,
++					 PPE_MC_MTU_CTRL_TBL_MTU_CMD,
++					 val);
++		if (ret)
++			return ret;
++	}
++
++	/* Enable CPU port counters. */
++	return ppe_counter_enable_set(ppe_dev, 0);
++}
++
+ int ppe_hw_config(struct ppe_device *ppe_dev)
+ {
+ 	int ret;
+@@ -1599,5 +1679,9 @@ int ppe_hw_config(struct ppe_device *ppe
+ 	if (ret)
+ 		return ret;
+ 
+-	return ppe_servcode_init(ppe_dev);
++	ret = ppe_servcode_init(ppe_dev);
++	if (ret)
++		return ret;
++
++	return ppe_port_config_init(ppe_dev);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_config.h
+@@ -233,6 +233,20 @@ struct ppe_sc_cfg {
+ 	int eip_offset_sel;
+ };
+ 
++/**
++ * enum ppe_action_type - PPE action of the received packet.
++ * @PPE_ACTION_FORWARD: Packet forwarded per L2/L3 process.
++ * @PPE_ACTION_DROP: Packet dropped by PPE.
++ * @PPE_ACTION_COPY_TO_CPU: Packet copied to CPU port per multicast queue.
++ * @PPE_ACTION_REDIRECT_TO_CPU: Packet redirected to CPU port per unicast queue.
++ */
++enum ppe_action_type {
++	PPE_ACTION_FORWARD = 0,
++	PPE_ACTION_DROP = 1,
++	PPE_ACTION_COPY_TO_CPU = 2,
++	PPE_ACTION_REDIRECT_TO_CPU = 3,
++};
++
+ int ppe_hw_config(struct ppe_device *ppe_dev);
+ int ppe_queue_scheduler_set(struct ppe_device *ppe_dev,
+ 			    int node_id, bool flow_level, int port,
+@@ -254,4 +268,5 @@ int ppe_port_resource_get(struct ppe_dev
+ 			  int *res_start, int *res_end);
+ int ppe_sc_config_set(struct ppe_device *ppe_dev, int sc,
+ 		      struct ppe_sc_cfg cfg);
++int ppe_counter_enable_set(struct ppe_device *ppe_dev, int port);
+ #endif
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_regs.h
+@@ -40,6 +40,18 @@
+ #define PPE_SERVICE_SET_RX_CNT_EN(tbl_cfg, value)	\
+ 	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_SERVICE_W1_RX_CNT_EN)
+ 
++/* PPE port egress VLAN configurations. */
++#define PPE_PORT_EG_VLAN_TBL_ADDR		0x20020
++#define PPE_PORT_EG_VLAN_TBL_ENTRIES		8
++#define PPE_PORT_EG_VLAN_TBL_INC		4
++#define PPE_PORT_EG_VLAN_TBL_VLAN_TYPE		BIT(0)
++#define PPE_PORT_EG_VLAN_TBL_CTAG_MODE		GENMASK(2, 1)
++#define PPE_PORT_EG_VLAN_TBL_STAG_MODE		GENMASK(4, 3)
++#define PPE_PORT_EG_VLAN_TBL_VSI_TAG_MODE_EN	BIT(5)
++#define PPE_PORT_EG_VLAN_TBL_PCP_PROP_CMD	BIT(6)
++#define PPE_PORT_EG_VLAN_TBL_DEI_PROP_CMD	BIT(7)
++#define PPE_PORT_EG_VLAN_TBL_TX_COUNTING_EN	BIT(8)
++
+ /* PPE queue counters enable/disable control. */
+ #define PPE_EG_BRIDGE_CONFIG_ADDR		0x20044
+ #define PPE_EG_BRIDGE_CONFIG_QUEUE_CNT_EN	BIT(2)
+@@ -65,6 +77,41 @@
+ #define PPE_EG_SERVICE_SET_TX_CNT_EN(tbl_cfg, value)	\
+ 	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_EG_SERVICE_W1_TX_CNT_EN)
+ 
++/* PPE port control configurations for the traffic to the multicast queues. */
++#define PPE_MC_MTU_CTRL_TBL_ADDR		0x60a00
++#define PPE_MC_MTU_CTRL_TBL_ENTRIES		8
++#define PPE_MC_MTU_CTRL_TBL_INC			4
++#define PPE_MC_MTU_CTRL_TBL_MTU			GENMASK(13, 0)
++#define PPE_MC_MTU_CTRL_TBL_MTU_CMD		GENMASK(15, 14)
++#define PPE_MC_MTU_CTRL_TBL_TX_CNT_EN		BIT(16)
++
++/* PPE port control configurations for the traffic to the unicast queues. */
++#define PPE_MRU_MTU_CTRL_TBL_ADDR		0x65000
++#define PPE_MRU_MTU_CTRL_TBL_ENTRIES		256
++#define PPE_MRU_MTU_CTRL_TBL_INC		0x10
++#define PPE_MRU_MTU_CTRL_W0_MRU			GENMASK(13, 0)
++#define PPE_MRU_MTU_CTRL_W0_MRU_CMD		GENMASK(15, 14)
++#define PPE_MRU_MTU_CTRL_W0_MTU			GENMASK(29, 16)
++#define PPE_MRU_MTU_CTRL_W0_MTU_CMD		GENMASK(31, 30)
++#define PPE_MRU_MTU_CTRL_W1_RX_CNT_EN		BIT(0)
++#define PPE_MRU_MTU_CTRL_W1_TX_CNT_EN		BIT(1)
++#define PPE_MRU_MTU_CTRL_W1_SRC_PROFILE		GENMASK(3, 2)
++#define PPE_MRU_MTU_CTRL_W1_INNER_PREC_LOW	BIT(31)
++#define PPE_MRU_MTU_CTRL_W2_INNER_PREC_HIGH	GENMASK(1, 0)
++
++#define PPE_MRU_MTU_CTRL_SET_MRU(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_MRU_MTU_CTRL_W0_MRU)
++#define PPE_MRU_MTU_CTRL_SET_MRU_CMD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_MRU_MTU_CTRL_W0_MRU_CMD)
++#define PPE_MRU_MTU_CTRL_SET_MTU(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_MRU_MTU_CTRL_W0_MTU)
++#define PPE_MRU_MTU_CTRL_SET_MTU_CMD(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)tbl_cfg, value, PPE_MRU_MTU_CTRL_W0_MTU_CMD)
++#define PPE_MRU_MTU_CTRL_SET_RX_CNT_EN(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_MRU_MTU_CTRL_W1_RX_CNT_EN)
++#define PPE_MRU_MTU_CTRL_SET_TX_CNT_EN(tbl_cfg, value)	\
++	u32p_replace_bits((u32 *)(tbl_cfg) + 0x1, value, PPE_MRU_MTU_CTRL_W1_TX_CNT_EN)
++
+ /* PPE service code configuration for destination port and counter. */
+ #define PPE_IN_L2_SERVICE_TBL_ADDR		0x66000
+ #define PPE_IN_L2_SERVICE_TBL_ENTRIES		256

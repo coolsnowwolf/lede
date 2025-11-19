@@ -1,15 +1,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qca-ssdk
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
-PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/qca-ssdk.git
+PKG_SOURCE_URL:=https://github.com/openwrt/qca-ssdk.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-06-06
-PKG_SOURCE_VERSION:=74caf88aa3b6793c300f676e4fb1c62da7507be9
-PKG_MIRROR_HASH:=6bdb90919b773f5fb432c8b374c9419feac32ba6583ad82dfec5e41628a32dd9
+PKG_SOURCE_DATE:=2025-05-30
+PKG_SOURCE_VERSION:=446db12b1fd3bca2e61e45cb01c4ad52cfddd95b
+PKG_MIRROR_HASH:=c2e6df159f02da78c76a2bb8b23ee35a7291d20a4d9ba22533926157966a8278
 
 PKG_FLAGS:=nonshared
+PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-lto
 
 include $(INCLUDE_DIR)/kernel.mk
@@ -21,7 +22,7 @@ define KernelPackage/qca-ssdk
   SUBMENU:=Network Devices
   TITLE:=Qualcom SSDK switch driver
   DEPENDS:=@(TARGET_qualcommax)
-  FILES:=$(PKG_BUILD_DIR)/build/bin/qca-ssdk.ko
+  FILES:=$(PKG_BUILD_DIR)/qca-ssdk.ko
   AUTOLOAD:=$(call AutoLoad,30,qca-ssdk)
 endef
 
@@ -31,7 +32,13 @@ endef
 
 GCC_VERSION=$(shell echo "$(CONFIG_GCC_VERSION)" | sed 's/[^0-9.]*\([0-9.]*\).*/\1/')
 
-LNX_CONFIG_OPTS = LNX_MAKEOPTS='$(KERNEL_MAKEOPTS)' MODULE_TYPE=KSLIB modules
+LNX_CONFIG_OPTS = LNX_MAKEOPTS='$(KERNEL_MAKEOPTS)' PRJ_PATH=$(PKG_BUILD_DIR) MODULE_TYPE=KSLIB modules
+
+EXTRA_CFLAGS:= \
+	-fno-stack-protector \
+	-Wno-missing-prototypes \
+	-Wno-missing-declarations \
+	-I$(STAGING_DIR)/usr/include
 
 MAKE_FLAGS+= \
 	TARGET_NAME=$(CONFIG_TARGET_NAME) \
@@ -42,15 +49,29 @@ MAKE_FLAGS+= \
 	ARCH=$(LINUX_KARCH) \
 	TARGET_SUFFIX=$(CONFIG_TARGET_SUFFIX) \
 	GCC_VERSION=$(GCC_VERSION) \
-	EXTRA_CFLAGS=-fno-stack-protector -I$(STAGING_DIR)/usr/include \
+	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+	SoC=$(CONFIG_TARGET_SUBTARGET) \
+	SHELL="$(BASH)" \
 	PTP_FEATURE=disable SWCONFIG_FEATURE=disable \
+	ISISC_ENABLE=disable MHT_ENABLE=disable \
+	IN_QCA803X_PHY=FALSE IN_MP_PHY=FALSE \
 	$(LNX_CONFIG_OPTS)
+
+ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
+    MAKE_FLAGS+= CHIP_TYPE=HPPE
+endif
 
 ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq60xx")
     MAKE_FLAGS+= CHIP_TYPE=CPPE
-else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
-    MAKE_FLAGS+= CHIP_TYPE=HPPE
 endif
+
+ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")
+    MAKE_FLAGS+= CHIP_TYPE=MP
+endif
+
+define Build/Compile
+	+$(MAKE) $(PKG_JOBS) $(MAKE_FLAGS) -C $(PKG_BUILD_DIR) $(LNX_CONFIG_OPTS)
+endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/qca-ssdk
@@ -79,7 +100,6 @@ define Build/InstallDev
 	$(CP) -rf $(PKG_BUILD_DIR)/include/common/*.h $(1)/usr/include/qca-ssdk
 	$(CP) -rf $(PKG_BUILD_DIR)/include/sal/os/linux/*.h $(1)/usr/include/qca-ssdk
 	$(CP) -rf $(PKG_BUILD_DIR)/include/sal/os/*.h $(1)/usr/include/qca-ssdk
-
 endef
 
 $(eval $(call KernelPackage,qca-ssdk))

@@ -1,0 +1,188 @@
+From b3c4a07fdd65476971040682b16ce43e872c7ea7 Mon Sep 17 00:00:00 2001
+From: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+Date: Wed, 22 May 2024 14:12:42 +0100
+Subject: [PATCH] mm/mempolicy: Add MPOL_RANDOM
+
+To help work around certain memory controller limitations or similar, a
+random NUMA allocation memory policy is added.
+
+Signed-off-by: Tvrtko Ursulin <tvrtko.ursulin@igalia.com>
+---
+ include/uapi/linux/mempolicy.h |  1 +
+ mm/mempolicy.c                 | 71 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 72 insertions(+)
+
+--- a/include/uapi/linux/mempolicy.h
++++ b/include/uapi/linux/mempolicy.h
+@@ -24,6 +24,7 @@ enum {
+ 	MPOL_LOCAL,
+ 	MPOL_PREFERRED_MANY,
+ 	MPOL_WEIGHTED_INTERLEAVE,
++	MPOL_RANDOM,
+ 	MPOL_MAX,	/* always last member of enum */
+ };
+ 
+--- a/mm/mempolicy.c
++++ b/mm/mempolicy.c
+@@ -41,6 +41,9 @@
+  * preferred many Try a set of nodes first before normal fallback. This is
+  *                similar to preferred without the special case.
+  *
++ * random         Allocate memory from a random node out of allowed set of
++ *                nodes.
++ *
+  * default        Allocate on the local node first, or when on a VMA
+  *                use the process policy. This is what Linux always did
+  *		  in a NUMA aware kernel and still does by, ahem, default.
+@@ -452,6 +455,10 @@ static const struct mempolicy_operations
+ 		.create = mpol_new_nodemask,
+ 		.rebind = mpol_rebind_nodemask,
+ 	},
++	[MPOL_RANDOM] = {
++		.create = mpol_new_nodemask,
++		.rebind = mpol_rebind_nodemask,
++	},
+ };
+ 
+ static bool migrate_folio_add(struct folio *folio, struct list_head *foliolist,
+@@ -900,6 +907,7 @@ static void get_policy_nodemask(struct m
+ 	case MPOL_PREFERRED:
+ 	case MPOL_PREFERRED_MANY:
+ 	case MPOL_WEIGHTED_INTERLEAVE:
++	case MPOL_RANDOM:
+ 		*nodes = pol->nodes;
+ 		break;
+ 	case MPOL_LOCAL:
+@@ -1917,6 +1925,27 @@ static unsigned int interleave_nodes(str
+ 	return nid;
+ }
+ 
++static unsigned int read_once_policy_nodemask(struct mempolicy *pol, nodemask_t *mask);
++
++static unsigned int random_nodes(struct mempolicy *policy)
++{
++	unsigned int nid = first_node(policy->nodes);
++	unsigned int cpuset_mems_cookie;
++	nodemask_t nodemask;
++	unsigned int r;
++
++	r = get_random_u32_below(read_once_policy_nodemask(policy, &nodemask));
++
++	/* to prevent miscount, use tsk->mems_allowed_seq to detect rebind */
++	do {
++		cpuset_mems_cookie = read_mems_allowed_begin();
++		while (r--)
++			nid = next_node_in(nid, policy->nodes);
++	} while (read_mems_allowed_retry(cpuset_mems_cookie));
++
++	return nid;
++}
++
+ /*
+  * Depending on the memory policy provide a node from which to allocate the
+  * next slab entry.
+@@ -1962,6 +1991,9 @@ unsigned int mempolicy_slab_node(void)
+ 	case MPOL_LOCAL:
+ 		return node;
+ 
++	case MPOL_RANDOM:
++		return random_nodes(policy);
++
+ 	default:
+ 		BUG();
+ 	}
+@@ -2042,6 +2074,33 @@ static unsigned int interleave_nid(struc
+ 	return nid;
+ }
+ 
++static unsigned int random_nid(struct mempolicy *pol,
++			       struct vm_area_struct *vma,
++			       pgoff_t ilx)
++{
++	nodemask_t nodemask;
++	unsigned int r, nnodes;
++	int i, nid;
++
++	nnodes = read_once_policy_nodemask(pol, &nodemask);
++	if (!nnodes)
++		return numa_node_id();
++
++	/*
++	 * QQQ
++	 * Can we say hash of vma+ilx is sufficiently random but still
++	 * stable in case of reliance on stable, as it appears is with
++	 * mpol_misplaced and interleaving?
++	 */
++	r = hash_long((unsigned long)vma + ilx,
++		      ilog2(roundup_pow_of_two(nnodes)));
++
++	nid = first_node(nodemask);
++	for (i = 0; i < r; i++)
++		nid = next_node(nid, nodemask);
++	return nid;
++}
++
+ /*
+  * Return a nodemask representing a mempolicy for filtering nodes for
+  * page allocation, together with preferred node id (or the input node id).
+@@ -2085,6 +2144,9 @@ static nodemask_t *policy_nodemask(gfp_t
+ 			weighted_interleave_nodes(pol) :
+ 			weighted_interleave_nid(pol, ilx);
+ 		break;
++	case MPOL_RANDOM:
++		*nid = random_nodes(pol);
++		break;
+ 	}
+ 
+ 	return nodemask;
+@@ -2153,6 +2215,7 @@ bool init_nodemask_of_mempolicy(nodemask
+ 	case MPOL_BIND:
+ 	case MPOL_INTERLEAVE:
+ 	case MPOL_WEIGHTED_INTERLEAVE:
++	case MPOL_RANDOM:
+ 		*mask = mempolicy->nodes;
+ 		break;
+ 
+@@ -2633,6 +2696,7 @@ bool __mpol_equal(struct mempolicy *a, s
+ 	case MPOL_PREFERRED:
+ 	case MPOL_PREFERRED_MANY:
+ 	case MPOL_WEIGHTED_INTERLEAVE:
++	case MPOL_RANDOM:
+ 		return !!nodes_equal(a->nodes, b->nodes);
+ 	case MPOL_LOCAL:
+ 		return true;
+@@ -2824,6 +2888,10 @@ int mpol_misplaced(struct folio *folio,
+ 		polnid = zonelist_node_idx(z);
+ 		break;
+ 
++	case MPOL_RANDOM:
++		polnid = random_nid(pol, vma, ilx);
++		break;
++
+ 	default:
+ 		BUG();
+ 	}
+@@ -3169,6 +3237,7 @@ static const char * const policy_modes[]
+ 	[MPOL_WEIGHTED_INTERLEAVE] = "weighted interleave",
+ 	[MPOL_LOCAL]      = "local",
+ 	[MPOL_PREFERRED_MANY]  = "prefer (many)",
++	[MPOL_RANDOM]  = "random",
+ };
+ 
+ /**
+@@ -3231,6 +3300,7 @@ int mpol_parse_str(char *str, struct mem
+ 		break;
+ 	case MPOL_INTERLEAVE:
+ 	case MPOL_WEIGHTED_INTERLEAVE:
++	case MPOL_RANDOM:
+ 		/*
+ 		 * Default to online nodes with memory if no nodelist
+ 		 */
+@@ -3375,6 +3445,7 @@ void mpol_to_str(char *buffer, int maxle
+ 	case MPOL_BIND:
+ 	case MPOL_INTERLEAVE:
+ 	case MPOL_WEIGHTED_INTERLEAVE:
++	case MPOL_RANDOM:
+ 		nodes = pol->nodes;
+ 		break;
+ 	default:

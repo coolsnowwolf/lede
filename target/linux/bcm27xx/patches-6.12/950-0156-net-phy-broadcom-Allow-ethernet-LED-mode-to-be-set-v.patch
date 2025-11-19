@@ -1,0 +1,77 @@
+From 9704fab9646e6654f0a713120f53336bdcee7743 Mon Sep 17 00:00:00 2001
+From: James Hughes <james.hughes@raspberrypi.org>
+Date: Thu, 31 Oct 2019 14:39:44 +0000
+Subject: [PATCH] net: phy: broadcom: Allow ethernet LED mode to be set via
+ device tree
+
+Add device tree entries and code to allow the specification of
+the lighting modes for the LED's on the ethernet connector.
+
+Signed-off-by: James Hughes <james.hughes@raspberrypi.org>
+
+net:phy:2711 Change the default ethernet LED actions
+
+This should return default behaviour back to that of previous
+releases.
+
+net: phy: broadcom: Make LEDs 3+4 shadow LEDs 1+2
+
+CM4 uses BCM54210PE, which supports 2 additional LEDs, choosing LED3
+for the amber LED because it shows activity by default (LED4 is not
+connected). However, this makes it uncontrollable by the eth_led<n>
+dtparams which target LEDs 1+2.
+
+Solve the problem by making LEDs 3+4 mirror LEDs 1+2 (which is much
+simpler than adding baseboard-specific overrides, but comes with a
+risk of making one of the LEDs redundant).
+
+See: https://github.com/raspberrypi/linux/issues/5289
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/net/phy/broadcom.c | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/phy/broadcom.c
++++ b/drivers/net/phy/broadcom.c
+@@ -430,6 +430,9 @@ static int bcm54811_config_init(struct p
+ static int bcm54xx_config_init(struct phy_device *phydev)
+ {
+ 	int reg, err, val;
++	u32 led_modes[] = {BCM_LED_MULTICOLOR_LINK_ACT,
++			   BCM_LED_MULTICOLOR_LINK};
++	struct device_node *np = phydev->mdio.dev.of_node;
+ 
+ 	reg = phy_read(phydev, MII_BCM54XX_ECR);
+ 	if (reg < 0)
+@@ -488,10 +491,10 @@ static int bcm54xx_config_init(struct ph
+ 
+ 	bcm54xx_phydsp_config(phydev);
+ 
++	of_property_read_u32_array(np, "led-modes", led_modes, 2);
++
+ 	/* For non-SFP setups, encode link speed into LED1 and LED3 pair
+ 	 * (green/amber).
+-	 * Also flash these two LEDs on activity. This means configuring
+-	 * them for MULTICOLOR and encoding link/activity into them.
+ 	 * Don't do this for devices on an SFP module, since some of these
+ 	 * use the LED outputs to control the SFP LOS signal, and changing
+ 	 * these settings will cause LOS to malfunction.
+@@ -500,10 +503,15 @@ static int bcm54xx_config_init(struct ph
+ 		val = BCM54XX_SHD_LEDS1_LED1(BCM_LED_SRC_MULTICOLOR1) |
+ 			BCM54XX_SHD_LEDS1_LED3(BCM_LED_SRC_MULTICOLOR1);
+ 		bcm_phy_write_shadow(phydev, BCM54XX_SHD_LEDS1, val);
++		/* BCM54210PE controls two extra LEDs with the next register.
++		 * Make them shadow the first pair of LEDs - useful on CM4 which
++		 * uses LED3 for ETH_LEDY instead of LED1.
++		 */
++		bcm_phy_write_shadow(phydev, BCM54XX_SHD_LEDS1 + 1, val);
+ 
+ 		val = BCM_LED_MULTICOLOR_IN_PHASE |
+-			BCM54XX_SHD_LEDS1_LED1(BCM_LED_MULTICOLOR_LINK_ACT) |
+-			BCM54XX_SHD_LEDS1_LED3(BCM_LED_MULTICOLOR_LINK_ACT);
++			BCM54XX_SHD_LEDS1_LED1(led_modes[0]) |
++			BCM54XX_SHD_LEDS1_LED3(led_modes[1]);
+ 		bcm_phy_write_exp(phydev, BCM_EXP_MULTICOLOR, val);
+ 	}
+ 

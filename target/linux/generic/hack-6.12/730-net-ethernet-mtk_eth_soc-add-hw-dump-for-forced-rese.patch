@@ -1,0 +1,115 @@
+From bc51c337a3147c4a02c743489885a6657bc5371c Mon Sep 17 00:00:00 2001
+From: Bo-Cun Chen <bc-bocun.chen@mediatek.com>
+Date: Wed, 27 Nov 2024 13:36:49 +0800
+Subject: [PATCH] net: ethernet: mtk_eth_soc: add hw dump for forced reset
+
+Without this patch, the ETH driver is unable to dump the registers
+before triggering a forced reset.
+
+Signed-off-by: Bo-Cun Chen <bc-bocun.chen@mediatek.com>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 55 +++++++++++++++++++++
+ 1 files changed, 55 insertions(+)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -66,6 +66,7 @@ static const struct mtk_reg_map mtk_reg_
+ 		.rx_ptr		= 0x1900,
+ 		.rx_cnt_cfg	= 0x1904,
+ 		.qcrx_ptr	= 0x1908,
++		.page		= 0x19f0,
+ 		.glo_cfg	= 0x1a04,
+ 		.rst_idx	= 0x1a08,
+ 		.delay_irq	= 0x1a0c,
+@@ -132,6 +133,7 @@ static const struct mtk_reg_map mt7986_r
+ 		.rx_ptr		= 0x4500,
+ 		.rx_cnt_cfg	= 0x4504,
+ 		.qcrx_ptr	= 0x4508,
++		.page		= 0x45f0,
+ 		.glo_cfg	= 0x4604,
+ 		.rst_idx	= 0x4608,
+ 		.delay_irq	= 0x460c,
+@@ -183,6 +185,7 @@ static const struct mtk_reg_map mt7988_r
+ 		.rx_ptr		= 0x4500,
+ 		.rx_cnt_cfg	= 0x4504,
+ 		.qcrx_ptr	= 0x4508,
++		.page		= 0x45f0,
+ 		.glo_cfg	= 0x4604,
+ 		.rst_idx	= 0x4608,
+ 		.delay_irq	= 0x460c,
+@@ -3901,6 +3904,56 @@ static void mtk_set_mcr_max_rx(struct mt
+ 		mtk_w32(mac->hw, mcr_new, MTK_MAC_MCR(mac->id));
+ }
+ 
++static void mtk_hw_dump_reg(struct mtk_eth *eth, char *name, u32 offset, u32 range)
++{
++	u32 cur = offset;
++
++	pr_info("\n==================== %s ====================\n", name);
++	while (cur < offset + range) {
++		pr_info("0x%08x: %08x %08x %08x %08x\n",
++			cur, mtk_r32(eth, cur), mtk_r32(eth, cur + 0x4),
++			mtk_r32(eth, cur + 0x8), mtk_r32(eth, cur + 0xc));
++		cur += 0x10;
++	}
++}
++
++static void mtk_hw_dump(struct mtk_eth *eth)
++{
++	const struct mtk_reg_map *reg_map = eth->soc->reg_map;
++	u32 id;
++
++	mtk_hw_dump_reg(eth, "FE", 0x0, 0x600);
++	mtk_hw_dump_reg(eth, "FE", 0x1400, 0x300);
++	mtk_hw_dump_reg(eth, "ADMA", reg_map->pdma.rx_ptr, 0x300);
++	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
++		for (id = 0; id < MTK_QDMA_NUM_QUEUES / 16; id++) {
++			mtk_w32(eth, id, reg_map->qdma.page);
++			pr_info("\nQDMA PAGE:%x ", mtk_r32(eth, reg_map->qdma.page));
++			mtk_hw_dump_reg(eth, "QDMA", reg_map->qdma.qtx_cfg, 0x100);
++			mtk_w32(eth, 0, reg_map->qdma.page);
++		}
++		mtk_hw_dump_reg(eth, "QDMA", reg_map->qdma.rx_ptr, 0x300);
++	}
++	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628)) {
++		mtk_hw_dump_reg(eth, "WDMA0", reg_map->wdma_base[0], 0x400);
++		mtk_hw_dump_reg(eth, "WDMA1", reg_map->wdma_base[1], 0x400);
++		if (mtk_is_netsys_v3_or_greater(eth))
++			mtk_hw_dump_reg(eth, "WDMA2", reg_map->wdma_base[2], 0x400);
++	}
++	mtk_hw_dump_reg(eth, "PPE0", reg_map->ppe_base + 0x200, 0x200);
++	if (!mtk_is_netsys_v1(eth))
++		mtk_hw_dump_reg(eth, "PPE1", reg_map->ppe_base + 0x600, 0x200);
++	if (mtk_is_netsys_v3_or_greater(eth))
++		mtk_hw_dump_reg(eth, "PPE2", reg_map->ppe_base + 0xE00, 0x200);
++	mtk_hw_dump_reg(eth, "GMAC", 0x10000, 0x300);
++	if (mtk_is_netsys_v3_or_greater(eth))
++		mtk_hw_dump_reg(eth, "GMAC", 0x10300, 0x100);
++	if (mtk_is_netsys_v3_or_greater(eth)) {
++		mtk_hw_dump_reg(eth, "XGMAC0", 0x12000, 0x300);
++		mtk_hw_dump_reg(eth, "XGMAC1", 0x13000, 0x300);
++	}
++}
++
+ static void mtk_hw_reset(struct mtk_eth *eth)
+ {
+ 	u32 val;
+@@ -4380,6 +4433,8 @@ static void mtk_pending_work(struct work
+ 	rtnl_lock();
+ 	set_bit(MTK_RESETTING, &eth->state);
+ 
++	mtk_hw_dump(eth);
++
+ 	mtk_prepare_for_reset(eth);
+ 	mtk_wed_fe_reset();
+ 	/* Run again reset preliminary configuration in order to avoid any
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -1191,6 +1191,7 @@ struct mtk_reg_map {
+ 		u32	rx_ptr;		/* rx base pointer */
+ 		u32	rx_cnt_cfg;	/* rx max count configuration */
+ 		u32	qcrx_ptr;	/* rx cpu pointer */
++		u32	page;		/* page configuration */
+ 		u32	glo_cfg;	/* global configuration */
+ 		u32	rst_idx;	/* reset index */
+ 		u32	delay_irq;	/* delay interrupt */

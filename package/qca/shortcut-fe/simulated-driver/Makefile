@@ -24,6 +24,8 @@ PKG_SOURCE_DATE:=2021-03-17
 PKG_SOURCE_VERSION:=697977d8d0ccf0ab596e5692d08608a75dd7f33d
 PKG_MIRROR_HASH:=659fa82a431e15af797a6c7069faeee02810453ad8b576c51c29f95a1761a045
 
+MAKE_PATH:=simulated-driver
+
 include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/shortcut-fe-drv
@@ -35,7 +37,7 @@ define KernelPackage/shortcut-fe-drv
 	   CONFIG_NET_CLS_ACT=y \
 	   CONFIG_XFRM=y
   TITLE:=Simulated sfe driver for ECM
-  FILES:=$(PKG_BUILD_DIR)/simulated-driver/shortcut-fe-drv.ko
+  FILES:=$(PKG_BUILD_DIR)/$(MAKE_PATH)/shortcut-fe-drv.ko
 endef
 
 define KernelPackage/shortcut-fe-drv/Description
@@ -43,18 +45,22 @@ Simulated sfe driver which act as an adapter to convert message
 between a connection manager and the SFE core engine.
 endef
 
+EXTRA_CFLAGS:= \
+	-DSFE_SUPPORT_IPV6 \
+	-Wno-missing-prototypes \
+	-Wno-missing-declarations
+
 define Build/Compile
 	$(MAKE) $(PKG_JOBS) -C "$(LINUX_DIR)" \
 		$(KERNEL_MAKE_FLAGS) \
-		$(PKG_MAKE_FLAGS) \
-		M="$(PKG_BUILD_DIR)/simulated-driver" \
-		EXTRA_CFLAGS="-DSFE_SUPPORT_IPV6" \
+		M="$(PKG_BUILD_DIR)/$(MAKE_PATH)/" \
+		EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
 		modules
 endef
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/include/shortcut-fe
-	$(CP) -rf $(PKG_BUILD_DIR)/simulated-driver/sfe_drv.h $(1)/usr/include/shortcut-fe
+	$(CP) -rf $(PKG_BUILD_DIR)/$(MAKE_PATH)/sfe_drv.h $(1)/usr/include/shortcut-fe
 endef
 
 $(eval $(call KernelPackage,shortcut-fe-drv))

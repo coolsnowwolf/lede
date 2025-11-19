@@ -53,7 +53,7 @@ DEFAULT_PACKAGES.nas:=\
 	mdadm
 # For router targets
 DEFAULT_PACKAGES.router:=\
-	dnsmasq-full firewall iptables ppp ppp-mod-pppoe odhcp6c odhcpd-ipv6only \
+	dnsmasq-full firewall iptables ppp ppp-mod-pppoe odhcp6c odhcpd-ipv6only ip6tables libip6tc kmod-ipt-nat6 \
 	block-mount coremark kmod-nf-nathelper kmod-nf-nathelper-extra kmod-ipt-raw kmod-tun \
 	iptables-mod-tproxy iptables-mod-extra ipset ip-full default-settings luci luci-proto-ipv6 \
 	ddns-scripts_aliyun ddns-scripts_dnspod luci-app-ddns luci-app-upnp luci-app-autoreboot \
@@ -259,8 +259,8 @@ ifeq ($(DUMP),1)
     CPU_CFLAGS_archs = -mcpu=archs
   endif
   ifeq ($(ARCH),riscv64)
-    CPU_TYPE ?= riscv64
-    CPU_CFLAGS_riscv64:=-mabi=lp64d -march=rv64imafdc
+    CPU_TYPE ?= generic
+    CPU_CFLAGS_generic:=-mabi=lp64d -march=rv64gc
   endif
   ifeq ($(ARCH),loongarch64)
     CPU_TYPE ?= generic

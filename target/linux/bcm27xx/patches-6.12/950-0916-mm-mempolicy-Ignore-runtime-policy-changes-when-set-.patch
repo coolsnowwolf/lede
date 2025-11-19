@@ -1,0 +1,67 @@
+From 550a46ee2e5b75f1ab6e59dc76fc9ea91093eb34 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 5 Feb 2025 12:08:46 +0000
+Subject: [PATCH] mm/mempolicy: Ignore runtime policy changes when set through
+ cmdline
+
+Some apps like linpack use numa_setpolicy to disable numa,
+but that tends to have a significant performance hit for us.
+
+If you have a cmdline.txt setting of numa_policy (to something other
+than default), then lets ignore runtime changes and stick with
+the cmdline.txt setting.
+
+Not specifying numa_setpolicy in cmdline, or setting
+numa_setpolicy=default(*) will allow runtime settings to work.
+
+(*) easier to do when numa_setpolicy=interleave is set in DT.
+
+Ignore logging for the first 40 seconds as there are some
+expected switches during boot.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ mm/mempolicy.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/mm/mempolicy.c
++++ b/mm/mempolicy.c
+@@ -85,6 +85,7 @@
+ #include <linux/highmem.h>
+ #include <linux/hugetlb.h>
+ #include <linux/kernel.h>
++#include <linux/ktime.h>
+ #include <linux/sched.h>
+ #include <linux/sched/mm.h>
+ #include <linux/sched/numa_balancing.h>
+@@ -138,6 +139,7 @@ static struct mempolicy default_policy =
+ 	.refcnt = ATOMIC_INIT(1), /* never free it */
+ 	.mode = MPOL_LOCAL,
+ };
++static bool mempolicy_cmdline_set;
+ 
+ static struct mempolicy preferred_node_policy[MAX_NUMNODES];
+ 
+@@ -1629,6 +1631,14 @@ static long kernel_set_mempolicy(int mod
+ 	int err;
+ 
+ 	err = sanitize_mpol_flags(&lmode, &mode_flags);
++
++	if (mempolicy_cmdline_set) {
++		// ignore messages during boot which are expected
++		if (ktime_get_boottime_seconds() > 40)
++			pr_info("Request to set policy to %d ignored\n", mode);
++		return 0;
++	}
++
+ 	if (err)
+ 		return err;
+ 
+@@ -3402,6 +3412,7 @@ static int __init setup_numapolicy(char
+ 		default_policy = pol;
+ 		mpol_to_str(buf, sizeof(buf), &pol);
+ 		pr_info("NUMA default policy overridden to '%s'\n", buf);
++		mempolicy_cmdline_set = pol.mode != MPOL_DEFAULT;
+ 	} else {
+ 		pr_warn("Unable to parse numa_policy=\n");
+ 	}

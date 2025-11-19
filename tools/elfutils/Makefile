@@ -3,12 +3,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=elfutils
-PKG_VERSION:=0.188
+PKG_VERSION:=0.192
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://sourceware.org/$(PKG_NAME)/ftp/$(PKG_VERSION)
-PKG_HASH:=fb8b0e8d0802005b9a309c60c1d8de32dd2951b56f0c3a3cb56d21ce01595dff
+PKG_HASH:=616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
 
 PKG_LICENSE:=GPL-3.0-or-later
 PKG_LICENSE_FILES:=COPYING COPYING-GPLV2 COPYING-LGPLV3
@@ -18,6 +18,8 @@ PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
+
+HOST_CFLAGS += -Wno-error -fPIC -std=gnu17
 
 HOST_CONFIGURE_ARGS += \
 	--disable-debuginfod \

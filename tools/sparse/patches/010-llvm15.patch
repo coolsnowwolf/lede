@@ -1,0 +1,128 @@
+From 0544c547682b878758eea731ef4b8e64e5ec91fb Mon Sep 17 00:00:00 2001
+From: Luc Van Oostenryck <lucvoo@kernel.org>
+Date: Sat, 20 Jan 2024 01:24:12 +0100
+Subject: llvm: fix LLVM 15 deprecation warnings
+
+LLVM 15 switched to opaque pointers by default and no longer supports typed pointers.
+Remove deprecated LLVM calls and update test.
+
+Original-patch-by: Vladimir Petko <vladimir.petko@canonical.com>
+Signed-off-by: Luc Van Oostenryck <lucvoo@kernel.org>
+---
+ sparse-llvm.c                      | 35 ++++++++++++++++++++++++++++++++++-
+ validation/backend/call-variadic.c | 16 ++++------------
+ 2 files changed, 38 insertions(+), 13 deletions(-)
+
+--- a/sparse-llvm.c
++++ b/sparse-llvm.c
+@@ -32,6 +32,20 @@ static LLVMTypeRef func_return_type(stru
+ 	return symbol_type(sym->ctype.base_type);
+ }
+ 
++#if LLVM_VERSION_MAJOR > 14
++// A call can be done either with a SYM_FN or a SYM_PTR (pointing to a SYM_FN).
++// Return the type corresponding to the SYM_FN.
++static LLVMTypeRef func_full_type(struct symbol *type)
++{
++	if (type->type == SYM_NODE) {
++		struct symbol *btype = type->ctype.base_type;
++		if (btype->type == SYM_PTR)
++			type = btype->ctype.base_type;
++	}
++	return symbol_type(type);
++}
++#endif
++
+ static LLVMTypeRef sym_func_type(struct symbol *sym)
+ {
+ 	int n_arg = symbol_list_size(sym->arguments);
+@@ -302,7 +316,11 @@ static LLVMValueRef get_sym_value(LLVMMo
+ 			LLVMSetGlobalConstant(data, 1);
+ 			LLVMSetInitializer(data, LLVMConstString(strdup(s), strlen(s) + 1, true));
+ 
++#if LLVM_VERSION_MAJOR > 14
++			result = LLVMConstGEP2(LLVMTypeOf(data), data, indices, ARRAY_SIZE(indices));
++#else
+ 			result = LLVMConstGEP(data, indices, ARRAY_SIZE(indices));
++#endif
+ 			return result;
+ 		}
+ 		default:
+@@ -485,7 +503,11 @@ static LLVMValueRef calc_gep(LLVMBuilder
+ 	/* convert base to char* type */
+ 	base = LLVMBuildPointerCast(builder, base, bytep, name);
+ 	/* addr = base + off */
++#if LLVM_VERSION_MAJOR > 14
++	addr = LLVMBuildInBoundsGEP2(builder, LLVMTypeOf(base),  base, &off, 1, name);
++#else
+ 	addr = LLVMBuildInBoundsGEP(builder, base, &off, 1, name);
++#endif
+ 	/* convert back to the actual pointer type */
+ 	addr = LLVMBuildPointerCast(builder, addr, type, name);
+ 	return addr;
+@@ -711,7 +733,11 @@ static void output_op_load(struct functi
+ 
+ 	/* perform load */
+ 	pseudo_name(insn->target, name);
++#if LLVM_VERSION_MAJOR > 14
++	target = LLVMBuildLoad2(fn->builder, symbol_type(insn->type), addr, name);
++#else
+ 	target = LLVMBuildLoad(fn->builder, addr, name);
++#endif
+ 
+ 	insn->target->priv = target;
+ }
+@@ -797,6 +823,7 @@ static void output_op_switch(struct func
+ static void output_op_call(struct function *fn, struct instruction *insn)
+ {
+ 	LLVMValueRef target, func;
++	struct symbol *fntype;
+ 	struct symbol *ctype;
+ 	int n_arg = 0, i;
+ 	struct pseudo *arg;
+@@ -812,14 +839,20 @@ static void output_op_call(struct functi
+ 	else
+ 		func = pseudo_to_value(fn, ctype, insn->func);
+ 	i = 0;
++	fntype = ctype;			// first symbol in the list is the function 'true' type
+ 	FOR_EACH_PTR(insn->arguments, arg) {
+-		NEXT_PTR_LIST(ctype);
++		NEXT_PTR_LIST(ctype);	// the remaining ones are the arguments' type
+ 		args[i++] = pseudo_to_rvalue(fn, ctype, arg);
+ 	} END_FOR_EACH_PTR(arg);
+ 	FINISH_PTR_LIST(ctype);
+ 
+ 	pseudo_name(insn->target, name);
++#if LLVM_VERSION_MAJOR > 14
++	target = LLVMBuildCall2(fn->builder, func_full_type(fntype), func, args, n_arg, name);
++#else
++	(void) fntype;
+ 	target = LLVMBuildCall(fn->builder, func, args, n_arg, name);
++#endif
+ 
+ 	insn->target->priv = target;
+ }
+--- a/validation/backend/call-variadic.c
++++ b/validation/backend/call-variadic.c
+@@ -11,17 +11,9 @@ int foo(const char *fmt, int a, long l,
+ /*
+  * check-name: call-variadic
+  * check-command: sparse-llvm-dis -m64 $file
++ * check-output-ignore
++ * check-output-contains: , ...) @print(\\(i8\\*\\|ptr\\) %ARG1., i32 120, i32 %ARG2., i32 8, i64 %ARG3., i64 0, \\(i32\\*\\|ptr\\) %ARG4., \\(i8\\*\\|ptr\\) null)
++ * check-output-contains: define i32 @foo(
++ * check-output-contains: declare i32 @print(
+  *
+- * check-output-start
+-; ModuleID = '<stdin>'
+-source_filename = "sparse"
+-
+-define i32 @foo(i8* %ARG1., i32 %ARG2., i64 %ARG3., i32* %ARG4.) {
+-L0:
+-  %R5. = call i32 (i8*, ...) @print(i8* %ARG1., i32 120, i32 %ARG2., i32 8, i64 %ARG3., i64 0, i32* %ARG4., i8* null)
+-  ret i32 %R5.
+-}
+-
+-declare i32 @print(i8*, ...)
+- * check-output-end
+  */

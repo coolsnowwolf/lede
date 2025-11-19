@@ -1,32 +1,27 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=7z
-PKG_VERSION:=22.01
-PKG_SOURCE_VERSION:=2201
+PKG_VERSION:=24.05
 
-PKG_SOURCE:=$(PKG_NAME)$(PKG_SOURCE_VERSION)-src.tar.xz
+PKG_SOURCE:=$(PKG_NAME)$(subst .,,$(PKG_VERSION))-src.tar.xz
 PKG_SOURCE_URL:=https://7-zip.org/a/
-PKG_HASH:=393098730c70042392af808917e765945dc2437dee7aae3cfcc4966eb920fbc5
+PKG_HASH:=63f341cf80b8d287c6e945519b3da0fa75553c85572a471b7fa6e68f9a90b790
+
+PKG_CPE_ID:=cpe:/a:7-zip:7-zip
 
 # This builds the 7zr variant which supports only 7z, so no non-LGPL code should be included
 PKG_LICENSE:=LGPL-2.1-or-later
 PKG_LICENSE_FILES:=DOC/License.txt DOC/copying.txt
 
-HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/$(PKG_NAME)-$(PKG_VERSION)
+HOST_MAKE_PATH:=CPP/7zip/Bundles/Alone7z
 
 include $(INCLUDE_DIR)/host-build.mk
 
-TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
-
-ALONE_DIR=$(HOST_BUILD_DIR)/CPP/7zip/Bundles/Alone7z
-
-define Host/Compile
-	$(MAKE) -C $(ALONE_DIR) -f makefile.gcc
-endef
+TAR_OPTIONS := -C $(HOST_BUILD_DIR) $(TAR_OPTIONS)
+HOST_MAKE_FLAGS += -f makefile.gcc
 
 define Host/Install
-	$(INSTALL_DIR) $(STAGING_DIR_HOST)/bin
-	$(INSTALL_BIN) $(ALONE_DIR)/_o/7zr $(STAGING_DIR_HOST)/bin/7zr
+	$(INSTALL_BIN) $(HOST_BUILD_DIR)/$(HOST_MAKE_PATH)/_o/7zr $(STAGING_DIR_HOST)/bin/
 endef
 
 define Host/Clean

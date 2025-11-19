@@ -1,0 +1,145 @@
+From: Daniel Golle <daniel@makrotopia.org>
+Subject: libata: add ledtrig support
+
+This adds a LED trigger for each ATA port indicating disk activity.
+
+As this is needed only on specific platforms (NAS SoCs and such),
+these platforms should define ARCH_WANTS_LIBATA_LEDS if there
+are boards with LED(s) intended to indicate ATA disk activity and
+need the OS to take care of that.
+In that way, if not selected, LED trigger support not will be
+included in libata-core and both, codepaths and structures remain
+untouched.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/ata/Kconfig       | 16 ++++++++++++++++
+ drivers/ata/libata-core.c | 41 +++++++++++++++++++++++++++++++++++++++++
+ include/linux/libata.h    |  9 +++++++++
+ 3 files changed, 66 insertions(+)
+
+--- a/drivers/ata/Kconfig
++++ b/drivers/ata/Kconfig
+@@ -67,6 +67,22 @@ config ATA_FORCE
+ 
+ 	  If unsure, say Y.
+ 
++config ARCH_WANT_LIBATA_LEDS
++	bool
++
++config ATA_LEDS
++	bool "support ATA port LED triggers"
++	depends on ARCH_WANT_LIBATA_LEDS
++	select NEW_LEDS
++	select LEDS_CLASS
++	select LEDS_TRIGGERS
++	default y
++	help
++	  This option adds a LED trigger for each registered ATA port.
++	  It is used to drive disk activity leds connected via GPIO.
++
++	  If unsure, say N.
++
+ config ATA_ACPI
+ 	bool "ATA ACPI Support"
+ 	depends on ACPI
+--- a/drivers/ata/libata-core.c
++++ b/drivers/ata/libata-core.c
+@@ -703,6 +703,17 @@ static inline void ata_set_tf_cdl(struct
+ 	qc->flags |= ATA_QCFLAG_HAS_CDL | ATA_QCFLAG_RESULT_TF;
+ }
+ 
++#ifdef CONFIG_ATA_LEDS
++#define LIBATA_BLINK_DELAY 20 /* ms */
++static inline void ata_led_act(struct ata_port *ap)
++{
++	if (unlikely(!ap->ledtrig))
++		return;
++
++	led_trigger_blink_oneshot(ap->ledtrig, LIBATA_BLINK_DELAY, LIBATA_BLINK_DELAY, 0);
++}
++#endif
++
+ /**
+  *	ata_build_rw_tf - Build ATA taskfile for given read/write request
+  *	@qc: Metadata associated with the taskfile to build
+@@ -4767,6 +4778,9 @@ void __ata_qc_complete(struct ata_queued
+ 		link->active_tag = ATA_TAG_POISON;
+ 		ap->nr_active_links--;
+ 	}
++#ifdef CONFIG_ATA_LEDS
++	ata_led_act(ap);
++#endif
+ 
+ 	/* clear exclusive status */
+ 	if (unlikely(qc->flags & ATA_QCFLAG_CLEAR_EXCL &&
+@@ -5489,6 +5503,9 @@ struct ata_port *ata_port_alloc(struct a
+ 	ap->stats.unhandled_irq = 1;
+ 	ap->stats.idle_irq = 1;
+ #endif
++#ifdef CONFIG_ATA_LEDS
++	ap->ledtrig = kzalloc(sizeof(struct led_trigger), GFP_KERNEL);
++#endif
+ 	ata_sff_port_init(ap);
+ 
+ 	ata_force_pflags(ap);
+@@ -5505,6 +5522,12 @@ void ata_port_free(struct ata_port *ap)
+ 	kfree(ap->pmp_link);
+ 	kfree(ap->slave_link);
+ 	ida_free(&ata_ida, ap->print_id);
++#ifdef CONFIG_ATA_LEDS
++	if (ap->ledtrig) {
++		led_trigger_unregister(ap->ledtrig);
++		kfree(ap->ledtrig);
++	};
++#endif
+ 	kfree(ap);
+ }
+ EXPORT_SYMBOL_GPL(ata_port_free);
+@@ -5909,7 +5932,23 @@ int ata_host_register(struct ata_host *h
+ 		WARN_ON(1);
+ 		return -EINVAL;
+ 	}
++#ifdef CONFIG_ATA_LEDS
++	for (i = 0; i < host->n_ports; i++) {
++		if (unlikely(!host->ports[i]->ledtrig))
++			continue;
+ 
++		snprintf(host->ports[i]->ledtrig_name,
++			sizeof(host->ports[i]->ledtrig_name), "ata%u",
++			host->ports[i]->print_id);
++
++		host->ports[i]->ledtrig->name = host->ports[i]->ledtrig_name;
++
++		if (led_trigger_register(host->ports[i]->ledtrig)) {
++			kfree(host->ports[i]->ledtrig);
++			host->ports[i]->ledtrig = NULL;
++		}
++	}
++#endif
+ 	/* Create associated sysfs transport objects  */
+ 	for (i = 0; i < host->n_ports; i++) {
+ 		rc = ata_tport_add(host->dev,host->ports[i]);
+--- a/include/linux/libata.h
++++ b/include/linux/libata.h
+@@ -23,6 +23,9 @@
+ #include <linux/cdrom.h>
+ #include <linux/sched.h>
+ #include <linux/async.h>
++#ifdef CONFIG_ATA_LEDS
++#include <linux/leds.h>
++#endif
+ 
+ /*
+  * Define if arch has non-standard setup.  This is a _PCI_ standard
+@@ -935,6 +938,10 @@ struct ata_port {
+ #ifdef CONFIG_ATA_ACPI
+ 	struct ata_acpi_gtm	__acpi_init_gtm; /* use ata_acpi_init_gtm() */
+ #endif
++#ifdef CONFIG_ATA_LEDS
++	struct led_trigger	*ledtrig;
++	char			ledtrig_name[8];
++#endif
+ };
+ 
+ /* The following initializer overrides a method to NULL whether one of

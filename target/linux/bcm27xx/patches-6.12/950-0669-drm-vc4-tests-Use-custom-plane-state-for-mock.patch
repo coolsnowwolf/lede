@@ -1,0 +1,99 @@
+From ab0bcced11a78ce2f780959e14f0a03ec957519a Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 14 Apr 2023 11:24:37 +0200
+Subject: [PATCH] drm/vc4: tests: Use custom plane state for mock
+
+The current mock planes were just using the regular drm_plane_state,
+while the driver expect struct vc4_plane_state that subclasses
+drm_plane_state.
+
+Hook the proper implementations of reset, duplicate_state, destroy and
+atomic_check to create vc4_plane_state.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/tests/vc4_mock_plane.c | 14 ++++++++++++++
+ drivers/gpu/drm/vc4/vc4_drv.h              |  6 ++++++
+ drivers/gpu/drm/vc4/vc4_plane.c            | 12 ++++++------
+ 3 files changed, 26 insertions(+), 6 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_mock_plane.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_mock_plane.c
+@@ -7,6 +7,20 @@
+ 
+ #include "vc4_mock.h"
+ 
++static const struct drm_plane_helper_funcs vc4_dummy_plane_helper_funcs = {
++	.atomic_check = vc4_plane_atomic_check,
++};
++
++static const struct drm_plane_funcs vc4_dummy_plane_funcs = {
++	.atomic_destroy_state	= vc4_plane_destroy_state,
++	.atomic_duplicate_state	= vc4_plane_duplicate_state,
++	.reset			= vc4_plane_reset,
++};
++
++static const uint32_t vc4_dummy_plane_formats[] = {
++	DRM_FORMAT_XRGB8888,
++};
++
+ struct drm_plane *vc4_dummy_plane(struct kunit *test, struct drm_device *drm,
+ 				  enum drm_plane_type type)
+ {
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -1103,6 +1103,12 @@ int vc4_kms_load(struct drm_device *dev)
+ struct drm_plane *vc4_plane_init(struct drm_device *dev,
+ 				 enum drm_plane_type type,
+ 				 uint32_t possible_crtcs);
++void vc4_plane_reset(struct drm_plane *plane);
++void vc4_plane_destroy_state(struct drm_plane *plane,
++			     struct drm_plane_state *state);
++struct drm_plane_state *vc4_plane_duplicate_state(struct drm_plane *plane);
++int vc4_plane_atomic_check(struct drm_plane *plane,
++			   struct drm_atomic_state *state);
+ int vc4_plane_create_additional_planes(struct drm_device *dev);
+ u32 vc4_plane_write_dlist(struct drm_plane *plane, u32 __iomem *dlist);
+ u32 vc4_plane_dlist_size(const struct drm_plane_state *state);
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -280,7 +280,7 @@ static bool plane_enabled(struct drm_pla
+ 	return state->fb && !WARN_ON(!state->crtc);
+ }
+ 
+-static struct drm_plane_state *vc4_plane_duplicate_state(struct drm_plane *plane)
++struct drm_plane_state *vc4_plane_duplicate_state(struct drm_plane *plane)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(plane->dev);
+ 	struct vc4_hvs *hvs = vc4->hvs;
+@@ -334,8 +334,8 @@ static void vc4_plane_release_upm_ida(st
+ 	ida_free(&hvs->upm_handles, upm_handle);
+ }
+ 
+-static void vc4_plane_destroy_state(struct drm_plane *plane,
+-				    struct drm_plane_state *state)
++void vc4_plane_destroy_state(struct drm_plane *plane,
++			     struct drm_plane_state *state)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(plane->dev);
+ 	struct vc4_hvs *hvs = vc4->hvs;
+@@ -368,7 +368,7 @@ static void vc4_plane_destroy_state(stru
+ }
+ 
+ /* Called during init to allocate the plane's atomic state. */
+-static void vc4_plane_reset(struct drm_plane *plane)
++void vc4_plane_reset(struct drm_plane *plane)
+ {
+ 	struct vc4_plane_state *vc4_state;
+ 
+@@ -2159,8 +2159,8 @@ static int vc6_plane_mode_set(struct drm
+  * compute the dlist here and have all active plane dlists get updated
+  * in the CRTC's flush.
+  */
+-static int vc4_plane_atomic_check(struct drm_plane *plane,
+-				  struct drm_atomic_state *state)
++int vc4_plane_atomic_check(struct drm_plane *plane,
++			   struct drm_atomic_state *state)
+ {
+ 	struct vc4_dev *vc4 = to_vc4_dev(plane->dev);
+ 	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state,

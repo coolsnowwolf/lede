@@ -1,0 +1,97 @@
+From 9008cdacdc41f8233f4444b86cf3a17201686e2d Mon Sep 17 00:00:00 2001
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Tue, 18 Jul 2023 20:18:16 +0800
+Subject: [PATCH 5/5] wifi: rt2x00: support loading eeprom from NVMEM cells
+
+This patch allows rt2x00 to load eeprom from "eeprom" NVMEM cell.
+
+Example:
+
+/* load eeprom from NVMEM provider 'eep' */
+&wmac {
+	nvmem-cells = <&eep>;
+	nvmem-cell-names = "eeprom";
+};
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ .../net/wireless/ralink/rt2x00/rt2x00eeprom.c | 41 ++++++++++++++++++-
+ 1 file changed, 40 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
+@@ -14,12 +14,12 @@
+ #include <linux/mtd/mtd.h>
+ #include <linux/mtd/partitions.h>
+ #endif
++#include <linux/nvmem-consumer.h>
+ #include <linux/of.h>
+ 
+ #include "rt2x00.h"
+ #include "rt2x00soc.h"
+ 
+-#if IS_ENABLED(CONFIG_MTD)
+ static void rt2800lib_eeprom_swap(struct rt2x00_dev *rt2x00dev)
+ {
+ 	struct device_node *np = rt2x00dev->dev->of_node;
+@@ -33,6 +33,7 @@ static void rt2800lib_eeprom_swap(struct
+ 		rt2x00dev->eeprom[i] = swab16(rt2x00dev->eeprom[i]);
+ }
+ 
++#if IS_ENABLED(CONFIG_MTD)
+ static int rt2800lib_read_eeprom_mtd(struct rt2x00_dev *rt2x00dev)
+ {
+ 	int ret = -EINVAL;
+@@ -88,6 +89,40 @@ static int rt2800lib_read_eeprom_mtd(str
+ }
+ #endif
+ 
++static int rt2800lib_read_eeprom_nvmem(struct rt2x00_dev *rt2x00dev)
++{
++	struct device_node *np = rt2x00dev->dev->of_node;
++	unsigned int len = rt2x00dev->ops->eeprom_size;
++	struct nvmem_cell *cell;
++	const void *data;
++	size_t retlen;
++	int ret = 0;
++
++	cell = of_nvmem_cell_get(np, "eeprom");
++	if (IS_ERR(cell))
++		return PTR_ERR(cell);
++
++	data = nvmem_cell_read(cell, &retlen);
++	nvmem_cell_put(cell);
++
++	if (IS_ERR(data))
++		return PTR_ERR(data);
++
++	if (retlen != len) {
++		dev_err(rt2x00dev->dev, "invalid eeprom size, required: 0x%04x\n", len);
++		ret = -EINVAL;
++		goto exit;
++	}
++
++	memcpy(rt2x00dev->eeprom, data, len);
++
++	rt2800lib_eeprom_swap(rt2x00dev);
++
++exit:
++	kfree(data);
++	return ret;
++}
++
+ static const char *
+ rt2x00lib_get_eeprom_file_name(struct rt2x00_dev *rt2x00dev)
+ {
+@@ -164,6 +199,10 @@ int rt2x00lib_read_eeprom(struct rt2x00_
+ 		return 0;
+ #endif
+ 
++	ret = rt2800lib_read_eeprom_nvmem(rt2x00dev);
++	if (!ret)
++		return 0;
++
+ 	return rt2x00lib_read_eeprom_file(rt2x00dev);
+ }
+ EXPORT_SYMBOL_GPL(rt2x00lib_read_eeprom);

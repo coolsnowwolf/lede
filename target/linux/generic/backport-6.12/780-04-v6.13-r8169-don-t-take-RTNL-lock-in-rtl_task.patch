@@ -1,0 +1,50 @@
+From ac48430368c1a4f4e6c2fa92243b4b93fd25bee4 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 16 Oct 2024 22:05:57 +0200
+Subject: [PATCH] r8169: don't take RTNL lock in rtl_task()
+
+There's not really a benefit here in taking the RTNL lock. The task
+handler does exception handling only, so we're in trouble anyway when
+we come here, and there's no need to protect against e.g. a parallel
+ethtool call.
+A benefit of removing the RTNL lock here is that we now can
+synchronously cancel the workqueue from a context holding the RTNL mutex.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -4836,10 +4836,8 @@ static void rtl_task(struct work_struct
+ 		container_of(work, struct rtl8169_private, wk.work);
+ 	int ret;
+ 
+-	rtnl_lock();
+-
+ 	if (!test_bit(RTL_FLAG_TASK_ENABLED, tp->wk.flags))
+-		goto out_unlock;
++		return;
+ 
+ 	if (test_and_clear_bit(RTL_FLAG_TASK_TX_TIMEOUT, tp->wk.flags)) {
+ 		/* if chip isn't accessible, reset bus to revive it */
+@@ -4848,7 +4846,7 @@ static void rtl_task(struct work_struct
+ 			if (ret < 0) {
+ 				netdev_err(tp->dev, "Can't reset secondary PCI bus, detach NIC\n");
+ 				netif_device_detach(tp->dev);
+-				goto out_unlock;
++				return;
+ 			}
+ 		}
+ 
+@@ -4867,8 +4865,6 @@ reset:
+ 	} else if (test_and_clear_bit(RTL_FLAG_TASK_RESET_NO_QUEUE_WAKE, tp->wk.flags)) {
+ 		rtl_reset_work(tp);
+ 	}
+-out_unlock:
+-	rtnl_unlock();
+ }
+ 
+ static int rtl8169_poll(struct napi_struct *napi, int budget)

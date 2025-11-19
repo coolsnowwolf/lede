@@ -1,22 +1,19 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ksmbd
-PKG_VERSION:=2023.12.22
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/cifsd-team/ksmbd
-PKG_SOURCE_VERSION:=0590dfae7a6e0a50eda6584286b2c6215aaddea1
-PKG_MIRROR_HASH:=95415120722db35ca599ab6ca36fd6310fc11ca50acf7d6235d4b0f397c46dd4
+PKG_SOURCE_DATE:=2025-04-04
+PKG_SOURCE_URL:=https://github.com/namjaejeon/ksmbd.git
+PKG_SOURCE_VERSION:=5ce517e5d08fa748074ba1422592da739da31e07
+PKG_MIRROR_HASH:=c088ea320fe7ff15f940774884b7c3a70178f58a8e9ddc425c8ddb37df67ab2a
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
-
-TAR_OPTIONS+= --strip-components 1
-TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
 define KernelPackage/fs-ksmbd
 	SUBMENU:=Filesystems
@@ -54,9 +51,9 @@ define KernelPackage/fs-ksmbd/config
 config KSMBD_SMB_INSECURE_SERVER
 	bool "Support for insecure SMB1/CIFS and SMB2.0 protocols"
 	depends on PACKAGE_kmod-fs-ksmbd
+	default n
 	help
 		This enables deprecated insecure protocols dialects: SMB1/CIFS and SMB2.0.
-	default y
 endef
 
 ifeq ($(CONFIG_KSMBD_SMB_INSECURE_SERVER),y)

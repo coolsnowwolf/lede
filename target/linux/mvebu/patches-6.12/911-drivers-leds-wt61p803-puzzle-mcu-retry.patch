@@ -1,0 +1,63 @@
+--- a/drivers/mfd/iei-wt61p803-puzzle.c
++++ b/drivers/mfd/iei-wt61p803-puzzle.c
+@@ -241,6 +241,7 @@ int iei_wt61p803_puzzle_write_command(st
+ {
+ 	struct device *dev = &mcu->serdev->dev;
+ 	int ret;
++	int retries;
+ 
+ 	if (size <= 1 || size > IEI_WT61P803_PUZZLE_MAX_COMMAND_LENGTH)
+ 		return -EINVAL;
+@@ -252,24 +253,36 @@ int iei_wt61p803_puzzle_write_command(st
+ 	print_hex_dump_debug("puzzle-mcu tx: ", DUMP_PREFIX_NONE,
+ 			     16, 1, cmd, size, false);
+ 
++	retries = 3;
+ 	/* Initialize reply struct */
+-	reinit_completion(&mcu->reply->received);
+-	mcu->reply->size = 0;
+-	usleep_range(2000, 10000);
+-	serdev_device_write_flush(mcu->serdev);
+-	ret = serdev_device_write_buf(mcu->serdev, cmd, size);
+-	if (ret < 0)
+-		goto exit;
+-
+-	serdev_device_wait_until_sent(mcu->serdev, IEI_WT61P803_PUZZLE_GENERAL_TIMEOUT);
+-	ret = wait_for_completion_timeout(&mcu->reply->received,
+-					  IEI_WT61P803_PUZZLE_GENERAL_TIMEOUT);
+-	if (ret == 0) {
+-		dev_err(dev, "Command reply receive timeout\n");
+-		ret = -ETIMEDOUT;
+-		goto exit;
++	while (retries) {
++		reinit_completion(&mcu->reply->received);
++		mcu->reply->size = 0;
++		usleep_range(2000, 10000);
++		serdev_device_write_flush(mcu->serdev);
++		ret = serdev_device_write_buf(mcu->serdev, cmd, size);
++		if (ret < 0)
++			goto exit;
++
++		serdev_device_wait_until_sent(mcu->serdev, IEI_WT61P803_PUZZLE_GENERAL_TIMEOUT);
++		ret = wait_for_completion_timeout(&mcu->reply->received,
++						  IEI_WT61P803_PUZZLE_GENERAL_TIMEOUT);
++		retries--;
++		if (ret == 0) {
++			if (retries == 0) {
++				dev_err(dev, "Command reply receive timeout\n");
++				ret = -ETIMEDOUT;
++				goto exit;
++			}
++		}
++		else {
++			if (mcu->reply->data[0] == IEI_WT61P803_PUZZLE_CMD_HEADER_START &&
++				mcu->reply->data[1] == IEI_WT61P803_PUZZLE_CMD_RESPONSE_OK &&
++				mcu->reply->data[2] == IEI_WT61P803_PUZZLE_CHECKSUM_RESPONSE_OK) {
++				break;
++			}
++		}
+ 	}
+-
+ 	*reply_size = mcu->reply->size;
+ 	/* Copy the received data, as it will not be available after a new frame is received */
+ 	memcpy(reply_data, mcu->reply->data, mcu->reply->size);

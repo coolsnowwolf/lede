@@ -1,0 +1,94 @@
+From e2015942e90a021151a5751776f35830ba063be7 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Wed, 16 Oct 2024 22:06:53 +0200
+Subject: [PATCH] r8169: replace custom flag with disable_work() et al
+
+So far we use a custom flag to define when a task can be scheduled and
+when not. Let's use the standard mechanism with disable_work() et al
+instead.
+Note that in rtl8169_close() we can remove the call to cancel_work()
+because we now call disable_work_sync() in rtl8169_down() already.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 18 ++++++------------
+ 1 file changed, 6 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -619,7 +619,6 @@ struct rtl8169_tc_offsets {
+ };
+ 
+ enum rtl_flag {
+-	RTL_FLAG_TASK_ENABLED = 0,
+ 	RTL_FLAG_TASK_RESET_PENDING,
+ 	RTL_FLAG_TASK_RESET_NO_QUEUE_WAKE,
+ 	RTL_FLAG_TASK_TX_TIMEOUT,
+@@ -2505,11 +2504,9 @@ u16 rtl8168h_2_get_adc_bias_ioffset(stru
+ 
+ static void rtl_schedule_task(struct rtl8169_private *tp, enum rtl_flag flag)
+ {
+-	if (!test_bit(RTL_FLAG_TASK_ENABLED, tp->wk.flags))
+-		return;
+-
+ 	set_bit(flag, tp->wk.flags);
+-	schedule_work(&tp->wk.work);
++	if (!schedule_work(&tp->wk.work))
++		clear_bit(flag, tp->wk.flags);
+ }
+ 
+ static void rtl8169_init_phy(struct rtl8169_private *tp)
+@@ -4836,9 +4833,6 @@ static void rtl_task(struct work_struct
+ 		container_of(work, struct rtl8169_private, wk.work);
+ 	int ret;
+ 
+-	if (!test_bit(RTL_FLAG_TASK_ENABLED, tp->wk.flags))
+-		return;
+-
+ 	if (test_and_clear_bit(RTL_FLAG_TASK_TX_TIMEOUT, tp->wk.flags)) {
+ 		/* if chip isn't accessible, reset bus to revive it */
+ 		if (RTL_R32(tp, TxConfig) == ~0) {
+@@ -4922,6 +4916,7 @@ static int r8169_phy_connect(struct rtl8
+ 
+ static void rtl8169_down(struct rtl8169_private *tp)
+ {
++	disable_work_sync(&tp->wk.work);
+ 	/* Clear all task flags */
+ 	bitmap_zero(tp->wk.flags, RTL_FLAG_MAX);
+ 
+@@ -4950,7 +4945,7 @@ static void rtl8169_up(struct rtl8169_pr
+ 	phy_resume(tp->phydev);
+ 	rtl8169_init_phy(tp);
+ 	napi_enable(&tp->napi);
+-	set_bit(RTL_FLAG_TASK_ENABLED, tp->wk.flags);
++	enable_work(&tp->wk.work);
+ 	rtl_reset_work(tp);
+ 
+ 	phy_start(tp->phydev);
+@@ -4967,8 +4962,6 @@ static int rtl8169_close(struct net_devi
+ 	rtl8169_down(tp);
+ 	rtl8169_rx_clear(tp);
+ 
+-	cancel_work(&tp->wk.work);
+-
+ 	free_irq(tp->irq, tp);
+ 
+ 	phy_disconnect(tp->phydev);
+@@ -5201,7 +5194,7 @@ static void rtl_remove_one(struct pci_de
+ 	if (pci_dev_run_wake(pdev))
+ 		pm_runtime_get_noresume(&pdev->dev);
+ 
+-	cancel_work_sync(&tp->wk.work);
++	disable_work_sync(&tp->wk.work);
+ 
+ 	if (IS_ENABLED(CONFIG_R8169_LEDS))
+ 		r8169_remove_leds(tp->leds);
+@@ -5579,6 +5572,7 @@ static int rtl_init_one(struct pci_dev *
+ 	tp->irq = pci_irq_vector(pdev, 0);
+ 
+ 	INIT_WORK(&tp->wk.work, rtl_task);
++	disable_work(&tp->wk.work);
+ 
+ 	rtl_init_mac_address(tp);
+ 

@@ -14,8 +14,13 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/of.h>
+#include <linux/version.h>
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,12,0)
 #include <asm/unaligned.h>
+#else
+#include <linux/unaligned.h>
+#endif
 
 #include "mtdsplit.h"
 

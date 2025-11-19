@@ -1,0 +1,117 @@
+From e8053643b6d70e23a634f14e4408f3a6d1d3a6bf Mon Sep 17 00:00:00 2001
+From: Shiji Yang <yangshiji66@qq.com>
+Date: Sat, 27 May 2023 09:04:48 +0000
+Subject: [PATCH] wifi: ath: add struct_group for struct ath_cycle_counters
+
+Add a struct_group to around all members in struct ath_cycle_counters.
+It can help the compiler detect the intended bounds of the memcpy() and
+memset().
+
+This patch fixes the following build warning:
+
+In function 'fortify_memset_chk',
+    inlined from 'ath9k_ps_wakeup' at /home/db/openwrt/build_dir/target-mips_24kc_musl/linux-ath79_generic/backports-6.1.24/drivers/net/wireless/ath/ath9k/main.c:140:3:
+./include/linux/fortify-string.h:314:25: error: call to '__write_overflow_field' declared with attribute warning: detected write beyond size of field (1st parameter); maybe use struct_group()? [-Werror=attribute-warning]
+  314 |                         __write_overflow_field(p_size_field, size);
+      |                         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Signed-off-by: Shiji Yang <yangshiji66@qq.com>
+---
+ drivers/net/wireless/ath/ath.h                | 10 ++++++----
+ drivers/net/wireless/ath/ath5k/ani.c          |  2 +-
+ drivers/net/wireless/ath/ath5k/base.c         |  4 ++--
+ drivers/net/wireless/ath/ath5k/mac80211-ops.c |  2 +-
+ drivers/net/wireless/ath/ath9k/link.c         |  2 +-
+ drivers/net/wireless/ath/ath9k/main.c         |  4 ++--
+ drivers/net/wireless/ath/hw.c                 |  2 +-
+ 7 files changed, 14 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath.h
++++ b/drivers/net/wireless/ath/ath.h
+@@ -43,10 +43,12 @@ struct ath_ani {
+ };
+ 
+ struct ath_cycle_counters {
+-	u32 cycles;
+-	u32 rx_busy;
+-	u32 rx_frame;
+-	u32 tx_frame;
++	struct_group(cnts,
++		u32 cycles;
++		u32 rx_busy;
++		u32 rx_frame;
++		u32 tx_frame;
++	);
+ };
+ 
+ enum ath_device_state {
+--- a/drivers/net/wireless/ath/ath5k/ani.c
++++ b/drivers/net/wireless/ath/ath5k/ani.c
+@@ -379,7 +379,7 @@ ath5k_hw_ani_get_listen_time(struct ath5
+ 	spin_lock_bh(&common->cc_lock);
+ 
+ 	ath_hw_cycle_counters_update(common);
+-	memcpy(&as->last_cc, &common->cc_ani, sizeof(as->last_cc));
++	memcpy(&as->last_cc.cnts, &common->cc_ani.cnts, sizeof(as->last_cc.cnts));
+ 
+ 	/* clears common->cc_ani */
+ 	listen = ath_hw_get_listen_time(common);
+--- a/drivers/net/wireless/ath/ath5k/base.c
++++ b/drivers/net/wireless/ath/ath5k/base.c
+@@ -2985,8 +2985,8 @@ ath5k_reset(struct ath5k_hw *ah, struct
+ 	memset(&ah->survey, 0, sizeof(ah->survey));
+ 	spin_lock_bh(&common->cc_lock);
+ 	ath_hw_cycle_counters_update(common);
+-	memset(&common->cc_survey, 0, sizeof(common->cc_survey));
+-	memset(&common->cc_ani, 0, sizeof(common->cc_ani));
++	memset(&common->cc_survey.cnts, 0, sizeof(common->cc_survey.cnts));
++	memset(&common->cc_ani.cnts, 0, sizeof(common->cc_ani.cnts));
+ 	spin_unlock_bh(&common->cc_lock);
+ 
+ 	/*
+--- a/drivers/net/wireless/ath/ath5k/mac80211-ops.c
++++ b/drivers/net/wireless/ath/ath5k/mac80211-ops.c
+@@ -664,7 +664,7 @@ ath5k_get_survey(struct ieee80211_hw *hw
+ 		ah->survey.time_rx += cc->rx_frame / div;
+ 		ah->survey.time_tx += cc->tx_frame / div;
+ 	}
+-	memset(cc, 0, sizeof(*cc));
++	memset(&cc->cnts, 0, sizeof(cc->cnts));
+ 	spin_unlock_bh(&common->cc_lock);
+ 
+ 	memcpy(survey, &ah->survey, sizeof(*survey));
+--- a/drivers/net/wireless/ath/ath9k/link.c
++++ b/drivers/net/wireless/ath/ath9k/link.c
+@@ -536,7 +536,7 @@ int ath_update_survey_stats(struct ath_s
+ 	if (cc->cycles > 0)
+ 		ret = cc->rx_busy * 100 / cc->cycles;
+ 
+-	memset(cc, 0, sizeof(*cc));
++	memset(&cc->cnts, 0, sizeof(cc->cnts));
+ 
+ 	ath_update_survey_nf(sc, pos);
+ 
+--- a/drivers/net/wireless/ath/ath9k/main.c
++++ b/drivers/net/wireless/ath/ath9k/main.c
+@@ -135,8 +135,8 @@ void ath9k_ps_wakeup(struct ath_softc *s
+ 	if (power_mode != ATH9K_PM_AWAKE) {
+ 		spin_lock(&common->cc_lock);
+ 		ath_hw_cycle_counters_update(common);
+-		memset(&common->cc_survey, 0, sizeof(common->cc_survey));
+-		memset(&common->cc_ani, 0, sizeof(common->cc_ani));
++		memset(&common->cc_survey.cnts, 0, sizeof(common->cc_survey.cnts));
++		memset(&common->cc_ani.cnts, 0, sizeof(common->cc_ani.cnts));
+ 		spin_unlock(&common->cc_lock);
+ 	}
+ 
+--- a/drivers/net/wireless/ath/hw.c
++++ b/drivers/net/wireless/ath/hw.c
+@@ -183,7 +183,7 @@ int32_t ath_hw_get_listen_time(struct at
+ 	listen_time = (cc->cycles - cc->rx_frame - cc->tx_frame) /
+ 		      (common->clockrate * 1000);
+ 
+-	memset(cc, 0, sizeof(*cc));
++	memset(&cc->cnts, 0, sizeof(cc->cnts));
+ 
+ 	return listen_time;
+ }

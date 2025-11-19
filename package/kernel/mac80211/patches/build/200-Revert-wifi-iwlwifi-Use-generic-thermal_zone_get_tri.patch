@@ -1,0 +1,159 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 17 Apr 2023 19:42:38 +0200
+Subject: [PATCH] Revert "wifi: iwlwifi: Use generic thermal_zone_get_trip()
+ function"
+
+This reverts commit 3d2f20ad46f83b333025f5e8e4afc34be8f13c4c.
+---
+
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/mvm.h
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/mvm.h
+@@ -531,7 +531,7 @@ struct iwl_mvm_tt_mgmt {
+  * @tzone: thermal zone device data
+ */
+ struct iwl_mvm_thermal_device {
+-	struct thermal_trip trips[IWL_MAX_DTS_TRIPS];
++	s16 temp_trips[IWL_MAX_DTS_TRIPS];
+ 	u8 fw_trips_index[IWL_MAX_DTS_TRIPS];
+ 	struct thermal_zone_device *tzone;
+ };
+--- a/drivers/net/wireless/intel/iwlwifi/mvm/tt.c
++++ b/drivers/net/wireless/intel/iwlwifi/mvm/tt.c
+@@ -573,11 +573,11 @@ int iwl_mvm_send_temp_report_ths_cmd(str
+ 	 * and uncompressed, the FW should get it compressed and sorted
+ 	 */
+ 
+-	/* compress trips to cmd array, remove uninitialized values*/
++	/* compress temp_trips to cmd array, remove uninitialized values*/
+ 	for (i = 0; i < IWL_MAX_DTS_TRIPS; i++) {
+-		if (mvm->tz_device.trips[i].temperature != INT_MIN) {
++		if (mvm->tz_device.temp_trips[i] != S16_MIN) {
+ 			cmd.thresholds[idx++] =
+-				cpu_to_le16((s16)(mvm->tz_device.trips[i].temperature / 1000));
++				cpu_to_le16(mvm->tz_device.temp_trips[i]);
+ 		}
+ 	}
+ 	cmd.num_temps = cpu_to_le32(idx);
+@@ -593,8 +593,8 @@ int iwl_mvm_send_temp_report_ths_cmd(str
+ 	 */
+ 	for (i = 0; i < idx; i++) {
+ 		for (j = 0; j < IWL_MAX_DTS_TRIPS; j++) {
+-			if ((int)(le16_to_cpu(cmd.thresholds[i]) * 1000) ==
+-			    mvm->tz_device.trips[j].temperature)
++			if (le16_to_cpu(cmd.thresholds[i]) ==
++				mvm->tz_device.temp_trips[j])
+ 				mvm->tz_device.fw_trips_index[i] = j;
+ 		}
+ 	}
+@@ -638,12 +638,37 @@ out:
+ 	return ret;
+ }
+ 
++static int iwl_mvm_tzone_get_trip_temp(struct thermal_zone_device *device,
++				       int trip, int *temp)
++{
++	struct iwl_mvm *mvm = (struct iwl_mvm *)device->devdata;
++
++	if (trip < 0 || trip >= IWL_MAX_DTS_TRIPS)
++		return -EINVAL;
++
++	*temp = mvm->tz_device.temp_trips[trip] * 1000;
++
++	return 0;
++}
++
++static int iwl_mvm_tzone_get_trip_type(struct thermal_zone_device *device,
++				       int trip, enum thermal_trip_type *type)
++{
++	if (trip < 0 || trip >= IWL_MAX_DTS_TRIPS)
++		return -EINVAL;
++
++	*type = THERMAL_TRIP_PASSIVE;
++
++	return 0;
++}
++
+ static int iwl_mvm_tzone_set_trip_temp(struct thermal_zone_device *device,
+ 				       int trip, int temp)
+ {
+ 	struct iwl_mvm *mvm = thermal_zone_device_priv(device);
+ 	struct iwl_mvm_thermal_device *tzone;
+-	int ret;
++	int i, ret;
++	s16 temperature;
+ 
+ 	mutex_lock(&mvm->mutex);
+ 
+@@ -653,17 +678,40 @@ static int iwl_mvm_tzone_set_trip_temp(s
+ 		goto out;
+ 	}
+ 
++	if (trip < 0 || trip >= IWL_MAX_DTS_TRIPS) {
++		ret = -EINVAL;
++		goto out;
++	}
++
+ 	if ((temp / 1000) > S16_MAX) {
+ 		ret = -EINVAL;
+ 		goto out;
+ 	}
+ 
++	temperature = (s16)(temp / 1000);
+ 	tzone = &mvm->tz_device;
++
+ 	if (!tzone) {
+ 		ret = -EIO;
+ 		goto out;
+ 	}
+ 
++	/* no updates*/
++	if (tzone->temp_trips[trip] == temperature) {
++		ret = 0;
++		goto out;
++	}
++
++	/* already existing temperature */
++	for (i = 0; i < IWL_MAX_DTS_TRIPS; i++) {
++		if (tzone->temp_trips[i] == temperature) {
++			ret = -EINVAL;
++			goto out;
++		}
++	}
++
++	tzone->temp_trips[trip] = temperature;
++
+ 	ret = iwl_mvm_send_temp_report_ths_cmd(mvm);
+ out:
+ 	mutex_unlock(&mvm->mutex);
+@@ -672,6 +720,8 @@ out:
+ 
+ static  struct thermal_zone_device_ops tzone_ops = {
+ 	.get_temp = iwl_mvm_tzone_get_temp,
++	.get_trip_temp = iwl_mvm_tzone_get_trip_temp,
++	.get_trip_type = iwl_mvm_tzone_get_trip_type,
+ 	.set_trip_temp = iwl_mvm_tzone_set_trip_temp,
+ };
+ 
+@@ -693,8 +743,7 @@ static void iwl_mvm_thermal_zone_registe
+ 	BUILD_BUG_ON(ARRAY_SIZE(name) >= THERMAL_NAME_LENGTH);
+ 
+ 	sprintf(name, "iwlwifi_%u", atomic_inc_return(&counter) & 0xFF);
+-	mvm->tz_device.tzone = thermal_zone_device_register_with_trips(name,
+-							mvm->tz_device.trips,
++	mvm->tz_device.tzone = thermal_zone_device_register(name,
+ 							IWL_MAX_DTS_TRIPS,
+ 							IWL_WRITABLE_TRIPS_MSK,
+ 							mvm, &tzone_ops,
+@@ -717,10 +766,8 @@ static void iwl_mvm_thermal_zone_registe
+ 	/* 0 is a valid temperature,
+ 	 * so initialize the array with S16_MIN which invalid temperature
+ 	 */
+-	for (i = 0 ; i < IWL_MAX_DTS_TRIPS; i++) {
+-		mvm->tz_device.trips[i].temperature = INT_MIN;
+-		mvm->tz_device.trips[i].type = THERMAL_TRIP_PASSIVE;
+-	}
++	for (i = 0 ; i < IWL_MAX_DTS_TRIPS; i++)
++		mvm->tz_device.temp_trips[i] = S16_MIN;
+ }
+ 
+ static int iwl_mvm_tcool_get_max_state(struct thermal_cooling_device *cdev,

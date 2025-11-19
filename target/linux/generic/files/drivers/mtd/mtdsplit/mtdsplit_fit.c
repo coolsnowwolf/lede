@@ -258,7 +258,7 @@ mtdsplit_fit_parse(struct mtd_info *mtd,
 	 * hence we need to parse FDT structure to find the end of the
 	 * last external data refernced.
 	 */
-	if (fit_size > 0x1000) {
+	if (fit_size > 0x80000) {
 		enum mtdsplit_part_type type;
 
 		/* Search for the rootfs partition after the FIT image */

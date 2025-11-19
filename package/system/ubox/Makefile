@@ -1,13 +1,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ubox
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/ubox.git
-PKG_SOURCE_DATE:=2022-08-13
-PKG_SOURCE_VERSION:=4c7b720b9c63b826fb9404e454ae54f2ef5649d5
-PKG_MIRROR_HASH:=35178148034dfef36c5fda2bc8217617920bc1a3b86f72efbe87e85048a6a2a8
+PKG_SOURCE_DATE:=2024-04-26
+PKG_SOURCE_VERSION:=85f1053019caf4cd333795760950235ee4529ba7
+PKG_MIRROR_HASH:=0fea1a29aefc4b5932d739b0c942c182aef7a1ac44f467de80183b21dd739332
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -44,9 +44,10 @@ endef
 define Package/logd
   SECTION:=base
   CATEGORY:=Base system
-  DEPENDS:=+libubox +libubus +libblobmsg-json
+  DEPENDS:=+libubox +libubus +libblobmsg-json +libudebug
   TITLE:=OpenWrt system log implementation
   USERID:=logd=514:logd=514
+  ALTERNATIVES:=200:/sbin/logread:/usr/libexec/logread-ubox
 endef
 
 define Package/getrandom/install
@@ -63,10 +64,12 @@ define Package/ubox/install
 endef
 
 define Package/logd/install
-	$(INSTALL_DIR) $(1)/sbin $(1)/etc/init.d/
+	$(INSTALL_DIR) $(1)/sbin $(1)/usr/libexec/ $(1)/etc/init.d/ $(1)/usr/share/acl.d
 
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/{logd,logread} $(1)/sbin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/logd $(1)/sbin/
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/logread $(1)/usr/libexec/logread-ubox
 	$(INSTALL_BIN) ./files/log.init $(1)/etc/init.d/log
+	$(INSTALL_DATA) ./files/logd.json $(1)/usr/share/acl.d
 endef
 
 $(eval $(call BuildPackage,ubox))

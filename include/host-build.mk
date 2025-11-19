@@ -34,16 +34,23 @@ include $(INCLUDE_DIR)/autotools.mk
 _host_target:=$(if $(HOST_QUILT),,.)
 
 Host/Patch:=$(Host/Patch/Default)
-ifneq ($(strip $(HOST_UNPACK)),)
-  define Host/Prepare/Default
-	$(HOST_UNPACK)
+define Host/Prepare/Default
+	$(if $(strip $(HOST_UNPACK)),$(HOST_UNPACK))
 	[ ! -d ./src/ ] || $(CP) ./src/* $(HOST_BUILD_DIR)
 	$(Host/Patch)
-  endef
-endif
+endef
 
 define Host/Prepare
   $(call Host/Prepare/Default)
+endef
+
+define Host/Gnulib/Prepare
+  $(STAGING_DIR_HOST)/bin/gnulib-tool \
+	--local-dir=$(STAGING_DIR_HOST)/share/gnulib \
+	--source-base=$(PKG_GNULIB_BASE) \
+	$(PKG_GNULIB_ARGS) \
+	$(PKG_GNULIB_MODS) \
+  ;
 endef
 
 HOST_CONFIGURE_VARS = \
@@ -107,6 +114,10 @@ endef
 
 define Host/Compile
   $(call Host/Compile/Default)
+endef
+
+define Host/Gnulib/Compile
+  $(call Host/Compile/Default,SUBDIRS='$$$$(wildcard $(PKG_GNULIB_BASE))')
 endef
 
 define Host/Install/Default

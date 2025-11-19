@@ -4,7 +4,7 @@
 #ifndef _MHI_H_
 #define _MHI_H_
 
-#define PCIE_MHI_DRIVER_VERSION "V1.3.6"
+#define PCIE_MHI_DRIVER_VERSION "V1.3.8"
 #define ENABLE_MHI_MON
 //#define ENABLE_IP_SW0
 

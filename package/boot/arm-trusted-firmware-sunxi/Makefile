@@ -46,6 +46,9 @@ TFA_TARGETS:= \
 	sunxi-h6 \
 	sunxi-h616
 
+TFA_MAKE_FLAGS+= \
+	$(if $(CONFIG_BINUTILS_VERSION_2_37)$(CONFIG_BINUTILS_VERSION_2_38),,LDFLAGS="-no-warn-rwx-segments")
+
 define Package/trusted-firmware-a/install
 	$(INSTALL_DIR) $(STAGING_DIR_IMAGE)
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/build/$(PLAT)/release/bl31.bin $(STAGING_DIR_IMAGE)/bl31_$(BUILD_VARIANT).bin

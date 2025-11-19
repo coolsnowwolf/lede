@@ -1,0 +1,43 @@
+From 1af55c553f3b793667e8adf834e1e59deb23d8c0 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 15 Apr 2025 14:19:31 +0100
+Subject: [PATCH] PCI: quirks: work around VL805 firmware ASPM meddling
+
+Certain versions of the VL805 firmware manipulate the endpoint Link
+Control register to toggle ASPM on/off based on workload, but these
+versions also report 0 in the Device Capability Acceptable Latency field
+leaving the RC with ASPM disabled.
+
+As it turns out, this EP has a broken L0s implementation so a) override
+L1 latency to a sensible value and b) mask L0s.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/pci/quirks.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+--- a/drivers/pci/quirks.c
++++ b/drivers/pci/quirks.c
+@@ -6255,6 +6255,22 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_I
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x56b1, aspm_l1_acceptable_latency);
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x56c0, aspm_l1_acceptable_latency);
+ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, 0x56c1, aspm_l1_acceptable_latency);
++
++/*
++ * VL805 firmware can report 0 in the L0s/L1 Acceptable Latency fields.
++ * This is shorter than its own exit latency so ASPM for the link partner
++ * never gets enabled (but firmware toggles EP L1/L0s enable internally).
++ * However, L0s is flaky so explicitly disable it.
++ */
++static void vl805_aspm_fixup(struct pci_dev *dev)
++{
++	dev->devcap &= ~PCI_EXP_DEVCAP_L1;
++	/* Set to own exit latency + 1 */
++	dev->devcap |= FIELD_PREP(PCI_EXP_DEVCAP_L1, 5);
++	pci_disable_link_state(dev, PCIE_LINK_STATE_L0S);
++	pci_info(dev, "ASPM: VL805 fixup applied\n");
++}
++DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_VIA, 0x3483, vl805_aspm_fixup);
+ #endif
+ 
+ #ifdef CONFIG_PCIE_DPC

@@ -1,0 +1,117 @@
+From 8405ec8e3c02df8b3720874c3e2169fef4553868 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Stephan=20M=C3=BCller?= <smueller@chronox.de>
+Date: Sat, 7 Oct 2023 09:10:43 +0200
+Subject: [PATCH] crypto: jitter - reuse allocated entropy collector
+
+In case a health test error occurs during runtime, the power-up health
+tests are rerun to verify that the noise source is still good and
+that the reported health test error was an outlier. For performing this
+power-up health test, the already existing entropy collector instance
+is used instead of allocating a new one. This change has the following
+implications:
+
+* The noise that is collected as part of the newly run health tests is
+  inserted into the entropy collector and thus stirs the existing
+  data present in there further. Thus, the entropy collected during
+  the health test is not wasted. This is also allowed by SP800-90B.
+
+* The power-on health test is not affected by the state of the entropy
+  collector, because it resets the APT / RCT state. The remainder of
+  the state is unrelated to the health test as it is only applied to
+  newly obtained time stamps.
+
+This change also fixes a bug report about an allocation while in an
+atomic lock (the lock is taken in jent_kcapi_random, jent_read_entropy
+is called and this can call jent_entropy_init).
+
+Fixes: 04597c8dd6c4 ("jitter - add RCT/APT support for different OSRs")
+Reported-by: Dan Carpenter <dan.carpenter@linaro.org>
+Signed-off-by: Stephan Mueller <smueller@chronox.de>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ crypto/jitterentropy-kcapi.c |  2 +-
+ crypto/jitterentropy.c       | 36 ++++++++++++++++++++++++++----------
+ crypto/jitterentropy.h       |  2 +-
+ 3 files changed, 28 insertions(+), 12 deletions(-)
+
+--- a/crypto/jitterentropy-kcapi.c
++++ b/crypto/jitterentropy-kcapi.c
+@@ -348,7 +348,7 @@ static int __init jent_mod_init(void)
+ 
+ 	desc->tfm = tfm;
+ 	crypto_shash_init(desc);
+-	ret = jent_entropy_init(CONFIG_CRYPTO_JITTERENTROPY_OSR, 0, desc);
++	ret = jent_entropy_init(CONFIG_CRYPTO_JITTERENTROPY_OSR, 0, desc, NULL);
+ 	shash_desc_zero(desc);
+ 	crypto_free_shash(tfm);
+ 	if (ret) {
+--- a/crypto/jitterentropy.c
++++ b/crypto/jitterentropy.c
+@@ -611,8 +611,7 @@ int jent_read_entropy(struct rand_data *
+ 			 * Perform startup health tests and return permanent
+ 			 * error if it fails.
+ 			 */
+-			if (jent_entropy_init(ec->osr, ec->flags,
+-					      ec->hash_state))
++			if (jent_entropy_init(0, 0, NULL, ec))
+ 				return -3;
+ 
+ 			return -2;
+@@ -686,14 +685,30 @@ void jent_entropy_collector_free(struct
+ 	jent_zfree(entropy_collector);
+ }
+ 
+-int jent_entropy_init(unsigned int osr, unsigned int flags, void *hash_state)
++int jent_entropy_init(unsigned int osr, unsigned int flags, void *hash_state,
++		      struct rand_data *p_ec)
+ {
+-	struct rand_data *ec;
+-	int i, time_backwards = 0, ret = 0;
++	/*
++	 * If caller provides an allocated ec, reuse it which implies that the
++	 * health test entropy data is used to further still the available
++	 * entropy pool.
++	 */
++	struct rand_data *ec = p_ec;
++	int i, time_backwards = 0, ret = 0, ec_free = 0;
+ 
+-	ec = jent_entropy_collector_alloc(osr, flags, hash_state);
+-	if (!ec)
+-		return JENT_EMEM;
++	if (!ec) {
++		ec = jent_entropy_collector_alloc(osr, flags, hash_state);
++		if (!ec)
++			return JENT_EMEM;
++		ec_free = 1;
++	} else {
++		/* Reset the APT */
++		jent_apt_reset(ec, 0);
++		/* Ensure that a new APT base is obtained */
++		ec->apt_base_set = 0;
++		/* Reset the RCT */
++		ec->rct_count = 0;
++	}
+ 
+ 	/* We could perform statistical tests here, but the problem is
+ 	 * that we only have a few loop counts to do testing. These
+@@ -783,7 +798,8 @@ int jent_entropy_init(unsigned int osr,
+ 	}
+ 
+ out:
+-	jent_entropy_collector_free(ec);
++	if (ec_free)
++		jent_entropy_collector_free(ec);
+ 
+ 	return ret;
+ }
+--- a/crypto/jitterentropy.h
++++ b/crypto/jitterentropy.h
+@@ -12,7 +12,7 @@ int jent_read_random_block(void *hash_st
+ 
+ struct rand_data;
+ extern int jent_entropy_init(unsigned int osr, unsigned int flags,
+-			     void *hash_state);
++			     void *hash_state, struct rand_data *p_ec);
+ extern int jent_read_entropy(struct rand_data *ec, unsigned char *data,
+ 			     unsigned int len);
+ 

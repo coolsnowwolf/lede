@@ -1,0 +1,76 @@
+From e2a85e0a87e2d0e884554a9776cc88997ce53b7d Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 31 May 2024 15:15:07 +0100
+Subject: [PATCH] drivers: media: pci: Add wrapper after removal of follow_pfn
+
+---
+ drivers/media/pci/hailo/vdma/memory.c      | 34 +++++++++++++++++++++-
+ drivers/regulator/rpi-panel-v2-regulator.c |  2 +-
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+--- a/drivers/media/pci/hailo/vdma/memory.c
++++ b/drivers/media/pci/hailo/vdma/memory.c
+@@ -8,12 +8,12 @@
+ #include "memory.h"
+ #include "utils/compact.h"
+ 
++#include <linux/highmem-internal.h>
+ #include <linux/slab.h>
+ #include <linux/scatterlist.h>
+ #include <linux/sched.h>
+ #include <linux/module.h>
+ 
+-
+ #define SGL_MAX_SEGMENT_SIZE 	(0x10000)
+ // See linux/mm.h
+ #define MMIO_AND_NO_PAGES_VMA_MASK (VM_IO | VM_PFNMAP)
+@@ -499,6 +499,38 @@ void hailo_vdma_clear_continuous_buffer_
+     }
+ }
+ 
++/**
++ * follow_pfn - look up PFN at a user virtual address
++ * @vma: memory mapping
++ * @address: user virtual address
++ * @pfn: location to store found PFN
++ *
++ * Only IO mappings and raw PFN mappings are allowed.
++ *
++ * This function does not allow the caller to read the permissions
++ * of the PTE.  Do not use it.
++ *
++ * Return: zero and the pfn at @pfn on success, -ve otherwise.
++ */
++static int follow_pfn(struct vm_area_struct *vma, unsigned long address,
++       unsigned long *pfn)
++{
++       int ret = -EINVAL;
++       spinlock_t *ptl;
++       pte_t *ptep;
++
++       if (!(vma->vm_flags & (VM_IO | VM_PFNMAP)))
++               return ret;
++
++       ret = follow_pte(vma, address, &ptep, &ptl);
++       if (ret)
++               return ret;
++       *pfn = pte_pfn(ptep_get(ptep));
++       pte_unmap_unlock(ptep, ptl);
++       return 0;
++}
++
++
+ // Assumes the provided user_address belongs to the vma and that MMIO_AND_NO_PAGES_VMA_MASK bits are set under
+ // vma->vm_flags. This is validated in hailo_vdma_buffer_map, and won't be checked here
+ #if defined(HAILO_SUPPORT_MMIO_DMA_MAPPING)
+--- a/drivers/regulator/rpi-panel-v2-regulator.c
++++ b/drivers/regulator/rpi-panel-v2-regulator.c
+@@ -77,7 +77,7 @@ static int rpi_panel_v2_update_status(st
+ 	int brightness = bl->props.brightness;
+ 
+ 	if (bl->props.power != FB_BLANK_UNBLANK ||
+-	    bl->props.fb_blank != FB_BLANK_UNBLANK)
++	    bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
+ 		brightness = 0;
+ 
+ 	return regmap_write(regmap, REG_PWM, brightness | PWM_BL_ENABLE);

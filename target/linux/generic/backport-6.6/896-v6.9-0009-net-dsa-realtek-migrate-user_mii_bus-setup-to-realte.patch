@@ -1,0 +1,198 @@
+From b4bd77971f3c290c4694ed710cc6967593b10bc2 Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Fri, 9 Feb 2024 02:03:45 -0300
+Subject: net: dsa: realtek: migrate slave_mii_bus setup to
+ realtek_dsa
+
+In the user MDIO driver, despite numerous references to SMI, including
+its compatible string, there's nothing inherently specific about the SMI
+interface in the user MDIO bus. Consequently, the code has been migrated
+to the rtl83xx module. All references to SMI have been eliminated.
+
+The MDIO bus id was changed from Realtek-<switch id> to the switch
+devname suffixed with :slave_mii, giving more information about the bus
+it is referencing.
+
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Reviewed-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/realtek/realtek-smi.c | 57 +---------------------
+ drivers/net/dsa/realtek/rtl83xx.c     | 68 +++++++++++++++++++++++++++
+ drivers/net/dsa/realtek/rtl83xx.h     |  1 +
+ 3 files changed, 70 insertions(+), 56 deletions(-)
+
+--- a/drivers/net/dsa/realtek/realtek-smi.c
++++ b/drivers/net/dsa/realtek/realtek-smi.c
+@@ -31,7 +31,6 @@
+ #include <linux/spinlock.h>
+ #include <linux/skbuff.h>
+ #include <linux/of.h>
+-#include <linux/of_mdio.h>
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/platform_device.h>
+@@ -312,60 +311,6 @@ static int realtek_smi_read(void *ctx, u
+ 	return realtek_smi_read_reg(priv, reg, val);
+ }
+ 
+-static int realtek_smi_mdio_read(struct mii_bus *bus, int addr, int regnum)
+-{
+-	struct realtek_priv *priv = bus->priv;
+-
+-	return priv->ops->phy_read(priv, addr, regnum);
+-}
+-
+-static int realtek_smi_mdio_write(struct mii_bus *bus, int addr, int regnum,
+-				  u16 val)
+-{
+-	struct realtek_priv *priv = bus->priv;
+-
+-	return priv->ops->phy_write(priv, addr, regnum, val);
+-}
+-
+-static int realtek_smi_setup_mdio(struct dsa_switch *ds)
+-{
+-	struct realtek_priv *priv =  ds->priv;
+-	struct device_node *mdio_np;
+-	int ret = 0;
+-
+-	mdio_np = of_get_child_by_name(priv->dev->of_node, "mdio");
+-	if (!mdio_np) {
+-		dev_err(priv->dev, "no MDIO bus node\n");
+-		return -ENODEV;
+-	}
+-
+-	priv->slave_mii_bus = devm_mdiobus_alloc(priv->dev);
+-	if (!priv->slave_mii_bus) {
+-		ret = -ENOMEM;
+-		goto err_put_node;
+-	}
+-
+-	priv->slave_mii_bus->priv = priv;
+-	priv->slave_mii_bus->name = "SMI slave MII";
+-	priv->slave_mii_bus->read = realtek_smi_mdio_read;
+-	priv->slave_mii_bus->write = realtek_smi_mdio_write;
+-	snprintf(priv->slave_mii_bus->id, MII_BUS_ID_SIZE, "SMI-%d",
+-		 ds->index);
+-	priv->slave_mii_bus->parent = priv->dev;
+-
+-	ret = devm_of_mdiobus_register(priv->dev, priv->slave_mii_bus, mdio_np);
+-	if (ret) {
+-		dev_err(priv->dev, "unable to register MDIO bus %s\n",
+-			priv->slave_mii_bus->id);
+-		goto err_put_node;
+-	}
+-
+-err_put_node:
+-	of_node_put(mdio_np);
+-
+-	return ret;
+-}
+-
+ static const struct realtek_interface_info realtek_smi_info = {
+ 	.reg_read = realtek_smi_read,
+ 	.reg_write = realtek_smi_write,
+@@ -407,7 +352,7 @@ int realtek_smi_probe(struct platform_de
+ 	}
+ 
+ 	priv->write_reg_noack = realtek_smi_write_reg_noack;
+-	priv->setup_interface = realtek_smi_setup_mdio;
++	priv->setup_interface = rtl83xx_setup_user_mdio;
+ 	priv->ds_ops = priv->variant->ds_ops_smi;
+ 
+ 	ret = rtl83xx_register_switch(priv);
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -3,6 +3,7 @@
+ #include <linux/module.h>
+ #include <linux/regmap.h>
+ #include <linux/of_device.h> /* krnl 6.1 only */
++#include <linux/of_mdio.h>
+ 
+ #include "realtek.h"
+ #include "rtl83xx.h"
+@@ -44,6 +45,73 @@ void rtl83xx_unlock(void *ctx)
+ }
+ EXPORT_SYMBOL_NS_GPL(rtl83xx_unlock, REALTEK_DSA);
+ 
++static int rtl83xx_user_mdio_read(struct mii_bus *bus, int addr, int regnum)
++{
++	struct realtek_priv *priv = bus->priv;
++
++	return priv->ops->phy_read(priv, addr, regnum);
++}
++
++static int rtl83xx_user_mdio_write(struct mii_bus *bus, int addr, int regnum,
++				   u16 val)
++{
++	struct realtek_priv *priv = bus->priv;
++
++	return priv->ops->phy_write(priv, addr, regnum, val);
++}
++
++/**
++ * rtl83xx_setup_user_mdio() - register the user mii bus driver
++ * @ds: DSA switch associated with this slave_mii_bus
++ *
++ * Registers the MDIO bus for built-in Ethernet PHYs, and associates it with
++ * the mandatory 'mdio' child OF node of the switch.
++ *
++ * Context: Can sleep.
++ * Return: 0 on success, negative value for failure.
++ */
++int rtl83xx_setup_user_mdio(struct dsa_switch *ds)
++{
++	struct realtek_priv *priv = ds->priv;
++	struct device_node *mdio_np;
++	struct mii_bus *bus;
++	int ret = 0;
++
++	mdio_np = of_get_child_by_name(priv->dev->of_node, "mdio");
++	if (!mdio_np) {
++		dev_err(priv->dev, "no MDIO bus node\n");
++		return -ENODEV;
++	}
++
++	bus = devm_mdiobus_alloc(priv->dev);
++	if (!bus) {
++		ret = -ENOMEM;
++		goto err_put_node;
++	}
++
++	bus->priv = priv;
++	bus->name = "Realtek user MII";
++	bus->read = rtl83xx_user_mdio_read;
++	bus->write = rtl83xx_user_mdio_write;
++	snprintf(bus->id, MII_BUS_ID_SIZE, "%s:slave_mii", dev_name(priv->dev));
++	bus->parent = priv->dev;
++
++	ret = devm_of_mdiobus_register(priv->dev, bus, mdio_np);
++	if (ret) {
++		dev_err(priv->dev, "unable to register MDIO bus %s\n",
++			bus->id);
++		goto err_put_node;
++	}
++
++	priv->slave_mii_bus = bus;
++
++err_put_node:
++	of_node_put(mdio_np);
++
++	return ret;
++}
++EXPORT_SYMBOL_NS_GPL(rtl83xx_setup_user_mdio, REALTEK_DSA);
++
+ /**
+  * rtl83xx_probe() - probe a Realtek switch
+  * @dev: the device being probed
+--- a/drivers/net/dsa/realtek/rtl83xx.h
++++ b/drivers/net/dsa/realtek/rtl83xx.h
+@@ -10,6 +10,7 @@ struct realtek_interface_info {
+ 
+ void rtl83xx_lock(void *ctx);
+ void rtl83xx_unlock(void *ctx);
++int rtl83xx_setup_user_mdio(struct dsa_switch *ds);
+ struct realtek_priv *
+ rtl83xx_probe(struct device *dev,
+ 	      const struct realtek_interface_info *interface_info);

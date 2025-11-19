@@ -80,11 +80,6 @@ define Host/SetToolchainInfo
 endef
 
 define Host/Configure
-	[ -f $(HOST_BUILD_DIR)/.autoconf ] || { \
-		cd $(HOST_BUILD_DIR)/; \
-		autoconf --force && \
-		touch $(HOST_BUILD_DIR)/.autoconf; \
-	}
 	mkdir -p $(CUR_BUILD_DIR)
 	( cd $(CUR_BUILD_DIR); rm -f config.cache; \
 		$(GLIBC_CONFIGURE) \

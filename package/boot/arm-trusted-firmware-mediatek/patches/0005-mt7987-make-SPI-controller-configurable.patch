@@ -1,0 +1,128 @@
+From e2e43103c00b5f7ccedbdbdece0f622cb420b4a5 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 3 Oct 2025 12:53:10 +0100
+Subject: [PATCH] mt7987: make SPI controller configurable
+
+Allow selecting the SPI controller used for SPIM-NAND or SPI-NOR boot
+devices (either SPI0 or SPI2).
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ plat/mediatek/apsoc_common/Config.in        |  1 +
+ plat/mediatek/mt7987/Config.in              | 29 +++++++++++++++++++++
+ plat/mediatek/mt7987/bl2/bl2.mk             | 12 +++++++++
+ plat/mediatek/mt7987/bl2/bl2_dev_spi_nand.c | 10 ++++++-
+ plat/mediatek/mt7987/platform.mk            |  4 +--
+ 5 files changed, 53 insertions(+), 3 deletions(-)
+ create mode 100644 plat/mediatek/mt7987/Config.in
+
+--- a/plat/mediatek/apsoc_common/Config.in
++++ b/plat/mediatek/apsoc_common/Config.in
+@@ -783,6 +783,7 @@ config ENABLE_BL31_RUNTIME_LOG
+ 	default 1
+ 	depends on _ENABLE_BL31_RUNTIME_LOG
+ 
++source "plat/mediatek/mt7987/Config.in"
+ source "plat/mediatek/mt7988/Config.in"
+ 
+ endmenu # Platform configurations
+--- /dev/null
++++ b/plat/mediatek/mt7987/Config.in
+@@ -0,0 +1,29 @@
++# SPDX-License-Identifier: BSD-3-Clause
++#
++# Copyright (c) 2025 Daniel Golle <daniel@makrotopia.org>
++#
++# MT7987 platform-specific configurations
++#
++
++if _PLAT_MT7987
++
++choice
++	prompt "SPI controller"
++	depends on (_BOOT_DEVICE_SPIM_NAND || _BOOT_DEVICE_SPI_NOR)
++	default _SPIM_CTRL_0 if _BOOT_DEVICE_SPIM_NAND
++	default _SPIM_CTRL_2 if _BOOT_DEVICE_SPI_NOR
++
++	config _SPIM_CTRL_0
++		bool "0"
++
++	config _SPIM_CTRL_2
++		bool "2"
++
++endchoice
++
++config SPIM_CTRL
++	int
++	default 0 if _SPIM_CTRL_0
++	default 2 if _SPIM_CTRL_2
++
++endif # _PLAT_MT7987
+--- a/plat/mediatek/mt7987/bl2/bl2.mk
++++ b/plat/mediatek/mt7987/bl2/bl2.mk
+@@ -91,7 +91,11 @@ endif # END OF BOOT_DEVICE = ram
+ ifeq ($(BOOT_DEVICE),nor)
+ $(eval $(call BL2_BOOT_NOR))
+ BL2_SOURCES		+=	$(MTK_PLAT_SOC)/bl2/bl2_dev_spi_nor.c
++ifeq ($(SPIM_CTRL),0)
++DTS_NAME		:=	mt7987-spi0
++else
+ DTS_NAME		:=	mt7987-spi2
++endif
+ endif # END OF BOOTDEVICE = nor
+ 
+ ifeq ($(BOOT_DEVICE),emmc)
+@@ -112,10 +116,18 @@ ifeq ($(BOOT_DEVICE),spim-nand)
+ $(eval $(call BL2_BOOT_SPI_NAND,0,0))
+ BL2_SOURCES		+=	$(MTK_PLAT_SOC)/bl2/bl2_dev_spi_nand.c
+ NAND_TYPE		?=	spim:2k+64
++ifeq ($(SPIM_CTRL),2)
++DTS_NAME		:=	mt7987-spi2
++else
+ DTS_NAME		:=	mt7987-spi0
++endif
+ $(eval $(call BL2_BOOT_NAND_TYPE_CHECK,$(NAND_TYPE),spim:2k+64 spim:2k+128 spim:4k+256))
+ endif # END OF BOOTDEVICE = spim-nand
+ 
++ifneq ($(SPIM_CTRL),)
++BL2_CPPFLAGS		+=	-DSPIM_CTRL=$(SPIM_CTRL)
++endif
++
+ ifeq ($(BROM_HEADER_TYPE),)
+ $(error BOOT_DEVICE has invalid value. Please re-check.)
+ endif
+--- a/plat/mediatek/mt7987/bl2/bl2_dev_spi_nand.c
++++ b/plat/mediatek/mt7987/bl2/bl2_dev_spi_nand.c
+@@ -12,10 +12,18 @@
+ 
+ #define MTK_QSPI_SRC_CLK		CB_MPLL_D2
+ 
++#if SPIM_CTRL == 0
++#define SELECTED_SPIM SPIM0
++#elif SPIM_CTRL == 2
++#define SELECTED_SPIM SPIM2
++#else
++#error "Invalid SPI controller selection"
++#endif
++
+ uint32_t mtk_plat_get_qspi_src_clk(void)
+ {
+ 	/* config GPIO pinmux to spi mode */
+-	mtk_spi_gpio_init(SPIM0);
++	mtk_spi_gpio_init(SELECTED_SPIM);
+ 
+ 	/* select 208M clk */
+ 	mtk_spi_source_clock_select(MTK_QSPI_SRC_CLK);
+--- a/plat/mediatek/mt7987/platform.mk
++++ b/plat/mediatek/mt7987/platform.mk
+@@ -56,8 +56,8 @@ include make_helpers/dep.mk
+ 
+ $(call GEN_DEP_RULES,bl2,emicfg bl2_boot_ram bl2_boot_nand_nmbm bl2_dev_mmc bl2_plat_init bl2_plat_setup mt7987_gpio dtb)
+ $(call MAKE_DEP,bl2,emicfg,DDR4_4BG_MODE DRAM_DEBUG_LOG DDR3_FREQ_2133 DDR3_FREQ_1866 DDR4_FREQ_3200 DDR4_FREQ_2666)
+-$(call MAKE_DEP,bl2,bl2_plat_init,BL2_COMPRESS)
+-$(call MAKE_DEP,bl2,bl2_plat_setup,BOOT_DEVICE TRUSTED_BOARD_BOOT BL32_TZRAM_BASE BL32_TZRAM_SIZE BL32_LOAD_OFFSET)
++$(call MAKE_DEP,bl2,bl2_plat_init,BL2_COMPRESS SPIM_CTRL)
++$(call MAKE_DEP,bl2,bl2_plat_setup,BOOT_DEVICE TRUSTED_BOARD_BOOT BL32_TZRAM_BASE BL32_TZRAM_SIZE BL32_LOAD_OFFSET SPIM_CTRL)
+ $(call MAKE_DEP,bl2,bl2_dev_mmc,BOOT_DEVICE)
+ $(call MAKE_DEP,bl2,bl2_boot_ram,RAM_BOOT_DEBUGGER_HOOK RAM_BOOT_UART_DL)
+ $(call MAKE_DEP,bl2,bl2_boot_nand_nmbm,NMBM_MAX_RATIO NMBM_MAX_RESERVED_BLOCKS NMBM_DEFAULT_LOG_LEVEL)

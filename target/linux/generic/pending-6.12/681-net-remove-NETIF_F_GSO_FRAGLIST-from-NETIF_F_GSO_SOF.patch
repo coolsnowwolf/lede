@@ -1,0 +1,129 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 15 Aug 2024 21:15:13 +0200
+Subject: [PATCH] net: remove NETIF_F_GSO_FRAGLIST from NETIF_F_GSO_SOFTWARE
+
+Several drivers set NETIF_F_GSO_SOFTWARE, but mangle fraglist GRO packets
+in a way that they can't be properly segmented anymore.
+In order to properly deal with this, remove fraglist GSO from
+NETIF_F_GSO_SOFTWARE and switch to NETIF_F_GSO_SOFTWARE_ALL (which includes
+fraglist GSO) in places where it's safe to add.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/dummy.c
++++ b/drivers/net/dummy.c
+@@ -111,7 +111,7 @@ static void dummy_setup(struct net_devic
+ 	dev->priv_flags |= IFF_LIVE_ADDR_CHANGE | IFF_NO_QUEUE;
+ 	dev->lltx = true;
+ 	dev->features	|= NETIF_F_SG | NETIF_F_FRAGLIST;
+-	dev->features	|= NETIF_F_GSO_SOFTWARE;
++	dev->features	|= NETIF_F_GSO_SOFTWARE_ALL;
+ 	dev->features	|= NETIF_F_HW_CSUM | NETIF_F_HIGHDMA;
+ 	dev->features	|= NETIF_F_GSO_ENCAP_ALL;
+ 	dev->hw_features |= dev->features;
+--- a/drivers/net/loopback.c
++++ b/drivers/net/loopback.c
+@@ -174,7 +174,7 @@ static void gen_lo_setup(struct net_devi
+ 	dev->lltx		= true;
+ 	dev->netns_local	= true;
+ 	netif_keep_dst(dev);
+-	dev->hw_features	= NETIF_F_GSO_SOFTWARE;
++	dev->hw_features	= NETIF_F_GSO_SOFTWARE_ALL;
+ 	dev->features		= NETIF_F_SG | NETIF_F_FRAGLIST
+ 		| NETIF_F_GSO_SOFTWARE
+ 		| NETIF_F_HW_CSUM
+--- a/drivers/net/macvlan.c
++++ b/drivers/net/macvlan.c
+@@ -897,7 +897,7 @@ static int macvlan_hwtstamp_set(struct n
+ static struct lock_class_key macvlan_netdev_addr_lock_key;
+ 
+ #define ALWAYS_ON_OFFLOADS \
+-	(NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE | \
++	(NETIF_F_SG | NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE_ALL | \
+ 	 NETIF_F_GSO_ROBUST | NETIF_F_GSO_ENCAP_ALL)
+ 
+ #define ALWAYS_ON_FEATURES ALWAYS_ON_OFFLOADS
+--- a/include/linux/netdev_features.h
++++ b/include/linux/netdev_features.h
+@@ -211,13 +211,14 @@ static inline int find_next_netdev_featu
+ 
+ /* List of features with software fallbacks. */
+ #define NETIF_F_GSO_SOFTWARE	(NETIF_F_ALL_TSO | NETIF_F_GSO_SCTP |	     \
+-				 NETIF_F_GSO_UDP_L4 | NETIF_F_GSO_FRAGLIST)
++				 NETIF_F_GSO_UDP_L4)
++#define NETIF_F_GSO_SOFTWARE_ALL (NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_FRAGLIST)
+ 
+ /*
+  * If one device supports one of these features, then enable them
+  * for all in netdev_increment_features.
+  */
+-#define NETIF_F_ONE_FOR_ALL	(NETIF_F_GSO_SOFTWARE | NETIF_F_GSO_ROBUST | \
++#define NETIF_F_ONE_FOR_ALL	(NETIF_F_GSO_SOFTWARE_ALL | NETIF_F_GSO_ROBUST | \
+ 				 NETIF_F_SG | NETIF_F_HIGHDMA |		\
+ 				 NETIF_F_FRAGLIST | NETIF_F_VLAN_CHALLENGED)
+ 
+--- a/net/8021q/vlan.h
++++ b/net/8021q/vlan.h
+@@ -109,7 +109,7 @@ static inline netdev_features_t vlan_tnl
+ 	netdev_features_t ret;
+ 
+ 	ret = real_dev->hw_enc_features &
+-	      (NETIF_F_CSUM_MASK | NETIF_F_GSO_SOFTWARE |
++	      (NETIF_F_CSUM_MASK | NETIF_F_GSO_SOFTWARE_ALL |
+ 	       NETIF_F_GSO_ENCAP_ALL);
+ 
+ 	if ((ret & NETIF_F_GSO_ENCAP_ALL) && (ret & NETIF_F_CSUM_MASK))
+--- a/net/8021q/vlan_dev.c
++++ b/net/8021q/vlan_dev.c
+@@ -538,7 +538,7 @@ static int vlan_dev_init(struct net_devi
+ 		dev->state |= (1 << __LINK_STATE_NOCARRIER);
+ 
+ 	dev->hw_features = NETIF_F_HW_CSUM | NETIF_F_SG |
+-			   NETIF_F_FRAGLIST | NETIF_F_GSO_SOFTWARE |
++			   NETIF_F_FRAGLIST | NETIF_F_GSO_SOFTWARE_ALL |
+ 			   NETIF_F_GSO_ENCAP_ALL |
+ 			   NETIF_F_HIGHDMA | NETIF_F_SCTP_CRC |
+ 			   NETIF_F_FCOE_CRC | NETIF_F_FSO;
+@@ -634,7 +634,7 @@ static netdev_features_t vlan_dev_fix_fe
+ 	if (lower_features & (NETIF_F_IP_CSUM|NETIF_F_IPV6_CSUM))
+ 		lower_features |= NETIF_F_HW_CSUM;
+ 	features = netdev_intersect_features(features, lower_features);
+-	features |= old_features & (NETIF_F_SOFT_FEATURES | NETIF_F_GSO_SOFTWARE);
++	features |= old_features & (NETIF_F_SOFT_FEATURES | NETIF_F_GSO_SOFTWARE_ALL);
+ 
+ 	return features;
+ }
+--- a/net/core/sock.c
++++ b/net/core/sock.c
+@@ -2550,7 +2550,7 @@ void sk_setup_caps(struct sock *sk, stru
+ 	if (sk_is_tcp(sk))
+ 		sk->sk_route_caps |= NETIF_F_GSO;
+ 	if (sk->sk_route_caps & NETIF_F_GSO)
+-		sk->sk_route_caps |= NETIF_F_GSO_SOFTWARE;
++		sk->sk_route_caps |= NETIF_F_GSO_SOFTWARE_ALL;
+ 	if (unlikely(sk->sk_gso_disabled))
+ 		sk->sk_route_caps &= ~NETIF_F_GSO_MASK;
+ 	if (sk_can_gso(sk)) {
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -2021,7 +2021,7 @@ void ieee80211_color_collision_detection
+ /* interface handling */
+ #define MAC80211_SUPPORTED_FEATURES_TX	(NETIF_F_IP_CSUM | NETIF_F_IPV6_CSUM | \
+ 					 NETIF_F_HW_CSUM | NETIF_F_SG | \
+-					 NETIF_F_HIGHDMA | NETIF_F_GSO_SOFTWARE | \
++					 NETIF_F_HIGHDMA | NETIF_F_GSO_SOFTWARE_ALL | \
+ 					 NETIF_F_HW_TC)
+ #define MAC80211_SUPPORTED_FEATURES_RX	(NETIF_F_RXCSUM)
+ #define MAC80211_SUPPORTED_FEATURES	(MAC80211_SUPPORTED_FEATURES_TX | \
+--- a/net/openvswitch/vport-internal_dev.c
++++ b/net/openvswitch/vport-internal_dev.c
+@@ -109,7 +109,7 @@ static void do_setup(struct net_device *
+ 	netdev->rtnl_link_ops = &internal_dev_link_ops;
+ 
+ 	netdev->features = NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA |
+-			   NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE |
++			   NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE_ALL |
+ 			   NETIF_F_GSO_ENCAP_ALL;
+ 
+ 	netdev->vlan_features = netdev->features;

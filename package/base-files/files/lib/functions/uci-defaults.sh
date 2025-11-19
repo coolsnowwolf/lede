@@ -39,7 +39,7 @@ ucidef_set_interface() {
 
 		[ -n "$opt" -a -n "$val" ] || break
 
-		[ "$opt" = "ifname" -a "$val" != "${val/ //}" ] && {
+		[ "$opt" = "device" -a "$val" != "${val/ //}" ] && {
 			json_select_array "ports"
 			for e in $val; do json_add_string "" "$e"; done
 			json_close_array
@@ -79,11 +79,11 @@ ucidef_set_compat_version() {
 }
 
 ucidef_set_interface_lan() {
-	ucidef_set_interface "lan" ifname "$1" protocol "${2:-static}"
+	ucidef_set_interface "lan" device "$1" protocol "${2:-static}"
 }
 
 ucidef_set_interface_wan() {
-	ucidef_set_interface "wan" ifname "$1" protocol "${2:-dhcp}"
+	ucidef_set_interface "wan" device "$1" protocol "${2:-dhcp}"
 }
 
 ucidef_set_interfaces_lan_wan() {
@@ -106,12 +106,33 @@ ucidef_set_bridge_mac() {
 	json_select ..
 }
 
-ucidef_set_network_device_mac() {
-	json_select_object "network-device"
+_ucidef_set_network_device_common() {
+	json_select_object "network_device"
 	json_select_object "${1}"
-	json_add_string macaddr "${2}"
+	json_add_string "${2}" "${3}"
 	json_select ..
 	json_select ..
+}
+
+ucidef_set_network_device_mac() {
+	_ucidef_set_network_device_common $1 macaddr $2
+}
+
+ucidef_set_network_device_path() {
+	_ucidef_set_network_device_common $1 path $2
+}
+
+ucidef_set_network_device_path_port() {
+	_ucidef_set_network_device_common $1 path $2
+	_ucidef_set_network_device_common $1 port $3
+}
+
+ucidef_set_network_device_gro() {
+	_ucidef_set_network_device_common $1 gro $2
+}
+
+ucidef_set_network_device_conduit() {
+	_ucidef_set_network_device_common $1 conduit $2
 }
 
 _ucidef_add_switch_port() {
@@ -201,14 +222,14 @@ _ucidef_finish_switch_roles() {
 
 			json_select_object "$role"
 				# attach previous interfaces (for multi-switch devices)
-				json_get_var devices ifname
+				json_get_var devices device
 				if ! list_contains devices "$device"; then
 					devices="${devices:+$devices }$device"
 				fi
 			json_select ..
 		json_select ..
 
-		ucidef_set_interface "$role" ifname "$devices"
+		ucidef_set_interface "$role" device "$devices"
 	done
 }
 
@@ -418,6 +439,15 @@ ucidef_set_led_default() {
 	json_select ..
 }
 
+ucidef_set_led_heartbeat() {
+	_ucidef_set_led_common "$1" "$2" "$3"
+
+	json_add_string trigger heartbeat
+	json_select ..
+
+	json_select ..
+}
+
 ucidef_set_led_gpio() {
 	local gpio="$4"
 	local inverted="$5"
@@ -617,6 +647,92 @@ ucidef_set_hostname() {
 	json_select ..
 }
 
+ucidef_set_timezone() {
+	local timezone="$1"
+	json_select_object system
+		json_add_string timezone "$timezone"
+	json_select ..
+}
+
+ucidef_set_wireless() {
+	local band="$1"
+	local ssid="$2"
+	local encryption="$3"
+	local key="$4"
+
+	case "$band" in
+	all|2g|5g|6g) ;;
+	*) return;;
+	esac
+	[ -z "$ssid" ] && return
+
+	json_select_object wlan
+		json_select_object defaults
+			json_select_object ssids
+				json_select_object "$band"
+					json_add_string ssid "$ssid"
+					[ -n "$encryption" ] && json_add_string encryption "$encryption"
+					[ -n "$key" ] && json_add_string key "$key"
+				json_select ..
+			json_select ..
+		json_select ..
+	json_select ..
+}
+
+ucidef_set_country() {
+	local country="$1"
+
+	json_select_object wlan
+		json_select_object defaults
+			json_add_string country "$country"
+		json_select ..
+	json_select ..
+}
+
+ucidef_set_wireless_mac_count() {
+	local band="$1"
+	local mac_count="$2"
+
+	case "$band" in
+	2g|5g|6g) ;;
+	*) return;;
+	esac
+	[ -z "$mac_count" ] && return
+
+	json_select_object wlan
+		json_select_object defaults
+			json_select_object ssids
+				json_select_object "$band"
+					json_add_string mac_count "$mac_count"
+				json_select ..
+			json_select ..
+		json_select ..
+	json_select ..
+}
+
+ucidef_set_root_password_plain() {
+	local passwd="$1"
+	json_select_object credentials
+		json_add_string root_password_plain "$passwd"
+	json_select ..
+}
+
+ucidef_set_root_password_hash() {
+	local passwd="$1"
+	json_select_object credentials
+		json_add_string root_password_hash "$passwd"
+	json_select ..
+}
+
+ucidef_set_ssh_authorized_key() {
+	local ssh_key="$1"
+	json_select_object credentials
+		json_select_array ssh_authorized_keys
+			json_add_string "" "$ssh_key"
+		json_select ..
+	json_select ..
+}
+
 ucidef_set_ntpserver() {
 	local server
 
@@ -624,6 +740,17 @@ ucidef_set_ntpserver() {
 		json_select_array ntpserver
 			for server in "$@"; do
 				json_add_string "" "$server"
+			done
+		json_select ..
+	json_select ..
+}
+
+ucidef_set_poe() {
+	json_select_object poe
+		json_add_string "budget" "$1"
+		json_select_array ports
+			for port in $2; do
+				json_add_string "" "$port"
 			done
 		json_select ..
 	json_select ..
@@ -642,6 +769,27 @@ ucidef_add_wlan() {
 	json_select ..
 
 	ucidef_wlan_idx="$((ucidef_wlan_idx + 1))"
+}
+
+ucidef_set_interface_netdev_range() {
+	local interface="$1"
+	local base_netdev="$2"
+	local start="$3"
+	local stop="$4"
+	local netdevs
+	local i
+
+	if [ "$stop" -ge "$start" ]; then
+		i="$start"
+		netdevs="$base_netdev$i"
+
+		while [ "$i" -lt "$stop" ]; do
+			i=$((i + 1))
+			netdevs="$netdevs $base_netdev$i"
+		done
+
+		ucidef_set_interface "$interface" device "$netdevs"
+	fi
 }
 
 board_config_update() {

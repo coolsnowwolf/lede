@@ -1,0 +1,63 @@
+From 96f6b239ff694192416df9cc3f8e130fb7b19301 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 24 Apr 2025 16:28:02 +0100
+Subject: [PATCH] media: i2c: imx708: Fix lockdep issues.
+
+The driver had a lockdep_assert_held in imx708_get_format_code,
+but the calls from enum_mbus_code and enum_frame_size didn't take
+the mutex.
+
+Likewise imx708_set_framing_limits calling __v4l2_ctrl_modify_range
+had a lockdep, but when going through the probe function the mutex
+hadn't been taken.
+
+Fix both cases.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx708.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/drivers/media/i2c/imx708.c
++++ b/drivers/media/i2c/imx708.c
+@@ -1258,7 +1258,9 @@ static int imx708_enum_mbus_code(struct
+ 		if (code->index >= (ARRAY_SIZE(codes) / 4))
+ 			return -EINVAL;
+ 
++		mutex_lock(&imx708->mutex);
+ 		code->code = imx708_get_format_code(imx708);
++		mutex_unlock(&imx708->mutex);
+ 	} else {
+ 		if (code->index > 0)
+ 			return -EINVAL;
+@@ -1274,6 +1276,7 @@ static int imx708_enum_frame_size(struct
+ 				  struct v4l2_subdev_frame_size_enum *fse)
+ {
+ 	struct imx708 *imx708 = to_imx708(sd);
++	u32 code;
+ 
+ 	if (fse->pad >= NUM_PADS)
+ 		return -EINVAL;
+@@ -1288,7 +1291,11 @@ static int imx708_enum_frame_size(struct
+ 		if (fse->index >= num_modes)
+ 			return -EINVAL;
+ 
+-		if (fse->code != imx708_get_format_code(imx708))
++		mutex_lock(&imx708->mutex);
++		code = imx708_get_format_code(imx708);
++		mutex_unlock(&imx708->mutex);
++
++		if (fse->code != code)
+ 			return -EINVAL;
+ 
+ 		fse->min_width = mode_list[fse->index].width;
+@@ -1900,7 +1907,9 @@ static int imx708_init_controls(struct i
+ 	imx708->sd.ctrl_handler = ctrl_hdlr;
+ 
+ 	/* Setup exposure and frame/line length limits. */
++	mutex_lock(&imx708->mutex);
+ 	imx708_set_framing_limits(imx708);
++	mutex_unlock(&imx708->mutex);
+ 
+ 	return 0;
+ 

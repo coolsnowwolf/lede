@@ -7,99 +7,26 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=util-linux
-PKG_VERSION:=2.39.3
+PKG_VERSION:=2.41.1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
-PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.39
-PKG_HASH:=7b6605e48d1a49f43cc4b4cfc59f313d0dd5402fa40b96810bd572e167dfed0f
+PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.41
+PKG_HASH:=be9ad9a276f4305ab7dd2f5225c8be1ff54352f565ff4dede9628c1aaa7dec57
 PKG_CPE_ID:=cpe:/a:kernel:util-linux
+
+PKG_FIXUP:=autoreconf
 
 HOST_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/host-build.mk
 
 HOST_CONFIGURE_ARGS += \
-	--disable-poman \
+	--with-pic \
+	--disable-shared \
 	--disable-nls \
-	--disable-asciidoc \
-	--disable-poman \
-	--disable-libuuid \
-	--disable-libblkid \
-	--disable-libmount \
-	--disable-libsmartcols \
-	--disable-libfdisk \
-	--disable-fdisks \
-	--disable-mount \
-	--disable-losetup \
-	--disable-zramctl \
-	--disable-fsck \
-	--disable-partx \
-	--disable-uuidd \
-	--disable-uuidgen \
-	--disable-blkid \
-	--disable-wipefs \
-	--disable-mountpoint \
-	--disable-fallocate \
-	--disable-unshare \
-	--disable-nsenter \
-	--disable-setpriv \
-	--disable-hardlink \
-	--disable-eject \
-	--disable-agetty \
-	--disable-cramfs \
-	--disable-bfs \
-	--disable-minix \
-	--disable-hwclock \
-	--disable-mkfs \
-	--disable-fstrim \
-	--disable-swapon \
-	--disable-lscpu \
-	--disable-lsfd \
-	--disable-lslogins \
-	--disable-wdctl \
-	--disable-cal \
-	--disable-logger \
-	--disable-whereis \
-	--disable-pipesz \
-	--disable-waitpid \
-	--disable-switch_root \
-	--disable-pivot_root \
-	--disable-lsmem \
-	--disable-chmem \
-	--disable-ipcmk \
-	--disable-ipcrm \
-	--disable-ipcs \
-	--disable-irqtop \
-	--disable-lsirq \
-	--disable-lsns \
-	--disable-rfkill \
-	--disable-scriptutils \
-	--disable-tunelp \
-	--disable-kill \
-	--disable-last \
-	--disable-utmpdump \
-	--disable-line \
-	--disable-mesg \
-	--disable-raw \
-	--disable-rename \
-	--disable-vipw \
-	--disable-newgrp \
-	--disable-chfn-chsh \
-	--disable-login \
-	--disable-nologin \
-	--disable-sulogin \
-	--disable-su \
-	--disable-runuser \
-	--disable-ul \
-	--disable-more \
-	--disable-pg \
-	--disable-setterm \
-	--disable-schedutils \
-	--disable-wall \
-	--disable-write \
-	--disable-bash-completion \
-	--disable-pylibmount \
-	--disable-pg-bell \
+	--disable-all-programs \
+	--enable-hexdump \
+	--enable-libuuid \
 	--without-util \
 	--without-selinux \
 	--without-audit \
@@ -121,12 +48,8 @@ HOST_CONFIGURE_ARGS += \
 	--without-python \
 	--without-cryptsetup
 
-define Host/Install
-	$(INSTALL_BIN) $(HOST_BUILD_DIR)/hexdump $(STAGING_DIR_HOST)/bin/
-endef
-
 define Host/Uninstall
-	rm -f $(STAGING_DIR_HOST)/bin/hexdump
+	-$(call Host/Compile/Default,uninstall)
 endef
 
 $(eval $(call HostBuild))

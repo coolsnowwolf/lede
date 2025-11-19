@@ -8,7 +8,7 @@ linksys_get_target_firmware() {
 
 	cur_boot_part=$(/usr/sbin/fw_printenv -n boot_part)
 	if [ -z "${cur_boot_part}" ] ; then
-		mtd_ubi0=$(cat /sys/devices/virtual/ubi/ubi0/mtd_num)
+		mtd_ubi0=$(cat /sys/class/ubi/ubi0/mtd_num)
 		case $(grep -E ^mtd${mtd_ubi0}: /proc/mtd | cut -d '"' -f 2) in
 		kernel1|rootfs1)
 			cur_boot_part=1
@@ -68,7 +68,12 @@ platform_do_upgrade_linksys() {
 			CI_UBIPART="rootfs2"
 		fi
 
-		nand_upgrade_tar "$1"
+		if nand_upgrade_tar "$1" ; then
+			nand_do_upgrade_success
+		else
+			nand_do_upgrade_failed
+		fi
+
 	}
 	[ "$magic_long" = "27051956" -o "$magic_long" = "0000a0e1" ] && {
 		get_image "$1" | mtd write - $part_label

@@ -1,0 +1,220 @@
+From 417c1c94c4fe01933d9cbdec3bf2d0ae5e45a6f7 Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Fri, 28 Feb 2025 15:56:17 +0000
+Subject: [PATCH] drm/rp1: DPI interlace: Improve precision of PIO-generated
+ VSYNC
+
+Instead of trying to minimize the delay between seeing HSYNC edge
+and asserting VSYNC, try to predict the next HSYNC edge precisely.
+This eliminates the round-trip delay but introduces mode-dependent
+rounding error. HSYNC->VSYNC lag reduced from ~30ns to -5ns..+10ns
+(plus up to 5ns synchronization jitter as before).
+
+This may benefit e.g. SCART HATs, particularly those that generate
+Composite Sync using a XNOR gate.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+---
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c | 118 ++++++++++++----------
+ 1 file changed, 67 insertions(+), 51 deletions(-)
+
+--- a/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
+@@ -29,15 +29,31 @@
+ #include <linux/pio_rp1.h>
+ 
+ /*
+- * Start a PIO SM to generate an interrupt just after HSYNC onset, then another
+- * after a fixed delay (during which we assume HSYNC will have been deasserted).
++ * Start a PIO SM to generate two interrupts for each horizontal line.
++ * The first occurs shortly before the middle of the line. The second
++ * is timed such that after receiving the IRQ plus 1 extra delay cycle,
++ * another SM's output will align with the next HSYNC within -5ns .. +10ns.
++ * To achieve this, we need an accurate measure of (cycles per line) / 2.
++ *
++ * Measured GPIO -> { wait gpio ; irq set | irq wait ; sideset } -> GPIO
++ * round-trip delay is about 8 cycles when pins are not heavily loaded.
++ *
++ * PIO code           ; Notional time % 1000-cycle period
++ * --------           ; ---------------------------------
++ * 0: wait 1 gpio 3   ;   0..  8
++ * 1: mov x, y        ;   8..  9
++ * 2: jmp x--, 2      ;   9..499    (Y should be T/2 - 11)
++ * 3: irq set 1       ; 499..500
++ * 4: mov x, y    [8] ; 500..509
++ * 5: jmp x--, 5      ; 509..999
++ * 6: irq set 1       ; 999..1000
+  */
+ 
+ static int rp1dpi_pio_start_timer_both(struct rp1_dpi *dpi, u32 flags, u32 tc)
+ {
+-	static const u16 instructions[2][5] = {
+-		{ 0xa022, 0x2083, 0xc001, 0x0043, 0xc001 }, /* posedge */
+-		{ 0xa022, 0x2003, 0xc001, 0x0043, 0xc001 }, /* negedge */
++	static const u16 instructions[2][7] = {
++		{ 0x2083, 0xa022, 0x0042, 0xc001, 0xa822, 0x0045, 0xc001 }, /* +H */
++		{ 0x2003, 0xa022, 0x0042, 0xc001, 0xa822, 0x0045, 0xc001 }, /* -H */
+ 	};
+ 	const struct pio_program prog = {
+ 		.instructions = instructions[(flags & DRM_MODE_FLAG_NHSYNC) ? 1 : 0],
+@@ -51,16 +67,18 @@ static int rp1dpi_pio_start_timer_both(s
+ 		return -EBUSY;
+ 
+ 	offset = pio_add_program(dpi->pio, &prog);
+-	if (offset == PIO_ORIGIN_ANY)
++	if (offset == PIO_ORIGIN_ANY) {
++		pio_sm_unclaim(dpi->pio, sm);
+ 		return -EBUSY;
++	}
+ 
+ 	pio_sm_config cfg = pio_get_default_sm_config();
+ 
+ 	pio_sm_set_enabled(dpi->pio, sm, false);
+-	sm_config_set_wrap(&cfg, offset, offset + 4);
++	sm_config_set_wrap(&cfg, offset, offset + 6);
+ 	pio_sm_init(dpi->pio, sm, offset, &cfg);
+ 
+-	pio_sm_put(dpi->pio, sm, tc - 4);
++	pio_sm_put(dpi->pio, sm, tc - 11);
+ 	pio_sm_exec(dpi->pio, sm, pio_encode_pull(false, false));
+ 	pio_sm_exec(dpi->pio, sm, pio_encode_out(pio_y, 32));
+ 	pio_sm_set_enabled(dpi->pio, sm, true);
+@@ -74,46 +92,36 @@ static int rp1dpi_pio_start_timer_both(s
+  * suitable moment (which should be an odd number of half-lines since the
+  * last active line), sample DE again to detect field phase.
+  *
+- * This version assumes VFP length is within 2..129 half-lines for any field
++ * This version assumes VFP length is within 2..256 half-lines for any field
+  * (one half-line delay is needed to sample DE; we always wait for the next
+- * half-line boundary to improve VSync start accuracy).
++ * half-line boundary to improve VSync start accuracy) and VBP in 1..255.
+  */
+ 
+ static int rp1dpi_pio_vsync_ilace(struct rp1_dpi *dpi,
+ 				  struct drm_display_mode const *mode)
+ {
+-	static const int wrap_target = 14;
+-	static const int wrap = 26;
+ 	u16 instructions[] = {  /* This is mutable */
++		//      .wrap_target
+ 		0xa0e6, //  0: mov    osr, isr    side 0     ; top: rewind parameters
+ 		0x2081, //  1: wait   1 gpio, 1   side 0     ; main: while (!DE) wait;
+ 		0x2783, //  2: wait   1 gpio, 3   side 0 [7] ;  do { @HSync
+ 		0xc041, //  3: irq    clear 1     side 0     ;   flush stale IRQs
+ 		0x20c1, //  4: wait   1 irq, 1    side 0     ;   @midline
+-		0x00c1, //  5: jmp    pin, 1      side 0     ;  } while (DE)
++		0x00c2, //  5: jmp    pin, 2      side 0     ;  } while (DE)
+ 		0x0007, //  6: jmp    7           side 0     ;  <modify for -DE fixup>
+-		0x6027, //  7: out    x, 7        side 0     ;  x = VFPlen - 2
+-		0x000a, //  8: jmp    10          side 0     ;  while (x--) {
+-		0x20c1, //  9: wait   1 irq, 1    side 0     ;    @halfline
+-		0x0049, // 10: jmp    x--, 9      side 0     ;  }
+-		0x6021, // 11: out    x, 1        side 0     ;  test for aligned case
+-		0x003a, // 12: jmp    !x, 26      side 0     ;  if (!x) goto precise;
+-		0x20c1, // 13: wait   1 irq, 1    side 0     ;  @halfline
+-		//     .wrap_target                          ; vsjoin:
+-		0xb722, // 14: mov    x, y        side 1 [7] ;  VSYNC=1; x = VSyncLen
+-		0xd041, // 15: irq    clear 1     side 1     ;  VSYNC=1; flush stale IRQs
+-		0x30c1, // 16: wait   1 irq, 1    side 1     ;  VSYNC=1; do { @halfline
+-		0x1050, // 17: jmp    x--, 16     side 1     ;  VSYNC=1; } while (x--)
+-		0x6028, // 18: out    x, 8        side 0     ;  VSYNC=0; x = VBPLen
+-		0x0015, // 19: jmp    21          side 0     ;  while (x--) {
+-		0x20c1, // 20: wait   1 irq, 1    side 0     ;    @halfline
+-		0x0054, // 21: jmp    x--, 20     side 0     ;  }
+-		0x00c0, // 22: jmp    pin, 0      side 0     ;  if (DE) reset phase
+-		0x0018, // 23: jmp    24          side 0     ;  <modify for -DE fixup>
+-		0x00e1, // 24: jmp    !osre, 1    side 0     ;  if (!phase) goto main
+-		0x0000, // 25: jmp    0           side 0     ;  goto top
+-		0x2083, // 26: wait   1 gpio, 3   side 0     ; precise: @HSync
+-		//     .wrap                                 ;  goto vsjoin
++		0x6028, //  7: out    x, 8        side 0     ;  x = VFPlen - 2
++		0x20c1, //  8: wait   1 irq, 1    side 0     ;  do { @halfline
++		0x0048, //  9: jmp    x--, 8      side 0     ;  } while (x--)
++		0xb022, // 10: mov    x, y        side 1     ;  VSYNC=1; x = VSyncLen
++		0x30c1, // 11: wait   1 irq, 1    side 1     ;  VSYNC=1; do { @halfline
++		0x104b, // 12: jmp    x--, 11     side 1     ;  VSYNC=1; } while (x--)
++		0x6028, // 13: out    x, 8        side 0     ;  VSYNC=0; x = VBPLen - 1
++		0x20c1, // 14: wait   1 irq, 1    side 0     ;  do { @halfline
++		0x004e, // 15: jmp    x--, 14     side 0     ;  } while (x--)
++		0x00c0, // 16: jmp    pin, 0      side 0     ;  if (DE) reset phase
++		0x0012, // 17: jmp    18          side 0     ;  <modify for -DE fixup>
++		0x00e1, // 18: jmp    !osre, 1    side 0     ;  if (!phase) goto main
++		//     .wrap                                 ;  goto top
+ 	};
+ 	struct pio_program prog = {
+ 		.instructions = instructions,
+@@ -129,8 +137,16 @@ static int rp1dpi_pio_vsync_ilace(struct
+ 	if (sm < 0)
+ 		return -EBUSY;
+ 
+-	/* Compute mid-line time constant and start the timer SM */
+-	tc = (mode->htotal * (u64)sysclk) / (u64)(2000u * mode->clock);
++	/*
++	 * Compute half-line time constant (round uppish so that VSync should
++	 * switch never > 5ns before DPICLK, while defeating roundoff errors)
++	 * and start the timer SM.
++	 */
++	tc = (u32)clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]);
++	if (!tc)
++		tc = 1000u * mode->clock;
++	tc = ((u64)mode->htotal * (u64)sysclk + ((7ul * tc) >> 2)) /
++		(u64)(2ul * tc);
+ 	if (rp1dpi_pio_start_timer_both(dpi, mode->flags, tc) < 0) {
+ 		pio_sm_unclaim(dpi->pio, sm);
+ 		return -EBUSY;
+@@ -141,15 +157,15 @@ static int rp1dpi_pio_vsync_ilace(struct
+ 	if (dpi->de_inv) {
+ 		instructions[1] ^= 0x0080;
+ 		instructions[5]  = 0x00c7;
+-		instructions[6]  = 0x0001;
+-		instructions[22] = 0x00d8;
+-		instructions[23] = 0x0000;
++		instructions[6]  = 0x0002;
++		instructions[16] = 0x00d2;
++		instructions[17] = 0x0000;
+ 	}
+-	for (i = 0; i < ARRAY_SIZE(instructions); i++) {
+-		if (mode->flags & DRM_MODE_FLAG_NVSYNC)
++	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
++		instructions[2] ^= 0x0080;
++	if (mode->flags & DRM_MODE_FLAG_NVSYNC) {
++		for (i = 0; i < ARRAY_SIZE(instructions); i++)
+ 			instructions[i] ^= 0x1000;
+-		if ((mode->flags & DRM_MODE_FLAG_NHSYNC) && (instructions[i] & 0xe07f) == 0x2003)
+-			instructions[i] ^= 0x0080;
+ 	}
+ 	offset = pio_add_program(dpi->pio, &prog);
+ 	if (offset == PIO_ORIGIN_ANY)
+@@ -157,7 +173,7 @@ static int rp1dpi_pio_vsync_ilace(struct
+ 
+ 	/* Configure pins and SM */
+ 	dpi->pio_stole_gpio2 = true;
+-	sm_config_set_wrap(&cfg, offset + wrap_target, offset + wrap);
++	sm_config_set_wrap(&cfg, offset, offset + ARRAY_SIZE(instructions) - 1);
+ 	sm_config_set_sideset(&cfg, 1, false, false);
+ 	sm_config_set_sideset_pins(&cfg, 2);
+ 	pio_gpio_init(dpi->pio, 2);
+@@ -168,17 +184,17 @@ static int rp1dpi_pio_vsync_ilace(struct
+ 	/* Compute vertical times, remembering how we rounded vdisplay, vtotal */
+ 	vfp = mode->vsync_start - (mode->vdisplay & ~1);
+ 	vbp = (mode->vtotal | 1) - mode->vsync_end;
+-	if (vfp > 128) {
+-		vbp += vfp - 128;
+-		vfp = 128;
++	if (vfp > 256) {
++		vbp += vfp - 256;
++		vfp = 256;
+ 	} else if (vfp < 3) {
+-		vbp = (vbp > 3 - vfp) ? (vbp - 3 + vfp) : 0;
++		vbp = (vbp > 3 - vfp) ? (vbp - 3 + vfp) : 1;
+ 		vfp = 3;
+ 	}
+ 
+ 	pio_sm_put(dpi->pio, sm,
+-		   (vfp - 2) + ((vfp & 1) << 7) + (vbp << 8) +
+-		   ((vfp - 3) << 16) + (((~vfp) & 1) << 23) + ((vbp + 1) << 24));
++		   (vfp - 2) + ((vbp - 1) << 8) +
++		   ((vfp - 3) << 16) + (vbp << 24));
+ 	pio_sm_put(dpi->pio, sm, mode->vsync_end - mode->vsync_start - 1);
+ 	pio_sm_exec(dpi->pio, sm, pio_encode_pull(false, false));
+ 	pio_sm_exec(dpi->pio, sm, pio_encode_out(pio_y, 32));

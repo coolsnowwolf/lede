@@ -284,13 +284,8 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, drvdata);
 
 	gpios = gpiod_get_array(dev, NULL, GPIOD_OUT_LOW);
-	if (IS_ERR(gpios)) {
-		if (PTR_ERR(gpios) != -EPROBE_DEFER) {
-			dev_err(dev, "failed to get gpios: %d\n",
-				PTR_ERR(gpios));
-		}
-		return PTR_ERR(gpios);
-	}
+	if (IS_ERR(gpios))
+		return dev_err_probe(dev, PTR_ERR(gpios), "failed to get gpios");
 
 	if (gpios->ndescs != RB91X_NAND_GPIOS) {
 		dev_err(dev, "expected %d gpios\n", RB91X_NAND_GPIOS);
@@ -333,25 +328,18 @@ static int rb91x_nand_probe(struct platform_device *pdev)
 
 	r = mtd_device_register(mtd, NULL, 0);
 	if (r) {
-		dev_err(dev, "mtd_device_register() failed: %d\n",
-			r);
-		goto err_release_nand;
+		rb91x_nand_release(drvdata);
+		return dev_err_probe(dev, r, "mtd_device_register() failed");
 	}
 
 	return 0;
-
-err_release_nand:
-	rb91x_nand_release(drvdata);
-	return r;
 }
 
-static int rb91x_nand_remove(struct platform_device *pdev)
+static void rb91x_nand_remove(struct platform_device *pdev)
 {
 	struct rb91x_nand_drvdata *drvdata = platform_get_drvdata(pdev);
 
 	rb91x_nand_release(drvdata);
-
-	return 0;
 }
 
 static const struct of_device_id rb91x_nand_match[] = {
@@ -363,10 +351,9 @@ MODULE_DEVICE_TABLE(of, rb91x_nand_match);
 
 static struct platform_driver rb91x_nand_driver = {
 	.probe	= rb91x_nand_probe,
-	.remove	= rb91x_nand_remove,
+	.remove_new	= rb91x_nand_remove,
 	.driver	= {
 		.name	= "rb91x-nand",
-		.owner	= THIS_MODULE,
 		.of_match_table = rb91x_nand_match,
 	},
 };

@@ -1,0 +1,74 @@
+From 371cc25966194e8fd47d36e089b5390ccc9e4df7 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Wed, 20 Apr 2022 18:08:38 +0100
+Subject: [PATCH] drm/v3d: Switch clock setting to new api
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+
+drm/v3d: Convert to new clock range API
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -17,6 +17,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/io.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/sched/clock.h>
+@@ -24,6 +25,9 @@
+ 
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
++
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
+ #include <uapi/drm/v3d_drm.h>
+ 
+ #include "v3d_drv.h"
+@@ -263,6 +267,8 @@ map_regs(struct v3d_dev *v3d, void __iom
+ static int v3d_platform_drm_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
++	struct rpi_firmware *firmware;
++	struct device_node *node;
+ 	struct drm_device *drm;
+ 	struct v3d_dev *v3d;
+ 	int ret;
+@@ -337,7 +343,20 @@ static int v3d_platform_drm_probe(struct
+ 			dev_err(dev, "Failed to get clock (%ld)\n", PTR_ERR(v3d->clk));
+ 		return PTR_ERR(v3d->clk);
+ 	}
+-	v3d->clk_up_rate = clk_get_rate(v3d->clk);
++
++	node = rpi_firmware_find_node();
++	if (!node)
++		return -EINVAL;
++
++	firmware = rpi_firmware_get(node);
++	of_node_put(node);
++	if (!firmware)
++		return -EPROBE_DEFER;
++
++	v3d->clk_up_rate = rpi_firmware_clk_get_max_rate(firmware,
++							 RPI_FIRMWARE_V3D_CLK_ID);
++	rpi_firmware_put(firmware);
++
+ 	/* For downclocking, drop it to the minimum frequency we can get from
+ 	 * the CPRMAN clock generator dividing off our parent.  The divider is
+ 	 * 4 bits, but ask for just higher than that so that rounding doesn't
+@@ -375,7 +394,7 @@ static int v3d_platform_drm_probe(struct
+ 	ret = v3d_sysfs_init(dev);
+ 	if (ret)
+ 		goto drm_unregister;
+-	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
++	ret = clk_set_min_rate(v3d->clk, v3d->clk_down_rate);
+ 	WARN_ON_ONCE(ret != 0);
+ 
+ 	return 0;

@@ -1,0 +1,213 @@
+#
+# Minimalist mconsole exec patch 
+#
+# 3.10 version (with bit more synchronous behavior) by fingon at iki dot fi
+# Adaptation to kernel 3.3.8 made by David Fernández (david at dit.upm.es) for 
+# Starting point: mconsole-exec-2.6.30.patch for kernel 2.6.30
+# Author of original patch: Paolo Giarrusso, aka Blaisorblade 
+#                           (http://www.user-mode-linux.org/~blaisorblade)
+#
+# Known misfeatures:
+#
+# - If output is too long, blocks (and breaks horribly) 
+# (this misfeature from 3.10 patches, when minimalizing the patch;
+#  workaround: redirect to a shared filesystem if long output is expected)
+#
+# - Nothing useful is done with stdin
+#
+--- a/arch/um/drivers/mconsole.h
++++ b/arch/um/drivers/mconsole.h
+@@ -85,6 +85,7 @@ extern void mconsole_cad(struct mc_reque
+ extern void mconsole_stop(struct mc_request *req);
+ extern void mconsole_go(struct mc_request *req);
+ extern void mconsole_log(struct mc_request *req);
++extern void mconsole_exec(struct mc_request *req);
+ extern void mconsole_proc(struct mc_request *req);
+ extern void mconsole_stack(struct mc_request *req);
+ 
+--- a/arch/um/drivers/mconsole_kern.c
++++ b/arch/um/drivers/mconsole_kern.c
+@@ -4,6 +4,7 @@
+  * Copyright (C) 2001 - 2008 Jeff Dike (jdike@{addtoit,linux.intel}.com)
+  */
+ 
++#include <linux/kmod.h>
+ #include <linux/console.h>
+ #include <linux/ctype.h>
+ #include <linux/string.h>
+@@ -27,6 +28,7 @@
+ #include <linux/mount.h>
+ #include <linux/file.h>
+ #include <linux/uaccess.h>
++#include <linux/completion.h>
+ #include <asm/switch_to.h>
+ 
+ #include <init.h>
+@@ -124,6 +126,59 @@ void mconsole_log(struct mc_request *req
+ 	mconsole_reply(req, "", 0, 0);
+ }
+ 
++void mconsole_exec(struct mc_request *req)
++{
++  struct subprocess_info *sub_info;
++  int res, len;
++  struct file *out;
++  char buf[MCONSOLE_MAX_DATA];
++
++  char *envp[] = {
++    "HOME=/", "TERM=linux",
++    "PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin",
++    NULL
++  };
++  char *argv[] = {
++    "/bin/sh", "-c",
++    req->request.data + strlen("exec "),
++    NULL
++  };
++
++  sub_info = call_usermodehelper_setup("/bin/sh", argv, envp, GFP_ATOMIC, NULL, NULL, NULL);
++  if (sub_info == NULL) {
++    mconsole_reply(req, "call_usermodehelper_setup failed", 1, 0);
++    return;
++  }
++  res = call_usermodehelper_stdoutpipe(sub_info, &out);
++  if (res < 0) {
++    kfree(sub_info);
++    mconsole_reply(req, "call_usermodehelper_stdoutpipe failed", 1, 0);
++    return;
++  }
++
++  res = call_usermodehelper_exec(sub_info, UMH_WAIT_PROC);
++  if (res < 0) {
++    kfree(sub_info);
++    mconsole_reply(req, "call_usermodehelper_exec failed", 1, 0);
++    return;
++  }
++
++  for (;;) {
++    len = out->f_op->read(out, buf, sizeof(buf), &out->f_pos);
++    if (len < 0) {
++      mconsole_reply(req, "reading output failed", 1, 0);
++      break;
++    }
++    if (len == 0)
++      break;
++    mconsole_reply_len(req, buf, len, 0, 1);
++  }
++  fput(out);
++
++  mconsole_reply_len(req, NULL, 0, 0, 0);
++}
++
++
+ void mconsole_proc(struct mc_request *req)
+ {
+ 	struct vfsmount *mnt = proc_mnt;
+@@ -190,6 +245,7 @@ void mconsole_proc(struct mc_request *re
+     stop - pause the UML; it will do nothing until it receives a 'go' \n\
+     go - continue the UML after a 'stop' \n\
+     log <string> - make UML enter <string> into the kernel log\n\
++    exec <string> - pass <string> to /bin/sh -c synchronously\n\
+     proc <file> - returns the contents of the UML's /proc/<file>\n\
+     stack <pid> - returns the stack of the specified pid\n\
+ "
+--- a/arch/um/drivers/mconsole_user.c
++++ b/arch/um/drivers/mconsole_user.c
+@@ -30,6 +30,7 @@ static struct mconsole_command commands[
+ 	{ "stop", mconsole_stop, MCONSOLE_PROC },
+ 	{ "go", mconsole_go, MCONSOLE_INTR },
+ 	{ "log", mconsole_log, MCONSOLE_INTR },
++	{ "exec", mconsole_exec, MCONSOLE_PROC },
+ 	{ "proc", mconsole_proc, MCONSOLE_PROC },
+ 	{ "stack", mconsole_stack, MCONSOLE_INTR },
+ };
+--- a/arch/um/os-Linux/file.c
++++ b/arch/um/os-Linux/file.c
+@@ -560,6 +560,8 @@ int os_create_unix_socket(const char *fi
+ 
+ 	addr.sun_family = AF_UNIX;
+ 
++	if (len > sizeof(addr.sun_path))
++		len = sizeof(addr.sun_path);
+ 	snprintf(addr.sun_path, len, "%s", file);
+ 
+ 	err = bind(sock, (struct sockaddr *) &addr, sizeof(addr));
+--- a/include/linux/kmod.h
++++ b/include/linux/kmod.h
+@@ -32,4 +32,6 @@ static inline int request_module_nowait(
+ #define try_then_request_module(x, mod...) (x)
+ #endif
+ 
++int call_usermodehelper_stdoutpipe(struct subprocess_info *sub_info, struct file **filp);
++
+ #endif /* __LINUX_KMOD_H__ */
+--- a/include/linux/umh.h
++++ b/include/linux/umh.h
+@@ -23,6 +23,7 @@ struct subprocess_info {
+ 	const char *path;
+ 	char **argv;
+ 	char **envp;
++	struct file *stdout;
+ 	int wait;
+ 	int retval;
+ 	int (*init)(struct subprocess_info *info, struct cred *new);
+--- a/kernel/umh.c
++++ b/kernel/umh.c
+@@ -29,6 +29,7 @@
+ #include <linux/uaccess.h>
+ #include <linux/initrd.h>
+ #include <linux/freezer.h>
++#include <linux/pipe_fs_i.h>
+ 
+ #include <trace/events/module.h>
+ 
+@@ -71,6 +72,28 @@ static int call_usermodehelper_exec_asyn
+ 	flush_signal_handlers(current, 1);
+ 	spin_unlock_irq(&current->sighand->siglock);
+ 
++	/* Install output when needed */
++	if (sub_info->stdout) {
++		struct files_struct *f = current->files;
++		struct fdtable *fdt;
++
++		sys_close(1);
++		sys_close(2);
++		get_file(sub_info->stdout);
++		fd_install(1, sub_info->stdout);
++		fd_install(2, sub_info->stdout);
++		spin_lock(&f->file_lock);
++		fdt = files_fdtable(f);
++		__set_bit(1, fdt->open_fds);
++		__clear_bit(1, fdt->close_on_exec);
++		__set_bit(2, fdt->open_fds);
++		__clear_bit(2, fdt->close_on_exec);
++		spin_unlock(&f->file_lock);
++
++		/* disallow core files */
++		current->signal->rlim[RLIMIT_CORE] = (struct rlimit){0, 0};
++	}
++
+ 	/*
+ 	 * Initial kernel threads share ther FS with init, in order to
+ 	 * get the init root directory. But we've now created a new
+@@ -330,6 +353,20 @@ static void helper_unlock(void)
+ 		wake_up(&running_helpers_waitq);
+ }
+ 
++int call_usermodehelper_stdoutpipe(struct subprocess_info *sub_info,
++					struct file **filp)
++{
++	struct file *f[2];
++
++	if (create_pipe_files(f, 0) < 0)
++		 return PTR_ERR(f);
++
++	sub_info->stdout = f[1];
++	*filp = f[0];
++	return 0;
++}
++EXPORT_SYMBOL(call_usermodehelper_stdoutpipe);
++
+ /**
+  * call_usermodehelper_setup - prepare to call a usermode helper
+  * @path: path to usermode executable

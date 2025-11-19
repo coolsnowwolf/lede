@@ -1325,10 +1325,10 @@ static int ar934x_nfc_attach_chip(struct nand_chip *nand)
 	if (ret)
 		return ret;
 
-	if (mtd->writesize == 2048)
-		nand->options |= NAND_NO_SUBPAGE_WRITE;
-
 	if (nand->ecc.engine_type == NAND_ECC_ENGINE_TYPE_ON_HOST) {
+		if (mtd->writesize == 2048)
+			nand->options |= NAND_NO_SUBPAGE_WRITE;
+
 		ret = ar934x_nfc_setup_hwecc(nfc);
 		if (ret)
 			return ret;
@@ -1359,7 +1359,6 @@ static const struct nand_controller_ops ar934x_nfc_controller_ops = {
 static int ar934x_nfc_probe(struct platform_device *pdev)
 {
 	struct ar934x_nfc *nfc;
-	struct resource *res;
 	struct mtd_info *mtd;
 	struct nand_chip *nand;
 	int ret;
@@ -1367,19 +1366,13 @@ static int ar934x_nfc_probe(struct platform_device *pdev)
 	pdev->dev.dma_mask = &ar934x_nfc_dma_mask;
 	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(&pdev->dev, "failed to get I/O memory\n");
-		return -EINVAL;
-	}
-
 	nfc = devm_kzalloc(&pdev->dev, sizeof(struct ar934x_nfc), GFP_KERNEL);
 	if (!nfc) {
 		dev_err(&pdev->dev, "failed to allocate driver data\n");
 		return -ENOMEM;
 	}
 
-	nfc->base = devm_ioremap_resource(&pdev->dev, res);
+	nfc->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(nfc->base)) {
 		dev_err(&pdev->dev, "failed to remap I/O memory\n");
 		return PTR_ERR(nfc->base);
@@ -1459,7 +1452,7 @@ err_free_buf:
 	return ret;
 }
 
-static int ar934x_nfc_remove(struct platform_device *pdev)
+static void ar934x_nfc_remove(struct platform_device *pdev)
 {
 	struct ar934x_nfc *nfc;
 
@@ -1469,8 +1462,6 @@ static int ar934x_nfc_remove(struct platform_device *pdev)
 		nand_cleanup(&nfc->nand_chip);
 		ar934x_nfc_free_buf(nfc);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id ar934x_nfc_match[] = {
@@ -1482,10 +1473,9 @@ MODULE_DEVICE_TABLE(of, ar934x_nfc_match);
 
 static struct platform_driver ar934x_nfc_driver = {
 	.probe		= ar934x_nfc_probe,
-	.remove		= ar934x_nfc_remove,
+	.remove_new	= ar934x_nfc_remove,
 	.driver = {
 		.name	= AR934X_NFC_DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = ar934x_nfc_match,
 	},
 };

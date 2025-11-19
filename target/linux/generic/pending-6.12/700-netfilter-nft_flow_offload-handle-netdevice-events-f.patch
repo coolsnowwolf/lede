@@ -1,0 +1,106 @@
+From: Pablo Neira Ayuso <pablo@netfilter.org>
+Date: Thu, 25 Jan 2018 12:58:55 +0100
+Subject: [PATCH] netfilter: nft_flow_offload: handle netdevice events from
+ nf_flow_table
+
+Move the code that deals with device events to the core.
+
+Signed-off-by: Pablo Neira Ayuso <pablo@netfilter.org>
+---
+
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -658,6 +658,23 @@ static struct pernet_operations nf_flow_
+ 	.exit_batch = nf_flow_table_pernet_exit,
+ };
+ 
++static int nf_flow_table_netdev_event(struct notifier_block *this,
++				      unsigned long event, void *ptr)
++{
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++
++	if (event != NETDEV_DOWN)
++		return NOTIFY_DONE;
++
++	nf_flow_table_cleanup(dev);
++
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block flow_offload_netdev_notifier = {
++	.notifier_call	= nf_flow_table_netdev_event,
++};
++
+ static int __init nf_flow_table_module_init(void)
+ {
+ 	int ret;
+@@ -674,6 +691,10 @@ static int __init nf_flow_table_module_i
+ 	if (ret)
+ 		goto out_bpf;
+ 
++	ret = register_netdevice_notifier(&flow_offload_netdev_notifier);
++	if (ret)
++		goto out_bpf;
++
+ 	return 0;
+ 
+ out_bpf:
+@@ -685,6 +706,7 @@ out_offload:
+ 
+ static void __exit nf_flow_table_module_exit(void)
+ {
++	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
+ 	nf_flow_table_offload_exit();
+ 	unregister_pernet_subsys(&nf_flow_table_net_ops);
+ }
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -487,47 +487,14 @@ static struct nft_expr_type nft_flow_off
+ 	.owner		= THIS_MODULE,
+ };
+ 
+-static int flow_offload_netdev_event(struct notifier_block *this,
+-				     unsigned long event, void *ptr)
+-{
+-	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+-
+-	if (event != NETDEV_DOWN)
+-		return NOTIFY_DONE;
+-
+-	nf_flow_table_cleanup(dev);
+-
+-	return NOTIFY_DONE;
+-}
+-
+-static struct notifier_block flow_offload_netdev_notifier = {
+-	.notifier_call	= flow_offload_netdev_event,
+-};
+-
+ static int __init nft_flow_offload_module_init(void)
+ {
+-	int err;
+-
+-	err = register_netdevice_notifier(&flow_offload_netdev_notifier);
+-	if (err)
+-		goto err;
+-
+-	err = nft_register_expr(&nft_flow_offload_type);
+-	if (err < 0)
+-		goto register_expr;
+-
+-	return 0;
+-
+-register_expr:
+-	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
+-err:
+-	return err;
++	return nft_register_expr(&nft_flow_offload_type);
+ }
+ 
+ static void __exit nft_flow_offload_module_exit(void)
+ {
+ 	nft_unregister_expr(&nft_flow_offload_type);
+-	unregister_netdevice_notifier(&flow_offload_netdev_notifier);
+ }
+ 
+ module_init(nft_flow_offload_module_init);

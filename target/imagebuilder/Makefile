@@ -42,7 +42,7 @@ $(BIN_DIR)/$(IB_NAME).tar.xz: clean
 
 ifeq ($(CONFIG_IB_STANDALONE),)
 	echo '## Remote package repositories' >> $(PKG_BUILD_DIR)/repositories.conf
-	$(call FeedSourcesAppend,$(PKG_BUILD_DIR)/repositories.conf)
+	$(call FeedSourcesAppendOPKG,$(PKG_BUILD_DIR)/repositories.conf)
 	$(VERSION_SED_SCRIPT) $(PKG_BUILD_DIR)/repositories.conf
 endif
 

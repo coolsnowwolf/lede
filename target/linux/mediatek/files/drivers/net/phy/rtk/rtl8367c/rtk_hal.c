@@ -262,7 +262,7 @@ void rtk_hal_dump_table(void)
 			printk("      %2d", l2_data.fid);
 			printk("  %4d", l2_data.cvid);
 			printk("  %02x%02x%02x%02x%02x%02x\n", l2_data.mac.octet[0],
-			l2_data.mac.octet[1], l2_data.mac.octet[2], l2_data.mac.octet[3], 
+			l2_data.mac.octet[1], l2_data.mac.octet[2], l2_data.mac.octet[3],
 			l2_data.mac.octet[4], l2_data.mac.octet[5]);
 			address ++;
 			}
@@ -523,7 +523,7 @@ void rtk_hal_qos_get_table2type(struct ra_switch_ioctl_data *data)
 void rtk_hal_qos_set_port2table(struct ra_switch_ioctl_data *data)
 {
 	rtk_api_ret_t ret;
-	
+
 	ret = rtk_qos_portPriSelIndex_set(data->port, data->qos_table_idx);
 	if (ret != 0)
 		printk("rtk_qos_portPriSelIndex_set failed\n");
@@ -533,7 +533,7 @@ void rtk_hal_qos_get_port2table(struct ra_switch_ioctl_data *data)
 {
 	rtk_api_ret_t ret;
 	rtk_qos_priDecTbl_t Index;
-	
+
 	ret = rtk_qos_portPriSelIndex_get(data->port, &Index);
 	if (ret != 0)
 		printk("rtk_qos_portPriSelIndex_set failed\n");
@@ -642,7 +642,7 @@ void rtk_hal_enable_igmpsnoop(struct ra_switch_ioctl_data *data)
 {
 	rtk_api_ret_t ret;
 	rtk_portmask_t pmask;
-	
+
 
 	ret = rtk_igmp_init();
 	if (data->on_off == 1) {
@@ -800,7 +800,7 @@ void rtk_hal_vlan_tag(struct ra_switch_ioctl_data *data)
 			RTK_PORTMASK_PORT_SET(vlan.untag, data->port);
 		else
 			RTK_PORTMASK_PORT_CLEAR(vlan.untag, data->port);
-		
+
 		ret = rtk_vlan_set(data->vid, &vlan);
 		if (ret != RT_ERR_OK)
 			printk("rtk_vlan_set failed\n");

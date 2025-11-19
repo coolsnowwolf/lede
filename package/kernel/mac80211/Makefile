@@ -10,14 +10,16 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
-PKG_VERSION:=6.1.24
-PKG_RELEASE:=3
-# PKG_SOURCE_URL:=@KERNEL/linux/kernel/projects/backports/stable/v5.15.58/
+PKG_VERSION:=6.6.15
+PKG_RELEASE:=1
+PKG_LICENSE:=GPL-2.0-only
+PKG_LICENSE_FILES:=COPYING
+
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
-PKG_HASH:=5d39aca7e34c33cb9b3e366117b2e86841b7bdd37933679d6b1e61be6b150648
+PKG_HASH:=3bbc461121134fda9089c084a5eed577d05e7837a157edf9a3797937172a3ece
 
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
-PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/backports-$(PKG_VERSION)
+PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(if $(BUILD_VARIANT),$(PKG_NAME)-$(BUILD_VARIANT)/)backports-$(PKG_VERSION)
 PKG_BUILD_PARALLEL:=1
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
@@ -48,7 +50,13 @@ define KernelPackage/mac80211/Default
   MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 endef
 
-config_package=$(if $(CONFIG_PACKAGE_kmod-$(1)),m)
+# config_pacakge:
+# 1 = OpenWrt KernelPackage name
+# 2 = Optional list of variants for which the module may be selected:
+#     If empty, the module is only selected with the first variant
+#     Use $(ALL_VARIANTS) to allow module selection in all variants
+config_package=$(if $(and $(CONFIG_PACKAGE_kmod-$(1)),$(call mac80211_variant_check,$(2))),m)
+mac80211_variant_check=$(if $(ALL_VARIANTS),$(filter $(BUILD_VARIANT),$(if $(1),$(1),$(firstword $(ALL_VARIANTS)))),y)
 
 config-y:= \
 	WLAN \
@@ -73,10 +81,10 @@ config-y:= \
 	WLAN_VENDOR_TI \
 	WLAN_VENDOR_ZYDAS \
 
-config-$(call config_package,cfg80211) += CFG80211
+config-$(call config_package,cfg80211,$(ALL_VARIANTS)) += CFG80211
 config-$(CONFIG_PACKAGE_CFG80211_TESTMODE) += NL80211_TESTMODE
 
-config-$(call config_package,mac80211) += MAC80211
+config-$(call config_package,mac80211,$(ALL_VARIANTS)) += MAC80211
 config-$(CONFIG_PACKAGE_MAC80211_MESH) += MAC80211_MESH
 
 include ath.mk
@@ -164,7 +172,7 @@ define KernelPackage/mac80211-hwsim
   $(call KernelPackage/mac80211/Default)
   TITLE:=mac80211 HW simulation device
   DEPENDS+= +kmod-mac80211 +@DRIVER_11AX_SUPPORT +@DRIVER_11AC_SUPPORT
-  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/mac80211_hwsim.ko
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/virtual/mac80211_hwsim.ko
   AUTOLOAD:=$(call AutoProbe,mac80211_hwsim)
 endef
 
@@ -341,6 +349,7 @@ define Build/Patch
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath9k,ath9k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath12k,ath12k/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mt7601u,mt7601u/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
@@ -357,6 +366,7 @@ define Quilt/Refresh/Package
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath9k,ath9k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath10k,ath10k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath11k,ath11k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/ath12k,ath12k/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rt2x00,rt2x00/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mt7601u,mt7601u/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)

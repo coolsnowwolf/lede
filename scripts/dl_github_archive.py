@@ -138,7 +138,11 @@ class Path(object):
         envs = os.environ.copy()
         if ts is not None:
             args.append('--mtime=@%d' % ts)
-        if into.endswith('.xz'):
+        if into.endswith('.zst'):
+            envs['ZSTD_CLEVEL'] = '20'
+            envs['ZSTD_NBTHREADS'] = '0'
+            args.append('--zstd')
+        elif into.endswith('.xz'):
             envs['XZ_OPT'] = '-7e'
             args.append('-J')
         elif into.endswith('.bz2'):

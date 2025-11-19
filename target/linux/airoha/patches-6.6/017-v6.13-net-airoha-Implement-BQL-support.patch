@@ -1,0 +1,42 @@
+From 1d304174106c93ce05f6088813ad7203b3eb381a Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sat, 12 Oct 2024 11:01:11 +0200
+Subject: [PATCH] net: airoha: Implement BQL support
+
+Introduce BQL support in the airoha_eth driver reporting to the kernel
+info about tx hw DMA queues in order to avoid bufferbloat and keep the
+latency small.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20241012-en7581-bql-v2-1-4deb4efdb60b@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/mediatek/airoha_eth.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/airoha_eth.c
++++ b/drivers/net/ethernet/mediatek/airoha_eth.c
+@@ -1710,9 +1710,11 @@ static int airoha_qdma_tx_napi_poll(stru
+ 			WRITE_ONCE(desc->msg1, 0);
+ 
+ 			if (skb) {
++				u16 queue = skb_get_queue_mapping(skb);
+ 				struct netdev_queue *txq;
+ 
+-				txq = netdev_get_tx_queue(skb->dev, qid);
++				txq = netdev_get_tx_queue(skb->dev, queue);
++				netdev_tx_completed_queue(txq, 1, skb->len);
+ 				if (netif_tx_queue_stopped(txq) &&
+ 				    q->ndesc - q->queued >= q->free_thr)
+ 					netif_tx_wake_queue(txq);
+@@ -2488,7 +2490,9 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	q->queued += i;
+ 
+ 	skb_tx_timestamp(skb);
+-	if (!netdev_xmit_more())
++	netdev_tx_sent_queue(txq, skb->len);
++
++	if (netif_xmit_stopped(txq) || !netdev_xmit_more())
+ 		airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid),
+ 				TX_RING_CPU_IDX_MASK,
+ 				FIELD_PREP(TX_RING_CPU_IDX_MASK, q->head));

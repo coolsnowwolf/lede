@@ -1,0 +1,206 @@
+From 5532e6bcc96948853454e6c968b17bcff74a8665 Mon Sep 17 00:00:00 2001
+From: Kieran Bingham <kieran.bingham@ideasonboard.com>
+Date: Mon, 3 Jun 2024 17:34:03 +0100
+Subject: [PATCH] staging: vc04_services: vc-sm-cma: Register with
+ vchiq_bus_type
+
+Register the vcsm rive with the vchiq_bus_type instead of useing the
+platform driver/device.
+
+Signed-off-by: Kieran Bingham <kieran.bingham@ideasonboard.com>
+---
+ .../staging/vc04_services/vc-sm-cma/vc_sm.c   | 55 +++++++++++--------
+ 1 file changed, 31 insertions(+), 24 deletions(-)
+
+--- a/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
++++ b/drivers/staging/vc04_services/vc-sm-cma/vc_sm.c
+@@ -40,7 +40,6 @@
+ #include <linux/module.h>
+ #include <linux/mm.h>
+ #include <linux/of_device.h>
+-#include <linux/platform_device.h>
+ #include <linux/proc_fs.h>
+ #include <linux/slab.h>
+ #include <linux/seq_file.h>
+@@ -49,6 +48,7 @@
+ #include <asm/cacheflush.h>
+ 
+ #include "../interface/vchiq_arm/vchiq_arm.h"
++#include "../interface/vchiq_arm/vchiq_bus.h"
+ #include "vc_sm_cma_vchi.h"
+ 
+ #include "vc_sm.h"
+@@ -85,7 +85,7 @@ struct sm_pde_t {
+ 
+ /* Global state information. */
+ struct sm_state_t {
+-	struct platform_device *pdev;
++	struct vchiq_device *device;
+ 
+ 	struct miscdevice misc_dev;
+ 
+@@ -323,7 +323,7 @@ static void vc_sm_release_resource(struc
+ 			       __func__, buffer);
+ 		buffer->import.dma_buf = NULL;
+ 	} else {
+-		dma_free_coherent(&sm_state->pdev->dev, buffer->size,
++		dma_free_coherent(&sm_state->device->dev, buffer->size,
+ 				  buffer->cookie, buffer->dma_addr);
+ 	}
+ 
+@@ -494,7 +494,7 @@ static int vc_sm_dmabuf_mmap(struct dma_
+ 	/* now map it to userspace */
+ 	vma->vm_pgoff = 0;
+ 
+-	ret = dma_mmap_coherent(&sm_state->pdev->dev, vma, buf->cookie,
++	ret = dma_mmap_coherent(&sm_state->device->dev, vma, buf->cookie,
+ 				buf->dma_addr, buf->size);
+ 
+ 	if (ret) {
+@@ -729,7 +729,7 @@ vc_sm_cma_import_dmabuf_internal(struct
+ 	if (!dma_buf)
+ 		return -EINVAL;
+ 
+-	attach = dma_buf_attach(dma_buf, &sm_state->pdev->dev);
++	attach = dma_buf_attach(dma_buf, &sm_state->device->dev);
+ 	if (IS_ERR(attach)) {
+ 		ret = PTR_ERR(attach);
+ 		goto error;
+@@ -880,7 +880,7 @@ static int vc_sm_cma_vpu_alloc(u32 size,
+ 	 */
+ 	mutex_lock(&buffer->lock);
+ 
+-	buffer->cookie = dma_alloc_coherent(&sm_state->pdev->dev,
++	buffer->cookie = dma_alloc_coherent(&sm_state->device->dev,
+ 					    aligned_size, &buffer->dma_addr,
+ 					    GFP_KERNEL);
+ 	if (!buffer->cookie) {
+@@ -899,7 +899,7 @@ static int vc_sm_cma_vpu_alloc(u32 size,
+ 		goto error;
+ 	}
+ 
+-	ret = dma_get_sgtable(&sm_state->pdev->dev, sgt, buffer->cookie,
++	ret = dma_get_sgtable(&sm_state->device->dev, sgt, buffer->cookie,
+ 			      buffer->dma_addr, buffer->size);
+ 	if (ret < 0) {
+ 		pr_err("failed to get scatterlist from DMA API\n");
+@@ -1116,7 +1116,7 @@ static int vc_sm_cma_ioctl_alloc(struct
+ 		goto error;
+ 	}
+ 
+-	buffer->cookie = dma_alloc_coherent(&sm_state->pdev->dev,
++	buffer->cookie = dma_alloc_coherent(&sm_state->device->dev,
+ 					    aligned_size,
+ 					    &buffer->dma_addr,
+ 					    GFP_KERNEL);
+@@ -1187,7 +1187,7 @@ static int vc_sm_cma_ioctl_alloc(struct
+ 		goto error;
+ 	}
+ 
+-	ret = dma_get_sgtable(&sm_state->pdev->dev, sgt, buffer->cookie,
++	ret = dma_get_sgtable(&sm_state->device->dev, sgt, buffer->cookie,
+ 			      buffer->dma_addr, buffer->size);
+ 	if (ret < 0) {
+ 		/* FIXME: error handling */
+@@ -1224,7 +1224,7 @@ error:
+ 	} else {
+ 		/* No dmabuf, therefore just free the buffer here */
+ 		if (buffer->cookie)
+-			dma_free_coherent(&sm_state->pdev->dev, buffer->size,
++			dma_free_coherent(&sm_state->device->dev, buffer->size,
+ 					  buffer->cookie, buffer->dma_addr);
+ 		kfree(buffer);
+ 	}
+@@ -1382,13 +1382,21 @@ static void vc_sm_connected_init(void)
+ 	struct vc_sm_version version;
+ 	struct vc_sm_result_t version_result;
+ 
++	/*
++	 * Digging the vchiq_drv_mgmt, so low here and through a global seems
++	 * suspicious.
++	 *
++	 * The callbacks should be able to pass a parameter or context.
++	 */
++	struct vchiq_drv_mgmt *mgmt = dev_get_drvdata(sm_state->device->dev.parent);
++
+ 	pr_info("[%s]: start\n", __func__);
+ 
+ 	/*
+ 	 * Initialize and create a VCHI connection for the shared memory service
+ 	 * running on videocore.
+ 	 */
+-	ret = vchiq_initialise(&sm_state->vchiq_instance);
++	ret = vchiq_initialise(&mgmt->state, &sm_state->vchiq_instance);
+ 	if (ret) {
+ 		pr_err("[%s]: failed to initialise VCHI instance (ret=%d)\n",
+ 		       __func__, ret);
+@@ -1467,31 +1475,31 @@ err_remove_debugfs:
+ }
+ 
+ /* Driver loading. */
+-static int bcm2835_vc_sm_cma_probe(struct platform_device *pdev)
++static int bcm2835_vc_sm_cma_probe(struct vchiq_device *device)
+ {
+ 	pr_info("%s: Videocore shared memory driver\n", __func__);
+ 
+-	sm_state = devm_kzalloc(&pdev->dev, sizeof(*sm_state), GFP_KERNEL);
++	sm_state = devm_kzalloc(&device->dev, sizeof(*sm_state), GFP_KERNEL);
+ 	if (!sm_state)
+ 		return -ENOMEM;
+-	sm_state->pdev = pdev;
++	sm_state->device = device;
+ 	mutex_init(&sm_state->map_lock);
+ 
+ 	spin_lock_init(&sm_state->kernelid_map_lock);
+ 	idr_init_base(&sm_state->kernelid_map, 1);
+ 
+-	pdev->dev.dma_parms = devm_kzalloc(&pdev->dev,
+-					   sizeof(*pdev->dev.dma_parms),
+-					   GFP_KERNEL);
++	device->dev.dma_parms = devm_kzalloc(&device->dev,
++					     sizeof(*device->dev.dma_parms),
++					     GFP_KERNEL);
+ 	/* dma_set_max_seg_size checks if dma_parms is NULL. */
+-	dma_set_max_seg_size(&pdev->dev, 0x3FFFFFFF);
++	dma_set_max_seg_size(&device->dev, 0x3FFFFFFF);
+ 
+-	vchiq_add_connected_callback(vc_sm_connected_init);
++	vchiq_add_connected_callback(device, vc_sm_connected_init);
+ 	return 0;
+ }
+ 
+ /* Driver unloading. */
+-static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
++static void bcm2835_vc_sm_cma_remove(struct vchiq_device *device)
+ {
+ 	pr_debug("[%s]: start\n", __func__);
+ 	if (sm_inited) {
+@@ -1512,7 +1520,6 @@ static int bcm2835_vc_sm_cma_remove(stru
+ 	}
+ 
+ 	pr_debug("[%s]: end\n", __func__);
+-	return 0;
+ }
+ 
+ /* Kernel API calls */
+@@ -1586,7 +1593,7 @@ int vc_sm_cma_import_dmabuf(struct dma_b
+ }
+ EXPORT_SYMBOL_GPL(vc_sm_cma_import_dmabuf);
+ 
+-static struct platform_driver bcm2835_vcsm_cma_driver = {
++static struct vchiq_driver bcm2835_vcsm_cma_driver = {
+ 	.probe = bcm2835_vc_sm_cma_probe,
+ 	.remove = bcm2835_vc_sm_cma_remove,
+ 	.driver = {
+@@ -1595,9 +1602,9 @@ static struct platform_driver bcm2835_vc
+ 		   },
+ };
+ 
+-module_platform_driver(bcm2835_vcsm_cma_driver);
++module_vchiq_driver(bcm2835_vcsm_cma_driver);
+ 
+ MODULE_AUTHOR("Dave Stevenson");
+ MODULE_DESCRIPTION("VideoCore CMA Shared Memory Driver");
+ MODULE_LICENSE("GPL v2");
+-MODULE_ALIAS("platform:vcsm-cma");
++MODULE_ALIAS("vcsm-cma");

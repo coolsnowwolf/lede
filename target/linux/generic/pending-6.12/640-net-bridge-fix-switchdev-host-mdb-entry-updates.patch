@@ -1,0 +1,42 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 22 Aug 2024 18:02:17 +0200
+Subject: [PATCH] net: bridge: fix switchdev host mdb entry updates
+
+When a mdb entry is removed, the bridge switchdev code can issue a
+switchdev_port_obj_del call for a port that was not offloaded.
+
+This leads to an imbalance in switchdev_port_obj_add/del calls, since
+br_switchdev_mdb_replay has not been called for the port before.
+
+This can lead to potential multicast forwarding issues and messages such as:
+mt7915e 0000:01:00.0 wl1-ap0: Failed to del Host Multicast Database entry
+	(object id=3) with error: -ENOENT (-2).
+
+Fix this issue by checking the port offload status when iterating over
+lower devs.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/bridge/br_switchdev.c
++++ b/net/bridge/br_switchdev.c
+@@ -571,10 +571,18 @@ static void br_switchdev_host_mdb(struct
+ 				  struct net_bridge_mdb_entry *mp, int type)
+ {
+ 	struct net_device *lower_dev;
++	struct net_bridge_port *port;
+ 	struct list_head *iter;
+ 
+-	netdev_for_each_lower_dev(dev, lower_dev, iter)
++	rcu_read_lock();
++	netdev_for_each_lower_dev(dev, lower_dev, iter) {
++		port = br_port_get_rcu(lower_dev);
++		if (!port || !port->offload_count)
++			continue;
++
+ 		br_switchdev_host_mdb_one(dev, lower_dev, mp, type);
++	}
++	rcu_read_unlock();
+ }
+ 
+ static int

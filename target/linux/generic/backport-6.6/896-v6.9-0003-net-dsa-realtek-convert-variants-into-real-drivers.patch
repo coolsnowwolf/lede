@@ -1,0 +1,539 @@
+From bce254b839abe67577bebdef0838796af409c229 Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Fri, 9 Feb 2024 02:03:39 -0300
+Subject: net: dsa: realtek: convert variants into real drivers
+
+Previously, the interface modules realtek-smi and realtek-mdio served as
+a platform and an MDIO driver, respectively. Each interface module
+redundantly specified the same compatible strings for both variants and
+referenced symbols from the variants.
+
+Now, each variant module has been transformed into a unified driver
+serving both as a platform and an MDIO driver. This modification
+reverses the relationship between the interface and variant modules,
+with the variant module now utilizing symbols from the interface
+modules.
+
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Linus Walleij <linus.walleij@linaro.org>
+Signed-off-by: David S. Miller <davem@davemloft.net>
+---
+ drivers/net/dsa/realtek/Kconfig        | 20 +++----
+ drivers/net/dsa/realtek/realtek-mdio.c | 68 +++++++++++++++---------
+ drivers/net/dsa/realtek/realtek-mdio.h | 48 +++++++++++++++++
+ drivers/net/dsa/realtek/realtek-smi.c  | 73 +++++++++++++++-----------
+ drivers/net/dsa/realtek/realtek-smi.h  | 48 +++++++++++++++++
+ drivers/net/dsa/realtek/rtl8365mb.c    | 54 ++++++++++++++++++-
+ drivers/net/dsa/realtek/rtl8366rb.c    | 54 ++++++++++++++++++-
+ 7 files changed, 292 insertions(+), 73 deletions(-)
+ create mode 100644 drivers/net/dsa/realtek/realtek-mdio.h
+ create mode 100644 drivers/net/dsa/realtek/realtek-smi.h
+
+--- a/drivers/net/dsa/realtek/Kconfig
++++ b/drivers/net/dsa/realtek/Kconfig
+@@ -16,37 +16,29 @@ menuconfig NET_DSA_REALTEK
+ if NET_DSA_REALTEK
+ 
+ config NET_DSA_REALTEK_MDIO
+-	tristate "Realtek MDIO interface driver"
++	tristate "Realtek MDIO interface support"
+ 	depends on OF
+-	depends on NET_DSA_REALTEK_RTL8365MB || NET_DSA_REALTEK_RTL8366RB
+-	depends on NET_DSA_REALTEK_RTL8365MB || !NET_DSA_REALTEK_RTL8365MB
+-	depends on NET_DSA_REALTEK_RTL8366RB || !NET_DSA_REALTEK_RTL8366RB
+ 	help
+ 	  Select to enable support for registering switches configured
+ 	  through MDIO.
+ 
+ config NET_DSA_REALTEK_SMI
+-	tristate "Realtek SMI interface driver"
++	tristate "Realtek SMI interface support"
+ 	depends on OF
+-	depends on NET_DSA_REALTEK_RTL8365MB || NET_DSA_REALTEK_RTL8366RB
+-	depends on NET_DSA_REALTEK_RTL8365MB || !NET_DSA_REALTEK_RTL8365MB
+-	depends on NET_DSA_REALTEK_RTL8366RB || !NET_DSA_REALTEK_RTL8366RB
+ 	help
+ 	  Select to enable support for registering switches connected
+ 	  through SMI.
+ 
+ config NET_DSA_REALTEK_RTL8365MB
+-	tristate "Realtek RTL8365MB switch subdriver"
+-	imply NET_DSA_REALTEK_SMI
+-	imply NET_DSA_REALTEK_MDIO
++	tristate "Realtek RTL8365MB switch driver"
++	depends on NET_DSA_REALTEK_SMI || NET_DSA_REALTEK_MDIO
+ 	select NET_DSA_TAG_RTL8_4
+ 	help
+ 	  Select to enable support for Realtek RTL8365MB-VC and RTL8367S.
+ 
+ config NET_DSA_REALTEK_RTL8366RB
+-	tristate "Realtek RTL8366RB switch subdriver"
+-	imply NET_DSA_REALTEK_SMI
+-	imply NET_DSA_REALTEK_MDIO
++	tristate "Realtek RTL8366RB switch driver"
++	depends on NET_DSA_REALTEK_SMI || NET_DSA_REALTEK_MDIO
+ 	select NET_DSA_TAG_RTL4_A
+ 	help
+ 	  Select to enable support for Realtek RTL8366RB.
+--- a/drivers/net/dsa/realtek/realtek-mdio.c
++++ b/drivers/net/dsa/realtek/realtek-mdio.c
+@@ -25,6 +25,7 @@
+ #include <linux/regmap.h>
+ 
+ #include "realtek.h"
++#include "realtek-mdio.h"
+ 
+ /* Read/write via mdiobus */
+ #define REALTEK_MDIO_CTRL0_REG		31
+@@ -140,7 +141,19 @@ static const struct regmap_config realte
+ 	.disable_locking = true,
+ };
+ 
+-static int realtek_mdio_probe(struct mdio_device *mdiodev)
++/**
++ * realtek_mdio_probe() - Probe a platform device for an MDIO-connected switch
++ * @mdiodev: mdio_device to probe on.
++ *
++ * This function should be used as the .probe in an mdio_driver. It
++ * initializes realtek_priv and read data from the device-tree node. The switch
++ * is hard reset if a method is provided. It checks the switch chip ID and,
++ * finally, a DSA switch is registered.
++ *
++ * Context: Can sleep. Takes and releases priv->map_lock.
++ * Return: Returns 0 on success, a negative error on failure.
++ */
++int realtek_mdio_probe(struct mdio_device *mdiodev)
+ {
+ 	struct realtek_priv *priv;
+ 	struct device *dev = &mdiodev->dev;
+@@ -235,8 +248,20 @@ static int realtek_mdio_probe(struct mdi
+ 
+ 	return 0;
+ }
++EXPORT_SYMBOL_NS_GPL(realtek_mdio_probe, REALTEK_DSA);
+ 
+-static void realtek_mdio_remove(struct mdio_device *mdiodev)
++/**
++ * realtek_mdio_remove() - Remove the driver of an MDIO-connected switch
++ * @mdiodev: mdio_device to be removed.
++ *
++ * This function should be used as the .remove_new in an mdio_driver. First
++ * it unregisters the DSA switch and cleans internal data. If a method is
++ * provided, the hard reset is asserted to avoid traffic leakage.
++ *
++ * Context: Can sleep.
++ * Return: Nothing.
++ */
++void realtek_mdio_remove(struct mdio_device *mdiodev)
+ {
+ 	struct realtek_priv *priv = dev_get_drvdata(&mdiodev->dev);
+ 
+@@ -249,8 +274,21 @@ static void realtek_mdio_remove(struct m
+ 	if (priv->reset)
+ 		gpiod_set_value(priv->reset, 1);
+ }
++EXPORT_SYMBOL_NS_GPL(realtek_mdio_remove, REALTEK_DSA);
+ 
+-static void realtek_mdio_shutdown(struct mdio_device *mdiodev)
++/**
++ * realtek_mdio_shutdown() - Shutdown the driver of a MDIO-connected switch
++ * @mdiodev: mdio_device shutting down.
++ *
++ * This function should be used as the .shutdown in an mdio_driver. It shuts
++ * down the DSA switch and cleans the platform driver data, to prevent
++ * realtek_mdio_remove() from running afterwards, which is possible if the
++ * parent bus implements its own .shutdown() as .remove().
++ *
++ * Context: Can sleep.
++ * Return: Nothing.
++ */
++void realtek_mdio_shutdown(struct mdio_device *mdiodev)
+ {
+ 	struct realtek_priv *priv = dev_get_drvdata(&mdiodev->dev);
+ 
+@@ -261,29 +299,7 @@ static void realtek_mdio_shutdown(struct
+ 
+ 	dev_set_drvdata(&mdiodev->dev, NULL);
+ }
+-
+-static const struct of_device_id realtek_mdio_of_match[] = {
+-#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_RTL8366RB)
+-	{ .compatible = "realtek,rtl8366rb", .data = &rtl8366rb_variant, },
+-#endif
+-#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_RTL8365MB)
+-	{ .compatible = "realtek,rtl8365mb", .data = &rtl8365mb_variant, },
+-#endif
+-	{ /* sentinel */ },
+-};
+-MODULE_DEVICE_TABLE(of, realtek_mdio_of_match);
+-
+-static struct mdio_driver realtek_mdio_driver = {
+-	.mdiodrv.driver = {
+-		.name = "realtek-mdio",
+-		.of_match_table = realtek_mdio_of_match,
+-	},
+-	.probe  = realtek_mdio_probe,
+-	.remove = realtek_mdio_remove,
+-	.shutdown = realtek_mdio_shutdown,
+-};
+-
+-mdio_module_driver(realtek_mdio_driver);
++EXPORT_SYMBOL_NS_GPL(realtek_mdio_shutdown, REALTEK_DSA);
+ 
+ MODULE_AUTHOR("Luiz Angelo Daros de Luca <luizluca@gmail.com>");
+ MODULE_DESCRIPTION("Driver for Realtek ethernet switch connected via MDIO interface");
+--- /dev/null
++++ b/drivers/net/dsa/realtek/realtek-mdio.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++
++#ifndef _REALTEK_MDIO_H
++#define _REALTEK_MDIO_H
++
++#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_MDIO)
++
++static inline int realtek_mdio_driver_register(struct mdio_driver *drv)
++{
++	return mdio_driver_register(drv);
++}
++
++static inline void realtek_mdio_driver_unregister(struct mdio_driver *drv)
++{
++	mdio_driver_unregister(drv);
++}
++
++int realtek_mdio_probe(struct mdio_device *mdiodev);
++void realtek_mdio_remove(struct mdio_device *mdiodev);
++void realtek_mdio_shutdown(struct mdio_device *mdiodev);
++
++#else /* IS_ENABLED(CONFIG_NET_DSA_REALTEK_MDIO) */
++
++static inline int realtek_mdio_driver_register(struct mdio_driver *drv)
++{
++	return 0;
++}
++
++static inline void realtek_mdio_driver_unregister(struct mdio_driver *drv)
++{
++}
++
++static inline int realtek_mdio_probe(struct mdio_device *mdiodev)
++{
++	return -ENOENT;
++}
++
++static inline void realtek_mdio_remove(struct mdio_device *mdiodev)
++{
++}
++
++static inline void realtek_mdio_shutdown(struct mdio_device *mdiodev)
++{
++}
++
++#endif /* IS_ENABLED(CONFIG_NET_DSA_REALTEK_MDIO) */
++
++#endif /* _REALTEK_MDIO_H */
+--- a/drivers/net/dsa/realtek/realtek-smi.c
++++ b/drivers/net/dsa/realtek/realtek-smi.c
+@@ -40,6 +40,7 @@
+ #include <linux/if_bridge.h>
+ 
+ #include "realtek.h"
++#include "realtek-smi.h"
+ 
+ #define REALTEK_SMI_ACK_RETRY_COUNT		5
+ 
+@@ -408,7 +409,19 @@ err_put_node:
+ 	return ret;
+ }
+ 
+-static int realtek_smi_probe(struct platform_device *pdev)
++/**
++ * realtek_smi_probe() - Probe a platform device for an SMI-connected switch
++ * @pdev: platform_device to probe on.
++ *
++ * This function should be used as the .probe in a platform_driver. It
++ * initializes realtek_priv and read data from the device-tree node. The switch
++ * is hard reset if a method is provided. It checks the switch chip ID and,
++ * finally, a DSA switch is registered.
++ *
++ * Context: Can sleep. Takes and releases priv->map_lock.
++ * Return: Returns 0 on success, a negative error on failure.
++ */
++int realtek_smi_probe(struct platform_device *pdev)
+ {
+ 	const struct realtek_variant *var;
+ 	struct device *dev = &pdev->dev;
+@@ -505,8 +518,20 @@ static int realtek_smi_probe(struct plat
+ 	}
+ 	return 0;
+ }
++EXPORT_SYMBOL_NS_GPL(realtek_smi_probe, REALTEK_DSA);
+ 
+-static void realtek_smi_remove(struct platform_device *pdev)
++/**
++ * realtek_smi_remove() - Remove the driver of a SMI-connected switch
++ * @pdev: platform_device to be removed.
++ *
++ * This function should be used as the .remove_new in a platform_driver. First
++ * it unregisters the DSA switch and cleans internal data. If a method is
++ * provided, the hard reset is asserted to avoid traffic leakage.
++ *
++ * Context: Can sleep.
++ * Return: Nothing.
++ */
++void realtek_smi_remove(struct platform_device *pdev)
+ {
+ 	struct realtek_priv *priv = platform_get_drvdata(pdev);
+ 
+@@ -521,8 +546,21 @@ static void realtek_smi_remove(struct pl
+ 	if (priv->reset)
+ 		gpiod_set_value(priv->reset, 1);
+ }
++EXPORT_SYMBOL_NS_GPL(realtek_smi_remove, REALTEK_DSA);
+ 
+-static void realtek_smi_shutdown(struct platform_device *pdev)
++/**
++ * realtek_smi_shutdown() - Shutdown the driver of a SMI-connected switch
++ * @pdev: platform_device shutting down.
++ *
++ * This function should be used as the .shutdown in a platform_driver. It shuts
++ * down the DSA switch and cleans the platform driver data, to prevent
++ * realtek_smi_remove() from running afterwards, which is possible if the
++ * parent bus implements its own .shutdown() as .remove().
++ *
++ * Context: Can sleep.
++ * Return: Nothing.
++ */
++void realtek_smi_shutdown(struct platform_device *pdev)
+ {
+ 	struct realtek_priv *priv = platform_get_drvdata(pdev);
+ 
+@@ -533,34 +571,7 @@ static void realtek_smi_shutdown(struct
+ 
+ 	platform_set_drvdata(pdev, NULL);
+ }
+-
+-static const struct of_device_id realtek_smi_of_match[] = {
+-#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_RTL8366RB)
+-	{
+-		.compatible = "realtek,rtl8366rb",
+-		.data = &rtl8366rb_variant,
+-	},
+-#endif
+-#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_RTL8365MB)
+-	{
+-		.compatible = "realtek,rtl8365mb",
+-		.data = &rtl8365mb_variant,
+-	},
+-#endif
+-	{ /* sentinel */ },
+-};
+-MODULE_DEVICE_TABLE(of, realtek_smi_of_match);
+-
+-static struct platform_driver realtek_smi_driver = {
+-	.driver = {
+-		.name = "realtek-smi",
+-		.of_match_table = realtek_smi_of_match,
+-	},
+-	.probe  = realtek_smi_probe,
+-	.remove_new = realtek_smi_remove,
+-	.shutdown = realtek_smi_shutdown,
+-};
+-module_platform_driver(realtek_smi_driver);
++EXPORT_SYMBOL_NS_GPL(realtek_smi_shutdown, REALTEK_DSA);
+ 
+ MODULE_AUTHOR("Linus Walleij <linus.walleij@linaro.org>");
+ MODULE_DESCRIPTION("Driver for Realtek ethernet switch connected via SMI interface");
+--- /dev/null
++++ b/drivers/net/dsa/realtek/realtek-smi.h
+@@ -0,0 +1,48 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++
++#ifndef _REALTEK_SMI_H
++#define _REALTEK_SMI_H
++
++#if IS_ENABLED(CONFIG_NET_DSA_REALTEK_SMI)
++
++static inline int realtek_smi_driver_register(struct platform_driver *drv)
++{
++	return platform_driver_register(drv);
++}
++
++static inline void realtek_smi_driver_unregister(struct platform_driver *drv)
++{
++	platform_driver_unregister(drv);
++}
++
++int realtek_smi_probe(struct platform_device *pdev);
++void realtek_smi_remove(struct platform_device *pdev);
++void realtek_smi_shutdown(struct platform_device *pdev);
++
++#else /* IS_ENABLED(CONFIG_NET_DSA_REALTEK_SMI) */
++
++static inline int realtek_smi_driver_register(struct platform_driver *drv)
++{
++	return 0;
++}
++
++static inline void realtek_smi_driver_unregister(struct platform_driver *drv)
++{
++}
++
++static inline int realtek_smi_probe(struct platform_device *pdev)
++{
++	return -ENOENT;
++}
++
++static inline void realtek_smi_remove(struct platform_device *pdev)
++{
++}
++
++static inline void realtek_smi_shutdown(struct platform_device *pdev)
++{
++}
++
++#endif /* IS_ENABLED(CONFIG_NET_DSA_REALTEK_SMI) */
++
++#endif  /* _REALTEK_SMI_H */
+--- a/drivers/net/dsa/realtek/rtl8365mb.c
++++ b/drivers/net/dsa/realtek/rtl8365mb.c
+@@ -101,6 +101,8 @@
+ #include <linux/if_vlan.h>
+ 
+ #include "realtek.h"
++#include "realtek-smi.h"
++#include "realtek-mdio.h"
+ 
+ /* Family-specific data and limits */
+ #define RTL8365MB_PHYADDRMAX		7
+@@ -2173,7 +2175,57 @@ const struct realtek_variant rtl8365mb_v
+ 	.cmd_write = 0xb8,
+ 	.chip_data_sz = sizeof(struct rtl8365mb),
+ };
+-EXPORT_SYMBOL_GPL(rtl8365mb_variant);
++
++static const struct of_device_id rtl8365mb_of_match[] = {
++	{ .compatible = "realtek,rtl8365mb", .data = &rtl8365mb_variant, },
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(of, rtl8365mb_of_match);
++
++static struct platform_driver rtl8365mb_smi_driver = {
++	.driver = {
++		.name = "rtl8365mb-smi",
++		.of_match_table = rtl8365mb_of_match,
++	},
++	.probe  = realtek_smi_probe,
++	.remove_new = realtek_smi_remove,
++	.shutdown = realtek_smi_shutdown,
++};
++
++static struct mdio_driver rtl8365mb_mdio_driver = {
++	.mdiodrv.driver = {
++		.name = "rtl8365mb-mdio",
++		.of_match_table = rtl8365mb_of_match,
++	},
++	.probe  = realtek_mdio_probe,
++	.remove = realtek_mdio_remove,
++	.shutdown = realtek_mdio_shutdown,
++};
++
++static int rtl8365mb_init(void)
++{
++	int ret;
++
++	ret = realtek_mdio_driver_register(&rtl8365mb_mdio_driver);
++	if (ret)
++		return ret;
++
++	ret = realtek_smi_driver_register(&rtl8365mb_smi_driver);
++	if (ret) {
++		realtek_mdio_driver_unregister(&rtl8365mb_mdio_driver);
++		return ret;
++	}
++
++	return 0;
++}
++module_init(rtl8365mb_init);
++
++static void __exit rtl8365mb_exit(void)
++{
++	realtek_smi_driver_unregister(&rtl8365mb_smi_driver);
++	realtek_mdio_driver_unregister(&rtl8365mb_mdio_driver);
++}
++module_exit(rtl8365mb_exit);
+ 
+ MODULE_AUTHOR("Alvin Šipraga <alsi@bang-olufsen.dk>");
+ MODULE_DESCRIPTION("Driver for RTL8365MB-VC ethernet switch");
+--- a/drivers/net/dsa/realtek/rtl8366rb.c
++++ b/drivers/net/dsa/realtek/rtl8366rb.c
+@@ -22,6 +22,8 @@
+ #include <linux/regmap.h>
+ 
+ #include "realtek.h"
++#include "realtek-smi.h"
++#include "realtek-mdio.h"
+ 
+ #define RTL8366RB_PORT_NUM_CPU		5
+ #define RTL8366RB_NUM_PORTS		6
+@@ -1847,7 +1849,57 @@ const struct realtek_variant rtl8366rb_v
+ 	.cmd_write = 0xa8,
+ 	.chip_data_sz = sizeof(struct rtl8366rb),
+ };
+-EXPORT_SYMBOL_GPL(rtl8366rb_variant);
++
++static const struct of_device_id rtl8366rb_of_match[] = {
++	{ .compatible = "realtek,rtl8366rb", .data = &rtl8366rb_variant, },
++	{ /* sentinel */ },
++};
++MODULE_DEVICE_TABLE(of, rtl8366rb_of_match);
++
++static struct platform_driver rtl8366rb_smi_driver = {
++	.driver = {
++		.name = "rtl8366rb-smi",
++		.of_match_table = rtl8366rb_of_match,
++	},
++	.probe  = realtek_smi_probe,
++	.remove_new = realtek_smi_remove,
++	.shutdown = realtek_smi_shutdown,
++};
++
++static struct mdio_driver rtl8366rb_mdio_driver = {
++	.mdiodrv.driver = {
++		.name = "rtl8366rb-mdio",
++		.of_match_table = rtl8366rb_of_match,
++	},
++	.probe  = realtek_mdio_probe,
++	.remove = realtek_mdio_remove,
++	.shutdown = realtek_mdio_shutdown,
++};
++
++static int rtl8366rb_init(void)
++{
++	int ret;
++
++	ret = realtek_mdio_driver_register(&rtl8366rb_mdio_driver);
++	if (ret)
++		return ret;
++
++	ret = realtek_smi_driver_register(&rtl8366rb_smi_driver);
++	if (ret) {
++		realtek_mdio_driver_unregister(&rtl8366rb_mdio_driver);
++		return ret;
++	}
++
++	return 0;
++}
++module_init(rtl8366rb_init);
++
++static void __exit rtl8366rb_exit(void)
++{
++	realtek_smi_driver_unregister(&rtl8366rb_smi_driver);
++	realtek_mdio_driver_unregister(&rtl8366rb_mdio_driver);
++}
++module_exit(rtl8366rb_exit);
+ 
+ MODULE_AUTHOR("Linus Walleij <linus.walleij@linaro.org>");
+ MODULE_DESCRIPTION("Driver for RTL8366RB ethernet switch");

@@ -1,0 +1,92 @@
+From 3303a206ae7474b2f8a5d17d8df9de08bac16ca5 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Sun, 8 Sep 2024 14:54:58 +0000
+Subject: [PATCH] drm/rockchip: dw_hdmi: Filter modes based on hdmiphy_clk
+
+RK3228 and RK3328 clock rate is being validated against a mpll config
+table intended for a Synopsys phy, and not the used inno-hdmi-phy.
+
+Instead get a reference to the hdmiphy clk and validate rates against
+it to enable use of HDMI2.0 modes, e.g. 4K@60Hz, on RK3228 and RK3328.
+
+For Synopsis phy the max_tmds_clock validation is sufficient.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+Tested-by: Diederik de Haas <didi.debian@cknow.org> # Rock64
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Link: https://patchwork.freedesktop.org/patch/msgid/20240908145511.3331451-2-jonas@kwiboo.se
+---
+ drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c | 35 ++++++++++-----------
+ 1 file changed, 17 insertions(+), 18 deletions(-)
+
+--- a/drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi-rockchip.c
+@@ -76,6 +76,7 @@ struct rockchip_hdmi {
+ 	struct rockchip_encoder encoder;
+ 	const struct rockchip_hdmi_chip_data *chip_data;
+ 	const struct dw_hdmi_plat_data *plat_data;
++	struct clk *hdmiphy_clk;
+ 	struct clk *ref_clk;
+ 	struct clk *grf_clk;
+ 	struct dw_hdmi *hdmi;
+@@ -251,10 +252,7 @@ dw_hdmi_rockchip_mode_valid(struct dw_hd
+ 			    const struct drm_display_mode *mode)
+ {
+ 	struct rockchip_hdmi *hdmi = data;
+-	const struct dw_hdmi_mpll_config *mpll_cfg = rockchip_mpll_cfg;
+ 	int pclk = mode->clock * 1000;
+-	bool exact_match = hdmi->plat_data->phy_force_vendor;
+-	int i;
+ 
+ 	if (hdmi->chip_data->max_tmds_clock &&
+ 	    mode->clock > hdmi->chip_data->max_tmds_clock)
+@@ -263,26 +261,18 @@ dw_hdmi_rockchip_mode_valid(struct dw_hd
+ 	if (hdmi->ref_clk) {
+ 		int rpclk = clk_round_rate(hdmi->ref_clk, pclk);
+ 
+-		if (abs(rpclk - pclk) > pclk / 1000)
++		if (rpclk < 0 || abs(rpclk - pclk) > pclk / 1000)
+ 			return MODE_NOCLOCK;
+ 	}
+ 
+-	for (i = 0; mpll_cfg[i].mpixelclock != (~0UL); i++) {
+-		/*
+-		 * For vendor specific phys force an exact match of the pixelclock
+-		 * to preserve the original behaviour of the driver.
+-		 */
+-		if (exact_match && pclk == mpll_cfg[i].mpixelclock)
+-			return MODE_OK;
+-		/*
+-		 * The Synopsys phy can work with pixelclocks up to the value given
+-		 * in the corresponding mpll_cfg entry.
+-		 */
+-		if (!exact_match && pclk <= mpll_cfg[i].mpixelclock)
+-			return MODE_OK;
++	if (hdmi->hdmiphy_clk) {
++		int rpclk = clk_round_rate(hdmi->hdmiphy_clk, pclk);
++
++		if (rpclk < 0 || abs(rpclk - pclk) > pclk / 1000)
++			return MODE_NOCLOCK;
+ 	}
+ 
+-	return MODE_BAD;
++	return MODE_OK;
+ }
+ 
+ static void dw_hdmi_rockchip_encoder_disable(struct drm_encoder *encoder)
+@@ -607,6 +597,15 @@ static int dw_hdmi_rockchip_bind(struct
+ 		return ret;
+ 	}
+ 
++	if (hdmi->phy) {
++		struct of_phandle_args clkspec;
++
++		clkspec.np = hdmi->phy->dev.of_node;
++		hdmi->hdmiphy_clk = of_clk_get_from_provider(&clkspec);
++		if (IS_ERR(hdmi->hdmiphy_clk))
++			hdmi->hdmiphy_clk = NULL;
++	}
++
+ 	if (hdmi->chip_data == &rk3568_chip_data) {
+ 		regmap_write(hdmi->regmap, RK3568_GRF_VO_CON1,
+ 			     HIWORD_UPDATE(RK3568_HDMI_SDAIN_MSK |

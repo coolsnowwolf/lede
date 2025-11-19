@@ -1,0 +1,144 @@
+From 2828a23364ab4a55af817b7ab370e6fc225f025d Mon Sep 17 00:00:00 2001
+From: Emil Renner Berthing <kernel@esmil.dk>
+Date: Sat, 20 Nov 2021 19:30:49 +0100
+Subject: [PATCH 1007/1021] reset: starfive: Add JH7100 audio reset driver
+
+The audio resets are almost identical to the system resets, there are
+just fewer of them. So factor out and export a generic probe function,
+so most of the reset controller implementation can be shared.
+
+Signed-off-by: Emil Renner Berthing <kernel@esmil.dk>
+---
+ MAINTAINERS                                   |  2 +-
+ drivers/reset/starfive/Kconfig                |  7 ++
+ drivers/reset/starfive/Makefile               |  2 +
+ .../starfive/reset-starfive-jh7100-audio.c    | 66 +++++++++++++++++++
+ .../reset/starfive/reset-starfive-jh7100.h    | 16 +++++
+ 5 files changed, 92 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/reset/starfive/reset-starfive-jh7100-audio.c
+ create mode 100644 drivers/reset/starfive/reset-starfive-jh7100.h
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -22070,7 +22070,7 @@ STARFIVE JH71X0 RESET CONTROLLER DRIVERS
+ M:	Emil Renner Berthing <kernel@esmil.dk>
+ M:	Hal Feng <hal.feng@starfivetech.com>
+ S:	Maintained
+-F:	Documentation/devicetree/bindings/reset/starfive,jh7100-reset.yaml
++F:	Documentation/devicetree/bindings/reset/starfive,jh7100-*.yaml
+ F:	drivers/reset/starfive/reset-starfive-jh71*
+ F:	include/dt-bindings/reset/starfive?jh71*.h
+ 
+--- a/drivers/reset/starfive/Kconfig
++++ b/drivers/reset/starfive/Kconfig
+@@ -11,6 +11,13 @@ config RESET_STARFIVE_JH7100
+ 	help
+ 	  This enables the reset controller driver for the StarFive JH7100 SoC.
+ 
++config RESET_STARFIVE_JH7100_AUDIO
++	tristate "StarFive JH7100 Audio Reset Driver"
++	depends on RESET_STARFIVE_JH7100
++	default m if SOC_STARFIVE
++	help
++	  This enables the audio reset driver for the StarFive JH7100 SoC.
++
+ config RESET_STARFIVE_JH7110
+ 	bool "StarFive JH7110 Reset Driver"
+ 	depends on CLK_STARFIVE_JH7110_SYS
+--- a/drivers/reset/starfive/Makefile
++++ b/drivers/reset/starfive/Makefile
+@@ -2,4 +2,6 @@
+ obj-$(CONFIG_RESET_STARFIVE_JH71X0)		+= reset-starfive-jh71x0.o
+ 
+ obj-$(CONFIG_RESET_STARFIVE_JH7100)		+= reset-starfive-jh7100.o
++obj-$(CONFIG_RESET_STARFIVE_JH7100_AUDIO)	+= reset-starfive-jh7100-audio.o
++
+ obj-$(CONFIG_RESET_STARFIVE_JH7110)		+= reset-starfive-jh7110.o
+--- /dev/null
++++ b/drivers/reset/starfive/reset-starfive-jh7100-audio.c
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Audio reset driver for the StarFive JH7100 SoC
++ *
++ * Copyright (C) 2021 Emil Renner Berthing <kernel@esmil.dk>
++ */
++
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++
++#include "reset-starfive-jh71x0.h"
++
++#include <dt-bindings/reset/starfive-jh7100-audio.h>
++
++/* register offsets */
++#define JH7100_AUDRST_ASSERT0	0x00
++#define JH7100_AUDRST_STATUS0	0x04
++
++/*
++ * Writing a 1 to the n'th bit of the ASSERT register asserts
++ * line n, and writing a 0 deasserts the same line.
++ * Most reset lines have their status inverted so a 0 bit in the STATUS
++ * register means the line is asserted and a 1 means it's deasserted. A few
++ * lines don't though, so store the expected value of the status registers when
++ * all lines are asserted.
++ */
++static const u32 jh7100_audrst_asserted[1] = {
++	BIT(JH7100_AUDRST_USB_AXI) |
++	BIT(JH7100_AUDRST_USB_PWRUP_RST_N) |
++	BIT(JH7100_AUDRST_USB_PONRST)
++};
++
++static int jh7100_audrst_probe(struct platform_device *pdev)
++{
++	void __iomem *base = devm_platform_ioremap_resource(pdev, 0);
++
++	if (IS_ERR(base))
++		return PTR_ERR(base);
++
++	return reset_starfive_jh71x0_register(&pdev->dev, pdev->dev.of_node,
++					      base + JH7100_AUDRST_ASSERT0,
++					      base + JH7100_AUDRST_STATUS0,
++					      jh7100_audrst_asserted,
++					      JH7100_AUDRSTN_END,
++					      THIS_MODULE);
++}
++
++static const struct of_device_id jh7100_audrst_dt_ids[] = {
++	{ .compatible = "starfive,jh7100-audrst" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, jh7100_audrst_dt_ids);
++
++static struct platform_driver jh7100_audrst_driver = {
++	.probe = jh7100_audrst_probe,
++	.driver = {
++		.name = "jh7100-reset-audio",
++		.of_match_table = jh7100_audrst_dt_ids,
++	},
++};
++module_platform_driver(jh7100_audrst_driver);
++
++MODULE_AUTHOR("Emil Renner Berthing");
++MODULE_DESCRIPTION("StarFive JH7100 audio reset driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/reset/starfive/reset-starfive-jh7100.h
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Copyright (C) 2021 Emil Renner Berthing <kernel@esmil.dk>
++ */
++
++#ifndef _RESET_STARFIVE_JH7100_H_
++#define _RESET_STARFIVE_JH7100_H_
++
++#include <linux/platform_device.h>
++
++int reset_starfive_jh7100_generic_probe(struct platform_device *pdev,
++					const u32 *asserted,
++					unsigned int status_offset,
++					unsigned int nr_resets);
++
++#endif

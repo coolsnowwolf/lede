@@ -1,5 +1,7 @@
 /*
- * Platform driver for the Realtek RTL8367R-VB ethernet switches
+ * Platform driver for Realtek RTL8367B family chips, i.e. RTL8367RB and RTL8367R-VB
+ * extended with support for RTL8367C family chips, i.e. RTL8367RB-VB and RTL8367S
+ * extended with support for RTL8367D family chips, i.e. RTL8367S-VB
  *
  * Copyright (C) 2012 Gabor Juhos <juhosg@openwrt.org>
  *
@@ -17,6 +19,7 @@
 #include <linux/delay.h>
 #include <linux/skbuff.h>
 #include <linux/rtl8367.h>
+#include <linux/version.h>
 
 #include "rtl8366_smi.h"
 
@@ -266,6 +269,37 @@ struct rtl8367b_initval {
 #define RTL8367B_MIB_RXB_ID		0	/* IfInOctets */
 #define RTL8367B_MIB_TXB_ID		28	/* IfOutOctets */
 
+#define RTL8367D_PORT_STATUS_REG(_p)		(0x12d0 + (_p))
+
+#define RTL8367D_PORT_STATUS_SPEED1_MASK	0x3000
+#define RTL8367D_PORT_STATUS_SPEED1_SHIFT	10 /*12-2*/
+
+#define RTL8367D_REG_MAC0_FORCE_SELECT		0x12c0
+#define RTL8367D_REG_MAC0_FORCE_SELECT_EN	0x12c8
+
+#define RTL8367D_VLAN_PVID_CTRL_REG(_p)		(0x0700 + (_p))
+#define RTL8367D_VLAN_PVID_CTRL_MASK		0xfff
+#define RTL8367D_VLAN_PVID_CTRL_SHIFT(_p)	0
+
+#define RTL8367D_FIDMAX			3
+#define RTL8367D_FID_MASK		3
+#define RTL8367D_TA_VLAN1_FID_SHIFT	0
+#define RTL8367D_TA_VLAN1_FID_MASK	RTL8367D_FID_MASK
+
+#define RTL8367D_VID_MASK		0xfff
+#define RTL8367D_TA_VLAN_VID_MASK	RTL8367D_VID_MASK
+
+#define RTL8367D_REG_EXT_TXC_DLY		0x13f9
+#define RTL8367D_EXT1_RGMII_TX_DLY_MASK		0x38
+
+#define RTL8367D_REG_TOP_CON0			0x1d70
+#define   RTL8367D_MAC7_SEL_EXT1_MASK		0x2000
+#define   RTL8367D_MAC4_SEL_EXT1_MASK		0x1000
+
+#define RTL8367D_REG_SDS1_MISC0			0x1d78
+#define   RTL8367D_SDS1_MODE_MASK		0x1f
+#define   RTL8367D_PORT_SDS_MODE_DISABLE		0x1f
+
 static struct rtl8366_mib_counter
 rtl8367b_mib_counters[RTL8367B_NUM_MIB_COUNTERS] = {
 	{0,   0, 4, "ifInOctets"			},
@@ -351,220 +385,7 @@ rtl8367b_mib_counters[RTL8367B_NUM_MIB_COUNTERS] = {
 			return err;					\
 	} while (0)
 
-static const struct rtl8367b_initval rtl8367r_vb_initvals_0[] = {
-	{0x1B03, 0x0876}, {0x1200, 0x7FC4}, {0x0301, 0x0026}, {0x1722, 0x0E14},
-	{0x205F, 0x0002}, {0x2059, 0x1A00}, {0x205F, 0x0000}, {0x207F, 0x0002},
-	{0x2077, 0x0000}, {0x2078, 0x0000}, {0x2079, 0x0000}, {0x207A, 0x0000},
-	{0x207B, 0x0000}, {0x207F, 0x0000}, {0x205F, 0x0002}, {0x2053, 0x0000},
-	{0x2054, 0x0000}, {0x2055, 0x0000}, {0x2056, 0x0000}, {0x2057, 0x0000},
-	{0x205F, 0x0000}, {0x12A4, 0x110A}, {0x12A6, 0x150A}, {0x13F1, 0x0013},
-	{0x13F4, 0x0010}, {0x13F5, 0x0000}, {0x0018, 0x0F00}, {0x0038, 0x0F00},
-	{0x0058, 0x0F00}, {0x0078, 0x0F00}, {0x0098, 0x0F00}, {0x12B6, 0x0C02},
-	{0x12B7, 0x030F}, {0x12B8, 0x11FF}, {0x12BC, 0x0004}, {0x1362, 0x0115},
-	{0x1363, 0x0002}, {0x1363, 0x0000}, {0x133F, 0x0030}, {0x133E, 0x000E},
-	{0x221F, 0x0007}, {0x221E, 0x002D}, {0x2218, 0xF030}, {0x221F, 0x0007},
-	{0x221E, 0x0023}, {0x2216, 0x0005}, {0x2215, 0x00B9}, {0x2219, 0x0044},
-	{0x2215, 0x00BA}, {0x2219, 0x0020}, {0x2215, 0x00BB}, {0x2219, 0x00C1},
-	{0x2215, 0x0148}, {0x2219, 0x0096}, {0x2215, 0x016E}, {0x2219, 0x0026},
-	{0x2216, 0x0000}, {0x2216, 0x0000}, {0x221E, 0x002D}, {0x2218, 0xF010},
-	{0x221F, 0x0007}, {0x221E, 0x0020}, {0x2215, 0x0D00}, {0x221F, 0x0000},
-	{0x221F, 0x0000}, {0x2217, 0x2160}, {0x221F, 0x0001}, {0x2210, 0xF25E},
-	{0x221F, 0x0007}, {0x221E, 0x0042}, {0x2215, 0x0F00}, {0x2215, 0x0F00},
-	{0x2216, 0x7408}, {0x2215, 0x0E00}, {0x2215, 0x0F00}, {0x2215, 0x0F01},
-	{0x2216, 0x4000}, {0x2215, 0x0E01}, {0x2215, 0x0F01}, {0x2215, 0x0F02},
-	{0x2216, 0x9400}, {0x2215, 0x0E02}, {0x2215, 0x0F02}, {0x2215, 0x0F03},
-	{0x2216, 0x7408}, {0x2215, 0x0E03}, {0x2215, 0x0F03}, {0x2215, 0x0F04},
-	{0x2216, 0x4008}, {0x2215, 0x0E04}, {0x2215, 0x0F04}, {0x2215, 0x0F05},
-	{0x2216, 0x9400}, {0x2215, 0x0E05}, {0x2215, 0x0F05}, {0x2215, 0x0F06},
-	{0x2216, 0x0803}, {0x2215, 0x0E06}, {0x2215, 0x0F06}, {0x2215, 0x0D00},
-	{0x2215, 0x0100}, {0x221F, 0x0001}, {0x2210, 0xF05E}, {0x221F, 0x0000},
-	{0x2217, 0x2100}, {0x221F, 0x0000}, {0x220D, 0x0003}, {0x220E, 0x0015},
-	{0x220D, 0x4003}, {0x220E, 0x0006}, {0x221F, 0x0000}, {0x2200, 0x1340},
-	{0x133F, 0x0010}, {0x12A0, 0x0058}, {0x12A1, 0x0058}, {0x133E, 0x000E},
-	{0x133F, 0x0030}, {0x221F, 0x0000}, {0x2210, 0x0166}, {0x221F, 0x0000},
-	{0x133E, 0x000E}, {0x133F, 0x0010}, {0x133F, 0x0030}, {0x133E, 0x000E},
-	{0x221F, 0x0005}, {0x2205, 0xFFF6}, {0x2206, 0x0080}, {0x2205, 0x8B6E},
-	{0x2206, 0x0000}, {0x220F, 0x0100}, {0x2205, 0x8000}, {0x2206, 0x0280},
-	{0x2206, 0x28F7}, {0x2206, 0x00E0}, {0x2206, 0xFFF7}, {0x2206, 0xA080},
-	{0x2206, 0x02AE}, {0x2206, 0xF602}, {0x2206, 0x0153}, {0x2206, 0x0201},
-	{0x2206, 0x6602}, {0x2206, 0x80B9}, {0x2206, 0xE08B}, {0x2206, 0x8CE1},
-	{0x2206, 0x8B8D}, {0x2206, 0x1E01}, {0x2206, 0xE18B}, {0x2206, 0x8E1E},
-	{0x2206, 0x01A0}, {0x2206, 0x00E7}, {0x2206, 0xAEDB}, {0x2206, 0xEEE0},
-	{0x2206, 0x120E}, {0x2206, 0xEEE0}, {0x2206, 0x1300}, {0x2206, 0xEEE0},
-	{0x2206, 0x2001}, {0x2206, 0xEEE0}, {0x2206, 0x2166}, {0x2206, 0xEEE0},
-	{0x2206, 0xC463}, {0x2206, 0xEEE0}, {0x2206, 0xC5E8}, {0x2206, 0xEEE0},
-	{0x2206, 0xC699}, {0x2206, 0xEEE0}, {0x2206, 0xC7C2}, {0x2206, 0xEEE0},
-	{0x2206, 0xC801}, {0x2206, 0xEEE0}, {0x2206, 0xC913}, {0x2206, 0xEEE0},
-	{0x2206, 0xCA30}, {0x2206, 0xEEE0}, {0x2206, 0xCB3E}, {0x2206, 0xEEE0},
-	{0x2206, 0xDCE1}, {0x2206, 0xEEE0}, {0x2206, 0xDD00}, {0x2206, 0xEEE2},
-	{0x2206, 0x0001}, {0x2206, 0xEEE2}, {0x2206, 0x0100}, {0x2206, 0xEEE4},
-	{0x2206, 0x8860}, {0x2206, 0xEEE4}, {0x2206, 0x8902}, {0x2206, 0xEEE4},
-	{0x2206, 0x8C00}, {0x2206, 0xEEE4}, {0x2206, 0x8D30}, {0x2206, 0xEEEA},
-	{0x2206, 0x1480}, {0x2206, 0xEEEA}, {0x2206, 0x1503}, {0x2206, 0xEEEA},
-	{0x2206, 0xC600}, {0x2206, 0xEEEA}, {0x2206, 0xC706}, {0x2206, 0xEE85},
-	{0x2206, 0xEE00}, {0x2206, 0xEE85}, {0x2206, 0xEF00}, {0x2206, 0xEE8B},
-	{0x2206, 0x6750}, {0x2206, 0xEE8B}, {0x2206, 0x6632}, {0x2206, 0xEE8A},
-	{0x2206, 0xD448}, {0x2206, 0xEE8A}, {0x2206, 0xD548}, {0x2206, 0xEE8A},
-	{0x2206, 0xD649}, {0x2206, 0xEE8A}, {0x2206, 0xD7F8}, {0x2206, 0xEE8B},
-	{0x2206, 0x85E2}, {0x2206, 0xEE8B}, {0x2206, 0x8700}, {0x2206, 0xEEFF},
-	{0x2206, 0xF600}, {0x2206, 0xEEFF}, {0x2206, 0xF7FC}, {0x2206, 0x04F8},
-	{0x2206, 0xE08B}, {0x2206, 0x8EAD}, {0x2206, 0x2023}, {0x2206, 0xF620},
-	{0x2206, 0xE48B}, {0x2206, 0x8E02}, {0x2206, 0x2877}, {0x2206, 0x0225},
-	{0x2206, 0xC702}, {0x2206, 0x26A1}, {0x2206, 0x0281}, {0x2206, 0xB302},
-	{0x2206, 0x8496}, {0x2206, 0x0202}, {0x2206, 0xA102}, {0x2206, 0x27F1},
-	{0x2206, 0x0228}, {0x2206, 0xF902}, {0x2206, 0x2AA0}, {0x2206, 0x0282},
-	{0x2206, 0xB8E0}, {0x2206, 0x8B8E}, {0x2206, 0xAD21}, {0x2206, 0x08F6},
-	{0x2206, 0x21E4}, {0x2206, 0x8B8E}, {0x2206, 0x0202}, {0x2206, 0x80E0},
-	{0x2206, 0x8B8E}, {0x2206, 0xAD22}, {0x2206, 0x05F6}, {0x2206, 0x22E4},
-	{0x2206, 0x8B8E}, {0x2206, 0xE08B}, {0x2206, 0x8EAD}, {0x2206, 0x2305},
-	{0x2206, 0xF623}, {0x2206, 0xE48B}, {0x2206, 0x8EE0}, {0x2206, 0x8B8E},
-	{0x2206, 0xAD24}, {0x2206, 0x08F6}, {0x2206, 0x24E4}, {0x2206, 0x8B8E},
-	{0x2206, 0x0227}, {0x2206, 0x6AE0}, {0x2206, 0x8B8E}, {0x2206, 0xAD25},
-	{0x2206, 0x05F6}, {0x2206, 0x25E4}, {0x2206, 0x8B8E}, {0x2206, 0xE08B},
-	{0x2206, 0x8EAD}, {0x2206, 0x260B}, {0x2206, 0xF626}, {0x2206, 0xE48B},
-	{0x2206, 0x8E02}, {0x2206, 0x830D}, {0x2206, 0x021D}, {0x2206, 0x6BE0},
-	{0x2206, 0x8B8E}, {0x2206, 0xAD27}, {0x2206, 0x05F6}, {0x2206, 0x27E4},
-	{0x2206, 0x8B8E}, {0x2206, 0x0281}, {0x2206, 0x4402}, {0x2206, 0x045C},
-	{0x2206, 0xFC04}, {0x2206, 0xF8E0}, {0x2206, 0x8B83}, {0x2206, 0xAD23},
-	{0x2206, 0x30E0}, {0x2206, 0xE022}, {0x2206, 0xE1E0}, {0x2206, 0x2359},
-	{0x2206, 0x02E0}, {0x2206, 0x85EF}, {0x2206, 0xE585}, {0x2206, 0xEFAC},
-	{0x2206, 0x2907}, {0x2206, 0x1F01}, {0x2206, 0x9E51}, {0x2206, 0xAD29},
-	{0x2206, 0x20E0}, {0x2206, 0x8B83}, {0x2206, 0xAD21}, {0x2206, 0x06E1},
-	{0x2206, 0x8B84}, {0x2206, 0xAD28}, {0x2206, 0x42E0}, {0x2206, 0x8B85},
-	{0x2206, 0xAD21}, {0x2206, 0x06E1}, {0x2206, 0x8B84}, {0x2206, 0xAD29},
-	{0x2206, 0x36BF}, {0x2206, 0x34BF}, {0x2206, 0x022C}, {0x2206, 0x31AE},
-	{0x2206, 0x2EE0}, {0x2206, 0x8B83}, {0x2206, 0xAD21}, {0x2206, 0x10E0},
-	{0x2206, 0x8B84}, {0x2206, 0xF620}, {0x2206, 0xE48B}, {0x2206, 0x84EE},
-	{0x2206, 0x8ADA}, {0x2206, 0x00EE}, {0x2206, 0x8ADB}, {0x2206, 0x00E0},
-	{0x2206, 0x8B85}, {0x2206, 0xAD21}, {0x2206, 0x0CE0}, {0x2206, 0x8B84},
-	{0x2206, 0xF621}, {0x2206, 0xE48B}, {0x2206, 0x84EE}, {0x2206, 0x8B72},
-	{0x2206, 0xFFBF}, {0x2206, 0x34C2}, {0x2206, 0x022C}, {0x2206, 0x31FC},
-	{0x2206, 0x04F8}, {0x2206, 0xFAEF}, {0x2206, 0x69E0}, {0x2206, 0x8B85},
-	{0x2206, 0xAD21}, {0x2206, 0x42E0}, {0x2206, 0xE022}, {0x2206, 0xE1E0},
-	{0x2206, 0x2358}, {0x2206, 0xC059}, {0x2206, 0x021E}, {0x2206, 0x01E1},
-	{0x2206, 0x8B72}, {0x2206, 0x1F10}, {0x2206, 0x9E2F}, {0x2206, 0xE48B},
-	{0x2206, 0x72AD}, {0x2206, 0x2123}, {0x2206, 0xE18B}, {0x2206, 0x84F7},
-	{0x2206, 0x29E5}, {0x2206, 0x8B84}, {0x2206, 0xAC27}, {0x2206, 0x10AC},
-	{0x2206, 0x2605}, {0x2206, 0x0205}, {0x2206, 0x23AE}, {0x2206, 0x1602},
-	{0x2206, 0x0535}, {0x2206, 0x0282}, {0x2206, 0x30AE}, {0x2206, 0x0E02},
-	{0x2206, 0x056A}, {0x2206, 0x0282}, {0x2206, 0x75AE}, {0x2206, 0x0602},
-	{0x2206, 0x04DC}, {0x2206, 0x0282}, {0x2206, 0x04EF}, {0x2206, 0x96FE},
-	{0x2206, 0xFC04}, {0x2206, 0xF8F9}, {0x2206, 0xE08B}, {0x2206, 0x87AD},
-	{0x2206, 0x2321}, {0x2206, 0xE0EA}, {0x2206, 0x14E1}, {0x2206, 0xEA15},
-	{0x2206, 0xAD26}, {0x2206, 0x18F6}, {0x2206, 0x27E4}, {0x2206, 0xEA14},
-	{0x2206, 0xE5EA}, {0x2206, 0x15F6}, {0x2206, 0x26E4}, {0x2206, 0xEA14},
-	{0x2206, 0xE5EA}, {0x2206, 0x15F7}, {0x2206, 0x27E4}, {0x2206, 0xEA14},
-	{0x2206, 0xE5EA}, {0x2206, 0x15FD}, {0x2206, 0xFC04}, {0x2206, 0xF8F9},
-	{0x2206, 0xE08B}, {0x2206, 0x87AD}, {0x2206, 0x233A}, {0x2206, 0xAD22},
-	{0x2206, 0x37E0}, {0x2206, 0xE020}, {0x2206, 0xE1E0}, {0x2206, 0x21AC},
-	{0x2206, 0x212E}, {0x2206, 0xE0EA}, {0x2206, 0x14E1}, {0x2206, 0xEA15},
-	{0x2206, 0xF627}, {0x2206, 0xE4EA}, {0x2206, 0x14E5}, {0x2206, 0xEA15},
-	{0x2206, 0xE2EA}, {0x2206, 0x12E3}, {0x2206, 0xEA13}, {0x2206, 0x5A8F},
-	{0x2206, 0x6A20}, {0x2206, 0xE6EA}, {0x2206, 0x12E7}, {0x2206, 0xEA13},
-	{0x2206, 0xF726}, {0x2206, 0xE4EA}, {0x2206, 0x14E5}, {0x2206, 0xEA15},
-	{0x2206, 0xF727}, {0x2206, 0xE4EA}, {0x2206, 0x14E5}, {0x2206, 0xEA15},
-	{0x2206, 0xFDFC}, {0x2206, 0x04F8}, {0x2206, 0xF9E0}, {0x2206, 0x8B87},
-	{0x2206, 0xAD23}, {0x2206, 0x38AD}, {0x2206, 0x2135}, {0x2206, 0xE0E0},
-	{0x2206, 0x20E1}, {0x2206, 0xE021}, {0x2206, 0xAC21}, {0x2206, 0x2CE0},
-	{0x2206, 0xEA14}, {0x2206, 0xE1EA}, {0x2206, 0x15F6}, {0x2206, 0x27E4},
-	{0x2206, 0xEA14}, {0x2206, 0xE5EA}, {0x2206, 0x15E2}, {0x2206, 0xEA12},
-	{0x2206, 0xE3EA}, {0x2206, 0x135A}, {0x2206, 0x8FE6}, {0x2206, 0xEA12},
-	{0x2206, 0xE7EA}, {0x2206, 0x13F7}, {0x2206, 0x26E4}, {0x2206, 0xEA14},
-	{0x2206, 0xE5EA}, {0x2206, 0x15F7}, {0x2206, 0x27E4}, {0x2206, 0xEA14},
-	{0x2206, 0xE5EA}, {0x2206, 0x15FD}, {0x2206, 0xFC04}, {0x2206, 0xF8FA},
-	{0x2206, 0xEF69}, {0x2206, 0xE08B}, {0x2206, 0x86AD}, {0x2206, 0x2146},
-	{0x2206, 0xE0E0}, {0x2206, 0x22E1}, {0x2206, 0xE023}, {0x2206, 0x58C0},
-	{0x2206, 0x5902}, {0x2206, 0x1E01}, {0x2206, 0xE18B}, {0x2206, 0x651F},
-	{0x2206, 0x109E}, {0x2206, 0x33E4}, {0x2206, 0x8B65}, {0x2206, 0xAD21},
-	{0x2206, 0x22AD}, {0x2206, 0x272A}, {0x2206, 0xD400}, {0x2206, 0x01BF},
-	{0x2206, 0x34F2}, {0x2206, 0x022C}, {0x2206, 0xA2BF}, {0x2206, 0x34F5},
-	{0x2206, 0x022C}, {0x2206, 0xE0E0}, {0x2206, 0x8B67}, {0x2206, 0x1B10},
-	{0x2206, 0xAA14}, {0x2206, 0xE18B}, {0x2206, 0x660D}, {0x2206, 0x1459},
-	{0x2206, 0x0FAE}, {0x2206, 0x05E1}, {0x2206, 0x8B66}, {0x2206, 0x590F},
-	{0x2206, 0xBF85}, {0x2206, 0x6102}, {0x2206, 0x2CA2}, {0x2206, 0xEF96},
-	{0x2206, 0xFEFC}, {0x2206, 0x04F8}, {0x2206, 0xF9FA}, {0x2206, 0xFBEF},
-	{0x2206, 0x79E2}, {0x2206, 0x8AD2}, {0x2206, 0xAC19}, {0x2206, 0x2DE0},
-	{0x2206, 0xE036}, {0x2206, 0xE1E0}, {0x2206, 0x37EF}, {0x2206, 0x311F},
-	{0x2206, 0x325B}, {0x2206, 0x019E}, {0x2206, 0x1F7A}, {0x2206, 0x0159},
-	{0x2206, 0x019F}, {0x2206, 0x0ABF}, {0x2206, 0x348E}, {0x2206, 0x022C},
-	{0x2206, 0x31F6}, {0x2206, 0x06AE}, {0x2206, 0x0FF6}, {0x2206, 0x0302},
-	{0x2206, 0x0470}, {0x2206, 0xF703}, {0x2206, 0xF706}, {0x2206, 0xBF34},
-	{0x2206, 0x9302}, {0x2206, 0x2C31}, {0x2206, 0xAC1A}, {0x2206, 0x25E0},
-	{0x2206, 0xE022}, {0x2206, 0xE1E0}, {0x2206, 0x23EF}, {0x2206, 0x300D},
-	{0x2206, 0x311F}, {0x2206, 0x325B}, {0x2206, 0x029E}, {0x2206, 0x157A},
-	{0x2206, 0x0258}, {0x2206, 0xC4A0}, {0x2206, 0x0408}, {0x2206, 0xBF34},
-	{0x2206, 0x9E02}, {0x2206, 0x2C31}, {0x2206, 0xAE06}, {0x2206, 0xBF34},
-	{0x2206, 0x9C02}, {0x2206, 0x2C31}, {0x2206, 0xAC1B}, {0x2206, 0x4AE0},
-	{0x2206, 0xE012}, {0x2206, 0xE1E0}, {0x2206, 0x13EF}, {0x2206, 0x300D},
-	{0x2206, 0x331F}, {0x2206, 0x325B}, {0x2206, 0x1C9E}, {0x2206, 0x3AEF},
-	{0x2206, 0x325B}, {0x2206, 0x1C9F}, {0x2206, 0x09BF}, {0x2206, 0x3498},
-	{0x2206, 0x022C}, {0x2206, 0x3102}, {0x2206, 0x83C5}, {0x2206, 0x5A03},
-	{0x2206, 0x0D03}, {0x2206, 0x581C}, {0x2206, 0x1E20}, {0x2206, 0x0207},
-	{0x2206, 0xA0A0}, {0x2206, 0x000E}, {0x2206, 0x0284}, {0x2206, 0x17AD},
-	{0x2206, 0x1817}, {0x2206, 0xBF34}, {0x2206, 0x9A02}, {0x2206, 0x2C31},
-	{0x2206, 0xAE0F}, {0x2206, 0xBF34}, {0x2206, 0xC802}, {0x2206, 0x2C31},
-	{0x2206, 0xBF34}, {0x2206, 0xC502}, {0x2206, 0x2C31}, {0x2206, 0x0284},
-	{0x2206, 0x52E6}, {0x2206, 0x8AD2}, {0x2206, 0xEF97}, {0x2206, 0xFFFE},
-	{0x2206, 0xFDFC}, {0x2206, 0x04F8}, {0x2206, 0xBF34}, {0x2206, 0xDA02},
-	{0x2206, 0x2CE0}, {0x2206, 0xE58A}, {0x2206, 0xD3BF}, {0x2206, 0x34D4},
-	{0x2206, 0x022C}, {0x2206, 0xE00C}, {0x2206, 0x1159}, {0x2206, 0x02E0},
-	{0x2206, 0x8AD3}, {0x2206, 0x1E01}, {0x2206, 0xE48A}, {0x2206, 0xD3D1},
-	{0x2206, 0x00BF}, {0x2206, 0x34DA}, {0x2206, 0x022C}, {0x2206, 0xA2D1},
-	{0x2206, 0x01BF}, {0x2206, 0x34D4}, {0x2206, 0x022C}, {0x2206, 0xA2BF},
-	{0x2206, 0x34CB}, {0x2206, 0x022C}, {0x2206, 0xE0E5}, {0x2206, 0x8ACE},
-	{0x2206, 0xBF85}, {0x2206, 0x6702}, {0x2206, 0x2CE0}, {0x2206, 0xE58A},
-	{0x2206, 0xCFBF}, {0x2206, 0x8564}, {0x2206, 0x022C}, {0x2206, 0xE0E5},
-	{0x2206, 0x8AD0}, {0x2206, 0xBF85}, {0x2206, 0x6A02}, {0x2206, 0x2CE0},
-	{0x2206, 0xE58A}, {0x2206, 0xD1FC}, {0x2206, 0x04F8}, {0x2206, 0xE18A},
-	{0x2206, 0xD1BF}, {0x2206, 0x856A}, {0x2206, 0x022C}, {0x2206, 0xA2E1},
-	{0x2206, 0x8AD0}, {0x2206, 0xBF85}, {0x2206, 0x6402}, {0x2206, 0x2CA2},
-	{0x2206, 0xE18A}, {0x2206, 0xCFBF}, {0x2206, 0x8567}, {0x2206, 0x022C},
-	{0x2206, 0xA2E1}, {0x2206, 0x8ACE}, {0x2206, 0xBF34}, {0x2206, 0xCB02},
-	{0x2206, 0x2CA2}, {0x2206, 0xE18A}, {0x2206, 0xD3BF}, {0x2206, 0x34DA},
-	{0x2206, 0x022C}, {0x2206, 0xA2E1}, {0x2206, 0x8AD3}, {0x2206, 0x0D11},
-	{0x2206, 0xBF34}, {0x2206, 0xD402}, {0x2206, 0x2CA2}, {0x2206, 0xFC04},
-	{0x2206, 0xF9A0}, {0x2206, 0x0405}, {0x2206, 0xE38A}, {0x2206, 0xD4AE},
-	{0x2206, 0x13A0}, {0x2206, 0x0805}, {0x2206, 0xE38A}, {0x2206, 0xD5AE},
-	{0x2206, 0x0BA0}, {0x2206, 0x0C05}, {0x2206, 0xE38A}, {0x2206, 0xD6AE},
-	{0x2206, 0x03E3}, {0x2206, 0x8AD7}, {0x2206, 0xEF13}, {0x2206, 0xBF34},
-	{0x2206, 0xCB02}, {0x2206, 0x2CA2}, {0x2206, 0xEF13}, {0x2206, 0x0D11},
-	{0x2206, 0xBF85}, {0x2206, 0x6702}, {0x2206, 0x2CA2}, {0x2206, 0xEF13},
-	{0x2206, 0x0D14}, {0x2206, 0xBF85}, {0x2206, 0x6402}, {0x2206, 0x2CA2},
-	{0x2206, 0xEF13}, {0x2206, 0x0D17}, {0x2206, 0xBF85}, {0x2206, 0x6A02},
-	{0x2206, 0x2CA2}, {0x2206, 0xFD04}, {0x2206, 0xF8E0}, {0x2206, 0x8B85},
-	{0x2206, 0xAD27}, {0x2206, 0x2DE0}, {0x2206, 0xE036}, {0x2206, 0xE1E0},
-	{0x2206, 0x37E1}, {0x2206, 0x8B73}, {0x2206, 0x1F10}, {0x2206, 0x9E20},
-	{0x2206, 0xE48B}, {0x2206, 0x73AC}, {0x2206, 0x200B}, {0x2206, 0xAC21},
-	{0x2206, 0x0DAC}, {0x2206, 0x250F}, {0x2206, 0xAC27}, {0x2206, 0x0EAE},
-	{0x2206, 0x0F02}, {0x2206, 0x84CC}, {0x2206, 0xAE0A}, {0x2206, 0x0284},
-	{0x2206, 0xD1AE}, {0x2206, 0x05AE}, {0x2206, 0x0302}, {0x2206, 0x84D8},
-	{0x2206, 0xFC04}, {0x2206, 0xEE8B}, {0x2206, 0x6800}, {0x2206, 0x0402},
-	{0x2206, 0x84E5}, {0x2206, 0x0285}, {0x2206, 0x2804}, {0x2206, 0x0285},
-	{0x2206, 0x4904}, {0x2206, 0xEE8B}, {0x2206, 0x6800}, {0x2206, 0xEE8B},
-	{0x2206, 0x6902}, {0x2206, 0x04F8}, {0x2206, 0xF9E0}, {0x2206, 0x8B85},
-	{0x2206, 0xAD26}, {0x2206, 0x38D0}, {0x2206, 0x0B02}, {0x2206, 0x2B4D},
-	{0x2206, 0x5882}, {0x2206, 0x7882}, {0x2206, 0x9F2D}, {0x2206, 0xE08B},
-	{0x2206, 0x68E1}, {0x2206, 0x8B69}, {0x2206, 0x1F10}, {0x2206, 0x9EC8},
-	{0x2206, 0x10E4}, {0x2206, 0x8B68}, {0x2206, 0xE0E0}, {0x2206, 0x00E1},
-	{0x2206, 0xE001}, {0x2206, 0xF727}, {0x2206, 0xE4E0}, {0x2206, 0x00E5},
-	{0x2206, 0xE001}, {0x2206, 0xE2E0}, {0x2206, 0x20E3}, {0x2206, 0xE021},
-	{0x2206, 0xAD30}, {0x2206, 0xF7F6}, {0x2206, 0x27E4}, {0x2206, 0xE000},
-	{0x2206, 0xE5E0}, {0x2206, 0x01FD}, {0x2206, 0xFC04}, {0x2206, 0xF8FA},
-	{0x2206, 0xEF69}, {0x2206, 0xE08B}, {0x2206, 0x86AD}, {0x2206, 0x2212},
-	{0x2206, 0xE0E0}, {0x2206, 0x14E1}, {0x2206, 0xE015}, {0x2206, 0xAD26},
-	{0x2206, 0x9CE1}, {0x2206, 0x85E0}, {0x2206, 0xBF85}, {0x2206, 0x6D02},
-	{0x2206, 0x2CA2}, {0x2206, 0xEF96}, {0x2206, 0xFEFC}, {0x2206, 0x04F8},
-	{0x2206, 0xFAEF}, {0x2206, 0x69E0}, {0x2206, 0x8B86}, {0x2206, 0xAD22},
-	{0x2206, 0x09E1}, {0x2206, 0x85E1}, {0x2206, 0xBF85}, {0x2206, 0x6D02},
-	{0x2206, 0x2CA2}, {0x2206, 0xEF96}, {0x2206, 0xFEFC}, {0x2206, 0x0464},
-	{0x2206, 0xE48C}, {0x2206, 0xFDE4}, {0x2206, 0x80CA}, {0x2206, 0xE480},
-	{0x2206, 0x66E0}, {0x2206, 0x8E70}, {0x2206, 0xE076}, {0x2205, 0xE142},
-	{0x2206, 0x0701}, {0x2205, 0xE140}, {0x2206, 0x0405}, {0x220F, 0x0000},
-	{0x221F, 0x0000}, {0x2200, 0x1340}, {0x133E, 0x000E}, {0x133F, 0x0010},
-	{0x13EB, 0x11BB}
-};
-
-static const struct rtl8367b_initval rtl8367r_vb_initvals_1[] = {
+static const struct rtl8367b_initval rtl8367b_initvals[] = {
 	{0x1B03, 0x0876}, {0x1200, 0x7FC4}, {0x1305, 0xC000}, {0x121E, 0x03CA},
 	{0x1233, 0x0352}, {0x1234, 0x0064}, {0x1237, 0x0096}, {0x1238, 0x0078},
 	{0x1239, 0x0084}, {0x123A, 0x0030}, {0x205F, 0x0002}, {0x2059, 0x1A00},
@@ -730,38 +551,27 @@ static int rtl8367b_write_phy_reg(struct rtl8366_smi *smi,
 static int rtl8367b_init_regs(struct rtl8366_smi *smi)
 {
 	const struct rtl8367b_initval *initvals;
-	u32 chip_num;
-	u32 chip_ver;
-	u32 rlvid;
 	int count;
-	int err;
 
-	REG_WR(smi, RTL8367B_RTL_MAGIC_ID_REG, RTL8367B_RTL_MAGIC_ID_VAL);
-	REG_RD(smi, RTL8367B_CHIP_NUMBER_REG, &chip_num);
-	REG_RD(smi, RTL8367B_CHIP_VER_REG, &chip_ver);
-
-	if ((chip_ver ==  0x0020 || chip_ver == 0x00A0) && chip_num == 0x6367)  {
+	switch (smi->rtl8367b_chip) {
+	case RTL8367B_CHIP_RTL8367RB:
+	case RTL8367B_CHIP_RTL8367R_VB:
+		initvals = rtl8367b_initvals;
+		count = ARRAY_SIZE(rtl8367b_initvals);
+		break;
+	case RTL8367B_CHIP_RTL8367RB_VB:
+	case RTL8367B_CHIP_RTL8367S:
+	case RTL8367B_CHIP_RTL8367S_VB:
 		initvals = rtl8367c_initvals;
 		count = ARRAY_SIZE(rtl8367c_initvals);
-	} else {
-		rlvid = (chip_ver >> RTL8367B_CHIP_VER_RLVID_SHIFT) &
-			RTL8367B_CHIP_VER_RLVID_MASK;
-		switch (rlvid) {
-		case 0:
-			initvals = rtl8367r_vb_initvals_0;
-			count = ARRAY_SIZE(rtl8367r_vb_initvals_0);
-			break;
-		case 1:
-			initvals = rtl8367r_vb_initvals_1;
-			count = ARRAY_SIZE(rtl8367r_vb_initvals_1);
-			break;
-		default:
-			dev_err(smi->parent, "unknow rlvid %u\n", rlvid);
-			return -ENODEV;
+		if ((smi->rtl8367b_chip == RTL8367B_CHIP_RTL8367S_VB) && (smi->emu_vlanmc == NULL)) {
+			smi->emu_vlanmc = kzalloc(sizeof(struct rtl8366_vlan_mc) * smi->num_vlan_mc, GFP_KERNEL);
+			dev_info(smi->parent, "alloc vlan mc emulator");
 		}
+		break;
+	default:
+		return -ENODEV;
 	}
-
-	/* TODO: disable RLTP */
 
 	return rtl8367b_write_initvals(smi, initvals, count);
 }
@@ -795,6 +605,7 @@ static int rtl8367b_extif_set_mode(struct rtl8366_smi *smi, int id,
 				   enum rtl8367_extif_mode mode)
 {
 	int err;
+	u32 data;
 
 	/* set port mode */
 	switch (mode) {
@@ -814,6 +625,15 @@ static int rtl8367b_extif_set_mode(struct rtl8366_smi *smi, int id,
 					RTL8367B_DEBUG1_DP_MASK(id),
 				(7 << RTL8367B_DEBUG1_DN_SHIFT(id)) |
 					(7 << RTL8367B_DEBUG1_DP_SHIFT(id)));
+			if ((smi->rtl8367b_chip == RTL8367B_CHIP_RTL8367S_VB) && (id == 1)) {
+				REG_RMW(smi, RTL8367D_REG_EXT_TXC_DLY, RTL8367D_EXT1_RGMII_TX_DLY_MASK, 0);
+				/* Configure RGMII/MII mux to port 7 if UTP_PORT4 is not RGMII mode */
+				REG_RD(smi, RTL8367D_REG_TOP_CON0, &data);
+				data &= RTL8367D_MAC4_SEL_EXT1_MASK;
+				if (data == 0)
+					REG_RMW(smi, RTL8367D_REG_TOP_CON0, RTL8367D_MAC7_SEL_EXT1_MASK, RTL8367D_MAC7_SEL_EXT1_MASK);
+				REG_RMW(smi, RTL8367D_REG_SDS1_MISC0, RTL8367D_SDS1_MODE_MASK, RTL8367D_PORT_SDS_MODE_DISABLE);
+			}
 		} else {
 			REG_RMW(smi, RTL8367B_CHIP_DEBUG2_REG,
 				RTL8367B_DEBUG2_DRI_EXT2 |
@@ -872,23 +692,31 @@ static int rtl8367b_extif_set_force(struct rtl8366_smi *smi, int id,
 	u32 val;
 	int err;
 
-	mask = (RTL8367B_DI_FORCE_MODE |
-		RTL8367B_DI_FORCE_NWAY |
-		RTL8367B_DI_FORCE_TXPAUSE |
-		RTL8367B_DI_FORCE_RXPAUSE |
-		RTL8367B_DI_FORCE_LINK |
-		RTL8367B_DI_FORCE_DUPLEX |
-		RTL8367B_DI_FORCE_SPEED_MASK);
-
-	val = pa->speed;
-	val |= pa->force_mode ? RTL8367B_DI_FORCE_MODE : 0;
+	val = pa->speed & RTL8367B_DI_FORCE_SPEED_MASK;
 	val |= pa->nway ? RTL8367B_DI_FORCE_NWAY : 0;
 	val |= pa->txpause ? RTL8367B_DI_FORCE_TXPAUSE : 0;
 	val |= pa->rxpause ? RTL8367B_DI_FORCE_RXPAUSE : 0;
 	val |= pa->link ? RTL8367B_DI_FORCE_LINK : 0;
 	val |= pa->duplex ? RTL8367B_DI_FORCE_DUPLEX : 0;
 
-	REG_RMW(smi, RTL8367B_DI_FORCE_REG(id), mask, val);
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) { /* Family D */
+		val |= (pa->speed << RTL8367D_PORT_STATUS_SPEED1_SHIFT) & RTL8367D_PORT_STATUS_SPEED1_MASK;
+		if (smi->cpu_port != UINT_MAX) {
+			REG_WR(smi, RTL8367D_REG_MAC0_FORCE_SELECT + smi->cpu_port, val);
+			REG_WR(smi, RTL8367D_REG_MAC0_FORCE_SELECT_EN + smi->cpu_port, pa->force_mode ? 0xffff : 0x0000);
+		}
+	} else {
+		val |= pa->force_mode ? RTL8367B_DI_FORCE_MODE : 0;
+		mask = (RTL8367B_DI_FORCE_MODE |
+			RTL8367B_DI_FORCE_NWAY |
+			RTL8367B_DI_FORCE_TXPAUSE |
+			RTL8367B_DI_FORCE_RXPAUSE |
+			RTL8367B_DI_FORCE_LINK |
+			RTL8367B_DI_FORCE_DUPLEX |
+			RTL8367B_DI_FORCE_SPEED_MASK);
+
+		REG_RMW(smi, RTL8367B_DI_FORCE_REG(id), mask, val);
+	}
 
 	return 0;
 }
@@ -939,21 +767,56 @@ static int rtl8367b_extif_init(struct rtl8366_smi *smi, int id,
 }
 
 #ifdef CONFIG_OF
-static int rtl8367b_extif_init_of(struct rtl8366_smi *smi, int id,
+static int rtl8367b_extif_init_of(struct rtl8366_smi *smi,
 				  const char *name)
 {
 	struct rtl8367_extif_config *cfg;
 	const __be32 *prop;
 	int size;
 	int err;
+	unsigned cpu_port;
+	unsigned id = UINT_MAX;
 
 	prop = of_get_property(smi->parent->of_node, name, &size);
-	if (!prop)
-		return rtl8367b_extif_init(smi, id, NULL);
+	if (!prop || (size != (10 * sizeof(*prop)))) {
+		dev_err(smi->parent, "%s property is not defined or invalid\n", name);
+		err = -EINVAL;
+		goto err_init;
+	}
 
-	if (size != (9 * sizeof(*prop))) {
-		dev_err(smi->parent, "%s property is invalid\n", name);
-		return -EINVAL;
+	cpu_port = be32_to_cpup(prop++);
+	switch (cpu_port) {
+	case RTL8367B_CPU_PORT_NUM:
+	case RTL8367B_CPU_PORT_NUM + 1:
+	case RTL8367B_CPU_PORT_NUM + 2:
+		if (smi->rtl8367b_chip == RTL8367B_CHIP_RTL8367R_VB) { /* for the RTL8367R-VB chip, cpu_port 5 corresponds to extif1 */
+			if (cpu_port == RTL8367B_CPU_PORT_NUM)
+				id = 1;
+			else {
+				dev_err(smi->parent, "wrong cpu_port %u in %s property\n", cpu_port, name);
+				err = -EINVAL;
+				goto err_init;
+			}
+		} else if (smi->rtl8367b_chip == RTL8367B_CHIP_RTL8367S_VB) { /* for the RTL8367S-VB chip, cpu_port 7 corresponds to extif1, cpu_port 6 corresponds to extif0 */
+			if (cpu_port != RTL8367B_CPU_PORT_NUM) {
+				id = cpu_port - RTL8367B_CPU_PORT_NUM - 1;
+			} else {
+				dev_err(smi->parent, "wrong cpu_port %u in %s property\n", cpu_port, name);
+				err = -EINVAL;
+				goto err_init;
+			}
+		} else {
+			id = cpu_port - RTL8367B_CPU_PORT_NUM;
+		}
+		if (smi->cpu_port == UINT_MAX) {
+			dev_info(smi->parent, "cpu_port:%u, assigned to extif%u\n", cpu_port, id);
+			smi->cpu_port = cpu_port;
+		}
+		break;
+	default:
+		dev_err(smi->parent, "wrong cpu_port %u in %s property\n", cpu_port, name);
+		err = -EINVAL;
+		goto err_init;
 	}
 
 	cfg = kzalloc(sizeof(struct rtl8367_extif_config), GFP_KERNEL);
@@ -973,10 +836,15 @@ static int rtl8367b_extif_init_of(struct rtl8366_smi *smi, int id,
 	err = rtl8367b_extif_init(smi, id, cfg);
 	kfree(cfg);
 
+err_init:
+	if (id != 0) rtl8367b_extif_init(smi, 0, NULL);
+	if (id != 1) rtl8367b_extif_init(smi, 1, NULL);
+	if (id != 2) rtl8367b_extif_init(smi, 2, NULL);
+
 	return err;
 }
 #else
-static int rtl8367b_extif_init_of(struct rtl8366_smi *smi, int id,
+static int rtl8367b_extif_init_of(struct rtl8366_smi *smi,
 				  const char *name)
 {
 	return -EINVAL;
@@ -997,15 +865,7 @@ static int rtl8367b_setup(struct rtl8366_smi *smi)
 
 	/* initialize external interfaces */
 	if (smi->parent->of_node) {
-		err = rtl8367b_extif_init_of(smi, 0, "realtek,extif0");
-		if (err)
-			return err;
-
-		err = rtl8367b_extif_init_of(smi, 1, "realtek,extif1");
-		if (err)
-			return err;
-
-		err = rtl8367b_extif_init_of(smi, 2, "realtek,extif2");
+		err = rtl8367b_extif_init_of(smi, "realtek,extif");
 		if (err)
 			return err;
 	} else {
@@ -1115,8 +975,12 @@ static int rtl8367b_get_vlan_4k(struct rtl8366_smi *smi, u32 vid,
 			 RTL8367B_TA_VLAN0_MEMBER_MASK;
 	vlan4k->untag = (data[0] >> RTL8367B_TA_VLAN0_UNTAG_SHIFT) &
 			RTL8367B_TA_VLAN0_UNTAG_MASK;
-	vlan4k->fid = (data[1] >> RTL8367B_TA_VLAN1_FID_SHIFT) &
-		      RTL8367B_TA_VLAN1_FID_MASK;
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) /* Family D */
+		vlan4k->fid = (data[1] >> RTL8367D_TA_VLAN1_FID_SHIFT) &
+				RTL8367D_TA_VLAN1_FID_MASK;
+	else
+		vlan4k->fid = (data[1] >> RTL8367B_TA_VLAN1_FID_SHIFT) &
+				RTL8367B_TA_VLAN1_FID_MASK;
 
 	return 0;
 }
@@ -1131,7 +995,7 @@ static int rtl8367b_set_vlan_4k(struct rtl8366_smi *smi,
 	if (vlan4k->vid >= RTL8367B_NUM_VIDS ||
 	    vlan4k->member > RTL8367B_TA_VLAN0_MEMBER_MASK ||
 	    vlan4k->untag > RTL8367B_UNTAG_MASK ||
-	    vlan4k->fid > RTL8367B_FIDMAX)
+	    vlan4k->fid > ((smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) ? RTL8367D_FIDMAX : RTL8367B_FIDMAX))
 		return -EINVAL;
 
 	memset(data, 0, sizeof(data));
@@ -1140,15 +1004,24 @@ static int rtl8367b_set_vlan_4k(struct rtl8366_smi *smi,
 		  RTL8367B_TA_VLAN0_MEMBER_SHIFT;
 	data[0] |= (vlan4k->untag & RTL8367B_TA_VLAN0_UNTAG_MASK) <<
 		   RTL8367B_TA_VLAN0_UNTAG_SHIFT;
-	data[1] = (vlan4k->fid & RTL8367B_TA_VLAN1_FID_MASK) <<
-		  RTL8367B_TA_VLAN1_FID_SHIFT;
+
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) /* Family D */
+		data[1] = ((vlan4k->fid & RTL8367D_TA_VLAN1_FID_MASK) <<
+			   RTL8367D_TA_VLAN1_FID_SHIFT) | 12; /* ivl_svl - BIT(3), svlan_chek_ivl_svl - BIT(2) */
+	else
+		data[1] = (vlan4k->fid & RTL8367B_TA_VLAN1_FID_MASK) <<
+			   RTL8367B_TA_VLAN1_FID_SHIFT;
 
 	for (i = 0; i < ARRAY_SIZE(data); i++)
 		REG_WR(smi, RTL8367B_TA_WRDATA_REG(i), data[i]);
 
 	/* write VID */
-	REG_WR(smi, RTL8367B_TA_ADDR_REG,
-	       vlan4k->vid & RTL8367B_TA_VLAN_VID_MASK);
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) /* Family D */
+		REG_WR(smi, RTL8367B_TA_ADDR_REG,
+		       vlan4k->vid & RTL8367D_TA_VLAN_VID_MASK);
+	else
+		REG_WR(smi, RTL8367B_TA_ADDR_REG,
+		       vlan4k->vid & RTL8367B_TA_VLAN_VID_MASK);
 
 	/* write table access control word */
 	REG_WR(smi, RTL8367B_TA_CTRL_REG, RTL8367B_TA_CTRL_CVLAN_WRITE);
@@ -1167,6 +1040,14 @@ static int rtl8367b_get_vlan_mc(struct rtl8366_smi *smi, u32 index,
 
 	if (index >= RTL8367B_NUM_VLANS)
 		return -EINVAL;
+
+	if (smi->emu_vlanmc) { /* use vlan mc emulation */
+		vlanmc->vid = smi->emu_vlanmc[index].vid;
+		vlanmc->member = smi->emu_vlanmc[index].member;
+		vlanmc->fid = smi->emu_vlanmc[index].fid;
+		vlanmc->untag = smi->emu_vlanmc[index].untag;
+		return 0;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(data); i++)
 		REG_RD(smi, RTL8367B_VLAN_MC_BASE(index) + i, &data[i]);
@@ -1193,8 +1074,16 @@ static int rtl8367b_set_vlan_mc(struct rtl8366_smi *smi, u32 index,
 	    vlanmc->priority > RTL8367B_PRIORITYMAX ||
 	    vlanmc->member > RTL8367B_VLAN_MC0_MEMBER_MASK ||
 	    vlanmc->untag > RTL8367B_UNTAG_MASK ||
-	    vlanmc->fid > RTL8367B_FIDMAX)
+	    vlanmc->fid > ((smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) ? RTL8367D_FIDMAX : RTL8367B_FIDMAX))
 		return -EINVAL;
+
+	if (smi->emu_vlanmc) { /* use vlanmc emulation */
+		smi->emu_vlanmc[index].vid = vlanmc->vid;
+		smi->emu_vlanmc[index].member = vlanmc->member;
+		smi->emu_vlanmc[index].fid = vlanmc->fid;
+		smi->emu_vlanmc[index].untag = vlanmc->untag;
+		return 0;
+	}
 
 	data[0] = (vlanmc->member & RTL8367B_VLAN_MC0_MEMBER_MASK) <<
 		  RTL8367B_VLAN_MC0_MEMBER_SHIFT;
@@ -1218,10 +1107,41 @@ static int rtl8367b_get_mc_index(struct rtl8366_smi *smi, int port, int *val)
 	if (port >= RTL8367B_NUM_PORTS)
 		return -EINVAL;
 
-	REG_RD(smi, RTL8367B_VLAN_PVID_CTRL_REG(port), &data);
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) { /* Family D */
+		int i;
+		struct rtl8366_vlan_mc vlanmc;
 
-	*val = (data >> RTL8367B_VLAN_PVID_CTRL_SHIFT(port)) &
-	       RTL8367B_VLAN_PVID_CTRL_MASK;
+		err = rtl8366_smi_read_reg(smi, RTL8367D_VLAN_PVID_CTRL_REG(port), &data);
+
+		if (err) {
+			dev_err(smi->parent, "read pvid register 0x%04x fail", RTL8367D_VLAN_PVID_CTRL_REG(port));
+			return err;
+		}
+
+		data &= RTL8367D_VLAN_PVID_CTRL_MASK;
+		for (i = 0; i < smi->num_vlan_mc; i++) {
+			err = rtl8367b_get_vlan_mc(smi, i, &vlanmc);
+
+			if (err) {
+				dev_err(smi->parent, "get vlan mc index %d fail", i);
+				return err;
+			}
+
+			if (data == vlanmc.vid) break;
+		}
+
+		if (i < smi->num_vlan_mc) {
+			*val = i;
+		} else {
+			dev_err(smi->parent, "vlan mc index for pvid %d not found", data);
+			return -EINVAL;
+		}
+	} else {
+		REG_RD(smi, RTL8367B_VLAN_PVID_CTRL_REG(port), &data);
+
+		*val = (data >> RTL8367B_VLAN_PVID_CTRL_SHIFT(port)) &
+			RTL8367B_VLAN_PVID_CTRL_MASK;
+	}
 
 	return 0;
 }
@@ -1231,7 +1151,28 @@ static int rtl8367b_set_mc_index(struct rtl8366_smi *smi, int port, int index)
 	if (port >= RTL8367B_NUM_PORTS || index >= RTL8367B_NUM_VLANS)
 		return -EINVAL;
 
-	return rtl8366_smi_rmwr(smi, RTL8367B_VLAN_PVID_CTRL_REG(port),
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) { /* Family D */
+		int pvid, err;
+		struct rtl8366_vlan_mc vlanmc;
+
+		err = rtl8367b_get_vlan_mc(smi, index, &vlanmc);
+
+		if (err) {
+			dev_err(smi->parent, "get vlan mc index %d fail", index);
+			return err;
+		}
+
+		pvid = vlanmc.vid & RTL8367D_VLAN_PVID_CTRL_MASK;
+		err = rtl8366_smi_write_reg(smi, RTL8367D_VLAN_PVID_CTRL_REG(port), pvid);
+
+		if (err) {
+			dev_err(smi->parent, "set port %d pvid %d fail", port, pvid);
+			return err;
+		}
+
+		return 0;
+	} else
+		return rtl8366_smi_rmwr(smi, RTL8367B_VLAN_PVID_CTRL_REG(port),
 				RTL8367B_VLAN_PVID_CTRL_MASK <<
 					RTL8367B_VLAN_PVID_CTRL_SHIFT(port),
 				(index & RTL8367B_VLAN_PVID_CTRL_MASK) <<
@@ -1294,7 +1235,10 @@ static int rtl8367b_sw_get_port_link(struct switch_dev *dev,
 	if (port >= RTL8367B_NUM_PORTS)
 		return -EINVAL;
 
-	rtl8366_smi_read_reg(smi, RTL8367B_PORT_STATUS_REG(port), &data);
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) /* Family D */
+		rtl8366_smi_read_reg(smi, RTL8367D_PORT_STATUS_REG(port), &data);
+	else
+		rtl8366_smi_read_reg(smi, RTL8367B_PORT_STATUS_REG(port), &data);
 
 	link->link = !!(data & RTL8367B_PORT_STATUS_LINK);
 	if (!link->link)
@@ -1305,15 +1249,18 @@ static int rtl8367b_sw_get_port_link(struct switch_dev *dev,
 	link->tx_flow = !!(data & RTL8367B_PORT_STATUS_TXPAUSE);
 	link->aneg = !!(data & RTL8367B_PORT_STATUS_NWAY);
 
-	speed = (data & RTL8367B_PORT_STATUS_SPEED_MASK);
+	if (smi->rtl8367b_chip >= RTL8367B_CHIP_RTL8367S_VB) /* Family D */
+		speed = (data & RTL8367B_PORT_STATUS_SPEED_MASK) | ((data & RTL8367D_PORT_STATUS_SPEED1_MASK) >> RTL8367D_PORT_STATUS_SPEED1_SHIFT);
+	else
+		speed = (data & RTL8367B_PORT_STATUS_SPEED_MASK);
 	switch (speed) {
-	case 0:
+	case RTL8367B_PORT_STATUS_SPEED_10:
 		link->speed = SWITCH_PORT_SPEED_10;
 		break;
-	case 1:
+	case RTL8367B_PORT_STATUS_SPEED_100:
 		link->speed = SWITCH_PORT_SPEED_100;
 		break;
-	case 2:
+	case RTL8367B_PORT_STATUS_SPEED_1000:
 		link->speed = SWITCH_PORT_SPEED_1000;
 		break;
 	default:
@@ -1530,10 +1477,11 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 	const char *chip_name = NULL;
 	u32 chip_num;
 	u32 chip_ver;
-	u32 chip_mode;
 	int ret;
 
-	/* TODO: improve chip detection */
+	smi->emu_vlanmc = NULL;
+	smi->rtl8367b_chip = RTL8367B_CHIP_UNKNOWN;
+
 	rtl8366_smi_write_reg(smi, RTL8367B_RTL_MAGIC_ID_REG,
 			      RTL8367B_RTL_MAGIC_ID_VAL);
 
@@ -1551,44 +1499,42 @@ static int rtl8367b_detect(struct rtl8366_smi *smi)
 		return ret;
 	}
 
-	ret = rtl8366_smi_read_reg(smi, RTL8367B_CHIP_MODE_REG, &chip_mode);
-	if (ret) {
-		dev_err(smi->parent, "unable to read %s register\n",
-			"chip mode");
-		return ret;
-	}
-
 	switch (chip_ver) {
+	case 0x0010:
+		if (chip_num == 0x6642) {
+			chip_name = "8367S-VB";
+			smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367S_VB;
+		}
+		break;
 	case 0x0020:
-		if (chip_num == 0x6367)
+		if (chip_num == 0x6367) {
 			chip_name = "8367RB-VB";
+			smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367RB_VB;
+		}
 		break;
 	case 0x00A0:
-		if (chip_num == 0x6367)
+		if (chip_num == 0x6367) {
 			chip_name = "8367S";
+			smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367S;
+		}
 		break;
 	case 0x1000:
 		chip_name = "8367RB";
+		smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367RB;
 		break;
 	case 0x1010:
 		chip_name = "8367R-VB";
+		smi->rtl8367b_chip = RTL8367B_CHIP_RTL8367R_VB;
 	}
 
 	if (!chip_name) {
 		dev_err(smi->parent,
-			"unknown chip num:%04x ver:%04x, mode:%04x\n",
-			chip_num, chip_ver, chip_mode);
+			"unknown chip (num:%04x ver:%04x)\n",
+			chip_num, chip_ver);
 		return -ENODEV;
 	}
 
-	dev_info(smi->parent, "RTL%s chip found\n", chip_name);
-
-	if (of_property_present(smi->parent->of_node, "realtek,extif2"))
-		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 2;
-	else if (of_property_present(smi->parent->of_node, "realtek,extif1") && (chip_ver != 0x1010)) /* for the RTL8367R-VB chip, extif1 corresponds to cpu_port 5 */ 
-		smi->cpu_port = RTL8367B_CPU_PORT_NUM + 1;
-
-	dev_info(smi->parent, "CPU port: %u\n", smi->cpu_port);
+	dev_info(smi->parent, "RTL%s chip found (num:%04x ver:%04x)\n", chip_name, chip_num, chip_ver);
 
 	return 0;
 }
@@ -1628,7 +1574,7 @@ static int  rtl8367b_probe(struct platform_device *pdev)
 	smi->cmd_write = 0xb8;
 	smi->ops = &rtl8367b_smi_ops;
 	smi->num_ports = RTL8367B_NUM_PORTS;
-	smi->cpu_port = RTL8367B_CPU_PORT_NUM;
+	smi->cpu_port = UINT_MAX; /* not defined yet */
 	smi->num_vlan_mc = RTL8367B_NUM_VLANS;
 	smi->mib_counters = rtl8367b_mib_counters;
 	smi->num_mib_counters = ARRAY_SIZE(rtl8367b_mib_counters);
@@ -1649,11 +1595,17 @@ static int  rtl8367b_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	rtl8366_smi_cleanup(smi);
  err_free_smi:
+	if (smi->emu_vlanmc)
+		kfree(smi->emu_vlanmc);
 	kfree(smi);
 	return err;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,11,0)
 static int rtl8367b_remove(struct platform_device *pdev)
+#else
+static void rtl8367b_remove(struct platform_device *pdev)
+#endif
 {
 	struct rtl8366_smi *smi = platform_get_drvdata(pdev);
 
@@ -1664,7 +1616,9 @@ static int rtl8367b_remove(struct platform_device *pdev)
 		kfree(smi);
 	}
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,11,0)
 	return 0;
+#endif
 }
 
 static void rtl8367b_shutdown(struct platform_device *pdev)

@@ -1,0 +1,164 @@
+From d890c6d602307c9297df12c7d0287f9ffd26208b Mon Sep 17 00:00:00 2001
+From: Sriram R <srirrama@codeaurora.org>
+Date: Wed, 12 May 2021 19:21:09 +0530
+Subject: [PATCH] ath11k: poll reo status ring for IPQ5018
+
+Currently reo status interrupts are not received
+due to wrong mapping of the reo status interrupt
+line in IPQ5018.
+
+Hence, until the mapping is resolved in HW, use
+polling to reap the reo status ring. Rather than
+a period timer to reap the ring, the timer is
+triggered only on sending a reo command with
+status request.
+
+Without proper reaping of the ring, backpressure
+and ring full issues are seen in multi client test
+setups which leads to flooding the console with
+error messages reporting failure to send reo cmds.
+
+Can be reverted once HW solution is available.
+
+Signed-off-by: Sriram R <srirrama@codeaurora.org>
+---
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -701,6 +701,7 @@ static struct ath11k_hw_params ath11k_hw
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
+ 		.support_fw_mac_sequence = false,
++		.reo_status_poll = true,
+ 	},
+ 	{
+ 		.name = "qca2066 hw2.1",
+--- a/drivers/net/wireless/ath/ath11k/dp.c
++++ b/drivers/net/wireless/ath/ath11k/dp.c
+@@ -347,12 +347,66 @@ void ath11k_dp_stop_shadow_timers(struct
+ 	ath11k_dp_shadow_stop_timer(ab, &ab->dp.reo_cmd_timer);
+ }
+ 
++static void ath11k_dp_handle_reo_status_timer(struct timer_list *timer)
++{
++	struct ath11k_dp *dp = from_timer(dp, timer, reo_status_timer);
++	struct ath11k_base *ab = dp->ab;
++
++	spin_lock_bh(&dp->reo_cmd_lock);
++	dp->reo_status_timer_running = false;
++	spin_unlock_bh(&dp->reo_cmd_lock);
++
++	ath11k_dp_process_reo_status(ab);
++}
++
++void ath11k_dp_start_reo_status_timer(struct ath11k_base *ab)
++{
++	struct ath11k_dp *dp = &ab->dp;
++
++	if (!ab->hw_params.reo_status_poll)
++		return;
++
++	spin_lock_bh(&dp->reo_cmd_lock);
++	if (dp->reo_status_timer_running) {
++		spin_unlock_bh(&dp->reo_cmd_lock);
++		return;
++	}
++	dp->reo_status_timer_running = true;
++	spin_unlock_bh(&dp->reo_cmd_lock);
++
++	mod_timer(&dp->reo_status_timer, jiffies +
++		  msecs_to_jiffies(ATH11K_REO_STATUS_POLL_TIMEOUT_MS));
++}
++
++static void ath11k_dp_stop_reo_status_timer(struct ath11k_base *ab)
++{
++	struct ath11k_dp *dp = &ab->dp;
++
++	if (!ab->hw_params.reo_status_poll)
++		return;
++
++	del_timer_sync(&dp->reo_status_timer);
++	dp->reo_status_timer_running = false;
++}
++
++static void ath11k_dp_init_reo_status_timer(struct ath11k_base *ab)
++{
++	struct ath11k_dp *dp = &ab->dp;
++
++	if (!ab->hw_params.reo_status_poll)
++		return;
++
++	timer_setup(&dp->reo_status_timer,
++		    ath11k_dp_handle_reo_status_timer, 0);
++}
++
+ static void ath11k_dp_srng_common_cleanup(struct ath11k_base *ab)
+ {
+ 	struct ath11k_dp *dp = &ab->dp;
+ 	int i;
+ 
+ 	ath11k_dp_stop_shadow_timers(ab);
++	ath11k_dp_stop_reo_status_timer(ab);
+ 	ath11k_dp_srng_cleanup(ab, &dp->wbm_desc_rel_ring);
+ 	ath11k_dp_srng_cleanup(ab, &dp->tcl_cmd_ring);
+ 	ath11k_dp_srng_cleanup(ab, &dp->tcl_status_ring);
+@@ -374,6 +428,8 @@ static int ath11k_dp_srng_common_setup(s
+ 	int i, ret;
+ 	u8 tcl_num, wbm_num;
+ 
++	ath11k_dp_init_reo_status_timer(ab);
++
+ 	ret = ath11k_dp_srng_setup(ab, &dp->wbm_desc_rel_ring,
+ 				   HAL_SW2WBM_RELEASE, 0, 0,
+ 				   DP_WBM_RELEASE_RING_SIZE);
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -44,6 +44,8 @@ struct dp_rx_tid {
+ #define DP_MON_PURGE_TIMEOUT_MS     100
+ #define DP_MON_SERVICE_BUDGET       128
+ 
++#define ATH11K_REO_STATUS_POLL_TIMEOUT_MS 10
++
+ struct dp_reo_cache_flush_elem {
+ 	struct list_head list;
+ 	struct dp_rx_tid data;
+@@ -286,6 +288,10 @@ struct ath11k_dp {
+ 	spinlock_t reo_cmd_lock;
+ 	struct ath11k_hp_update_timer reo_cmd_timer;
+ 	struct ath11k_hp_update_timer tx_ring_timer[DP_TCL_NUM_RING_MAX];
++
++	/* reo status timer and flags */
++	struct timer_list reo_status_timer;
++	bool reo_status_timer_running;
+ };
+ 
+ /* HTT definitions */
+@@ -1712,5 +1718,6 @@ void ath11k_dp_shadow_init_timer(struct
+ 				 struct ath11k_hp_update_timer *update_timer,
+ 				 u32 interval, u32 ring_id);
+ void ath11k_dp_stop_shadow_timers(struct ath11k_base *ab);
++void ath11k_dp_start_reo_status_timer(struct ath11k_base *ab);
+ 
+ #endif
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -779,6 +779,10 @@ int ath11k_dp_tx_send_reo_cmd(struct ath
+ 	if (cmd_num == 0)
+ 		return -EINVAL;
+ 
++	/* Trigger reo status polling if required */
++	if (cmd->flag & HAL_REO_CMD_FLG_NEED_STATUS)
++		ath11k_dp_start_reo_status_timer(ab);
++
+ 	if (!cb)
+ 		return 0;
+ 
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -231,6 +231,7 @@ struct ath11k_hw_params {
+ 	u32 tx_ring_size;
+ 	bool smp2p_wow_exit;
+ 	bool support_fw_mac_sequence;
++	bool reo_status_poll;
+ };
+ 
+ struct ath11k_hw_ops {

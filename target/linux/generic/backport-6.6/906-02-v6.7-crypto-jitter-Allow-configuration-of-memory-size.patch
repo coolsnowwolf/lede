@@ -1,0 +1,159 @@
+From 59bcfd788552504606e3eb774ae68052379396b6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Stephan=20M=C3=BCller?= <smueller@chronox.de>
+Date: Thu, 21 Sep 2023 13:48:33 +0200
+Subject: [PATCH] crypto: jitter - Allow configuration of memory size
+
+The memory size consumed by the Jitter RNG is one contributing factor in
+the amount of entropy that is gathered. As the amount of entropy
+directly correlates with the distance of the memory from the CPU, the
+caches that are possibly present on a given system have an impact on the
+collected entropy.
+
+Thus, the kernel compile time should offer a means to configure the
+amount of memory used by the Jitter RNG. Although this option could be
+turned into a runtime option (e.g. a kernel command line option), it
+should remain a compile time option as otherwise adminsitrators who may
+not have performed an entropy assessment may select a value that is
+inappropriate.
+
+The default value selected by the configuration is identical to the
+current Jitter RNG value. Thus, the patch should not lead to any change
+in the Jitter RNG behavior.
+
+To accommodate larger memory buffers, kvzalloc / kvfree is used.
+
+Signed-off-by: Stephan Mueller <smueller@chronox.de>
+Signed-off-by: Herbert Xu <herbert@gondor.apana.org.au>
+---
+ crypto/Kconfig               | 43 ++++++++++++++++++++++++++++++++++++
+ crypto/jitterentropy-kcapi.c | 11 +++++++++
+ crypto/jitterentropy.c       | 16 ++++++++------
+ crypto/jitterentropy.h       |  2 ++
+ 4 files changed, 65 insertions(+), 7 deletions(-)
+
+--- a/crypto/Kconfig
++++ b/crypto/Kconfig
+@@ -1297,6 +1297,49 @@ config CRYPTO_JITTERENTROPY
+ 
+ 	  See https://www.chronox.de/jent/
+ 
++choice
++	prompt "CPU Jitter RNG Memory Size"
++	default CRYPTO_JITTERENTROPY_MEMSIZE_2
++	depends on CRYPTO_JITTERENTROPY
++	help
++	  The Jitter RNG measures the execution time of memory accesses.
++	  Multiple consecutive memory accesses are performed. If the memory
++	  size fits into a cache (e.g. L1), only the memory access timing
++	  to that cache is measured. The closer the cache is to the CPU
++	  the less variations are measured and thus the less entropy is
++	  obtained. Thus, if the memory size fits into the L1 cache, the
++	  obtained entropy is less than if the memory size fits within
++	  L1 + L2, which in turn is less if the memory fits into
++	  L1 + L2 + L3. Thus, by selecting a different memory size,
++	  the entropy rate produced by the Jitter RNG can be modified.
++
++	config CRYPTO_JITTERENTROPY_MEMSIZE_2
++		bool "2048 Bytes (default)"
++
++	config CRYPTO_JITTERENTROPY_MEMSIZE_128
++		bool "128 kBytes"
++
++	config CRYPTO_JITTERENTROPY_MEMSIZE_1024
++		bool "1024 kBytes"
++
++	config CRYPTO_JITTERENTROPY_MEMSIZE_8192
++		bool "8192 kBytes"
++endchoice
++
++config CRYPTO_JITTERENTROPY_MEMORY_BLOCKS
++	int
++	default 64 if CRYPTO_JITTERENTROPY_MEMSIZE_2
++	default 512 if CRYPTO_JITTERENTROPY_MEMSIZE_128
++	default 1024 if CRYPTO_JITTERENTROPY_MEMSIZE_1024
++	default 4096 if CRYPTO_JITTERENTROPY_MEMSIZE_8192
++
++config CRYPTO_JITTERENTROPY_MEMORY_BLOCKSIZE
++	int
++	default 32 if CRYPTO_JITTERENTROPY_MEMSIZE_2
++	default 256 if CRYPTO_JITTERENTROPY_MEMSIZE_128
++	default 1024 if CRYPTO_JITTERENTROPY_MEMSIZE_1024
++	default 2048 if CRYPTO_JITTERENTROPY_MEMSIZE_8192
++
+ config CRYPTO_JITTERENTROPY_TESTINTERFACE
+ 	bool "CPU Jitter RNG Test Interface"
+ 	depends on CRYPTO_JITTERENTROPY
+--- a/crypto/jitterentropy-kcapi.c
++++ b/crypto/jitterentropy-kcapi.c
+@@ -54,6 +54,17 @@
+  * Helper function
+  ***************************************************************************/
+ 
++void *jent_kvzalloc(unsigned int len)
++{
++	return kvzalloc(len, GFP_KERNEL);
++}
++
++void jent_kvzfree(void *ptr, unsigned int len)
++{
++	memzero_explicit(ptr, len);
++	kvfree(ptr);
++}
++
+ void *jent_zalloc(unsigned int len)
+ {
+ 	return kzalloc(len, GFP_KERNEL);
+--- a/crypto/jitterentropy.c
++++ b/crypto/jitterentropy.c
+@@ -75,10 +75,10 @@ struct rand_data {
+ 
+ 	unsigned int flags;		/* Flags used to initialize */
+ 	unsigned int osr;		/* Oversample rate */
+-#define JENT_MEMORY_BLOCKS 64
+-#define JENT_MEMORY_BLOCKSIZE 32
+ #define JENT_MEMORY_ACCESSLOOPS 128
+-#define JENT_MEMORY_SIZE (JENT_MEMORY_BLOCKS*JENT_MEMORY_BLOCKSIZE)
++#define JENT_MEMORY_SIZE						\
++	(CONFIG_CRYPTO_JITTERENTROPY_MEMORY_BLOCKS *			\
++	 CONFIG_CRYPTO_JITTERENTROPY_MEMORY_BLOCKSIZE)
+ 	unsigned char *mem;	/* Memory access location with size of
+ 				 * memblocks * memblocksize */
+ 	unsigned int memlocation; /* Pointer to byte in *mem */
+@@ -650,13 +650,15 @@ struct rand_data *jent_entropy_collector
+ 		/* Allocate memory for adding variations based on memory
+ 		 * access
+ 		 */
+-		entropy_collector->mem = jent_zalloc(JENT_MEMORY_SIZE);
++		entropy_collector->mem = jent_kvzalloc(JENT_MEMORY_SIZE);
+ 		if (!entropy_collector->mem) {
+ 			jent_zfree(entropy_collector);
+ 			return NULL;
+ 		}
+-		entropy_collector->memblocksize = JENT_MEMORY_BLOCKSIZE;
+-		entropy_collector->memblocks = JENT_MEMORY_BLOCKS;
++		entropy_collector->memblocksize =
++			CONFIG_CRYPTO_JITTERENTROPY_MEMORY_BLOCKSIZE;
++		entropy_collector->memblocks =
++			CONFIG_CRYPTO_JITTERENTROPY_MEMORY_BLOCKS;
+ 		entropy_collector->memaccessloops = JENT_MEMORY_ACCESSLOOPS;
+ 	}
+ 
+@@ -679,7 +681,7 @@ struct rand_data *jent_entropy_collector
+ 
+ void jent_entropy_collector_free(struct rand_data *entropy_collector)
+ {
+-	jent_zfree(entropy_collector->mem);
++	jent_kvzfree(entropy_collector->mem, JENT_MEMORY_SIZE);
+ 	entropy_collector->mem = NULL;
+ 	jent_zfree(entropy_collector);
+ }
+--- a/crypto/jitterentropy.h
++++ b/crypto/jitterentropy.h
+@@ -1,5 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0-or-later
+ 
++extern void *jent_kvzalloc(unsigned int len);
++extern void jent_kvzfree(void *ptr, unsigned int len);
+ extern void *jent_zalloc(unsigned int len);
+ extern void jent_zfree(void *ptr);
+ extern void jent_get_nstime(__u64 *out);

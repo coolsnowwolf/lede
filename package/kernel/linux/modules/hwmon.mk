@@ -133,7 +133,7 @@ define KernelPackage/hwmon-gsc
 	$(LINUX_DIR)/drivers/mfd/gateworks-gsc.ko \
 	$(LINUX_DIR)/drivers/hwmon/gsc-hwmon.ko
   AUTOLOAD:=$(call AutoLoad,20,gsc-hwmon,1)
-  $(call AddDepends/hwmon,@!LINUX_5_4 +kmod-i2c-core)
+  $(call AddDepends/hwmon,@!LINUX_5_4 +kmod-i2c-core +kmod-mfd)
 endef
 
 define KernelPackage/hwmon-gsc/description
@@ -406,7 +406,7 @@ define KernelPackage/hwmon-max6697
   KCONFIG:=CONFIG_SENSORS_MAX6697
   FILES:=$(LINUX_DIR)/drivers/hwmon/max6697.ko
   AUTOLOAD:=$(call AutoProbe,max6697)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
+  $(call AddDepends/hwmon,+kmod-i2c-core +!LINUX_6_6:kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-max6697/description

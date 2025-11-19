@@ -6,13 +6,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=opensbi
-PKG_RELEASE:=1.2
+PKG_RELEASE:=1.6
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=https://github.com/riscv/opensbi
-PKG_SOURCE_DATE:=2022-12-24
-PKG_SOURCE_VERSION:=6b5188ca14e59ce7bf71afe4e7d3d557c3d31bf8
-PKG_MIRROR_HASH:=edcdd99da6c62975171981c0aa2b73a27091067da11ccd49816b5ad27d000858
+PKG_SOURCE_DATE:=2024-12-24
+PKG_SOURCE_VERSION:=bd613dd92113f683052acfb23d9dc8ba60029e0a
+PKG_MIRROR_HASH:=7897ee3c77c7d205278cbb87eabc92056ea73d3ea45ca974cf3500ef33399d96
 
 PKG_BUILD_DIR=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_VERSION)
 
@@ -29,7 +29,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/opensbi
     SECTION:=boot
     CATEGORY:=Boot Loaders
-    DEPENDS:=@TARGET_sifiveu
+    DEPENDS:=@(TARGET_sifiveu||TARGET_allwinner)
     URL:=https://github.com/riscv/opensbi/blob/master/README.md
     VARIANT:=$(subst _,/,$(subst opensbi_,,$(1)))
     TITLE:=OpenSBI generic

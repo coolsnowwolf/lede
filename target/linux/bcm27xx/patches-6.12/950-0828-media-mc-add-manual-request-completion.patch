@@ -1,0 +1,160 @@
+From 7901e052d6b4f1efb99458e00cce87e5379f0eb4 Mon Sep 17 00:00:00 2001
+From: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+Date: Thu, 29 Aug 2024 12:55:37 +0200
+Subject: [PATCH] media: mc: add manual request completion
+
+By default when the last request object is completed, the whole
+request completes as well.
+
+But sometimes you want to manually complete a request in a driver,
+so add a manual complete mode for this.
+
+In req_queue the driver marks the request for manual completion by
+calling media_request_mark_manual_completion, and when the driver
+wants to manually complete the request it calls
+media_request_manual_complete().
+
+Signed-off-by: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+---
+ drivers/media/mc/mc-request.c | 38 +++++++++++++++++++++++++++++++++--
+ include/media/media-request.h | 36 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 71 insertions(+), 3 deletions(-)
+
+--- a/drivers/media/mc/mc-request.c
++++ b/drivers/media/mc/mc-request.c
+@@ -54,6 +54,7 @@ static void media_request_clean(struct m
+ 	req->access_count = 0;
+ 	WARN_ON(req->num_incomplete_objects);
+ 	req->num_incomplete_objects = 0;
++	req->manual_completion = false;
+ 	wake_up_interruptible_all(&req->poll_wait);
+ }
+ 
+@@ -319,6 +320,7 @@ int media_request_alloc(struct media_dev
+ 	req->mdev = mdev;
+ 	req->state = MEDIA_REQUEST_STATE_IDLE;
+ 	req->num_incomplete_objects = 0;
++	req->manual_completion = false;
+ 	kref_init(&req->kref);
+ 	INIT_LIST_HEAD(&req->objects);
+ 	spin_lock_init(&req->lock);
+@@ -465,7 +467,7 @@ void media_request_object_unbind(struct
+ 
+ 	req->num_incomplete_objects--;
+ 	if (req->state == MEDIA_REQUEST_STATE_QUEUED &&
+-	    !req->num_incomplete_objects) {
++	    !req->num_incomplete_objects && !req->manual_completion) {
+ 		req->state = MEDIA_REQUEST_STATE_COMPLETE;
+ 		completed = true;
+ 		wake_up_interruptible_all(&req->poll_wait);
+@@ -494,7 +496,7 @@ void media_request_object_complete(struc
+ 	    WARN_ON(req->state != MEDIA_REQUEST_STATE_QUEUED))
+ 		goto unlock;
+ 
+-	if (!--req->num_incomplete_objects) {
++	if (!--req->num_incomplete_objects && !req->manual_completion) {
+ 		req->state = MEDIA_REQUEST_STATE_COMPLETE;
+ 		wake_up_interruptible_all(&req->poll_wait);
+ 		completed = true;
+@@ -505,3 +507,35 @@ unlock:
+ 		media_request_put(req);
+ }
+ EXPORT_SYMBOL_GPL(media_request_object_complete);
++
++void media_request_manual_complete(struct media_request *req)
++{
++	unsigned long flags;
++	bool completed = false;
++
++	if (WARN_ON(!req))
++		return;
++	if (WARN_ON(!req->manual_completion))
++		return;
++
++	spin_lock_irqsave(&req->lock, flags);
++	if (WARN_ON(req->state != MEDIA_REQUEST_STATE_QUEUED))
++		goto unlock;
++
++	req->manual_completion = false;
++	/*
++	 * It is expected that all other objects in this request are
++	 * completed when this function is called. WARN if that is
++	 * not the case.
++	 */
++	if (!WARN_ON(req->num_incomplete_objects)) {
++		req->state = MEDIA_REQUEST_STATE_COMPLETE;
++		wake_up_interruptible_all(&req->poll_wait);
++		completed = true;
++	}
++unlock:
++	spin_unlock_irqrestore(&req->lock, flags);
++	if (completed)
++		media_request_put(req);
++}
++EXPORT_SYMBOL_GPL(media_request_manual_complete);
+--- a/include/media/media-request.h
++++ b/include/media/media-request.h
+@@ -56,6 +56,10 @@ struct media_request_object;
+  * @access_count: count the number of request accesses that are in progress
+  * @objects: List of @struct media_request_object request objects
+  * @num_incomplete_objects: The number of incomplete objects in the request
++ * @manual_completion: if true, then the request won't be marked as completed
++ * when @num_incomplete_objects reaches 0. Call media_request_manual_complete()
++ * to set this field to false and complete the request
++ * if @num_incomplete_objects == 0.
+  * @poll_wait: Wait queue for poll
+  * @lock: Serializes access to this struct
+  */
+@@ -68,6 +72,7 @@ struct media_request {
+ 	unsigned int access_count;
+ 	struct list_head objects;
+ 	unsigned int num_incomplete_objects;
++	bool manual_completion;
+ 	wait_queue_head_t poll_wait;
+ 	spinlock_t lock;
+ };
+@@ -218,6 +223,35 @@ media_request_get_by_fd(struct media_dev
+ int media_request_alloc(struct media_device *mdev,
+ 			int *alloc_fd);
+ 
++/**
++ * media_request_mark_manual_completion - Set manual_completion to true
++ *
++ * @req: The request
++ *
++ * Mark that the request has to be manually completed by calling
++ * media_request_manual_complete().
++ *
++ * This function should be called in the req_queue callback.
++ */
++static inline void
++media_request_mark_manual_completion(struct media_request *req)
++{
++	req->manual_completion = true;
++}
++
++/**
++ * media_request_manual_complete - Set manual_completion to false
++ *
++ * @req: The request
++ *
++ * Set @manual_completion to false, and if @num_incomplete_objects
++ * is 0, then mark the request as completed.
++ *
++ * If there are still incomplete objects in the request, then
++ * WARN for that since that suggests a driver error.
++ */
++void media_request_manual_complete(struct media_request *req);
++
+ #else
+ 
+ static inline void media_request_get(struct media_request *req)
+@@ -336,7 +370,7 @@ void media_request_object_init(struct me
+  * @req: The media request
+  * @ops: The object ops for this object
+  * @priv: A driver-specific priv pointer associated with this object
+- * @is_buffer: Set to true if the object a buffer object.
++ * @is_buffer: Set to true if the object is a buffer object.
+  * @obj: The object
+  *
+  * Bind this object to the request and set the ops and priv values of

@@ -1,0 +1,159 @@
+From 47d5895edf01f25c4aadecc48ad08f957599f348 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <mripard@kernel.org>
+Date: Fri, 25 Oct 2024 18:15:42 +0100
+Subject: [PATCH] drm/vc4: crtc: Add support for BCM2712 PixelValves
+
+The PixelValves found on the BCM2712 are similar to the ones found in
+the previous generation.
+
+Compared to BCM2711:
+- the pixelvalves only drive one HDMI controller each
+- HDMI1 PixelValve has a FIFO long enough to support 4k at 60Hz
+- support has been added for odd horizontal timings whilst at 2pixels/clock
+
+Signed-off-by: Maxime Ripard <mripard@kernel.org>
+Link: https://patchwork.freedesktop.org/patch/msgid/20241025-drm-vc4-2712-support-v2-11-35efa83c8fc0@raspberrypi.com
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c | 49 ++++++++++++++++++++++++++++++++--
+ drivers/gpu/drm/vc4/vc4_drv.h  |  2 ++
+ drivers/gpu/drm/vc4/vc4_regs.h |  6 +++++
+ 3 files changed, 55 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -240,6 +240,11 @@ static u32 vc4_get_fifo_full_level(struc
+ 	const struct vc4_crtc_data *crtc_data = vc4_crtc_to_vc4_crtc_data(vc4_crtc);
+ 	const struct vc4_pv_data *pv_data = vc4_crtc_to_vc4_pv_data(vc4_crtc);
+ 	struct vc4_dev *vc4 = to_vc4_dev(vc4_crtc->base.dev);
++
++	/*
++	 * NOTE: Could we use register 0x68 (PV_HW_CFG1) to get the FIFO
++	 * size?
++	 */
+ 	u32 fifo_len_bytes = pv_data->fifo_depth;
+ 
+ 	/*
+@@ -421,6 +426,7 @@ static void vc4_crtc_config_pv(struct dr
+ 		 */
+ 		CRTC_WRITE(PV_V_CONTROL,
+ 			   PV_VCONTROL_CONTINUOUS |
++			   (vc4->gen >= VC4_GEN_6_C ? PV_VCONTROL_ODD_TIMING : 0) |
+ 			   (is_dsi ? PV_VCONTROL_DSI : 0) |
+ 			   PV_VCONTROL_INTERLACE |
+ 			   (odd_field_first
+@@ -432,6 +438,7 @@ static void vc4_crtc_config_pv(struct dr
+ 	} else {
+ 		CRTC_WRITE(PV_V_CONTROL,
+ 			   PV_VCONTROL_CONTINUOUS |
++			   (vc4->gen >= VC4_GEN_6_C ? PV_VCONTROL_ODD_TIMING : 0) |
+ 			   (is_dsi ? PV_VCONTROL_DSI : 0));
+ 		CRTC_WRITE(PV_VSYNCD_EVEN, 0);
+ 	}
+@@ -446,11 +453,17 @@ static void vc4_crtc_config_pv(struct dr
+ 	if (is_dsi)
+ 		CRTC_WRITE(PV_HACT_ACT, mode->hdisplay * pixel_rep);
+ 
+-	if (vc4->gen == VC4_GEN_5)
++	if (vc4->gen >= VC4_GEN_5)
+ 		CRTC_WRITE(PV_MUX_CFG,
+ 			   VC4_SET_FIELD(PV_MUX_CFG_RGB_PIXEL_MUX_MODE_NO_SWAP,
+ 					 PV_MUX_CFG_RGB_PIXEL_MUX_MODE));
+ 
++	if (vc4->gen >= VC4_GEN_6_C)
++		CRTC_WRITE(PV_PIPE_INIT_CTRL,
++			   VC4_SET_FIELD(1, PV_PIPE_INIT_CTRL_PV_INIT_WIDTH) |
++			   VC4_SET_FIELD(1, PV_PIPE_INIT_CTRL_PV_INIT_IDLE) |
++			   PV_PIPE_INIT_CTRL_PV_INIT_EN);
++
+ 	CRTC_WRITE(PV_CONTROL, PV_CONTROL_FIFO_CLR |
+ 		   vc4_crtc_get_fifo_full_level_bits(vc4_crtc, format) |
+ 		   VC4_SET_FIELD(format, PV_CONTROL_FORMAT) |
+@@ -549,7 +562,11 @@ int vc4_crtc_disable_at_boot(struct drm_
+ 	if (!(of_device_is_compatible(vc4_crtc->pdev->dev.of_node,
+ 				      "brcm,bcm2711-pixelvalve2") ||
+ 	      of_device_is_compatible(vc4_crtc->pdev->dev.of_node,
+-				      "brcm,bcm2711-pixelvalve4")))
++				      "brcm,bcm2711-pixelvalve4") ||
++	      of_device_is_compatible(vc4_crtc->pdev->dev.of_node,
++				      "brcm,bcm2712-pixelvalve0") ||
++	      of_device_is_compatible(vc4_crtc->pdev->dev.of_node,
++				      "brcm,bcm2712-pixelvalve1")))
+ 		return 0;
+ 
+ 	if (!(CRTC_READ(PV_CONTROL) & PV_CONTROL_EN))
+@@ -1292,6 +1309,32 @@ const struct vc4_pv_data bcm2711_pv4_dat
+ 	},
+ };
+ 
++const struct vc4_pv_data bcm2712_pv0_data = {
++	.base = {
++		.debugfs_name = "crtc0_regs",
++		.hvs_available_channels = BIT(0),
++		.hvs_output = 0,
++	},
++	.fifo_depth = 64,
++	.pixels_per_clock = 1,
++	.encoder_types = {
++		[0] = VC4_ENCODER_TYPE_HDMI0,
++	},
++};
++
++const struct vc4_pv_data bcm2712_pv1_data = {
++	.base = {
++		.debugfs_name = "crtc1_regs",
++		.hvs_available_channels = BIT(1),
++		.hvs_output = 1,
++	},
++	.fifo_depth = 64,
++	.pixels_per_clock = 1,
++	.encoder_types = {
++		[0] = VC4_ENCODER_TYPE_HDMI1,
++	},
++};
++
+ static const struct of_device_id vc4_crtc_dt_match[] = {
+ 	{ .compatible = "brcm,bcm2835-pixelvalve0", .data = &bcm2835_pv0_data },
+ 	{ .compatible = "brcm,bcm2835-pixelvalve1", .data = &bcm2835_pv1_data },
+@@ -1301,6 +1344,8 @@ static const struct of_device_id vc4_crt
+ 	{ .compatible = "brcm,bcm2711-pixelvalve2", .data = &bcm2711_pv2_data },
+ 	{ .compatible = "brcm,bcm2711-pixelvalve3", .data = &bcm2711_pv3_data },
+ 	{ .compatible = "brcm,bcm2711-pixelvalve4", .data = &bcm2711_pv4_data },
++	{ .compatible = "brcm,bcm2712-pixelvalve0", .data = &bcm2712_pv0_data },
++	{ .compatible = "brcm,bcm2712-pixelvalve1", .data = &bcm2712_pv1_data },
+ 	{}
+ };
+ 
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -558,6 +558,8 @@ extern const struct vc4_pv_data bcm2711_
+ extern const struct vc4_pv_data bcm2711_pv2_data;
+ extern const struct vc4_pv_data bcm2711_pv3_data;
+ extern const struct vc4_pv_data bcm2711_pv4_data;
++extern const struct vc4_pv_data bcm2712_pv0_data;
++extern const struct vc4_pv_data bcm2712_pv1_data;
+ 
+ struct vc4_crtc {
+ 	struct drm_crtc base;
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -155,6 +155,7 @@
+ # define PV_CONTROL_EN				BIT(0)
+ 
+ #define PV_V_CONTROL				0x04
++# define PV_VCONTROL_ODD_TIMING			BIT(29)
+ # define PV_VCONTROL_ODD_DELAY_MASK		VC4_MASK(22, 6)
+ # define PV_VCONTROL_ODD_DELAY_SHIFT		6
+ # define PV_VCONTROL_ODD_FIRST			BIT(5)
+@@ -215,6 +216,11 @@
+ # define PV_MUX_CFG_RGB_PIXEL_MUX_MODE_SHIFT	2
+ # define PV_MUX_CFG_RGB_PIXEL_MUX_MODE_NO_SWAP	8
+ 
++#define PV_PIPE_INIT_CTRL			0x94
++# define PV_PIPE_INIT_CTRL_PV_INIT_WIDTH_MASK	VC4_MASK(11, 8)
++# define PV_PIPE_INIT_CTRL_PV_INIT_IDLE_MASK	VC4_MASK(7, 4)
++# define PV_PIPE_INIT_CTRL_PV_INIT_EN		BIT(0)
++
+ #define SCALER_CHANNELS_COUNT			3
+ 
+ #define SCALER_DISPCTRL                         0x00000000

@@ -4,10 +4,10 @@ PKG_NAME:=qca-nss-drv
 PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2023-08-06
+PKG_SOURCE_DATE:=2024-11-13
 PKG_SOURCE_URL:=https://git.codelinaro.org/clo/qsdk/oss/lklm/nss-drv.git
-PKG_SOURCE_VERSION:=1ab184034529539f61093184a67d4454cb3eb352
-PKG_MIRROR_HASH:=6aa081c0853d3e3b6d78eee588a0967e540b2317d15aef3c3f6f7129925653f7
+PKG_SOURCE_VERSION:=d5ee67bd84d1ee7ed81eb6758e62a6db5a0cf4c7
+PKG_MIRROR_HASH:=72ebdbce21b5cc24131100f8e45dfcb8188a5963c5864ee497129278f022b740
 
 PKG_BUILD_PARALLEL:=1
 PKG_FLAGS:=nonshared
@@ -101,6 +101,9 @@ ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq807x")
 else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq60xx")
     SOC="ipq60xx_64"
 	subtarget:=$(CONFIG_TARGET_SUBTARGET)
+else ifeq ($(CONFIG_TARGET_SUBTARGET), "ipq50xx")
+    SOC="ipq50xx_64"
+	subtarget:=$(CONFIG_TARGET_SUBTARGET)
 endif
 
 define Build/InstallDev
@@ -117,6 +120,7 @@ EXTRA_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-nss-gmac \
 			   -I$(STAGING_DIR)/usr/include/qca-nss-dp \
 			   -I$(STAGING_DIR)/usr/include/qca-ssdk \
 			   -Wno-unused-variable \
+			   -Wno-error=enum-conversion \
 			   -Wno-error=unused-function
 
 ifeq ($(BOARD),qualcommax)

@@ -90,6 +90,13 @@ network_get_prefix6() {
 	__network_ifstatus "$1" "$2" "['ipv6-prefix'][0]['address','mask']" "/"
 }
 
+# determine first IPv6 prefix assignment of given logical interface
+# 1: destination variable
+# 2: interface
+network_get_prefix_assignment6() {
+	__network_ifstatus "$1" "$2" "['ipv6-prefix-assignment'][0]['address','mask']" "/"
+}
+
 # determine all IPv4 addresses of given logical interface
 # 1: destination variable
 # 2: interface
@@ -185,6 +192,13 @@ network_get_subnets6() {
 # 2: interface
 network_get_prefixes6() {
 	__network_ifstatus "$1" "$2" "['ipv6-prefix'][*]['address','mask']" "/ "
+}
+
+# determine all IPv6 prefix assignments of given logical interface
+# 1: destination variable
+# 2: interface
+network_get_prefix_assignments6() {
+	__network_ifstatus "$1" "$2" "['ipv6-prefix-assignment'][*]['address','mask']" "/ "
 }
 
 # determine IPv4 gateway of given logical interface

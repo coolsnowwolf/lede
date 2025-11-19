@@ -1,0 +1,218 @@
+From 3c6c32951e292a51ede70b8087bb0308d7dbc4fc Mon Sep 17 00:00:00 2001
+From: Alan Modra <amodra@gmail.com>
+Date: Thu, 28 Mar 2024 20:33:32 +1030
+Subject: [PATCH 2/2] PR 30569, delete _bfd_mips_elf_early_size_sections
+
+PR30569 was triggered by a patch of mine 6540edd52cc0 moving the call
+to always_size_sections in bfd_elf_size_dynamic_sections earlier, made
+to support the x86 DT_RELR implementation.  This broke mips16 code
+handling stubs when --export-dynamic is passed to the linker, because
+numerous symbols then became dynamic after always_size_sections.  The
+mips backend fiddles with symbols in its always_size_sections.  Maciej
+in 902e9fc76a0e had moved the call to always_size_sections to after
+the export-dynamic code.  Prior to that, Nathan in 04c3a75556c0 moved
+it before the exec stack code, back to the start of
+bfd_elf_size_dynamic_sections which was where Ian put it originally
+in ff12f303355b.  So the call has moved around a little.  I'm leaving
+it where it is, and instead calling mips_elf_check_symbols from
+late_size_sections (the old size_dynamic_sections) which is now always
+called.  In fact, the whole of _bfd_mips_elf_early_size_sections can
+be merged into _bfd_mips_elf_late_size_sections.
+---
+ bfd/elf32-mips.c  |  1 -
+ bfd/elf64-mips.c  |  2 --
+ bfd/elfn32-mips.c |  1 -
+ bfd/elfxx-mips.c  | 84 +++++++++++++++++++----------------------------
+ bfd/elfxx-mips.h  |  2 --
+ 5 files changed, 34 insertions(+), 56 deletions(-)
+
+--- a/bfd/elf32-mips.c
++++ b/bfd/elf32-mips.c
+@@ -2525,7 +2525,6 @@ static const struct ecoff_debug_swap mip
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 					_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_early_size_sections	_bfd_mips_elf_early_size_sections
+ #define elf_backend_late_size_sections	_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	_bfd_mips_elf_relocate_section
+--- a/bfd/elf64-mips.c
++++ b/bfd/elf64-mips.c
+@@ -4739,8 +4739,6 @@ const struct elf_size_info mips_elf64_si
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 				_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_early_size_sections \
+-				_bfd_mips_elf_early_size_sections
+ #define elf_backend_late_size_sections \
+ 				_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+--- a/bfd/elfn32-mips.c
++++ b/bfd/elfn32-mips.c
+@@ -4125,7 +4125,6 @@ static const struct ecoff_debug_swap mip
+ #define elf_backend_get_target_dtag	_bfd_mips_elf_get_target_dtag
+ #define elf_backend_adjust_dynamic_symbol \
+ 					_bfd_mips_elf_adjust_dynamic_symbol
+-#define elf_backend_early_size_sections	_bfd_mips_elf_early_size_sections
+ #define elf_backend_late_size_sections	_bfd_mips_elf_late_size_sections
+ #define elf_backend_init_index_section	_bfd_elf_init_1_index_section
+ #define elf_backend_relocate_section	_bfd_mips_elf_relocate_section
+--- a/bfd/elfxx-mips.c
++++ b/bfd/elfxx-mips.c
+@@ -9554,48 +9554,6 @@ _bfd_mips_elf_adjust_dynamic_symbol (str
+   return _bfd_elf_adjust_dynamic_copy (info, h, s);
+ }
+ 
+-/* This function is called after all the input files have been read,
+-   and the input sections have been assigned to output sections.  We
+-   check for any mips16 stub sections that we can discard.  */
+-
+-bool
+-_bfd_mips_elf_early_size_sections (bfd *output_bfd,
+-				   struct bfd_link_info *info)
+-{
+-  asection *sect;
+-  struct mips_elf_link_hash_table *htab;
+-  struct mips_htab_traverse_info hti;
+-
+-  htab = mips_elf_hash_table (info);
+-  BFD_ASSERT (htab != NULL);
+-
+-  /* The .reginfo section has a fixed size.  */
+-  sect = bfd_get_section_by_name (output_bfd, ".reginfo");
+-  if (sect != NULL)
+-    {
+-      bfd_set_section_size (sect, sizeof (Elf32_External_RegInfo));
+-      sect->flags |= SEC_FIXED_SIZE | SEC_HAS_CONTENTS;
+-    }
+-
+-  /* The .MIPS.abiflags section has a fixed size.  */
+-  sect = bfd_get_section_by_name (output_bfd, ".MIPS.abiflags");
+-  if (sect != NULL)
+-    {
+-      bfd_set_section_size (sect, sizeof (Elf_External_ABIFlags_v0));
+-      sect->flags |= SEC_FIXED_SIZE | SEC_HAS_CONTENTS;
+-    }
+-
+-  hti.info = info;
+-  hti.output_bfd = output_bfd;
+-  hti.error = false;
+-  mips_elf_link_hash_traverse (mips_elf_hash_table (info),
+-			       mips_elf_check_symbols, &hti);
+-  if (hti.error)
+-    return false;
+-
+-  return true;
+-}
+-
+ /* If the link uses a GOT, lay it out and work out its size.  */
+ 
+ static bool
+@@ -9900,7 +9858,8 @@ mips_elf_set_plt_sym_value (struct mips_
+   return true;
+ }
+ 
+-/* Set the sizes of the dynamic sections.  */
++/* Set the sizes of the dynamic sections, some mips non-dynamic sections,
++   and check for any mips16 stub sections that we can discard.  */
+ 
+ bool
+ _bfd_mips_elf_late_size_sections (bfd *output_bfd,
+@@ -9910,14 +9869,39 @@ _bfd_mips_elf_late_size_sections (bfd *o
+   asection *s, *sreldyn;
+   bool reltext;
+   struct mips_elf_link_hash_table *htab;
++  struct mips_htab_traverse_info hti;
+ 
+   htab = mips_elf_hash_table (info);
+   BFD_ASSERT (htab != NULL);
+-  dynobj = elf_hash_table (info)->dynobj;
++
++  /* The .reginfo section has a fixed size.  */
++  s = bfd_get_section_by_name (output_bfd, ".reginfo");
++  if (s != NULL)
++    {
++      bfd_set_section_size (s, sizeof (Elf32_External_RegInfo));
++      s->flags |= SEC_FIXED_SIZE | SEC_HAS_CONTENTS;
++    }
++
++  /* The .MIPS.abiflags section has a fixed size.  */
++  s = bfd_get_section_by_name (output_bfd, ".MIPS.abiflags");
++  if (s != NULL)
++    {
++      bfd_set_section_size (s, sizeof (Elf_External_ABIFlags_v0));
++      s->flags |= SEC_FIXED_SIZE | SEC_HAS_CONTENTS;
++    }
++
++  hti.info = info;
++  hti.output_bfd = output_bfd;
++  hti.error = false;
++  mips_elf_link_hash_traverse (htab, mips_elf_check_symbols, &hti);
++  if (hti.error)
++    return false;
++
++  dynobj = htab->root.dynobj;
+   if (dynobj == NULL)
+     return true;
+ 
+-  if (elf_hash_table (info)->dynamic_sections_created)
++  if (htab->root.dynamic_sections_created)
+     {
+       /* Set the contents of the .interp section to the interpreter.  */
+       if (bfd_link_executable (info) && !info->nointerp)
+@@ -10057,7 +10041,7 @@ _bfd_mips_elf_late_size_sections (bfd *o
+ 	    }
+ 	}
+       else if (bfd_link_executable (info)
+-	       && ! mips_elf_hash_table (info)->use_rld_obj_head
++	       && !htab->use_rld_obj_head
+ 	       && startswith (name, ".rld_map"))
+ 	{
+ 	  /* We add a room for __rld_map.  It will be filled in by the
+@@ -10066,7 +10050,7 @@ _bfd_mips_elf_late_size_sections (bfd *o
+ 	}
+       else if (SGI_COMPAT (output_bfd)
+ 	       && startswith (name, ".compact_rel"))
+-	s->size += mips_elf_hash_table (info)->compact_rel_size;
++	s->size += htab->compact_rel_size;
+       else if (s == htab->root.splt)
+ 	{
+ 	  /* If the last PLT entry has a branch delay slot, allocate
+@@ -10106,7 +10090,7 @@ _bfd_mips_elf_late_size_sections (bfd *o
+ 	}
+     }
+ 
+-  if (elf_hash_table (info)->dynamic_sections_created)
++  if (htab->root.dynamic_sections_created)
+     {
+       /* Add some entries to the .dynamic section.  We fill in the
+ 	 values later, in _bfd_mips_elf_finish_dynamic_sections, but we
+@@ -14834,7 +14818,7 @@ _bfd_mips_elf_final_link (bfd *abfd, str
+ 	      input_section->flags &= ~SEC_HAS_CONTENTS;
+ 	    }
+ 
+-	  /* Size has been set in _bfd_mips_elf_early_size_sections.  */
++	  /* Size has been set in _bfd_mips_elf_late_size_sections.  */
+ 	  BFD_ASSERT(o->size == sizeof (Elf_External_ABIFlags_v0));
+ 
+ 	  /* Skip this section later on (I don't think this currently
+@@ -14893,7 +14877,7 @@ _bfd_mips_elf_final_link (bfd *abfd, str
+ 	      input_section->flags &= ~SEC_HAS_CONTENTS;
+ 	    }
+ 
+-	  /* Size has been set in _bfd_mips_elf_early_size_sections.  */
++	  /* Size has been set in _bfd_mips_elf_late_size_sections.  */
+ 	  BFD_ASSERT(o->size == sizeof (Elf32_External_RegInfo));
+ 
+ 	  /* Skip this section later on (I don't think this currently
+--- a/bfd/elfxx-mips.h
++++ b/bfd/elfxx-mips.h
+@@ -52,8 +52,6 @@ extern bool _bfd_mips_elf_check_relocs
+   (bfd *, struct bfd_link_info *, asection *, const Elf_Internal_Rela *);
+ extern bool _bfd_mips_elf_adjust_dynamic_symbol
+   (struct bfd_link_info *, struct elf_link_hash_entry *);
+-extern bool _bfd_mips_elf_early_size_sections
+-  (bfd *, struct bfd_link_info *);
+ extern bool _bfd_mips_elf_late_size_sections
+   (bfd *, struct bfd_link_info *);
+ extern int _bfd_mips_elf_relocate_section

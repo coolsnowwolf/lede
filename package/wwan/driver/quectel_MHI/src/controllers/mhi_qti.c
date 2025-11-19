@@ -430,6 +430,7 @@ rpm_resume_exit:
 	return ret;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int mhi_system_resume(struct device *dev)
 {
 	int ret = 0;
@@ -473,6 +474,7 @@ int mhi_system_suspend(struct device *dev)
 	MHI_LOG("Exit\n");
 	return 0;
 }
+#endif
 #endif
 
 /* checks if link is down */
@@ -1066,9 +1068,12 @@ static struct pci_device_id mhi_pcie_device_id[] = {
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0305)}, //SDX24
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0306)}, //SDX55
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0308)}, //SDX62
+	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x011a)}, //SDX35
+	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, 0x0309)}, //SDX7X
 	{PCI_DEVICE(0x1eac, 0x1001)}, //EM120
 	{PCI_DEVICE(0x1eac, 0x1002)}, //EM160
 	{PCI_DEVICE(0x1eac, 0x1004)}, //RM520
+	{PCI_DEVICE(0x1eac, 0x100b)}, //RM255
 	{PCI_DEVICE(MHI_PCIE_VENDOR_ID, MHI_PCIE_DEBUG_ID)},
 	{0},
 };

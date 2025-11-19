@@ -5,13 +5,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=hostapd
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=1.2
 
 PKG_SOURCE_URL:=http://w1.fi/hostap.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-07-29
-PKG_SOURCE_VERSION:=b704dc72ef824dfdd96674b90179b274d1d38105
-PKG_MIRROR_HASH:=6c9dd359ef5a4595b6576e07928566d6864957c4af6466d641d6c3f7717f4689
+PKG_SOURCE_DATE:=2023-06-22
+PKG_SOURCE_VERSION:=599d00be9de2846c6ea18c1487d8329522ade22b
+PKG_MIRROR_HASH:=828810c558ea181e45ed0c8b940f5c41e55775e2979a15aed8cf0ab17dd7723c
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
@@ -21,15 +21,13 @@ PKG_BUILD_PARALLEL:=1
 PKG_ASLR_PIE_REGULAR:=1
 
 PKG_CONFIG_DEPENDS:= \
-	CONFIG_PACKAGE_kmod-ath9k \
-	CONFIG_PACKAGE_kmod-cfg80211 \
 	CONFIG_PACKAGE_hostapd \
 	CONFIG_PACKAGE_hostapd-basic \
 	CONFIG_PACKAGE_hostapd-mini \
 	CONFIG_WPA_RFKILL_SUPPORT \
-	CONFIG_DRIVER_WEXT_SUPPORT \
 	CONFIG_DRIVER_11AC_SUPPORT \
 	CONFIG_DRIVER_11AX_SUPPORT \
+	CONFIG_DRIVER_11BE_SUPPORT \
 	CONFIG_WPA_ENABLE_WEP
 
 PKG_BUILD_FLAGS:=gc-sections lto
@@ -82,12 +80,20 @@ ifneq ($(CONFIG_DRIVER_11AX_SUPPORT),)
   HOSTAPD_IEEE80211AX:=y
 endif
 
+ifneq ($(CONFIG_DRIVER_11BE_SUPPORT),)
+  HOSTAPD_IEEE80211BE:=y
+endif
+
+
+CORE_DEPENDS = +ucode +libucode \
+	+ucode-mod-fs +ucode-mod-nl80211 +ucode-mod-rtnl +ucode-mod-ubus +ucode-mod-uloop \
+	+libubus +libblobmsg-json
+
 DRIVER_MAKEOPTS= \
-	CONFIG_ACS=$(CONFIG_PACKAGE_kmod-cfg80211) \
-	CONFIG_DRIVER_NL80211=$(CONFIG_PACKAGE_kmod-cfg80211) \
+	CONFIG_ACS=y CONFIG_DRIVER_NL80211=y \
 	CONFIG_IEEE80211AC=$(HOSTAPD_IEEE80211AC) \
 	CONFIG_IEEE80211AX=$(HOSTAPD_IEEE80211AX) \
-	CONFIG_DRIVER_WEXT=$(CONFIG_DRIVER_WEXT_SUPPORT) \
+	CONFIG_IEEE80211BE=$(HOSTAPD_IEEE80211BE) \
 	CONFIG_MBO=$(CONFIG_WPA_MBO_SUPPORT)
 
 ifeq ($(SSL_VARIANT),openssl)
@@ -141,7 +147,7 @@ ifneq ($(LOCAL_TYPE),hostapd)
   endif
 endif
 
-DRV_DEPENDS:=+PACKAGE_kmod-cfg80211:libnl-tiny +kmod-cfg80211
+DRV_DEPENDS:=+libnl-tiny
 
 
 define Package/hostapd/Default
@@ -150,7 +156,7 @@ define Package/hostapd/Default
   SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Authenticator
   URL:=http://hostap.epitest.fi/
-  DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  DEPENDS:=$(DRV_DEPENDS) +hostapd-common $(CORE_DEPENDS)
   EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   PROVIDES:=hostapd
@@ -255,7 +261,7 @@ define Package/wpad/Default
   CATEGORY:=Network
   SUBMENU:=WirelessAPD
   TITLE:=IEEE 802.1x Auth/Supplicant
-  DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  DEPENDS:=$(DRV_DEPENDS) +hostapd-common $(CORE_DEPENDS)
   EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   URL:=http://hostap.epitest.fi/
@@ -358,7 +364,7 @@ endef
 
 define Package/wpad-mesh
 $(call Package/wpad/Default,$(1))
-  DEPENDS+=@PACKAGE_kmod-cfg80211 @(!TARGET_uml||BROKEN)
+  DEPENDS+=@(!TARGET_uml||BROKEN)
   PROVIDES+=wpa-supplicant-mesh wpad-mesh
 endef
 
@@ -400,7 +406,7 @@ define Package/wpa-supplicant/Default
   SUBMENU:=WirelessAPD
   TITLE:=WPA Supplicant
   URL:=http://hostap.epitest.fi/wpa_supplicant/
-  DEPENDS:=$(DRV_DEPENDS) +hostapd-common +libubus
+  DEPENDS:=$(DRV_DEPENDS) +hostapd-common $(CORE_DEPENDS)
   EXTRA_DEPENDS:=hostapd-common (=$(PKG_VERSION)-$(PKG_RELEASE))
   USERID:=network=101:network=101
   PROVIDES:=wpa-supplicant
@@ -442,13 +448,12 @@ endef
 define Package/wpa-supplicant-p2p
 $(call Package/wpa-supplicant/Default,$(1))
   TITLE+= (Wi-Fi P2P support)
-  DEPENDS+=@PACKAGE_kmod-cfg80211
   VARIANT:=supplicant-p2p-internal
 endef
 
 define Package/wpa-supplicant-mesh/Default
 $(call Package/wpa-supplicant/Default,$(1))
-  DEPENDS+=@PACKAGE_kmod-cfg80211 @(!TARGET_uml||BROKEN)
+  DEPENDS+=@(!TARGET_uml||BROKEN)
   PROVIDES+=wpa-supplicant-mesh
 endef
 
@@ -522,7 +527,7 @@ define Package/eapol-test/Default
   SECTION:=net
   SUBMENU:=WirelessAPD
   CATEGORY:=Network
-  DEPENDS:=$(DRV_DEPENDS) +libubus
+  DEPENDS:=$(DRV_DEPENDS) $(CORE_DEPENDS)
 endef
 
 define Package/eapol-test
@@ -587,11 +592,7 @@ TARGET_CPPFLAGS := \
 	-D_GNU_SOURCE \
 	$(if $(CONFIG_WPA_MSG_MIN_PRIORITY),-DCONFIG_MSG_MIN_PRIORITY=$(CONFIG_WPA_MSG_MIN_PRIORITY))
 
-TARGET_LDFLAGS += -lubox -lubus
-
-ifdef CONFIG_PACKAGE_kmod-cfg80211
-  TARGET_LDFLAGS += -lm -lnl-tiny
-endif
+TARGET_LDFLAGS += -lubox -lubus -lblobmsg_json -lucode -lm -lnl-tiny
 
 ifdef CONFIG_WPA_ENABLE_WEP
     DRIVER_MAKEOPTS += CONFIG_WEP=y
@@ -676,8 +677,37 @@ define Build/Compile
 	$(Build/Compile/$(BUILD_VARIANT))
 endef
 
+define Install/hostapd/full
+	$(INSTALL_DIR) $(1)/etc/init.d $(1)/etc/config $(1)/etc/radius
+	ln -sf hostapd $(1)/usr/sbin/hostapd-radius
+	$(INSTALL_BIN) ./files/radius.init $(1)/etc/init.d/radius
+	$(INSTALL_DATA) ./files/radius.config $(1)/etc/config/radius
+	$(INSTALL_DATA) ./files/radius.clients $(1)/etc/radius/clients
+	$(INSTALL_DATA) ./files/radius.users $(1)/etc/radius/users
+endef
+
+define Package/hostapd-full/conffiles
+/etc/config/radius
+/etc/radius
+endef
+
+ifeq ($(CONFIG_VARIANT),full)
+Package/wpad-mesh-openssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad-mesh-wolfssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad-mesh-mbedtls/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad-openssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad-wolfssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/wpad-mbedtls/conffiles = $(Package/hostapd-full/conffiles)
+Package/hostapd/conffiles = $(Package/hostapd-full/conffiles)
+Package/hostapd-openssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/hostapd-wolfssl/conffiles = $(Package/hostapd-full/conffiles)
+Package/hostapd-mbedtls/conffiles = $(Package/hostapd-full/conffiles)
+endif
+
 define Install/hostapd
 	$(INSTALL_DIR) $(1)/usr/sbin
+	$(if $(findstring full,$(CONFIG_VARIANT)),$(Install/hostapd/full))
 endef
 
 define Install/supplicant

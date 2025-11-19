@@ -13,6 +13,8 @@ PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=
 
+PKG_BUILD_FLAGS:=lto
+
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/cmake.mk
 
@@ -30,10 +32,7 @@ endef
 
 TARGET_CFLAGS += \
 	-I$(STAGING_DIR)/usr/include/libnl-tiny \
-	-I$(STAGING_DIR)/usr/include \
-	-flto
-
-TARGET_LDFLAGS += -flto -fuse-linker-plugin
+	-I$(STAGING_DIR)/usr/include
 
 CMAKE_OPTIONS += \
 	-DLIBNL_LIBS=-lnl-tiny \

@@ -1,26 +1,7 @@
-define Device/FitImage
-	KERNEL_SUFFIX := -uImage.itb
-	KERNEL = kernel-bin | libdeflate-gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
-	KERNEL_NAME := Image
-endef
-
-define Device/FitImageLzma
-	KERNEL_SUFFIX := -uImage.itb
-	KERNEL = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
-	KERNEL_NAME := Image
-endef
-
 define Device/EmmcImage
-	IMAGES += factory.bin sysupgrade.bin
+	IMAGES += factory.bin
 	IMAGE/factory.bin := append-rootfs | pad-rootfs | pad-to 64k
 	IMAGE/sysupgrade.bin/squashfs := append-rootfs | pad-to 64k | sysupgrade-tar rootfs=$$$$@ | append-metadata
-endef
-
-define Device/UbiFit
-	KERNEL_IN_UBI := 1
-	IMAGES := factory.ubi sysupgrade.bin
-	IMAGE/factory.ubi := append-ubi
-	IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
 
 define Build/wax6xx-netgear-tar
@@ -32,6 +13,33 @@ define Build/wax6xx-netgear-tar
 	tar -C $@.tmp/ -cf $@ .
 	rm -rf $@.tmp
 endef
+
+define Device/aliyun_ap8220
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Aliyun
+	DEVICE_MODEL := AP8220
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@ac02
+	SOC := ipq8071
+	DEVICE_PACKAGES := ipq-wifi-aliyun_ap8220
+endef
+TARGET_DEVICES += aliyun_ap8220
+
+define Device/arcadyan_aw1000
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Arcadyan
+	DEVICE_MODEL := AW1000
+	BLOCKSIZE := 256k
+	PAGESIZE := 4096
+	DEVICE_DTS_CONFIG := config@hk09
+	SOC := ipq8072
+	DEVICE_PACKAGES := ipq-wifi-arcadyan_aw1000 kmod-spi-gpio \
+		kmod-gpio-nxp-74hc164 kmod-usb-serial-option uqmi
+endef
+TARGET_DEVICES += arcadyan_aw1000
 
 define Device/buffalo_wxr-5950ax12
 	$(call Device/FitImage)
@@ -244,6 +252,21 @@ define Device/xiaomi_ax9000
 	DEVICE_PACKAGES := ipq-wifi-xiaomi_ax9000 kmod-ath11k-pci ath11k-firmware-qcn9074
 endef
 TARGET_DEVICES += xiaomi_ax9000
+
+define Device/zbtlink_zbt-z800ax
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := Zbtlink
+	DEVICE_MODEL := ZBT-Z800AX
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_DTS_CONFIG := config@hk09
+	SOC := ipq8074
+	DEVICE_PACKAGES := ipq-wifi-zbtlink_zbt-z800ax
+	IMAGES += factory.bin
+	IMAGE/factory.bin := append-ubi | qsdk-ipq-factory-nand
+endef
+TARGET_DEVICES += zbtlink_zbt-z800ax
 
 define Device/zte_mf269
 	$(call Device/FitImage)

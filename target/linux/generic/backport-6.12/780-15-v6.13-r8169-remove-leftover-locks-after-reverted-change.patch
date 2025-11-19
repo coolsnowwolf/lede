@@ -1,0 +1,113 @@
+From 83cb4b470c66b37b19a347a35cea01e0cbdd258d Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Mon, 4 Nov 2024 23:16:20 +0100
+Subject: [PATCH] r8169: remove leftover locks after reverted change
+
+After e31a9fedc7d8 ("Revert "r8169: disable ASPM during NAPI poll"")
+these locks aren't needed any longer.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://patch.msgid.link/680f2606-ac7d-4ced-8694-e5033855da9b@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/realtek/r8169_main.c | 29 ++---------------------
+ 1 file changed, 2 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/ethernet/realtek/r8169_main.c
++++ b/drivers/net/ethernet/realtek/r8169_main.c
+@@ -661,13 +661,9 @@ struct rtl8169_private {
+ 		struct work_struct work;
+ 	} wk;
+ 
+-	raw_spinlock_t config25_lock;
+ 	raw_spinlock_t mac_ocp_lock;
+ 	struct mutex led_lock;	/* serialize LED ctrl RMW access */
+ 
+-	raw_spinlock_t cfg9346_usage_lock;
+-	int cfg9346_usage_count;
+-
+ 	unsigned supports_gmii:1;
+ 	unsigned aspm_manageable:1;
+ 	unsigned dash_enabled:1;
+@@ -721,22 +717,12 @@ static inline struct device *tp_to_dev(s
+ 
+ static void rtl_lock_config_regs(struct rtl8169_private *tp)
+ {
+-	unsigned long flags;
+-
+-	raw_spin_lock_irqsave(&tp->cfg9346_usage_lock, flags);
+-	if (!--tp->cfg9346_usage_count)
+-		RTL_W8(tp, Cfg9346, Cfg9346_Lock);
+-	raw_spin_unlock_irqrestore(&tp->cfg9346_usage_lock, flags);
++	RTL_W8(tp, Cfg9346, Cfg9346_Lock);
+ }
+ 
+ static void rtl_unlock_config_regs(struct rtl8169_private *tp)
+ {
+-	unsigned long flags;
+-
+-	raw_spin_lock_irqsave(&tp->cfg9346_usage_lock, flags);
+-	if (!tp->cfg9346_usage_count++)
+-		RTL_W8(tp, Cfg9346, Cfg9346_Unlock);
+-	raw_spin_unlock_irqrestore(&tp->cfg9346_usage_lock, flags);
++	RTL_W8(tp, Cfg9346, Cfg9346_Unlock);
+ }
+ 
+ static void rtl_pci_commit(struct rtl8169_private *tp)
+@@ -747,24 +733,18 @@ static void rtl_pci_commit(struct rtl816
+ 
+ static void rtl_mod_config2(struct rtl8169_private *tp, u8 clear, u8 set)
+ {
+-	unsigned long flags;
+ 	u8 val;
+ 
+-	raw_spin_lock_irqsave(&tp->config25_lock, flags);
+ 	val = RTL_R8(tp, Config2);
+ 	RTL_W8(tp, Config2, (val & ~clear) | set);
+-	raw_spin_unlock_irqrestore(&tp->config25_lock, flags);
+ }
+ 
+ static void rtl_mod_config5(struct rtl8169_private *tp, u8 clear, u8 set)
+ {
+-	unsigned long flags;
+ 	u8 val;
+ 
+-	raw_spin_lock_irqsave(&tp->config25_lock, flags);
+ 	val = RTL_R8(tp, Config5);
+ 	RTL_W8(tp, Config5, (val & ~clear) | set);
+-	raw_spin_unlock_irqrestore(&tp->config25_lock, flags);
+ }
+ 
+ static bool rtl_is_8125(struct rtl8169_private *tp)
+@@ -1570,7 +1550,6 @@ static void __rtl8169_set_wol(struct rtl
+ 		{ WAKE_MAGIC, Config3, MagicPacket }
+ 	};
+ 	unsigned int i, tmp = ARRAY_SIZE(cfg);
+-	unsigned long flags;
+ 	u8 options;
+ 
+ 	rtl_unlock_config_regs(tp);
+@@ -1589,14 +1568,12 @@ static void __rtl8169_set_wol(struct rtl
+ 			r8168_mac_ocp_modify(tp, 0xc0b6, BIT(0), 0);
+ 	}
+ 
+-	raw_spin_lock_irqsave(&tp->config25_lock, flags);
+ 	for (i = 0; i < tmp; i++) {
+ 		options = RTL_R8(tp, cfg[i].reg) & ~cfg[i].mask;
+ 		if (wolopts & cfg[i].opt)
+ 			options |= cfg[i].mask;
+ 		RTL_W8(tp, cfg[i].reg, options);
+ 	}
+-	raw_spin_unlock_irqrestore(&tp->config25_lock, flags);
+ 
+ 	switch (tp->mac_version) {
+ 	case RTL_GIGA_MAC_VER_02 ... RTL_GIGA_MAC_VER_06:
+@@ -5479,8 +5456,6 @@ static int rtl_init_one(struct pci_dev *
+ 	tp->supports_gmii = ent->driver_data == RTL_CFG_NO_GBIT ? 0 : 1;
+ 	tp->ocp_base = OCP_STD_PHY_BASE;
+ 
+-	raw_spin_lock_init(&tp->cfg9346_usage_lock);
+-	raw_spin_lock_init(&tp->config25_lock);
+ 	raw_spin_lock_init(&tp->mac_ocp_lock);
+ 	mutex_init(&tp->led_lock);
+ 

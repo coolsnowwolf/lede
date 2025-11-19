@@ -1,0 +1,128 @@
+From 491cb9c5084790aafa02e843349492c284373231 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 9 Jan 2025 00:30:45 +0100
+Subject: [PATCH 6/6] PCI: mediatek-gen3: Avoid PCIe resetting via PERST# for
+ Airoha EN7581 SoC
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Airoha EN7581 has a hw bug asserting/releasing PERST# signal causing
+occasional PCIe link down issues. In order to overcome the problem,
+PERST# signal is not asserted/released during device probe or
+suspend/resume phase and the PCIe block is reset using
+en7523_reset_assert() and en7581_pci_enable().
+
+Introduce flags field in the mtk_gen3_pcie_pdata struct in order to
+specify per-SoC capabilities.
+
+Link: https://lore.kernel.org/r/20250109-pcie-en7581-rst-fix-v4-1-4a45c89fb143@kernel.org
+Tested-by: Hui Ma <hui.ma@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Krzysztof Wilczyński <kwilczynski@kernel.org>
+---
+ drivers/pci/controller/pcie-mediatek-gen3.c | 59 ++++++++++++++-------
+ 1 file changed, 41 insertions(+), 18 deletions(-)
+
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -127,10 +127,18 @@
+ 
+ struct mtk_gen3_pcie;
+ 
++enum mtk_gen3_pcie_flags {
++	SKIP_PCIE_RSTB	= BIT(0), /* Skip PERST# assertion during device
++				   * probing or suspend/resume phase to
++				   * avoid hw bugs/issues.
++				   */
++};
++
+ /**
+  * struct mtk_gen3_pcie_pdata - differentiate between host generations
+  * @power_up: pcie power_up callback
+  * @phy_resets: phy reset lines SoC data.
++ * @flags: pcie device flags.
+  */
+ struct mtk_gen3_pcie_pdata {
+ 	int (*power_up)(struct mtk_gen3_pcie *pcie);
+@@ -138,6 +146,7 @@ struct mtk_gen3_pcie_pdata {
+ 		const char *id[MAX_NUM_PHY_RESETS];
+ 		int num_resets;
+ 	} phy_resets;
++	u32 flags;
+ };
+ 
+ /**
+@@ -404,22 +413,33 @@ static int mtk_pcie_startup_port(struct
+ 	val |= PCIE_DISABLE_DVFSRC_VLT_REQ;
+ 	writel_relaxed(val, pcie->base + PCIE_MISC_CTRL_REG);
+ 
+-	/* Assert all reset signals */
+-	val = readl_relaxed(pcie->base + PCIE_RST_CTRL_REG);
+-	val |= PCIE_MAC_RSTB | PCIE_PHY_RSTB | PCIE_BRG_RSTB | PCIE_PE_RSTB;
+-	writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
+-
+ 	/*
+-	 * Described in PCIe CEM specification sections 2.2 (PERST# Signal)
+-	 * and 2.2.1 (Initial Power-Up (G3 to S0)).
+-	 * The deassertion of PERST# should be delayed 100ms (TPVPERL)
+-	 * for the power and clock to become stable.
++	 * Airoha EN7581 has a hw bug asserting/releasing PCIE_PE_RSTB signal
++	 * causing occasional PCIe link down. In order to overcome the issue,
++	 * PCIE_RSTB signals are not asserted/released at this stage and the
++	 * PCIe block is reset using en7523_reset_assert() and
++	 * en7581_pci_enable().
+ 	 */
+-	msleep(100);
+-
+-	/* De-assert reset signals */
+-	val &= ~(PCIE_MAC_RSTB | PCIE_PHY_RSTB | PCIE_BRG_RSTB | PCIE_PE_RSTB);
+-	writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
++	if (!(pcie->soc->flags & SKIP_PCIE_RSTB)) {
++		/* Assert all reset signals */
++		val = readl_relaxed(pcie->base + PCIE_RST_CTRL_REG);
++		val |= PCIE_MAC_RSTB | PCIE_PHY_RSTB | PCIE_BRG_RSTB |
++		       PCIE_PE_RSTB;
++		writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
++
++		/*
++		 * Described in PCIe CEM specification revision 6.0.
++		 *
++		 * The deassertion of PERST# should be delayed 100ms (TPVPERL)
++		 * for the power and clock to become stable.
++		 */
++		msleep(PCIE_T_PVPERL_MS);
++
++		/* De-assert reset signals */
++		val &= ~(PCIE_MAC_RSTB | PCIE_PHY_RSTB | PCIE_BRG_RSTB |
++			 PCIE_PE_RSTB);
++		writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
++	}
+ 
+ 	/* Check if the link is up or not */
+ 	err = readl_poll_timeout(pcie->base + PCIE_LINK_STATUS_REG, val,
+@@ -1178,10 +1198,12 @@ static int mtk_pcie_suspend_noirq(struct
+ 		return err;
+ 	}
+ 
+-	/* Pull down the PERST# pin */
+-	val = readl_relaxed(pcie->base + PCIE_RST_CTRL_REG);
+-	val |= PCIE_PE_RSTB;
+-	writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
++	if (!(pcie->soc->flags & SKIP_PCIE_RSTB)) {
++		/* Assert the PERST# pin */
++		val = readl_relaxed(pcie->base + PCIE_RST_CTRL_REG);
++		val |= PCIE_PE_RSTB;
++		writel_relaxed(val, pcie->base + PCIE_RST_CTRL_REG);
++	}
+ 
+ 	dev_dbg(pcie->dev, "entered L2 states successfully");
+ 
+@@ -1232,6 +1254,7 @@ static const struct mtk_gen3_pcie_pdata
+ 		.id[2] = "phy-lane2",
+ 		.num_resets = 3,
+ 	},
++	.flags = SKIP_PCIE_RSTB,
+ };
+ 
+ static const struct of_device_id mtk_pcie_of_match[] = {

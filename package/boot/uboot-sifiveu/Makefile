@@ -7,8 +7,8 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_RELEASE:=1
-PKG_VERSION:=2022.10
-PKG_HASH:=50b4482a505bc281ba8470c399a3c26e145e29b23500bc35c50debd7fa46bdf8
+PKG_VERSION:=2023.10
+PKG_HASH:=e00e6c6f014e046101739d08d06f328811cebcf5ae101348f409cbbd55ce6900
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -56,7 +56,7 @@ define Build/InstallDev
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/spl/u-boot-spl.bin $(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-$(UBOOT_IMAGE)-spl
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/$(DTS_DIR)/$(UBOOT_DTS) $(STAGING_DIR_IMAGE)/$(UBOOT_DTS)
 
-	mkimage -C none -A arm -T script -d uEnv-$(UENV).txt \
+	mkimage -C none -A riscv -T script -d uEnv-$(UENV).txt \
 		$(STAGING_DIR_IMAGE)/$(BUILD_DEVICES)-boot.scr
 endef
 

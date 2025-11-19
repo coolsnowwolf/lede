@@ -1,0 +1,771 @@
+From abe886c760bc190724b4548bc2a990aeb5c30b10 Mon Sep 17 00:00:00 2001
+From: popcornmix <popcornmix@gmail.com>
+Date: Fri, 28 Oct 2016 15:36:43 +0100
+Subject: [PATCH] vc_mem: Add vc_mem driver for querying firmware memory
+ addresses
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: popcornmix <popcornmix@gmail.com>
+
+BCM270x: Move vc_mem
+
+Make the vc_mem module available for ARCH_BCM2835 by moving it.
+
+Signed-off-by: Noralf Trønnes <noralf@tronnes.org>
+
+char: vc_mem: Fix up compat ioctls for 64bit kernel
+
+compat_ioctl wasn't defined, so 32bit user/64bit kernel
+always failed.
+VC_MEM_IOC_MEM_PHYS_ADDR was defined with parameter size
+unsigned long, so the ioctl cmd changes between sizes.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+char: vc_mem: Fix all coding style issues.
+
+Cleans up all checkpatch errors in vc_mem.c and vc_mem.h
+No functional change to the code.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.org>
+
+char: vc_mem: Delete dead code
+
+There are no error exists once device_create has succeeded, and
+therefore no need to call device_destroy from vc_mem_init.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+char: broadcom: vc_mem: Fix preprocessor conditional
+
+Signed-off-by: Alexander Winkowski <dereference23@outlook.com>
+
+vc_mem: Add the DMA memcpy support from bcm2708_fb
+
+bcm2708_fb is disabled by the vc4-kms-v3d overlay, which means that the
+DMA memcpy support it provides is not available to allow vclog to read
+the VC logs from the top 16MB on Pi 2 and Pi 3. Add the code to the
+vc_mem driver, which will still be enabled.
+
+It ought to be possible to do a proper DMA_MEM_TO_MEM copy via the
+generic DMA customer API, but that can be a later step.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/char/broadcom/Kconfig   |  18 +
+ drivers/char/broadcom/Makefile  |   1 +
+ drivers/char/broadcom/vc_mem.c  | 635 ++++++++++++++++++++++++++++++++
+ include/linux/broadcom/vc_mem.h |  39 ++
+ 4 files changed, 693 insertions(+)
+ create mode 100644 drivers/char/broadcom/Kconfig
+ create mode 100644 drivers/char/broadcom/Makefile
+ create mode 100644 drivers/char/broadcom/vc_mem.c
+ create mode 100644 include/linux/broadcom/vc_mem.h
+
+--- /dev/null
++++ b/drivers/char/broadcom/Kconfig
+@@ -0,0 +1,18 @@
++#
++# Broadcom char driver config
++#
++
++menuconfig BRCM_CHAR_DRIVERS
++	bool "Broadcom Char Drivers"
++	help
++	  Broadcom's char drivers
++
++if BRCM_CHAR_DRIVERS
++
++config BCM2708_VCMEM
++	bool "Videocore Memory"
++        default y
++        help
++          Helper for videocore memory access and total size allocation.
++
++endif
+--- /dev/null
++++ b/drivers/char/broadcom/Makefile
+@@ -0,0 +1 @@
++obj-$(CONFIG_BCM2708_VCMEM)	+= vc_mem.o
+--- /dev/null
++++ b/drivers/char/broadcom/vc_mem.c
+@@ -0,0 +1,635 @@
++/*
++ * Copyright 2010 - 2011 Broadcom Corporation.  All rights reserved.
++ *
++ * Unless you and Broadcom execute a separate written software license
++ * agreement governing use of this software, this software is licensed to you
++ * under the terms of the GNU General Public License version 2, available at
++ * http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++ *
++ * Notwithstanding the above, under no circumstances may you combine this
++ * software in any way with any other Broadcom software provided under a
++ * license other than the GPL, without Broadcom's express prior written
++ * consent.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/fs.h>
++#include <linux/device.h>
++#include <linux/cdev.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/debugfs.h>
++#include <linux/uaccess.h>
++#include <linux/dma-mapping.h>
++#include <linux/broadcom/vc_mem.h>
++#include <linux/compat.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/platform_data/dma-bcm2708.h>
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
++#define DRIVER_NAME  "vc-mem"
++
++/* N.B. These use a different magic value for compatibility with bmc7208_fb */
++#define VC_MEM_IOC_DMACOPY   _IOW('z', 0x22, struct vc_mem_dmacopy)
++#define VC_MEM_IOC_DMACOPY32 _IOW('z', 0x22, struct vc_mem_dmacopy32)
++
++/* address with no aliases */
++#define INTALIAS_NORMAL(x) ((x) & ~0xc0000000)
++/* cache coherent but non-allocating in L1 and L2 */
++#define INTALIAS_L1L2_NONALLOCATING(x) (((x) & ~0xc0000000) | 0x80000000)
++
++/* Device (/dev) related variables */
++static dev_t vc_mem_devnum;
++static struct class *vc_mem_class;
++static struct cdev vc_mem_cdev;
++static int vc_mem_inited;
++
++#ifdef CONFIG_DEBUG_FS
++static struct dentry *vc_mem_debugfs_entry;
++#endif
++
++struct vc_mem_dmacopy {
++	void *dst;
++	__u32 src;
++	__u32 length;
++};
++
++#ifdef CONFIG_COMPAT
++struct vc_mem_dmacopy32 {
++	compat_uptr_t dst;
++	__u32 src;
++	__u32 length;
++};
++#endif
++
++/*
++ * Videocore memory addresses and size
++ *
++ * Drivers that wish to know the videocore memory addresses and sizes should
++ * use these variables instead of the MM_IO_BASE and MM_ADDR_IO defines in
++ * headers. This allows the other drivers to not be tied down to a a certain
++ * address/size at compile time.
++ *
++ * In the future, the goal is to have the videocore memory virtual address and
++ * size be calculated at boot time rather than at compile time. The decision of
++ * where the videocore memory resides and its size would be in the hands of the
++ * bootloader (and/or kernel). When that happens, the values of these variables
++ * would be calculated and assigned in the init function.
++ */
++/* In the 2835 VC in mapped above ARM, but ARM has full access to VC space */
++unsigned long mm_vc_mem_phys_addr;
++EXPORT_SYMBOL(mm_vc_mem_phys_addr);
++unsigned int mm_vc_mem_size;
++EXPORT_SYMBOL(mm_vc_mem_size);
++unsigned int mm_vc_mem_base;
++EXPORT_SYMBOL(mm_vc_mem_base);
++
++static uint phys_addr;
++static uint mem_size;
++static uint mem_base;
++
++struct vc_mem_dma {
++	struct device *dev;
++	int dma_chan;
++	int dma_irq;
++	void __iomem *dma_chan_base;
++	wait_queue_head_t dma_waitq;
++	void *cb_base;	/* DMA control blocks */
++	dma_addr_t cb_handle;
++};
++
++struct { u32 base, length; } gpu_mem;
++static struct mutex dma_mutex;
++static struct vc_mem_dma vc_mem_dma;
++
++static int
++vc_mem_open(struct inode *inode, struct file *file)
++{
++	(void)inode;
++
++	pr_debug("%s: called file = 0x%p\n", __func__, file);
++
++	return 0;
++}
++
++static int
++vc_mem_release(struct inode *inode, struct file *file)
++{
++	(void)inode;
++
++	pr_debug("%s: called file = 0x%p\n", __func__, file);
++
++	return 0;
++}
++
++static void
++vc_mem_get_size(void)
++{
++}
++
++static void
++vc_mem_get_base(void)
++{
++}
++
++int
++vc_mem_get_current_size(void)
++{
++	return mm_vc_mem_size;
++}
++EXPORT_SYMBOL_GPL(vc_mem_get_current_size);
++
++static int
++vc_mem_dma_init(void)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++	struct platform_device *pdev;
++	struct device_node *fwnode;
++	struct rpi_firmware *fw;
++	struct device *dev;
++	u32 revision;
++	int rc;
++
++	if (vcdma->dev)
++		return 0;
++
++	fwnode = of_find_node_by_path("/system");
++	rc = of_property_read_u32(fwnode, "linux,revision", &revision);
++	revision = (revision >> 12) & 0xf;
++	if (revision != 1 && revision != 2) {
++		/* Only BCM2709 and BCM2710 may have logs where the ARMs
++		 * can't see them.
++		 */
++		return -ENXIO;
++	}
++
++	fwnode = rpi_firmware_find_node();
++	if (!fwnode)
++		return -ENXIO;
++
++	pdev = of_find_device_by_node(fwnode);
++	dev = &pdev->dev;
++
++	rc = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (rc)
++		return rc;
++
++	fw = rpi_firmware_get(fwnode);
++	if (!fw)
++		return -ENXIO;
++	rc = rpi_firmware_property(fw, RPI_FIRMWARE_GET_VC_MEMORY,
++				   &gpu_mem, sizeof(gpu_mem));
++	if (rc)
++		return rc;
++
++	gpu_mem.base = INTALIAS_NORMAL(gpu_mem.base);
++
++	if (!gpu_mem.base || !gpu_mem.length) {
++		dev_err(dev, "%s: unable to determine gpu memory (%x,%x)\n",
++			__func__, gpu_mem.base, gpu_mem.length);
++		return -EFAULT;
++	}
++
++	vcdma->cb_base = dma_alloc_wc(dev, SZ_4K, &vcdma->cb_handle, GFP_KERNEL);
++	if (!vcdma->cb_base) {
++		dev_err(dev, "failed to allocate DMA CBs\n");
++		return -ENOMEM;
++	}
++
++	rc = bcm_dma_chan_alloc(BCM_DMA_FEATURE_BULK,
++				&vcdma->dma_chan_base,
++				&vcdma->dma_irq);
++	if (rc < 0) {
++		dev_err(dev, "failed to allocate a DMA channel\n");
++		goto free_cb;
++	}
++
++	vcdma->dma_chan = rc;
++
++	init_waitqueue_head(&vcdma->dma_waitq);
++
++	vcdma->dev = dev;
++
++	return 0;
++
++free_cb:
++	dma_free_wc(dev, SZ_4K, vcdma->cb_base, vcdma->cb_handle);
++
++	return rc;
++}
++
++static void
++vc_mem_dma_uninit(void)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++
++	if (vcdma->dev) {
++		bcm_dma_chan_free(vcdma->dma_chan);
++		dma_free_wc(vcdma->dev, SZ_4K, vcdma->cb_base, vcdma->cb_handle);
++		vcdma->dev = NULL;
++	}
++}
++
++static int dma_memcpy(struct vc_mem_dma *vcdma, dma_addr_t dst, dma_addr_t src,
++		      int size)
++{
++	struct bcm2708_dma_cb *cb = vcdma->cb_base;
++	int burst_size = (vcdma->dma_chan == 0) ? 8 : 2;
++
++	cb->info = BCM2708_DMA_BURST(burst_size) | BCM2708_DMA_S_WIDTH |
++		   BCM2708_DMA_S_INC | BCM2708_DMA_D_WIDTH |
++		   BCM2708_DMA_D_INC;
++	cb->dst = dst;
++	cb->src = src;
++	cb->length = size;
++	cb->stride = 0;
++	cb->pad[0] = 0;
++	cb->pad[1] = 0;
++	cb->next = 0;
++
++	bcm_dma_start(vcdma->dma_chan_base, vcdma->cb_handle);
++	bcm_dma_wait_idle(vcdma->dma_chan_base);
++
++	return 0;
++}
++
++static long vc_mem_copy(struct vc_mem_dmacopy *ioparam)
++{
++	struct vc_mem_dma *vcdma = &vc_mem_dma;
++	size_t size = PAGE_SIZE;
++	const u32 dma_xfer_chunk = 256;
++	u32 *buf = NULL;
++	dma_addr_t bus_addr;
++	long rc = 0;
++	size_t offset;
++
++	/* restrict this to root user */
++	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID))
++		return -EFAULT;
++
++	if (mutex_lock_interruptible(&dma_mutex))
++		return -EINTR;
++
++	rc = vc_mem_dma_init();
++	if (rc)
++		goto out;
++
++	vcdma = &vc_mem_dma;
++
++	if (INTALIAS_NORMAL(ioparam->src) < gpu_mem.base ||
++	    INTALIAS_NORMAL(ioparam->src) >= gpu_mem.base + gpu_mem.length) {
++		pr_err("%s: invalid memory access %x (%x-%x)", __func__,
++		       INTALIAS_NORMAL(ioparam->src), gpu_mem.base,
++		       gpu_mem.base + gpu_mem.length);
++		rc = -EFAULT;
++		goto out;
++	}
++
++	buf = dma_alloc_coherent(vcdma->dev, PAGE_ALIGN(size), &bus_addr,
++				 GFP_ATOMIC);
++	if (!buf) {
++		rc = -ENOMEM;
++		goto out;
++	}
++
++	for (offset = 0; offset < ioparam->length; offset += size) {
++		size_t remaining = ioparam->length - offset;
++		size_t s = min(size, remaining);
++		u8 *p = (u8 *)((uintptr_t)ioparam->src + offset);
++		u8 *q = (u8 *)ioparam->dst + offset;
++
++		rc = dma_memcpy(vcdma, bus_addr,
++				INTALIAS_L1L2_NONALLOCATING((u32)(uintptr_t)p),
++				(s + dma_xfer_chunk - 1) & ~(dma_xfer_chunk - 1));
++		if (rc) {
++			dev_err(vcdma->dev, "dma_memcpy failed\n");
++			break;
++		}
++		if (copy_to_user(q, buf, s) != 0) {
++			pr_err("%s: copy_to_user failed\n", __func__);
++			rc = -EFAULT;
++			break;
++		}
++	}
++
++out:
++	if (buf)
++		dma_free_coherent(vcdma->dev, PAGE_ALIGN(size), buf,
++				  bus_addr);
++
++	mutex_unlock(&dma_mutex);
++
++	return rc;
++}
++
++static long
++vc_mem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	int rc = 0;
++
++	(void) cmd;
++	(void) arg;
++
++	pr_debug("%s: called file = 0x%p, cmd %08x\n", __func__, file, cmd);
++
++	switch (cmd) {
++	case VC_MEM_IOC_MEM_PHYS_ADDR:
++		{
++			pr_debug("%s: VC_MEM_IOC_MEM_PHYS_ADDR=0x%p\n",
++				__func__, (void *)mm_vc_mem_phys_addr);
++
++			if (copy_to_user((void *)arg, &mm_vc_mem_phys_addr,
++					 sizeof(mm_vc_mem_phys_addr))) {
++				rc = -EFAULT;
++			}
++			break;
++		}
++	case VC_MEM_IOC_MEM_SIZE:
++		{
++			/* Get the videocore memory size first */
++			vc_mem_get_size();
++
++			pr_debug("%s: VC_MEM_IOC_MEM_SIZE=%x\n", __func__,
++				 mm_vc_mem_size);
++
++			if (copy_to_user((void *)arg, &mm_vc_mem_size,
++					 sizeof(mm_vc_mem_size))) {
++				rc = -EFAULT;
++			}
++			break;
++		}
++	case VC_MEM_IOC_MEM_BASE:
++		{
++			/* Get the videocore memory base */
++			vc_mem_get_base();
++
++			pr_debug("%s: VC_MEM_IOC_MEM_BASE=%x\n", __func__,
++				 mm_vc_mem_base);
++
++			if (copy_to_user((void *)arg, &mm_vc_mem_base,
++					 sizeof(mm_vc_mem_base))) {
++				rc = -EFAULT;
++			}
++			break;
++		}
++	case VC_MEM_IOC_MEM_LOAD:
++		{
++			/* Get the videocore memory base */
++			vc_mem_get_base();
++
++			pr_debug("%s: VC_MEM_IOC_MEM_LOAD=%x\n", __func__,
++				mm_vc_mem_base);
++
++			if (copy_to_user((void *)arg, &mm_vc_mem_base,
++					 sizeof(mm_vc_mem_base))) {
++				rc = -EFAULT;
++			}
++			break;
++		}
++	case VC_MEM_IOC_DMACOPY:
++		{
++			struct vc_mem_dmacopy ioparam;
++			/* Get the parameter data.
++			 */
++			if (copy_from_user
++			    (&ioparam, (void *)arg, sizeof(ioparam))) {
++				pr_err("%s: copy_from_user failed\n", __func__);
++				rc = -EFAULT;
++				break;
++			}
++
++			rc = vc_mem_copy(&ioparam);
++			break;
++		}
++	default:
++		{
++			return -ENOTTY;
++		}
++	}
++	pr_debug("%s: file = 0x%p returning %d\n", __func__, file, rc);
++
++	return rc;
++}
++
++#ifdef CONFIG_COMPAT
++static long
++vc_mem_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	int rc = 0;
++
++	switch (cmd) {
++	case VC_MEM_IOC_MEM_PHYS_ADDR32:
++		pr_debug("%s: VC_MEM_IOC_MEM_PHYS_ADDR32=0x%p\n",
++			 __func__, (void *)mm_vc_mem_phys_addr);
++
++		/* This isn't correct, but will cover us for now as
++		 * VideoCore is 32bit only.
++		 */
++		if (copy_to_user((void *)arg, &mm_vc_mem_phys_addr,
++				 sizeof(compat_ulong_t)))
++			rc = -EFAULT;
++
++		break;
++
++	case VC_MEM_IOC_DMACOPY32:
++	{
++		struct vc_mem_dmacopy32 param32;
++		struct vc_mem_dmacopy param;
++		/* Get the parameter data.
++		 */
++		if (copy_from_user(&param32, (void *)arg, sizeof(param32))) {
++			pr_err("%s: copy_from_user failed\n", __func__);
++			rc = -EFAULT;
++			break;
++		}
++		param.dst = compat_ptr(param32.dst);
++		param.src = param32.src;
++		param.length = param32.length;
++		rc = vc_mem_copy(&param);
++		break;
++	}
++
++	default:
++		rc = vc_mem_ioctl(file, cmd, arg);
++		break;
++	}
++
++	return rc;
++}
++#endif
++
++static int
++vc_mem_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	int rc = 0;
++	unsigned long length = vma->vm_end - vma->vm_start;
++	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
++
++	pr_debug("%s: vm_start = 0x%08lx vm_end = 0x%08lx vm_pgoff = 0x%08lx\n",
++		 __func__, (long)vma->vm_start, (long)vma->vm_end,
++		 (long)vma->vm_pgoff);
++
++	if (offset + length > mm_vc_mem_size) {
++		pr_err("%s: length %ld is too big\n", __func__, length);
++		return -EINVAL;
++	}
++	/* Do not cache the memory map */
++	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++
++	rc = remap_pfn_range(vma, vma->vm_start,
++			     (mm_vc_mem_phys_addr >> PAGE_SHIFT) +
++			     vma->vm_pgoff, length, vma->vm_page_prot);
++	if (rc)
++		pr_err("%s: remap_pfn_range failed (rc=%d)\n", __func__, rc);
++
++	return rc;
++}
++
++/* File Operations for the driver. */
++static const struct file_operations vc_mem_fops = {
++	.owner = THIS_MODULE,
++	.open = vc_mem_open,
++	.release = vc_mem_release,
++	.unlocked_ioctl = vc_mem_ioctl,
++#ifdef CONFIG_COMPAT
++	.compat_ioctl = vc_mem_compat_ioctl,
++#endif
++	.mmap = vc_mem_mmap,
++};
++
++#ifdef CONFIG_DEBUG_FS
++static void vc_mem_debugfs_deinit(void)
++{
++	debugfs_remove_recursive(vc_mem_debugfs_entry);
++	vc_mem_debugfs_entry = NULL;
++}
++
++
++static int vc_mem_debugfs_init(
++	struct device *dev)
++{
++	vc_mem_debugfs_entry = debugfs_create_dir(DRIVER_NAME, NULL);
++	if (!vc_mem_debugfs_entry) {
++		dev_warn(dev, "could not create debugfs entry\n");
++		return -EFAULT;
++	}
++
++	debugfs_create_x32("vc_mem_phys_addr",
++				0444,
++				vc_mem_debugfs_entry,
++				(u32 *)&mm_vc_mem_phys_addr);
++	debugfs_create_x32("vc_mem_size",
++				0444,
++				vc_mem_debugfs_entry,
++				(u32 *)&mm_vc_mem_size);
++	debugfs_create_x32("vc_mem_base",
++				0444,
++				vc_mem_debugfs_entry,
++				(u32 *)&mm_vc_mem_base);
++
++	return 0;
++}
++
++#endif /* CONFIG_DEBUG_FS */
++
++/* Module load/unload functions */
++
++static int __init
++vc_mem_init(void)
++{
++	int rc = -EFAULT;
++	struct device *dev;
++
++	pr_debug("%s: called\n", __func__);
++
++	mm_vc_mem_phys_addr = phys_addr;
++	mm_vc_mem_size = mem_size;
++	mm_vc_mem_base = mem_base;
++
++	vc_mem_get_size();
++
++	pr_info("vc-mem: phys_addr:0x%08lx mem_base=0x%08x mem_size:0x%08x(%u MiB)\n",
++		mm_vc_mem_phys_addr, mm_vc_mem_base, mm_vc_mem_size,
++		mm_vc_mem_size / (1024 * 1024));
++
++	rc = alloc_chrdev_region(&vc_mem_devnum, 0, 1, DRIVER_NAME);
++	if (rc < 0) {
++		pr_err("%s: alloc_chrdev_region failed (rc=%d)\n",
++		       __func__, rc);
++		goto out_err;
++	}
++
++	cdev_init(&vc_mem_cdev, &vc_mem_fops);
++	rc = cdev_add(&vc_mem_cdev, vc_mem_devnum, 1);
++	if (rc) {
++		pr_err("%s: cdev_add failed (rc=%d)\n", __func__, rc);
++		goto out_unregister;
++	}
++
++	vc_mem_class = class_create(DRIVER_NAME);
++	if (IS_ERR(vc_mem_class)) {
++		rc = PTR_ERR(vc_mem_class);
++		pr_err("%s: class_create failed (rc=%d)\n", __func__, rc);
++		goto out_cdev_del;
++	}
++
++	dev = device_create(vc_mem_class, NULL, vc_mem_devnum, NULL,
++			    DRIVER_NAME);
++	if (IS_ERR(dev)) {
++		rc = PTR_ERR(dev);
++		pr_err("%s: device_create failed (rc=%d)\n", __func__, rc);
++		goto out_class_destroy;
++	}
++
++#ifdef CONFIG_DEBUG_FS
++	/* don't fail if the debug entries cannot be created */
++	vc_mem_debugfs_init(dev);
++#endif
++
++	mutex_init(&dma_mutex);
++	vc_mem_inited = 1;
++	return 0;
++
++out_class_destroy:
++	class_destroy(vc_mem_class);
++	vc_mem_class = NULL;
++
++out_cdev_del:
++	cdev_del(&vc_mem_cdev);
++
++out_unregister:
++	unregister_chrdev_region(vc_mem_devnum, 1);
++
++out_err:
++	return -1;
++}
++
++static void __exit
++vc_mem_exit(void)
++{
++	pr_debug("%s: called\n", __func__);
++
++	vc_mem_dma_uninit();
++	if (vc_mem_inited) {
++#ifdef CONFIG_DEBUG_FS
++		vc_mem_debugfs_deinit();
++#endif
++		device_destroy(vc_mem_class, vc_mem_devnum);
++		class_destroy(vc_mem_class);
++		cdev_del(&vc_mem_cdev);
++		unregister_chrdev_region(vc_mem_devnum, 1);
++		vc_mem_inited = 0;
++	}
++}
++
++module_init(vc_mem_init);
++module_exit(vc_mem_exit);
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Broadcom Corporation");
++
++module_param(phys_addr, uint, 0644);
++module_param(mem_size, uint, 0644);
++module_param(mem_base, uint, 0644);
+--- /dev/null
++++ b/include/linux/broadcom/vc_mem.h
+@@ -0,0 +1,39 @@
++/*
++ * Copyright 2010 - 2011 Broadcom Corporation.  All rights reserved.
++ *
++ * Unless you and Broadcom execute a separate written software license
++ * agreement governing use of this software, this software is licensed to you
++ * under the terms of the GNU General Public License version 2, available at
++ * http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
++ *
++ * Notwithstanding the above, under no circumstances may you combine this
++ * software in any way with any other Broadcom software provided under a
++ * license other than the GPL, without Broadcom's express prior written
++ * consent.
++ */
++
++#ifndef _VC_MEM_H
++#define _VC_MEM_H
++
++#include <linux/ioctl.h>
++
++#define VC_MEM_IOC_MAGIC  'v'
++
++#define VC_MEM_IOC_MEM_PHYS_ADDR    _IOR(VC_MEM_IOC_MAGIC, 0, unsigned long)
++#define VC_MEM_IOC_MEM_SIZE         _IOR(VC_MEM_IOC_MAGIC, 1, unsigned int)
++#define VC_MEM_IOC_MEM_BASE         _IOR(VC_MEM_IOC_MAGIC, 2, unsigned int)
++#define VC_MEM_IOC_MEM_LOAD         _IOR(VC_MEM_IOC_MAGIC, 3, unsigned int)
++
++#ifdef __KERNEL__
++#define VC_MEM_TO_ARM_ADDR_MASK 0x3FFFFFFF
++
++extern unsigned long mm_vc_mem_phys_addr;
++extern unsigned int  mm_vc_mem_size;
++extern int vc_mem_get_current_size(void);
++#endif
++
++#ifdef CONFIG_COMPAT
++#define VC_MEM_IOC_MEM_PHYS_ADDR32  _IOR(VC_MEM_IOC_MAGIC, 0, compat_ulong_t)
++#endif
++
++#endif  /* _VC_MEM_H */

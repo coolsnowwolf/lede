@@ -1,0 +1,90 @@
+From cef4ba037209392aa6437357c27ba7c450936e36 Mon Sep 17 00:00:00 2001
+From: Ram Chandrasekar <rkumbako@codeaurora.org>
+Date: Mon, 7 May 2018 11:54:08 -0600
+Subject: [PATCH] drivers: thermal: step_wise: add support for hysteresis
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Step wise governor increases the mitigation level when the temperature
+goes above a threshold and will decrease the mitigation when the
+temperature falls below the threshold. If it were a case, where the
+temperature hovers around a threshold, the mitigation will be applied
+and removed at every iteration. This reaction to the temperature is
+inefficient for performance.
+
+The use of hysteresis temperature could avoid this ping-pong of
+mitigation by relaxing the mitigation to happen only when the
+temperature goes below this lower hysteresis value.
+
+Signed-off-by: Ram Chandrasekar <rkumbako@codeaurora.org>
+Signed-off-by: Lina Iyer <ilina@codeaurora.org>
+
+drivers: thermal: step_wise: avoid throttling at hysteresis temperature after dropping below it
+
+Signed-off-by: Serge Schneider <serge@raspberrypi.org>
+
+Fix hysteresis support in gov_step_wise.c
+
+Directly get hyst value instead of going through an
+optional and, now, unimplemented function.
+
+Signed-off-by: Jürgen Kreileder <jk@blackdown.de>
+---
+ drivers/thermal/gov_step_wise.c | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+--- a/drivers/thermal/gov_step_wise.c
++++ b/drivers/thermal/gov_step_wise.c
+@@ -17,11 +17,11 @@
+ #include "thermal_core.h"
+ 
+ /*
+- * If the temperature is higher than a trip point,
++ * If the temperature is higher than a hysteresis temperature,
+  *    a. if the trend is THERMAL_TREND_RAISING, use higher cooling
+  *       state for this trip point
+  *    b. if the trend is THERMAL_TREND_DROPPING, do nothing
+- * If the temperature is lower than a trip point,
++ * If the temperature is lower than a hysteresis temperature,
+  *    a. if the trend is THERMAL_TREND_RAISING, do nothing
+  *    b. if the trend is THERMAL_TREND_DROPPING, use lower cooling
+  *       state for this trip point, if the cooling state already
+@@ -74,19 +74,35 @@ static void thermal_zone_trip_update(str
+ 	int trip_id = thermal_zone_trip_id(tz, trip);
+ 	struct thermal_instance *instance;
+ 	bool throttle = false;
++	int hyst_temp;
+ 
+ 	if (tz->temperature >= trip_threshold) {
+ 		throttle = true;
+ 		trace_thermal_zone_trip(tz, trip_id, trip->type);
+ 	}
+ 
+-	dev_dbg(&tz->device, "Trip%d[type=%d,temp=%d]:trend=%d,throttle=%d\n",
+-		trip_id, trip->type, trip_threshold, trend, throttle);
++	hyst_temp = trip->temperature - trip->hysteresis;
++
++	dev_dbg(&tz->device,
++		"Trip%d[type=%d,temp=%d,hyst=%d]:trend=%d,throttle=%d\n",
++		trip_id, trip->type, trip->temperature, hyst_temp, trend, throttle);
+ 
+ 	list_for_each_entry(instance, &td->thermal_instances, trip_node) {
+ 		int old_target;
+ 
+ 		old_target = instance->target;
++		throttle = false;
++		/*
++		 * Lower the mitigation only if the temperature
++		 * goes below the hysteresis temperature.
++		 */
++		if (tz->temperature >= trip->temperature ||
++		   (tz->temperature >= hyst_temp &&
++		   old_target == instance->upper)) {
++			throttle = true;
++			trace_thermal_zone_trip(tz, trip_id, trip->type);
++		}
++
+ 		instance->target = get_target_state(instance, trend, throttle);
+ 
+ 		dev_dbg(&instance->cdev->device, "old_target=%d, target=%ld\n",

@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fullconenat
-PKG_RELEASE:=10
+PKG_RELEASE:=1
 
-PKG_SOURCE_DATE:=2022-02-13
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_URL:=https://github.com/llccd/netfilter-full-cone-nat.git
-PKG_SOURCE_VERSION:=108a36cbdca17e68c9e6e7fd5e26156a88f738e8
-PKG_MIRROR_HASH:=00d749235271dee194dcd23c22e6e85207ea90192a62a110b2af0b4e4de1971f
+PKG_SOURCE_DATE:=2023-01-01
+PKG_SOURCE_URL:=https://github.com/llccd/netfilter-full-cone-nat
+PKG_SOURCE_VERSION:=74c5e6f3c7faaf33ece451697537c81781781c20
+PKG_MIRROR_HASH:=3c254f1edba28eafdccac9cf95eb550fd2b05eeaaec8a02c73e1dcd2f98f9d93
 
 PKG_LICENSE:=GPL-2.0
 PKG_LICENSE_FILES:=LICENSE
@@ -22,19 +22,6 @@ PKG_MAINTAINER:=Chion Tang <tech@chionlab.moe>
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
-
-define Package/iptables-mod-fullconenat
-  SUBMENU:=Firewall
-  SECTION:=net
-  CATEGORY:=Network
-  TITLE:=FULLCONENAT iptables extension
-  DEPENDS:=+libxtables +kmod-ipt-fullconenat
-endef
-
-define Package/iptables-mod-fullconenat/install
-	$(INSTALL_DIR) $(1)/usr/lib/iptables
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libipt_FULLCONENAT.so $(1)/usr/lib/iptables
-endef
 
 define KernelPackage/ipt-fullconenat
   SUBMENU:=Netfilter Extensions
@@ -47,13 +34,21 @@ define KernelPackage/ipt-fullconenat
   AUTOLOAD:=$(call AutoProbe,xt_FULLCONENAT)
 endef
 
-include $(INCLUDE_DIR)/kernel-defaults.mk
+define Package/iptables-mod-fullconenat
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=Firewall
+  TITLE:=FULLCONENAT iptables extension
+  DEPENDS:=+libxtables +kmod-ipt-fullconenat
+endef
+
+define Package/iptables-mod-fullconenat/install
+	$(INSTALL_DIR) $(1)/usr/lib/iptables
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/libipt_FULLCONENAT.so $(1)/usr/lib/iptables
+endef
 
 define Build/Compile
-	+$(KERNEL_MAKE) $(PKG_JOBS) \
-		M="$(PKG_BUILD_DIR)" \
-		EXTRA_CFLAGS="$(BUILDFLAGS)" \
-		modules
+	+$(KERNEL_MAKE) M="$(PKG_BUILD_DIR)" modules
 	$(call Build/Compile/Default)
 endef
 

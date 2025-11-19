@@ -6,12 +6,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nftables
-PKG_VERSION:=1.0.6
+PKG_VERSION:=1.1.1
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://netfilter.org/projects/$(PKG_NAME)/files
-PKG_HASH:=2407430ddd82987670e48dc2fda9e280baa8307abec04ab18d609df3db005e4c
+PKG_HASH:=6358830f3a64f31e39b0ad421d7dadcd240b72343ded48d8ef13b8faf204865a
 
 PKG_MAINTAINER:=
 PKG_LICENSE:=GPL-2.0
@@ -19,6 +19,8 @@ PKG_LICENSE_FILES:=COPYING
 
 PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
+
+PKG_BUILD_FLAGS:=lto
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -36,7 +38,7 @@ define Package/nftables/Default
   CATEGORY:=Network
   SUBMENU:=Firewall
   TITLE:=nftables userspace utility
-  DEPENDS:=+kmod-nft-core +libnftnl
+  DEPENDS:=+kmod-nft-core +libnftnl +kmod-nft-fullcone
   URL:=http://netfilter.org/projects/nftables/
   PROVIDES:=nftables
 endef
@@ -59,9 +61,6 @@ endef
 ifeq ($(BUILD_VARIANT),json)
   CONFIGURE_ARGS += --with-json
 endif
-
-TARGET_CFLAGS += -flto
-TARGET_LDFLAGS += -flto
 
 define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib $(1)/usr/include

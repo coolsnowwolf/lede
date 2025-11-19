@@ -13,7 +13,7 @@ PKG_VERSION:=8.5.0
 PKG_RELEASE:=1
 
 PKG_SOURCE:=cryptopp$(subst .,,$(PKG_VERSION)).zip
-PKG_SOURCE_URL:=https://www.cryptopp.com/
+PKG_SOURCE_URL:=https://github.com/weidai11/cryptopp/releases/download/CRYPTOPP_$(subst .,_,$(PKG_VERSION))/
 PKG_HASH:=95fc50d59488ebf61a735cce2b2ec2c2561fc682077c7b496273d65a1ed93d9e
 
 PKG_FIXUP:=autoreconf
@@ -38,9 +38,19 @@ define Package/libcryptopp/description
   use of templates and abstract base classes.
 endef
 
+PKG_BUILD_FILE:=cryptopp-autotools$(subst .,,$(PKG_VERSION)).zip
+define Download/autotools
+  URL:=https://github.com/noloader/cryptopp-autotools/releases/download/CRYPTOPP_$(subst .,_,$(PKG_VERSION))/
+  FILE:=$(PKG_BUILD_FILE)
+  HASH:=91e06c53b517753f0ba02b92bb259e0ee929ebc6ad4f8b5c190d39ba407d3fbe
+endef
+$(eval $(call Download,autotools))
+
 define Build/Prepare
-	$(Build/Prepare/Default)
+	$(PKG_UNPACK)
+	unzip -q -d $(PKG_BUILD_DIR) $(DL_DIR)/$(PKG_BUILD_FILE)
 	cd $(PKG_BUILD_DIR); rm -f GNUmakefile GNUmakefile-cross
+	$(Build/Patch)
 endef
 
 define Build/InstallDev

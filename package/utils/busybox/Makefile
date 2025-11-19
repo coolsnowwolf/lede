@@ -5,17 +5,21 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=busybox
-PKG_VERSION:=1.36.0
+PKG_VERSION:=1.36.1
 PKG_RELEASE:=1
 PKG_FLAGS:=essential
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://www.busybox.net/downloads \
-		http://sources.buildroot.net
-PKG_HASH:=542750c8af7cb2630e201780b4f99f3dcceeb06f505b479ec68241c1e6af61a5
+		https://sources.buildroot.net/$(PKG_NAME)
+PKG_HASH:=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
 
 PKG_BUILD_DEPENDS:=BUSYBOX_CONFIG_PAM:libpam
 PKG_BUILD_PARALLEL:=1
+ifeq ($(CONFIG_SOFT_FLOAT),)
+  PKG_BUILD_FLAGS+=no-mips16
+endif
+
 PKG_CHECK_FORMAT_SECURITY:=0
 
 PKG_LICENSE:=GPL-2.0

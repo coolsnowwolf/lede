@@ -1,0 +1,82 @@
+From 3eecda8f1b9f2cb03234208f06592bc88ededc37 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 7 Mar 2022 16:18:55 +0000
+Subject: [PATCH] xhci: add quirk for host controllers that don't update
+ endpoint DCS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Seen on a VLI VL805 PCIe to USB controller. For non-stream endpoints
+at least, if the xHC halts on a particular TRB due to an error then
+the DCS field in the Out Endpoint Context maintained by the hardware
+is not updated with the current cycle state.
+
+Using the quirk XHCI_EP_CTX_BROKEN_DCS and instead fetch the DCS bit
+from the TRB that the xHC stopped on.
+
+[ bjorn: rebased to v5.14-rc2 ]
+
+Link: https://github.com/raspberrypi/linux/issues/3060
+Cc: stable@vger.kernel.org
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.org>
+Signed-off-by: Bjørn Mork <bjorn@mork.no>
+Signed-off-by: Mathias Nyman <mathias.nyman@linux.intel.com>
+Link: https://lore.kernel.org/r/20211008092547.3996295-3-mathias.nyman@linux.intel.com
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/usb/host/xhci-pci.c  |  1 +
+ drivers/usb/host/xhci-ring.c | 23 ++++++++++++++++++++++-
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -454,6 +454,7 @@ static void xhci_pci_quirks(struct devic
+ 	if (pdev->vendor == PCI_VENDOR_ID_VIA && pdev->device == PCI_DEVICE_ID_VIA_VL805) {
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
+ 		xhci->quirks |= XHCI_TRB_OVERFETCH;
++		xhci->quirks |= XHCI_EP_CTX_BROKEN_DCS;
+ 	}
+ 
+ 	if (pdev->vendor == PCI_VENDOR_ID_ASMEDIA &&
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -637,8 +637,11 @@ static int xhci_move_dequeue_past_td(str
+ 	struct xhci_ring *ep_ring;
+ 	struct xhci_command *cmd;
+ 	struct xhci_segment *new_seg;
++	struct xhci_segment *halted_seg = NULL;
+ 	union xhci_trb *new_deq;
+ 	int new_cycle;
++	union xhci_trb *halted_trb;
++	int index = 0;
+ 	dma_addr_t addr;
+ 	u64 hw_dequeue;
+ 	bool cycle_found = false;
+@@ -657,7 +660,25 @@ static int xhci_move_dequeue_past_td(str
+ 	hw_dequeue = xhci_get_hw_deq(xhci, dev, ep_index, stream_id);
+ 	new_seg = ep_ring->deq_seg;
+ 	new_deq = ep_ring->dequeue;
+-	new_cycle = hw_dequeue & 0x1;
++
++	/*
++	 * Quirk: xHC write-back of the DCS field in the hardware dequeue
++	 * pointer is wrong - use the cycle state of the TRB pointed to by
++	 * the dequeue pointer.
++	 */
++	if (xhci->quirks & XHCI_EP_CTX_BROKEN_DCS &&
++	    !(ep->ep_state & EP_HAS_STREAMS))
++		halted_seg = trb_in_td(xhci, td, hw_dequeue & ~0xf, false);
++	if (halted_seg) {
++		index = ((dma_addr_t)(hw_dequeue & ~0xf) - halted_seg->dma) /
++			 sizeof(*halted_trb);
++		halted_trb = &halted_seg->trbs[index];
++		new_cycle = halted_trb->generic.field[3] & 0x1;
++		xhci_dbg(xhci, "Endpoint DCS = %d TRB index = %d cycle = %d\n",
++			 (u8)(hw_dequeue & 0x1), index, new_cycle);
++	} else {
++		new_cycle = hw_dequeue & 0x1;
++	}
+ 
+ 	/*
+ 	 * We want to find the pointer, segment and cycle state of the new trb

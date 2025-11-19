@@ -1,0 +1,102 @@
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Wed, 27 Oct 2024 16:34:11 +0400
+Subject: [PATCH] wifi: ath11k: update hif and pci ops for QCN6122
+
+Add HIF and PCI ops for QCN6122. QCN6122 by default uses DP window 3.
+However, this is configurable, so let's introduce a function to do that and
+follow the existing register access code for (hybrid)AHB devices and use 
+DP window 1.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+--- a/drivers/net/wireless/ath/ath11k/ahb.c
++++ b/drivers/net/wireless/ath/ath11k/ahb.c
+@@ -762,6 +762,18 @@ static int ath11k_ahb_hif_resume(struct
+ 	return 0;
+ }
+ 
++static void ath11k_ahb_config_static_window_qcn6122(struct ath11k_base *ab)
++{
++	u32 umac_window = FIELD_GET(ATH11K_PCI_WINDOW_VALUE_MASK, HAL_SEQ_WCSS_UMAC_OFFSET);
++	u32 ce_window = FIELD_GET(ATH11K_PCI_WINDOW_VALUE_MASK, HAL_CE_WFSS_CE_REG_BASE);
++	u32 window;
++
++	window = (umac_window) | (ce_window << 6);
++
++	iowrite32(ATH11K_PCI_WINDOW_ENABLE_BIT | window,
++		  ab->mem + ATH11K_PCI_WINDOW_REG_ADDRESS);
++}
++
+ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_ipq8074 = {
+ 	.start = ath11k_ahb_start,
+ 	.stop = ath11k_ahb_stop,
+@@ -794,6 +806,24 @@ static const struct ath11k_hif_ops ath11
+ 	.ce_irq_disable = ath11k_pci_disable_ce_irqs_except_wake_irq,
+ };
+ 
++static const struct ath11k_hif_ops ath11k_ahb_hif_ops_qcn6122 = {
++	.start = ath11k_pcic_start,
++	.stop = ath11k_pcic_stop,
++	.read32 = ath11k_pcic_read32,
++	.write32 = ath11k_pcic_write32,
++	.read = NULL,
++	.irq_enable = ath11k_pcic_ext_irq_enable,
++	.irq_disable = ath11k_pcic_ext_irq_disable,
++	.get_msi_address =  ath11k_pcic_get_msi_address,
++	.get_user_msi_vector = ath11k_pcic_get_user_msi_assignment,
++	.map_service_to_pipe = ath11k_pcic_map_service_to_pipe,
++	.power_down = ath11k_ahb_power_down,
++	.power_up = ath11k_ahb_power_up,
++	.ce_irq_enable = ath11k_pci_enable_ce_irqs_except_wake_irq,
++	.ce_irq_disable = ath11k_pci_disable_ce_irqs_except_wake_irq,
++	.config_static_window = ath11k_ahb_config_static_window_qcn6122,
++};
++
+ static int ath11k_core_get_rproc(struct ath11k_base *ab)
+ {
+ 	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+@@ -1115,6 +1145,10 @@ static int ath11k_ahb_probe(struct platf
+ 		hif_ops = &ath11k_ahb_hif_ops_wcn6750;
+ 		pci_ops = &ath11k_ahb_pci_ops_wcn6750;
+ 		break;
++	case ATH11K_HW_QCN6122_HW10:
++		hif_ops = &ath11k_ahb_hif_ops_qcn6122;
++		pci_ops = &ath11k_ahb_pci_ops_wcn6750;
++		break;
+ 	default:
+ 		dev_err(&pdev->dev, "unsupported device type %d\n", hw_rev);
+ 		return -EOPNOTSUPP;
+--- a/drivers/net/wireless/ath/ath11k/hif.h
++++ b/drivers/net/wireless/ath/ath11k/hif.h
+@@ -30,6 +30,7 @@ struct ath11k_hif_ops {
+ 	void (*ce_irq_enable)(struct ath11k_base *ab);
+ 	void (*ce_irq_disable)(struct ath11k_base *ab);
+ 	void (*get_ce_msi_idx)(struct ath11k_base *ab, u32 ce_id, u32 *msi_idx);
++	void (*config_static_window)(struct ath11k_base *ab);
+ };
+ 
+ static inline void ath11k_hif_ce_irq_enable(struct ath11k_base *ab)
+@@ -145,4 +146,12 @@ static inline void ath11k_get_ce_msi_idx
+ 		*msi_data_idx = ce_id;
+ }
+ 
++static inline void ath11k_hif_config_static_window(struct ath11k_base *ab)
++{
++	if (!ab->hw_params.static_window_map || !ab->hif.ops->config_static_window)
++		return;
++
++	ab->hif.ops->config_static_window(ab);
++}
++
+ #endif /* _HIF_H_ */
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -2184,6 +2184,8 @@ static int ath11k_qmi_request_device_inf
+ 	ab->mem = bar_addr_va;
+ 	ab->mem_len = resp.bar_size;
+ 
++	ath11k_hif_config_static_window(ab);
++
+ 	return 0;
+ out:
+ 	return ret;

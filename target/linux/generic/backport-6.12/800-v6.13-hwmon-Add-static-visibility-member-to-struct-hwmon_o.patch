@@ -1,0 +1,88 @@
+From 79bc0af904db647979c735563299c9b0d820e432 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Thu, 10 Oct 2024 21:35:42 +0200
+Subject: [PATCH] hwmon: Add static visibility member to struct hwmon_ops
+
+Several drivers return the same static value in their is_visible
+callback, what results in code duplication. Therefore add an option
+for drivers to specify a static visibility directly.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Message-ID: <89690b81-2c73-47ae-9ae9-45c77b45ca0c@gmail.com>
+groeck: Renamed hwmon_ops_is_visible -> hwmon_is_visible
+Signed-off-by: Guenter Roeck <linux@roeck-us.net>
+---
+ drivers/hwmon/hwmon.c | 19 +++++++++++++++----
+ include/linux/hwmon.h |  5 ++++-
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+--- a/drivers/hwmon/hwmon.c
++++ b/drivers/hwmon/hwmon.c
+@@ -145,6 +145,17 @@ static const struct class hwmon_class =
+ 
+ static DEFINE_IDA(hwmon_ida);
+ 
++static umode_t hwmon_is_visible(const struct hwmon_ops *ops,
++				const void *drvdata,
++				enum hwmon_sensor_types type,
++				u32 attr, int channel)
++{
++	if (ops->visible)
++		return ops->visible;
++
++	return ops->is_visible(drvdata, type, attr, channel);
++}
++
+ /* Thermal zone handling */
+ 
+ /*
+@@ -267,8 +278,8 @@ static int hwmon_thermal_register_sensor
+ 			int err;
+ 
+ 			if (!(info[i]->config[j] & HWMON_T_INPUT) ||
+-			    !chip->ops->is_visible(drvdata, hwmon_temp,
+-						   hwmon_temp_input, j))
++			    !hwmon_is_visible(chip->ops, drvdata, hwmon_temp,
++					      hwmon_temp_input, j))
+ 				continue;
+ 
+ 			err = hwmon_thermal_add_sensor(dev, j);
+@@ -506,7 +517,7 @@ static struct attribute *hwmon_genattr(c
+ 	const char *name;
+ 	bool is_string = is_string_attr(type, attr);
+ 
+-	mode = ops->is_visible(drvdata, type, attr, index);
++	mode = hwmon_is_visible(ops, drvdata, type, attr, index);
+ 	if (!mode)
+ 		return ERR_PTR(-ENOENT);
+ 
+@@ -1033,7 +1044,7 @@ hwmon_device_register_with_info(struct d
+ 	if (!dev || !name || !chip)
+ 		return ERR_PTR(-EINVAL);
+ 
+-	if (!chip->ops || !chip->ops->is_visible || !chip->info)
++	if (!chip->ops || !(chip->ops->visible || chip->ops->is_visible) || !chip->info)
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	return __hwmon_device_register(dev, name, drvdata, chip, extra_groups);
+--- a/include/linux/hwmon.h
++++ b/include/linux/hwmon.h
+@@ -368,7 +368,9 @@ enum hwmon_intrusion_attributes {
+ 
+ /**
+  * struct hwmon_ops - hwmon device operations
+- * @is_visible: Callback to return attribute visibility. Mandatory.
++ * @visible:	Static visibility. If non-zero, 'is_visible' is ignored.
++ * @is_visible: Callback to return attribute visibility. Mandatory unless
++ *		'visible' is non-zero.
+  *		Parameters are:
+  *		@const void *drvdata:
+  *			Pointer to driver-private data structure passed
+@@ -412,6 +414,7 @@ enum hwmon_intrusion_attributes {
+  *		The function returns 0 on success or a negative error number.
+  */
+ struct hwmon_ops {
++	umode_t visible;
+ 	umode_t (*is_visible)(const void *drvdata, enum hwmon_sensor_types type,
+ 			      u32 attr, int channel);
+ 	int (*read)(struct device *dev, enum hwmon_sensor_types type,

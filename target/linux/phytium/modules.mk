@@ -16,8 +16,8 @@ $(eval $(call KernelPackage,hwmon-phytium))
 define KernelPackage/drm-phytium
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM Support for Phytium Graphics Card
-  DEPENDS:=@TARGET_phytium @DISPLAY_SUPPORT +kmod-drm +kmod-drm-kms-helper \
-	+(LINUX_5_10||LINUX_6_1||LINUX_6_3||LINUX_6_4||LINUX_6_5||LINUX_6_6):kmod-acpi-video
+  DEPENDS:=@TARGET_phytium @DISPLAY_SUPPORT +kmod-drm \
+	+kmod-drm-kms-helper +LINUX_5_10:kmod-acpi-video
   KCONFIG:=CONFIG_DRM_PHYTIUM
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/phytium/phytium-dc-drm.ko
   AUTOLOAD:=$(call AutoProbe,phytium-dc-drm)

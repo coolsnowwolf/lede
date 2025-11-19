@@ -559,9 +559,14 @@ static int mhi_netdev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 static void mhi_netdev_get_drvinfo (struct net_device *ndev, struct ethtool_drvinfo *info)
 {
 	//struct mhi_netdev *mhi_netdev = ndev_to_mhi(ndev);
-
-	strlcpy (info->driver, "pcie_mhi", sizeof info->driver);
-	strlcpy (info->version, PCIE_MHI_DRIVER_VERSION, sizeof info->version);
+	/* strlcpy() is deprecated in kernel 6.8.0+, using strscpy instead */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6,8,0))
+	strlcpy(info->driver, "pcie_mhi", sizeof(info->driver));
+	strlcpy(info->version, PCIE_MHI_DRIVER_VERSION, sizeof(info->version));
+#else
+	strscpy(info->driver, "pcie_mhi", sizeof(info->driver));
+	strscpy(info->version, PCIE_MHI_DRIVER_VERSION, sizeof(info->version));
+#endif
 }
 
 static const struct ethtool_ops mhi_netdev_ethtool_ops = {

@@ -1,0 +1,106 @@
+From 7bfe3404a02923ca3858abf56b18a098b4be33b2 Mon Sep 17 00:00:00 2001
+From: Christophe Roullier <christophe.roullier@st.com>
+Date: Wed, 10 Nov 2021 17:39:40 +0100
+Subject: [PATCH] net: ethernet: stmmac: stm32: support the phy-supply
+ regulator binding
+
+Configure the phy regulator if defined by the "phy-supply" DT phandle.
+
+Signed-off-by: Christophe Roullier <christophe.roullier@foss.st.com>
+---
+ .../net/ethernet/stmicro/stmmac/dwmac-stm32.c | 51 ++++++++++++++++++-
+ 1 file changed, 50 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-stm32.c
+@@ -14,6 +14,7 @@
+ #include <linux/of_net.h>
+ #include <linux/phy.h>
+ #include <linux/platform_device.h>
++#include <linux/regulator/consumer.h>
+ #include <linux/pm_wakeirq.h>
+ #include <linux/regmap.h>
+ #include <linux/slab.h>
+@@ -103,6 +104,7 @@ struct stm32_dwmac {
+ 	u32 mode_reg;		 /* MAC glue-logic mode register */
+ 	u32 mode_mask;
+ 	struct regmap *regmap;
++	struct regulator *regulator;
+ 	u32 speed;
+ 	const struct stm32_ops *ops;
+ 	struct device *dev;
+@@ -443,6 +445,16 @@ static int stm32_dwmac_parse_data(struct
+ 		}
+ 	}
+ 
++	dwmac->regulator = devm_regulator_get_optional(dev, "phy");
++	if (IS_ERR(dwmac->regulator)) {
++		if (PTR_ERR(dwmac->regulator) == -EPROBE_DEFER) {
++			dev_dbg(dev, "phy regulator is not available yet, deferred probing\n");
++			return -EPROBE_DEFER;
++		}
++		dev_dbg(dev, "no regulator found\n");
++		dwmac->regulator = NULL;
++	}
++
+ 	return err;
+ }
+ 
+@@ -508,6 +520,28 @@ static int stm32mp1_parse_data(struct st
+ 	return err;
+ }
+ 
++static int phy_power_on(struct stm32_dwmac *bsp_priv, bool enable)
++{
++	int ret;
++	struct device *dev = bsp_priv->dev;
++
++	if (!bsp_priv->regulator)
++		return 0;
++
++	if (enable) {
++		ret = regulator_enable(bsp_priv->regulator);
++		if (ret)
++			dev_err(dev, "fail to enable phy-supply\n");
++	} else {
++		ret = regulator_disable(bsp_priv->regulator);
++		if (ret)
++			dev_err(dev, "fail to disable phy-supply\n");
++	}
++
++	return 0;
++}
++
++
+ static int stm32_dwmac_probe(struct platform_device *pdev)
+ {
+ 	struct plat_stmmacenet_data *plat_dat;
+@@ -549,12 +583,18 @@ static int stm32_dwmac_probe(struct plat
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
++	ret = phy_power_on(plat_dat->bsp_priv, true);
+ 	if (ret)
+ 		goto err_clk_disable;
+ 
++	ret = stmmac_dvr_probe(&pdev->dev, plat_dat, &stmmac_res);
++	if (ret)
++		goto err_gmac_powerdown;
++
+ 	return 0;
+ 
++err_gmac_powerdown:
++	phy_power_on(plat_dat->bsp_priv, false);
+ err_clk_disable:
+ 	stm32_dwmac_clk_disable(dwmac, false);
+ 
+@@ -575,6 +615,8 @@ static void stm32_dwmac_remove(struct pl
+ 		dev_pm_clear_wake_irq(&pdev->dev);
+ 		device_init_wakeup(&pdev->dev, false);
+ 	}
++
++	phy_power_on(priv->plat->bsp_priv, false);
+ }
+ 
+ static int stm32mp1_suspend(struct stm32_dwmac *dwmac)

@@ -1,0 +1,56 @@
+From b3f79468c90d8770f007d628a1e32b2d5d44a5c2 Mon Sep 17 00:00:00 2001
+From: Sander Vanheule <sander@svanheule.net>
+Date: Sat, 15 May 2021 11:57:32 +0200
+Subject: [PATCH] gpio: regmap: Bypass cache for shadowed outputs
+
+Some chips have the read-only input and write-only output data registers
+aliased to the same offset, but do not perform direction multiplexing on
+writes. Upon writing the register, this then always updates the output
+value, even when the pin is configured as input. As a result it is not
+safe to perform read-modify-writes on output pins, when other pins are
+still configured as input.
+
+For example, on a bit-banged I2C bus, where the lines are switched
+between out-low and in (with external pull-up)
+
+    OUT(L) IN     OUT(H)
+SCK ....../''''''|''''''
+
+SDA '''''''''\..........
+             ^   ^- SCK switches to direction to OUT, but now has a high
+             |      value, breaking the clock.
+             |
+             \- Perform RMW to update SDA. This reads the current input
+                value for SCK, updates the SDA value and writes back a 1
+                for SCK as well.
+
+If a register is used for both the data input and data output (and is
+not marked as volatile) the driver should ensure the cache is not
+updated on register reads. This ensures proper functioning of writing
+the output register with regmap_update_bits(), which will then use and
+update the cache only on register writes.
+
+Signed-off-by: Sander Vanheule <sander@svanheule.net>
+---
+ drivers/gpio/gpio-regmap.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpio/gpio-regmap.c
++++ b/drivers/gpio/gpio-regmap.c
+@@ -74,7 +74,15 @@ static int gpio_regmap_get(struct gpio_c
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = regmap_read(gpio->regmap, reg, &val);
++	/*
++	 * Ensure we don't spoil the register cache with pin input values and
++	 * perform a bypassed read. This way the cache (if any) is only used and
++	 * updated on register writes.
++	 */
++	if (gpio->reg_dat_base == gpio->reg_set_base)
++		ret = regmap_read_bypassed(gpio->regmap, reg, &val);
++	else
++		ret = regmap_read(gpio->regmap, reg, &val);
+ 	if (ret)
+ 		return ret;
+ 

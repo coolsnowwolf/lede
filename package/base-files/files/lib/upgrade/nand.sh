@@ -111,7 +111,7 @@ nand_remove_ubiblock() {
 
 	local ubiblk="ubiblock${ubivol:3}"
 	if [ -e "/dev/$ubiblk" ]; then
-		umount "/dev/$ubiblk" 2>/dev/null && echo "unmounted /dev/$ubiblk" || :
+		umount "/dev/$ubiblk" && echo "unmounted /dev/$ubiblk" || :
 		if ! ubiblock -r "/dev/$ubivol"; then
 			echo "cannot remove $ubiblk"
 			return 1

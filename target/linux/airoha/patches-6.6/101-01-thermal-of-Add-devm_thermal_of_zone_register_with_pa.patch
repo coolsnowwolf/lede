@@ -1,0 +1,210 @@
+From 1f194995c3648e20da53137d4c9110b39e779f41 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 18 Oct 2024 11:34:35 +0200
+Subject: [PATCH 2/3] thermal: of: Add
+ devm_thermal_of_zone_register_with_params() variant
+
+Commit b1ae92dcfa8e ("thermal: core: Make struct thermal_zone_device
+definition internal") moved the thermal_zone_device struct from global
+thermal.h to internal thermal_core.h making the internal variables of
+the struct not accessible from the user drivers (without inclusing
+thermal_core.h).
+
+One case where the internal variables might be needed is for the
+thermal_zone_params in the context of OF probe.
+
+In such case a thermal driver might have default params that can only be
+parsed at runtime (example present in EFUSE or derived from other values)
+and wants to update the values in the thermal_zone_params for the
+thermal device. (to use the helper like get_slope() or get_offset())
+
+To account for this scenario, introduce a variant of
+devm_thermal_of_zone_register(),
+devm_thermal_of_zone_register_with_params(), that takes and additional
+variable and permits to register the thermal device with default
+thermal_zone_params.
+
+To follow OF implementation, these params are only treated as default
+params and are ignored if a related one is defined in DT. (example a
+slope or offset value defined in DT have priority to the default one
+passed in a thermal_device_params struct)
+
+This permits to support both implementation, use the helpers and expose
+these values in sysfs.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/thermal/thermal_of.c | 67 +++++++++++++++++++++++++++++-------
+ include/linux/thermal.h      | 13 +++++++
+ 2 files changed, 68 insertions(+), 12 deletions(-)
+
+--- a/drivers/thermal/thermal_of.c
++++ b/drivers/thermal/thermal_of.c
+@@ -246,7 +246,7 @@ static void thermal_of_parameters_init(s
+ {
+ 	int coef[2];
+ 	int ncoef = ARRAY_SIZE(coef);
+-	int prop, ret;
++	int prop;
+ 
+ 	tzp->no_hwmon = true;
+ 
+@@ -258,14 +258,11 @@ static void thermal_of_parameters_init(s
+ 	 * thermal zone. Thus, we are considering only the first two
+ 	 * values as slope and offset.
+ 	 */
+-	ret = of_property_read_u32_array(np, "coefficients", coef, ncoef);
+-	if (ret) {
+-		coef[0] = 1;
+-		coef[1] = 0;
++	if (!of_property_read_u32_array(np, "coefficients", coef, ncoef)) {
++		tzp->slope = coef[0];
++		tzp->offset = coef[1];
+ 	}
+ 
+-	tzp->slope = coef[0];
+-	tzp->offset = coef[1];
+ }
+ 
+ static struct device_node *thermal_of_zone_get_by_name(struct thermal_zone_device *tz)
+@@ -459,10 +456,15 @@ static void thermal_of_zone_unregister(s
+  * zone properties and registers new thermal zone with those
+  * properties.
+  *
++ * The passed thermal zone params are treated as default values and ignored if
++ * the related property is found in DT. (DT params have priority to
++ * default values)
++ *
+  * @sensor: A device node pointer corresponding to the sensor in the device tree
+  * @id: An integer as sensor identifier
+  * @data: A private data to be stored in the thermal zone dedicated private area
+  * @ops: A set of thermal sensor ops
++ * @tzp: a pointer to the default thermal zone params structure associated with the sensor
+  *
+  * Return: a valid thermal zone structure pointer on success.
+  * 	- EINVAL: if the device tree thermal description is malformed
+@@ -470,11 +472,11 @@ static void thermal_of_zone_unregister(s
+  *	- Other negative errors are returned by the underlying called functions
+  */
+ static struct thermal_zone_device *thermal_of_zone_register(struct device_node *sensor, int id, void *data,
+-							    const struct thermal_zone_device_ops *ops)
++							    const struct thermal_zone_device_ops *ops,
++							    struct thermal_zone_params *tzp)
+ {
+ 	struct thermal_zone_device *tz;
+ 	struct thermal_trip *trips;
+-	struct thermal_zone_params tzp = {};
+ 	struct thermal_zone_device_ops *of_ops;
+ 	struct device_node *np;
+ 	int delay, pdelay;
+@@ -509,7 +511,7 @@ static struct thermal_zone_device *therm
+ 		goto out_kfree_trips;
+ 	}
+ 
+-	thermal_of_parameters_init(np, &tzp);
++	thermal_of_parameters_init(np, tzp);
+ 
+ 	of_ops->bind = thermal_of_bind;
+ 	of_ops->unbind = thermal_of_unbind;
+@@ -517,7 +519,7 @@ static struct thermal_zone_device *therm
+ 	mask = GENMASK_ULL((ntrips) - 1, 0);
+ 
+ 	tz = thermal_zone_device_register_with_trips(np->name, trips, ntrips,
+-						     mask, data, of_ops, &tzp,
++						     mask, data, of_ops, tzp,
+ 						     pdelay, delay);
+ 	if (IS_ERR(tz)) {
+ 		ret = PTR_ERR(tz);
+@@ -572,6 +574,7 @@ static int devm_thermal_of_zone_match(st
+ struct thermal_zone_device *devm_thermal_of_zone_register(struct device *dev, int sensor_id, void *data,
+ 							  const struct thermal_zone_device_ops *ops)
+ {
++	struct thermal_zone_params tzp = { .slope = 1 };
+ 	struct thermal_zone_device **ptr, *tzd;
+ 
+ 	ptr = devres_alloc(devm_thermal_of_zone_release, sizeof(*ptr),
+@@ -579,7 +582,7 @@ struct thermal_zone_device *devm_thermal
+ 	if (!ptr)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	tzd = thermal_of_zone_register(dev->of_node, sensor_id, data, ops);
++	tzd = thermal_of_zone_register(dev->of_node, sensor_id, data, ops, &tzp);
+ 	if (IS_ERR(tzd)) {
+ 		devres_free(ptr);
+ 		return tzd;
+@@ -593,6 +596,46 @@ struct thermal_zone_device *devm_thermal
+ EXPORT_SYMBOL_GPL(devm_thermal_of_zone_register);
+ 
+ /**
++ * devm_thermal_of_zone_register_with_params - register a thermal tied with the sensor life cycle
++ *					       with default params
++ *
++ * This function is the device version of the thermal_of_zone_register() function.
++ *
++ * @dev: a device structure pointer to sensor to be tied with the thermal zone OF life cycle
++ * @sensor_id: the sensor identifier
++ * @data: a pointer to a private data to be stored in the thermal zone 'devdata' field
++ * @ops: a pointer to the ops structure associated with the sensor
++ * @tzp: a pointer to the default thermal zone params structure associated with the sensor
++ *
++ * The thermal zone params are treated as default values and ignored if the related property is
++ * found in DT. (DT params have priority to default values)
++ */
++struct thermal_zone_device *devm_thermal_of_zone_register_with_params(struct device *dev, int sensor_id,
++								      void *data,
++								      const struct thermal_zone_device_ops *ops,
++								      struct thermal_zone_params *tzp)
++{
++	struct thermal_zone_device **ptr, *tzd;
++
++	ptr = devres_alloc(devm_thermal_of_zone_release, sizeof(*ptr),
++			   GFP_KERNEL);
++	if (!ptr)
++		return ERR_PTR(-ENOMEM);
++
++	tzd = thermal_of_zone_register(dev->of_node, sensor_id, data, ops, tzp);
++	if (IS_ERR(tzd)) {
++		devres_free(ptr);
++		return tzd;
++	}
++
++	*ptr = tzd;
++	devres_add(dev, ptr);
++
++	return tzd;
++}
++EXPORT_SYMBOL_GPL(devm_thermal_of_zone_register_with_params);
++
++/**
+  * devm_thermal_of_zone_unregister - Resource managed version of
+  *				thermal_of_zone_unregister().
+  * @dev: Device for which which resource was allocated.
+--- a/include/linux/thermal.h
++++ b/include/linux/thermal.h
+@@ -263,6 +263,10 @@ struct thermal_zone_params {
+ #ifdef CONFIG_THERMAL_OF
+ struct thermal_zone_device *devm_thermal_of_zone_register(struct device *dev, int id, void *data,
+ 							  const struct thermal_zone_device_ops *ops);
++struct thermal_zone_device *devm_thermal_of_zone_register_with_params(struct device *dev, int id,
++								      void *data,
++								      const struct thermal_zone_device_ops *ops,
++								      struct thermal_zone_params *tzp);
+ 
+ void devm_thermal_of_zone_unregister(struct device *dev, struct thermal_zone_device *tz);
+ 
+@@ -274,6 +278,15 @@ struct thermal_zone_device *devm_thermal
+ {
+ 	return ERR_PTR(-ENOTSUPP);
+ }
++
++static inline
++struct thermal_zone_device *devm_thermal_of_zone_register_with_params(struct device *dev, int id,
++								      void *data,
++								      const struct thermal_zone_device_ops *ops,
++								      struct thermal_zone_params *tzp)
++{
++	return ERR_PTR(-ENOTSUPP);
++}
+ 
+ static inline void devm_thermal_of_zone_unregister(struct device *dev,
+ 						   struct thermal_zone_device *tz)

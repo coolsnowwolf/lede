@@ -1,0 +1,72 @@
+From 1eddc907063295b70ac6d1a47ca1498f9575bb48 Mon Sep 17 00:00:00 2001
+From: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+Date: Thu, 29 Aug 2024 12:55:38 +0200
+Subject: [PATCH] media: vicodec: add support for manual completion
+
+Manually complete the requests: this tests the manual completion
+code.
+
+Signed-off-by: Hans Verkuil <hverkuil-cisco@xs4all.nl>
+---
+ .../media/test-drivers/vicodec/vicodec-core.c | 21 +++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+--- a/drivers/media/test-drivers/vicodec/vicodec-core.c
++++ b/drivers/media/test-drivers/vicodec/vicodec-core.c
+@@ -446,8 +446,10 @@ static void device_run(void *priv)
+ 	ctx->comp_magic_cnt = 0;
+ 	ctx->comp_has_frame = false;
+ 	spin_unlock(ctx->lock);
+-	if (ctx->is_stateless && src_req)
++	if (ctx->is_stateless && src_req) {
+ 		v4l2_ctrl_request_complete(src_req, &ctx->hdl);
++		media_request_manual_complete(src_req);
++	}
+ 
+ 	if (ctx->is_enc)
+ 		v4l2_m2m_job_finish(dev->stateful_enc.m2m_dev, ctx->fh.m2m_ctx);
+@@ -1523,8 +1525,12 @@ static void vicodec_return_bufs(struct v
+ 			vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
+ 		if (vbuf == NULL)
+ 			return;
+-		v4l2_ctrl_request_complete(vbuf->vb2_buf.req_obj.req,
+-					   &ctx->hdl);
++		if (ctx->is_stateless && V4L2_TYPE_IS_OUTPUT(q->type)) {
++			struct media_request *req = vbuf->vb2_buf.req_obj.req;
++
++			v4l2_ctrl_request_complete(req, &ctx->hdl);
++			media_request_manual_complete(req);
++		}
+ 		spin_lock(ctx->lock);
+ 		v4l2_m2m_buf_done(vbuf, state);
+ 		spin_unlock(ctx->lock);
+@@ -1677,6 +1683,7 @@ static void vicodec_buf_request_complete
+ 	struct vicodec_ctx *ctx = vb2_get_drv_priv(vb->vb2_queue);
+ 
+ 	v4l2_ctrl_request_complete(vb->req_obj.req, &ctx->hdl);
++	media_request_manual_complete(vb->req_obj.req);
+ }
+ 
+ 
+@@ -2001,6 +2008,12 @@ static int vicodec_request_validate(stru
+ 	return vb2_request_validate(req);
+ }
+ 
++static void vicodec_request_queue(struct media_request *req)
++{
++	media_request_mark_manual_completion(req);
++	v4l2_m2m_request_queue(req);
++}
++
+ static const struct v4l2_file_operations vicodec_fops = {
+ 	.owner		= THIS_MODULE,
+ 	.open		= vicodec_open,
+@@ -2021,7 +2034,7 @@ static const struct video_device vicodec
+ 
+ static const struct media_device_ops vicodec_m2m_media_ops = {
+ 	.req_validate	= vicodec_request_validate,
+-	.req_queue	= v4l2_m2m_request_queue,
++	.req_queue	= vicodec_request_queue,
+ };
+ 
+ static const struct v4l2_m2m_ops m2m_ops = {

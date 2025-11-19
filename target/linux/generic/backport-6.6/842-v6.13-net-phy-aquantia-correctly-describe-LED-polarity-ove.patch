@@ -1,0 +1,108 @@
+From 9d55e68b19f222e6334ef4021c5527998f5ab537 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 10 Oct 2024 13:55:00 +0100
+Subject: [PATCH 2/4] net: phy: aquantia: correctly describe LED polarity
+ override
+
+Use newly defined 'active-high' property to set the
+VEND1_GLOBAL_LED_DRIVE_VDD bit and let 'active-low' clear that bit. This
+reflects the technical reality which was inverted in the previous
+description in which the 'active-low' property was used to actually set
+the VEND1_GLOBAL_LED_DRIVE_VDD bit, which means that VDD (ie. supply
+voltage) of the LED is driven rather than GND.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/86a413b4387c42dcb54f587cc2433a06f16aae83.1728558223.git.daniel@makrotopia.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/phy/aquantia/aquantia.h      |  1 +
+ drivers/net/phy/aquantia/aquantia_leds.c | 19 ++++++++++++++-----
+ drivers/net/phy/aquantia/aquantia_main.c | 12 +++++++++---
+ 3 files changed, 24 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/phy/aquantia/aquantia.h
++++ b/drivers/net/phy/aquantia/aquantia.h
+@@ -169,6 +169,7 @@ static const struct aqr107_hw_stat aqr10
+ struct aqr107_priv {
+ 	u64 sgmii_stats[AQR107_SGMII_STAT_SZ];
+ 	unsigned long leds_active_low;
++	unsigned long leds_active_high;
+ };
+ 
+ #if IS_REACHABLE(CONFIG_HWMON)
+--- a/drivers/net/phy/aquantia/aquantia_leds.c
++++ b/drivers/net/phy/aquantia/aquantia_leds.c
+@@ -121,13 +121,13 @@ int aqr_phy_led_active_low_set(struct ph
+ {
+ 	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, AQR_LED_DRIVE(index),
+ 			      VEND1_GLOBAL_LED_DRIVE_VDD,
+-			      enable ? VEND1_GLOBAL_LED_DRIVE_VDD : 0);
++			      enable ? 0 : VEND1_GLOBAL_LED_DRIVE_VDD);
+ }
+ 
+ int aqr_phy_led_polarity_set(struct phy_device *phydev, int index, unsigned long modes)
+ {
++	bool force_active_low = false, force_active_high = false;
+ 	struct aqr107_priv *priv = phydev->priv;
+-	bool active_low = false;
+ 	u32 mode;
+ 
+ 	if (index >= AQR_MAX_LEDS)
+@@ -136,7 +136,10 @@ int aqr_phy_led_polarity_set(struct phy_
+ 	for_each_set_bit(mode, &modes, __PHY_LED_MODES_NUM) {
+ 		switch (mode) {
+ 		case PHY_LED_ACTIVE_LOW:
+-			active_low = true;
++			force_active_low = true;
++			break;
++		case PHY_LED_ACTIVE_HIGH:
++			force_active_high = true;
+ 			break;
+ 		default:
+ 			return -EINVAL;
+@@ -144,8 +147,14 @@ int aqr_phy_led_polarity_set(struct phy_
+ 	}
+ 
+ 	/* Save LED driver vdd state to restore on SW reset */
+-	if (active_low)
++	if (force_active_low)
+ 		priv->leds_active_low |= BIT(index);
+ 
+-	return aqr_phy_led_active_low_set(phydev, index, active_low);
++	if (force_active_high)
++		priv->leds_active_high |= BIT(index);
++
++	if (force_active_high || force_active_low)
++		return aqr_phy_led_active_low_set(phydev, index, force_active_low);
++
++	unreachable();
+ }
+--- a/drivers/net/phy/aquantia/aquantia_main.c
++++ b/drivers/net/phy/aquantia/aquantia_main.c
+@@ -529,7 +529,7 @@ static int aqr107_config_mdi(struct phy_
+ static int aqr107_config_init(struct phy_device *phydev)
+ {
+ 	struct aqr107_priv *priv = phydev->priv;
+-	u32 led_active_low;
++	u32 led_idx;
+ 	int ret;
+ 
+ 	/* Check that the PHY interface type is compatible */
+@@ -569,8 +569,14 @@ static int aqr107_config_init(struct phy
+ 		return ret;
+ 
+ 	/* Restore LED polarity state after reset */
+-	for_each_set_bit(led_active_low, &priv->leds_active_low, AQR_MAX_LEDS) {
+-		ret = aqr_phy_led_active_low_set(phydev, led_active_low, true);
++	for_each_set_bit(led_idx, &priv->leds_active_low, AQR_MAX_LEDS) {
++		ret = aqr_phy_led_active_low_set(phydev, led_idx, true);
++		if (ret)
++			return ret;
++	}
++
++	for_each_set_bit(led_idx, &priv->leds_active_high, AQR_MAX_LEDS) {
++		ret = aqr_phy_led_active_low_set(phydev, led_idx, false);
+ 		if (ret)
+ 			return ret;
+ 	}

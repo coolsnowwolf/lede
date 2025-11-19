@@ -15,7 +15,7 @@ $(eval $(call TestHostCommand,working-make, \
 	$(MAKE) -v | grep -E 'Make (4\.[1-9]|[5-9]\.)'))
 
 $(eval $(call TestHostCommand,case-sensitive-fs, \
-	OpenWrt can only be built on a case-sensitive filesystem, \
+	LEDE can only be built on a case-sensitive filesystem, \
 	rm -f $(TMP_DIR)/test.*; touch $(TMP_DIR)/test.fs; \
 		test ! -f $(TMP_DIR)/test.FS))
 

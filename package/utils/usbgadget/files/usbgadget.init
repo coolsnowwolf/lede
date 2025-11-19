@@ -1,0 +1,144 @@
+#!/bin/sh /etc/rc.common
+
+START=19
+
+GADGET_FS=/sys/kernel/config/usb_gadget
+GADGET_PRESETS_DIR=/usr/share/usbgadget
+GADGET_PREFIX=owrt_
+
+log() {
+	logger -t usbgadget "$@"
+}
+
+apply_configs() {
+	local fs_path="$1"
+	local cfg="$2"
+	for param in $(find "$fs_path" -maxdepth 1 -type f -exec basename '{}' ';'); do
+		[ "$param" = "UDC" ] && continue
+
+		config_get val "$cfg" "$param"
+		[ -n "$val" ] && echo "$val" > "${fs_path}/${param}"
+	done
+}
+
+setup_gadget() {
+	local cfg="$1"
+	local gadget_path="${GADGET_FS}/${GADGET_PREFIX}${cfg}"
+	local param udc
+
+	config_get udc "$cfg" UDC
+	[ -z "$udc" ] && return
+
+	mkdir "$gadget_path" || return
+	apply_configs "$gadget_path" "$cfg"
+
+	local strings_path="${gadget_path}/strings/0x409"
+	mkdir "$strings_path"
+	apply_configs "$strings_path" "$cfg"
+}
+
+setup_configuration() {
+	local cfg="$1"
+	local gadget
+	config_get gadget "$cfg" gadget
+	local cfgs_path="${GADGET_FS}/${GADGET_PREFIX}${gadget}/configs"
+	[ -d "${cfgs_path}" ] || return
+	local cfg_path="${cfgs_path}/${cfg}.1"
+	mkdir "$cfg_path" || {
+		log "failed to create configuration ${cfg}"
+		return
+	}
+
+	apply_configs "$cfg_path" "$cfg"
+
+	local strings_path="${cfg_path}/strings/0x409"
+	mkdir "$strings_path"
+	apply_configs "$strings_path" "$cfg"
+}
+
+setup_function() {
+	local cfg="$1"
+	local usbcfg gadget usbfun
+
+	config_get usbcfg "$cfg" configuration
+	[ -z "$usbcfg" ] && return
+	config_get usbfun "$cfg" function
+	[ -z "$usbfun" ] && return
+
+	config_get gadget "$usbcfg" gadget
+	local gadget_path="${GADGET_FS}/${GADGET_PREFIX}${gadget}"
+	local cfg_path="${gadget_path}/configs/${usbcfg}.1"
+	[ -d "${cfg_path}" ] || return
+
+	local fun_path="${gadget_path}/functions/${usbfun}.${cfg}"
+	mkdir "$fun_path" || {
+		log "failed to create function ${usbfun}.${cfg}"
+		return
+	}
+
+	apply_configs "$fun_path" "$cfg"
+
+	ln -s "$fun_path" "$cfg_path"
+}
+
+attach_gadget() {
+	local cfg="$1"
+	local gadget_path="${GADGET_FS}/${GADGET_PREFIX}${cfg}"
+	local param udc
+
+	config_get udc "$cfg" UDC
+	[ -z "$udc" ] && return
+
+	echo "$udc" > "$gadget_path/UDC"
+}
+
+load_gadget() {
+	config_foreach setup_gadget gadget
+	config_foreach setup_configuration configuration
+	config_foreach setup_function function
+	config_foreach attach_gadget gadget
+}
+
+# use subshell for isolated env
+apply_preset() (
+	local preset="$1"
+	local gadget="$2"
+	UCI_CONFIG_DIR=$GADGET_PRESETS_DIR config_load "$1"
+	config_set g1 UDC "$2"
+	load_gadget
+)
+
+load_preset() {
+	local cfg="$1"
+	config_get name "$cfg" name
+	config_get udc "$cfg" UDC
+	[ -z "$udc" ] && return
+	apply_preset $name $udc
+}
+
+start() {
+	grep -q /sys/kernel/config /proc/mounts || \
+		mount -t configfs configfs /sys/kernel/config
+
+	[ -d /sys/kernel/config/usb_gadget ] || {
+		log "usb_gadget support not found."
+		return 1
+	}
+
+	config_load usbgadget
+	config_foreach load_preset preset
+	load_gadget
+}
+
+stop() {
+	for gadget_path in ${GADGET_FS}/${GADGET_PREFIX}* ; do
+		[ -d "$gadget_path" ] || continue
+		echo "" > ${gadget_path}/UDC
+		find ${gadget_path}/configs -maxdepth 2 -type l -exec rm '{}' ';'
+		rmdir ${gadget_path}/configs/*/strings/*
+		rmdir ${gadget_path}/configs/*
+		rmdir ${gadget_path}/functions/*
+		rmdir ${gadget_path}/strings/*
+		rmdir $gadget_path
+	done
+}

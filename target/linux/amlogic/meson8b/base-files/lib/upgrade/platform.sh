@@ -25,6 +25,7 @@ platform_do_upgrade() {
 		;;
 	esac
 }
+
 platform_copy_config() {
 	case "$(board_name)" in
 	hardkernel,odroid-c2)

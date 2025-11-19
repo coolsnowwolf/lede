@@ -16,34 +16,23 @@ PKG_HASH:=0b0e3aa07c8c063ddf40b082bdf7e37a1562bda40a0ff5272957f3e987e0e54b
 
 PKG_LICENSE:=BSD-2-Clause
 PKG_LICENSE_FILES:=LICENSE lib/LICENSE
-
-HOST_BUILD_PARALLEL:=1
+PKG_CPE_ID:=cpe:/a:lz4_project:lz4
 
 include $(INCLUDE_DIR)/host-build.mk
+include $(INCLUDE_DIR)/meson.mk
+
+MESON_HOST_BUILD_DIR:=$(HOST_BUILD_DIR)/contrib/meson/openwrt-build
 
 # Always optimize for speed
 HOST_CFLAGS := $(filter-out -O%,$(HOST_CFLAGS)) -O3
 
-HOST_MAKE_FLAGS+=PREFIX=$(HOST_BUILD_PREFIX) \
-		 ENABLE_DOCS=1
-
-define Host/Configure
-endef
-
-define Host/Compile
-	$(call Host/Compile/Default,default)
-endef
-
-define Host/Install
-	$(call Host/Compile/Default,install)
-endef
-
-define Host/Uninstall
-	$(call Host/Compile/Default,uninstall)
-	$(call Host/Compile/Default,clean)
-endef
-
-define Host/Clean
-endef
+MESON_HOST_ARGS += \
+	-Ddefault_library=static \
+	-Ddebug-level=0 \
+	-Dunstable=false \
+	-Dprograms=true \
+	-Dtests=false \
+	-Dcontrib=false \
+	-Dexamples=false
 
 $(eval $(call HostBuild))

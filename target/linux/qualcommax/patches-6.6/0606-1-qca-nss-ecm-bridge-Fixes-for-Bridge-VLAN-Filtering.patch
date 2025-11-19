@@ -1,0 +1,341 @@
+From 7732ede3f72eebb8742e17e61e07e9286c442aec Mon Sep 17 00:00:00 2001
+From: Vishnu Vardhan Bantanahal <quic_vishvard@quicinc.com>
+Date: Mon, 15 May 2023 17:56:04 +0530
+Subject: [PATCH 277/281] bridge: Fixes for Bridge VLAN Filtering
+
+1. Fix function to check for bridge master status while checking
+for Bridge VLAN filter feature is enabled on bridge slave ports.
+2. Disable default PVID for bridges during device registration in
+the system.
+Change-Id: Ibea6559c1b0700a2300b60e20d57b7818e23a8a8
+Signed-off-by: Vishnu Vardhan Bantanahal <quic_vishvard@quicinc.com>
+
+bridge: Fix Bridge VLAN stats update
+This patch fixes Bridge VLAN stats update for both bridge master
+and bridge slave.
+Change-Id: Ia26f4c71e83e27dd83336815cda5c05c8c3f24ff
+Signed-off-by: Vishnu Vardhan Bantanahal <quic_vishvard@quicinc.com>
+
+bridge: Add bridge VLAN filter APIs for offload for 6.1 Kernel
+
+Change-Id: I54e44c26664f86ae024f54605a032713a9a3eee5
+Signed-off-by: Vishnu Vardhan Bantanahal <quic_vishvard@quicinc.com>
+---
+ include/linux/if_bridge.h |  29 +++++-
+ include/linux/netdevice.h |   2 +-
+ net/bridge/br.c           |   4 +
+ net/bridge/br_if.c        |  11 ++-
+ net/bridge/br_private.h   |   1 +
+ net/bridge/br_vlan.c      | 186 +++++++++++++++++++++++++++++++++++++-
+ net/core/dev.c            |   2 +-
+ 7 files changed, 227 insertions(+), 8 deletions(-)
+
+--- a/include/linux/if_bridge.h
++++ b/include/linux/if_bridge.h
+@@ -128,6 +128,12 @@ int br_vlan_get_info_rcu(const struct ne
+ bool br_mst_enabled(const struct net_device *dev);
+ int br_mst_get_info(const struct net_device *dev, u16 msti, unsigned long *vids);
+ int br_mst_get_state(const struct net_device *dev, u16 msti, u8 *state);
++
++extern struct net_device *br_fdb_find_vid_by_mac(struct net_device *dev, u8 *mac, u16 *vid);
++extern int br_vlan_get_tag_skb(const struct sk_buff *skb, u16 *vid);
++extern int br_dev_is_vlan_filter_enabled(struct net_device *dev);
++extern int br_vlan_update_stats(struct net_device* dev, u32 vid, u64 rx_bytes, u64 rx_packets, u64 tx_bytes, u64 tx_packets);
++extern int br_vlan_get_info_rcu(const struct net_device *dev, u16 vid, struct bridge_vlan_info *p_vinfo);
+ #else
+ static inline bool br_vlan_enabled(const struct net_device *dev)
+ {
+@@ -149,8 +155,27 @@ static inline int br_vlan_get_pvid_rcu(c
+ 	return -EINVAL;
+ }
+ 
+-static inline int br_vlan_get_info(const struct net_device *dev, u16 vid,
+-				   struct bridge_vlan_info *p_vinfo)
++static inline int br_vlan_get_info(const struct net_device *dev, u16 vid, struct bridge_vlan_info *p_vinfo)
++{
++	return -EINVAL;
++}
++
++static inline struct net_device *br_fdb_find_vid_by_mac(struct net_device *dev, u8 *mac, u16 *vid)
++{
++	return NULL;
++}
++
++static inline int br_vlan_get_tag_skb(const struct sk_buff *skb, u16 *vid)
++{
++	return -EINVAL;
++}
++
++static inline int br_dev_is_vlan_filter_enabled(const struct net_device *dev)
++{
++	return -EINVAL;
++}
++
++static inline int br_vlan_update_stats(struct net_device* dev, u32 vid, u64 rx_bytes, u64 rx_packets, u64 tx_bytes, u64 tx_packets)
+ {
+ 	return -EINVAL;
+ }
+--- a/net/bridge/br.c
++++ b/net/bridge/br.c
+@@ -42,6 +42,10 @@ static int br_device_event(struct notifi
+ 			return notifier_from_errno(err);
+ 
+ 		if (event == NETDEV_REGISTER) {
++#if IS_ENABLED(CONFIG_BRIDGE_VLAN_FILTERING)
++			br_vlan_disable_default_pvid(netdev_priv(dev));
++#endif
++
+ 			/* register of bridge completed, add sysfs entries */
+ 			err = br_sysfs_addbr(dev);
+ 			if (err)
+--- a/net/bridge/br_if.c
++++ b/net/bridge/br_if.c
+@@ -800,9 +800,12 @@ struct net_device *br_port_dev_get(struc
+ 				   struct sk_buff *skb,
+ 				   unsigned int cookie)
+ {
++#if !IS_ENABLED(CONFIG_BRIDGE_VLAN_FILTERING)
+ 	struct net_bridge_fdb_entry *fdbe;
+ 	struct net_bridge *br;
++#endif
+ 	struct net_device *netdev = NULL;
++	u16 __maybe_unused vid;
+ 
+ 	/* Is this a bridge? */
+ 	if (!(dev->priv_flags & IFF_EBRIDGE))
+@@ -831,14 +834,20 @@ struct net_device *br_port_dev_get(struc
+ 	 * determine the port to use - fall back to using FDB
+ 	 */
+ 
++#if IS_ENABLED(CONFIG_BRIDGE_VLAN_FILTERING)
++	/* Lookup the fdb entry and get reference to the port dev.
++	 * dev_hold() is done as part of br_fdb_find_vid_by_mac()
++	 */
++	netdev = br_fdb_find_vid_by_mac(dev, addr, &vid);
++#else
+ 	br = netdev_priv(dev);
+-
+-	/* Lookup the fdb entry and get reference to the port dev */
+ 	fdbe = br_fdb_find_rcu(br, addr, 0);
+ 	if (fdbe && fdbe->dst) {
+ 		netdev = fdbe->dst->dev; /* port device */
+ 		dev_hold(netdev);
+ 	}
++#endif
++
+ out:
+ 	rcu_read_unlock();
+ 	return netdev;
+--- a/net/bridge/br_private.h
++++ b/net/bridge/br_private.h
+@@ -1563,6 +1563,7 @@ void br_vlan_fill_forward_path_pvid(stru
+ int br_vlan_fill_forward_path_mode(struct net_bridge *br,
+ 				   struct net_bridge_port *dst,
+ 				   struct net_device_path *path);
++void br_vlan_disable_default_pvid(struct net_bridge *br);
+ 
+ static inline struct net_bridge_vlan_group *br_vlan_group(
+ 					const struct net_bridge *br)
+--- a/net/bridge/br_vlan.c
++++ b/net/bridge/br_vlan.c
+@@ -933,8 +933,190 @@ int br_vlan_get_proto(const struct net_d
+ }
+ EXPORT_SYMBOL_GPL(br_vlan_get_proto);
+ 
++/*
++ * br_vlan_get_tag_skb()
++ * 	Returns VLAN tag is its found valid in skb.
++ */
++int br_vlan_get_tag_skb(const struct sk_buff *skb, u16 *vid)
++{
++	return br_vlan_get_tag(skb, vid);
++
++}
++EXPORT_SYMBOL_GPL(br_vlan_get_tag_skb);
++
++/*
++ * br_dev_is_vlan_filter_enabled()
++ * 	Caller should ensure to hold rcu_lock()
++ * 	Returns 0, when device(port or bridge device) has a valid bridge
++ * 	vlan filter configuration and returns error otherwise.
++ */
++int br_dev_is_vlan_filter_enabled(struct net_device *dev)
++{
++	struct net_bridge_port *p;
++	struct net_bridge_vlan_group *vg = NULL;
++	struct net_device *master = NULL;
++
++	if (!dev) {
++		return -ENODEV;
++	}
++
++	if (netif_is_bridge_master(dev)) {
++		/*
++		 * Its a bridge device
++		 */
++		if (!br_vlan_enabled(dev)) {
++			return -ENOENT;
++		}
++
++		vg = br_vlan_group(netdev_priv(dev));
++	} else if (dev->priv_flags & IFF_BRIDGE_PORT) {
++		/*
++		 * It's a bridge port
++		 */
++		master = netdev_master_upper_dev_get_rcu(dev);
++		if (!master) {
++			return -EINVAL;
++		}
++
++		if (!br_vlan_enabled(master)) {
++			return -ENOENT;
++		}
++
++		p = br_port_get_rcu(dev);
++		if (p)
++			vg = nbp_vlan_group(p);
++	} else {
++		/*
++		 * Neither a bridge device or port
++		 */
++		return -EINVAL;
++	}
++
++	if (vg != NULL && vg->num_vlans) {
++		return 0;
++	}
++
++	return -ENXIO;
++}
++EXPORT_SYMBOL_GPL(br_dev_is_vlan_filter_enabled);
++
++/*
++ * br_fdb_find_vid_by_mac()
++ * 	Caller ensures to ensure rcu_lock() is taken.
++ * 	Returns 0 in case of lookup was performed.
++ * 	Look up the bridge fdb table for the mac-address & find associated
++ * 	VLAN id associated with it.
++ * 	vid is non-zero for succesfull lookup, otherwise 0.
++ * 	We dev_hold() on the returned device, caller will release this hold.
++ */
++struct net_device *br_fdb_find_vid_by_mac(struct net_device *dev, u8 *mac, u16 *vid)
++{
++	struct net_bridge *br;
++	struct net_bridge_fdb_entry *f;
++	struct net_device *netdev = NULL;
++
++	if (!mac) {
++		return NULL;
++	}
++
++	if (!dev || !netif_is_bridge_master(dev)) {
++		return NULL;
++	}
++
++	br = netdev_priv(dev);
++	if (!br) {
++		return NULL;
++	}
++
++	hlist_for_each_entry_rcu(f, &br->fdb_list, fdb_node) {
++		if (ether_addr_equal(f->key.addr.addr, mac)) {
++			*vid = f->key.vlan_id;
++			if (f->dst) {
++				netdev = f->dst->dev;
++				dev_hold(netdev);
++				break;
++			}
++		}
++	}
++	return netdev;
++}
++EXPORT_SYMBOL_GPL(br_fdb_find_vid_by_mac);
++
++/*
++ * br_vlan_update_stats()
++ * 	Update bridge VLAN filter statistics.
++ */
++int br_vlan_update_stats(struct net_device *dev, u32 vid, u64 rx_bytes, u64 rx_packets, u64 tx_bytes, u64 tx_packets)
++{
++	struct net_bridge_port *p;
++	struct net_bridge_vlan *v;
++	struct pcpu_sw_netstats *stats;
++	const struct net_bridge *br;
++	struct net_bridge_vlan_group *vg;
++	struct net_device *brdev;
++
++	if (!dev) {
++		return -ENODEV;
++	}
++
++	if (!netif_is_bridge_port(dev) && !netif_is_bridge_master(dev)) {
++		return -EINVAL;
++	}
++
++	rcu_read_lock();
++
++	brdev = dev;
++	if (!netif_is_bridge_master(dev)) {
++		brdev = netdev_master_upper_dev_get_rcu(dev);
++		if (!brdev) {
++			rcu_read_unlock();
++			return -EPERM;
++		}
++	}
++
++	br = netdev_priv(brdev);
++	if (!br || !br_opt_get(br, BROPT_VLAN_STATS_ENABLED)) {
++		rcu_read_unlock();
++		return -EINVAL;
++	}
++
++	p = br_port_get_rcu(dev);
++	if (p) {
++		vg = nbp_vlan_group_rcu(p);
++	} else if (netif_is_bridge_master(dev)) {
++		vg = br_vlan_group(netdev_priv(dev));
++	} else {
++		rcu_read_unlock();
++		return -EINVAL;
++	}
++
++
++	if (!vg) {
++		rcu_read_unlock();
++		return -ENXIO;
++	}
++
++	v = br_vlan_find(vg, vid);
++	if (!v || !br_vlan_should_use(v)) {
++		rcu_read_unlock();
++		return -ENOENT;
++	}
++
++	stats = this_cpu_ptr(v->stats);
++	u64_stats_update_begin(&stats->syncp);
++	u64_stats_add(&stats->rx_bytes, rx_bytes);
++	u64_stats_add(&stats->rx_packets, rx_packets);
++	u64_stats_add(&stats->tx_bytes, tx_bytes);
++	u64_stats_add(&stats->tx_packets, tx_packets);
++	u64_stats_update_end(&stats->syncp);
++
++	rcu_read_unlock();
++	return 0;
++}
++EXPORT_SYMBOL_GPL(br_vlan_update_stats);
++
+ int __br_vlan_set_proto(struct net_bridge *br, __be16 proto,
+-			struct netlink_ext_ack *extack)
++	                        struct netlink_ext_ack *extack)
+ {
+ 	struct switchdev_attr attr = {
+ 		.orig_dev = br->dev,
+@@ -1068,7 +1250,7 @@ static bool vlan_default_pvid(struct net
+ 	return false;
+ }
+ 
+-static void br_vlan_disable_default_pvid(struct net_bridge *br)
++void br_vlan_disable_default_pvid(struct net_bridge *br)
+ {
+ 	struct net_bridge_port *p;
+ 	u16 pvid = br->default_pvid;

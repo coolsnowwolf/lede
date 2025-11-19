@@ -1,0 +1,852 @@
+--- a/Makefile
++++ b/Makefile
+@@ -10,6 +10,9 @@ qca-nss-tun6rd-objs := nss_connmgr_tun6r
+ ccflags-y += -DNSS_TUN6RD_DEBUG_LEVEL=0
+ ccflags-y += -Wall -Werror
+ 
++# Kernel 6.12 compatibility
++ccflags-y += -Wno-missing-prototypes -include $(src)/compat.h
++
+ KERNELVERSION := $(word 1, $(subst ., ,$(KERNELVERSION))).$(word 2, $(subst ., ,$(KERNELVERSION)))
+ 
+ obj-$(bridge-mgr)+= bridge/
+--- a/bridge/nss_bridge_mgr.c
++++ b/bridge/nss_bridge_mgr.c
+@@ -1486,7 +1486,7 @@ static struct notifier_block nss_bridge_
+  * nss_bridge_mgr_wan_inf_add_handler
+  *	Marks an interface as a WAN interface for special handling by bridge.
+  */
+-static int nss_bridge_mgr_wan_intf_add_handler(struct ctl_table *table,
++static int nss_bridge_mgr_wan_intf_add_handler(compat_const struct ctl_table *table,
+ 						int write, void __user *buffer,
+ 						size_t *lenp, loff_t *ppos)
+ {
+@@ -1535,7 +1535,7 @@ static int nss_bridge_mgr_wan_intf_add_h
+  * nss_bridge_mgr_wan_inf_del_handler
+  *	Un-marks an interface as a WAN interface.
+  */
+-static int nss_bridge_mgr_wan_intf_del_handler(struct ctl_table *table,
++static int nss_bridge_mgr_wan_intf_del_handler(compat_const struct ctl_table *table,
+ 						int write, void __user *buffer,
+ 						size_t *lenp, loff_t *ppos)
+ {
+@@ -1593,8 +1593,7 @@ static struct ctl_table nss_bridge_mgr_t
+ 		.maxlen         = sizeof(char) * IFNAMSIZ,
+ 		.mode           = 0644,
+ 		.proc_handler   = &nss_bridge_mgr_wan_intf_del_handler,
+-	},
+-	{ }
++	}
+ };
+ 
+ /*
+--- a/dtls/v2.0/nss_dtlsmgr_ctx_dev.c
++++ b/dtls/v2.0/nss_dtlsmgr_ctx_dev.c
+@@ -284,7 +284,11 @@ void nss_dtlsmgr_ctx_dev_rx_outer(struct
+ 		skb_set_transport_header(skb, sizeof(struct iphdr));
+ 
+ 		iph = ip_hdr(skb);
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0);
++#else
++		rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0, 0);
++#endif
+ 		if (IS_ERR(rt)) {
+ 			nss_dtlsmgr_warn("%px: No IPv4 route or out dev", dev);
+ 			dev_kfree_skb_any(skb);
+--- a/gre/nss_connmgr_gre.c
++++ b/gre/nss_connmgr_gre.c
+@@ -40,6 +40,12 @@
+ #define MAX_RETRY_COUNT 100
+ #define MAX_WIFI_HEADROOM 66
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
++#define TUNNEL_CSUM IP_TUNNEL_CSUM_BIT
++#define TUNNEL_SEQ IP_TUNNEL_SEQ_BIT
++#define TUNNEL_KEY IP_TUNNEL_KEY_BIT
++#endif
++
+ /*
+  * GRE connection manager context structure
+  */
+@@ -186,7 +192,12 @@ static int nss_connmgr_gre_dev_init(stru
+ 	if ((dev->priv_flags_ext & IFF_EXT_GRE_V4_TAP) || (dev->type == ARPHRD_IPGRE)) {
+ 		dev->needed_headroom = sizeof(struct iphdr) + sizeof(struct ethhdr) + MAX_WIFI_HEADROOM + append;
+ 		dev->mtu = ETH_DATA_LEN - sizeof(struct iphdr) - append;
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		dev->features |= NETIF_F_NETNS_LOCAL | NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA;
++#else
++		dev->features |= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA;
++		dev->netns_local = true;
++#endif
+ 		dev->hw_features |= NETIF_F_SG | NETIF_F_FRAGLIST | NETIF_F_HIGHDMA;
+ 		return 0;
+ 	}
+@@ -200,7 +211,11 @@ static int nss_connmgr_gre_dev_init(stru
+ 		dev->mtu = IPV6_MIN_MTU;
+ 	}
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	dev->features |= NETIF_F_NETNS_LOCAL;
++#else
++	dev->netns_local = true;
++#endif
+ 	return 0;
+ }
+ 
+@@ -211,7 +226,6 @@ static int nss_connmgr_gre_dev_init(stru
+ static void nss_connmgr_gre_dev_uninit(struct net_device *dev)
+ {
+ 	free_percpu(dev->tstats);
+-	return;
+ }
+ 
+ /*
+@@ -578,7 +592,6 @@ static void nss_connmgr_gre_tap_inner_ex
+ 	 */
+ 	skb->protocol = eth_type_trans(skb, dev);
+ 	netif_receive_skb(skb);
+-	return;
+ }
+ 
+ /*
+@@ -724,10 +737,10 @@ static void nss_connmgr_gre_make_name(st
+ {
+ 	switch (cfg->mode) {
+ 	case GRE_MODE_TUN:
+-		strlcpy(name, "tun-%d", IFNAMSIZ);
++		strscpy(name, "tun-%d", IFNAMSIZ);
+ 		break;
+ 	case GRE_MODE_TAP:
+-		strlcpy(name, "tap-%d", IFNAMSIZ);
++		strscpy(name, "tap-%d", IFNAMSIZ);
+ 		break;
+ 	default:
+ 		break;
+@@ -757,7 +770,7 @@ static struct net_device *__nss_connmgr_
+ 	int ret = -1, retry, next_if_num_inner = 0, next_if_num_outer = 0;
+ 
+ 	if (cfg->name) {
+-		strlcpy(name, cfg->name, IFNAMSIZ);
++		strscpy(name, cfg->name, IFNAMSIZ);
+ 	} else {
+ 		nss_connmgr_gre_make_name(cfg, name);
+ 	}
+--- a/gre/nss_connmgr_gre_v4.c
++++ b/gre/nss_connmgr_gre_v4.c
+@@ -45,7 +45,11 @@ static struct net_device *nss_connmgr_gr
+ 	struct net_device *dev;
+ 	uint32_t ip_addr __attribute__ ((unused)) = ntohl(dest_ip);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, htonl(dest_ip), 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, htonl(dest_ip), 0, 0, 0, 0);
++#endif
+ 	if (IS_ERR(rt)) {
+ 		nss_connmgr_gre_warning("Unable to lookup route for %pI4\n", &ip_addr);
+ 		return NULL;
+@@ -87,7 +91,11 @@ static int nss_connmgr_gre_v4_get_mac_ad
+ 	dev_put(local_dev);
+ 	nss_connmgr_gre_info("Src MAC address for %pI4 is %pM\n", &laddr, src_mac);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, raddr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, raddr, 0, 0, 0, 0);
++#endif
+ 	if (IS_ERR(rt)) {
+ 		nss_connmgr_gre_warning("route look up failed for %pI4\n", &raddr);
+ 		return GRE_ERR_RADDR_ROUTE_LOOKUP;
+@@ -218,7 +226,7 @@ int nss_connmgr_gre_v4_set_config(struct
+ 
+ 	nss_connmgr_gre_set_gre_flags(cfg, &t->parms.o_flags, &t->parms.i_flags);
+ 
+-	strlcpy(t->parms.name, dev->name, IFNAMSIZ);
++	strscpy(t->parms.name, dev->name, IFNAMSIZ);
+ 	t->dev = dev;
+ 	return GRE_SUCCESS;
+ }
+--- a/ipsecmgr/v1.0/nss_ipsecmgr.c
++++ b/ipsecmgr/v1.0/nss_ipsecmgr.c
+@@ -526,7 +526,11 @@ static struct net_device *nss_ipsecmgr_t
+ 		}
+ 
+ 		if (!is_encap) {
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 			rt = ip_route_output(&init_net, iph->saddr, 0, 0, 0);
++#else
++			rt = ip_route_output(&init_net, iph->saddr, 0, 0, 0, 0);
++#endif
+ 			if (IS_ERR(rt)) {
+ 				return NULL;
+ 			}
+--- a/ipsecmgr/v1.0/nss_ipsecmgr_flow.c
++++ b/ipsecmgr/v1.0/nss_ipsecmgr_flow.c
+@@ -915,7 +915,11 @@ bool nss_ipsecmgr_flow_process_pmtu(stru
+ 		if (unlikely(skb_dst(skb)))
+ 			goto send_icmp;
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		rt = ip_route_output(&init_net, ip_hdr(skb)->daddr, 0, 0, 0);
++#else
++		rt = ip_route_output(&init_net, ip_hdr(skb)->daddr, 0, 0, 0, 0);
++#endif
+ 		if (IS_ERR(rt)) {
+ 			return false;
+ 		}
+--- a/ipsecmgr/v2.0/nss_ipsecmgr_ctx.c
++++ b/ipsecmgr/v2.0/nss_ipsecmgr_ctx.c
+@@ -230,7 +230,11 @@ static void nss_ipsecmgr_ctx_notify_ipv4
+ 	 * flow that coming in for the first time. We should query
+ 	 * the Linux to see the associated NETDEV
+ 	 */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, iph->saddr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, iph->saddr, 0, 0, 0, 0);
++#endif
+ 	if (IS_ERR(rt)) {
+ 		dev_kfree_skb_any(skb);
+ 		ctx->hstats.v4_notify_drop++;
+@@ -258,7 +262,11 @@ static void nss_ipsecmgr_ctx_route_ipv4(
+ 	struct iphdr *iph = ip_hdr(skb);
+ 	struct rtable *rt;
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0);
++#else
++	rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0, 0);
++#endif
+ 	if (unlikely(IS_ERR(rt))) {
+ 		nss_ipsecmgr_warn("%pK: No route, drop packet.\n", skb);
+ 		dev_kfree_skb_any(skb);
+--- a/ipsecmgr/v2.0/plugins/xfrm/nss_ipsec_xfrm_tunnel.c
++++ b/ipsecmgr/v2.0/plugins/xfrm/nss_ipsec_xfrm_tunnel.c
+@@ -149,7 +149,11 @@ static void nss_ipsec_xfrm_tunnel_rx_out
+ 	if (ip_hdr(skb)->version == IPVERSION) {
+ 		struct iphdr *iph = ip_hdr(skb);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		struct rtable *rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0);
++#else
++		struct rtable *rt = ip_route_output(&init_net, iph->daddr, iph->saddr, 0, 0, 0);
++#endif
+ 		if (unlikely(IS_ERR(rt))) {
+ 			nss_ipsec_xfrm_warn("%px: Failed to handle ipv4 exception after encap; No route\n", skb);
+ 			goto drop;
+@@ -285,7 +289,11 @@ struct nss_ipsec_xfrm_tunnel *nss_ipsec_
+ 
+ 	switch (family) {
+ 	case AF_INET:
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		 rt = ip_route_output(&init_net, remote->a4, 0, 0, 0);
++#else
++		 rt = ip_route_output(&init_net, remote->a4, 0, 0, 0, 0);
++#endif
+ 		 if (IS_ERR(rt)) {
+ 			 nss_ipsec_xfrm_err("%p:Failed to allocate tunnel; No IPv4 dst found\n", drv);
+ 			 return NULL;
+--- a/l2tp/l2tpv2/nss_connmgr_l2tpv2.c
++++ b/l2tp/l2tpv2/nss_connmgr_l2tpv2.c
+@@ -319,7 +319,7 @@ static struct nss_connmgr_l2tpv2_session
+ 	 */
+ 	dev_hold(dev);
+ 	l2tpv2_session_data->dev = dev;
+-	strlcpy(session->ifname, dev->name, IFNAMSIZ);
++	strscpy(session->ifname, dev->name, IFNAMSIZ);
+ 
+ 	/*
+ 	 * There is no need for protecting simultaneous addition &
+@@ -417,7 +417,11 @@ static void nss_connmgr_l2tpv2_exception
+ 				/*
+ 				 * set skb_iif
+ 				 */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 				rt = ip_route_output(&init_net, iph_inner->saddr, 0, 0, 0);
++#else
++				rt = ip_route_output(&init_net, iph_inner->saddr, 0, 0, 0, 0);
++#endif
+ 				if (unlikely(IS_ERR(rt))) {
+ 					nss_connmgr_l2tpv2_warning("Martian packets !!!");
+ 				} else {
+@@ -859,7 +863,7 @@ EXPORT_SYMBOL(l2tpmgr_unregister_ipsecmg
+  * nss_connmgr_l2tpv2_proc_handler()
+  *	Read and write handler for sysctl.
+  */
+-static int nss_connmgr_l2tpv2_proc_handler(struct ctl_table *ctl,
++static int nss_connmgr_l2tpv2_proc_handler(compat_const struct ctl_table *ctl,
+ 					  int write, void __user *buffer,
+ 					  size_t *lenp, loff_t *ppos)
+ {
+@@ -979,8 +983,7 @@ static struct ctl_table nss_connmgr_l2tp
+ 		.maxlen		= L2TP_SYSCTL_STR_LEN_MAX,
+ 		.mode		= 0644,
+ 		.proc_handler	= &nss_connmgr_l2tpv2_proc_handler,
+-	},
+-	{ }
++	}
+ };
+ 
+ /*
+@@ -991,8 +994,7 @@ static struct ctl_table nss_connmgr_l2tp
+ 		.procname		= "l2tpv2",
+ 		.mode			= 0555,
+ 		.child			= nss_connmgr_l2tpv2_table,
+-	},
+-	{ }
++	}
+ };
+ 
+ /*
+@@ -1003,8 +1005,7 @@ static struct ctl_table nss_connmgr_l2tp
+ 		.procname		= "nss",
+ 		.mode			= 0555,
+ 		.child			= nss_connmgr_l2tpv2_dir,
+-	},
+-	{ }
++	}
+ };
+ #endif
+ 
+--- a/l2tp/l2tpv2/nss_l2tpv2_stats.c
++++ b/l2tp/l2tpv2/nss_l2tpv2_stats.c
+@@ -129,7 +129,11 @@ void nss_l2tpv2_update_dev_stats(struct
+ 		dev_put(dev);
+ 		return;
+ 	}
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+ 	session = l2tp_tunnel_get_session(tunnel, data.l2tpv2.session.session_id);
++#else
++	session = l2tp_v2_session_get(dev_net(dev), data.l2tpv2.tunnel.tunnel_id, data.l2tpv2.session.session_id);
++#endif
+ 	if (!session) {
+ 		tunnel_put(tunnel);
+ 		dev_put(dev);
+--- a/match/nss_match_cmd.c
++++ b/match/nss_match_cmd.c
+@@ -124,7 +124,7 @@ static enum nss_match_profile_type nss_m
+  * nss_match_cmd_procfs_config_handler()
+  * 	Handles command input by user to create and configure match instance.
+  */
+-static int nss_match_cmd_procfs_config_handler(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_match_cmd_procfs_config_handler(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	char *command_str, *token, *param, *value;
+ 	char *input_msg, *input_msg_orig;
+@@ -451,7 +451,7 @@ fail:
+  * nss_match_cmd_procfs_reset_nexthop
+  * 	Reset to default nexthop of an interface
+  */
+-static int nss_match_cmd_procfs_reset_nexthop(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_match_cmd_procfs_reset_nexthop(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	struct net_device *dev;
+ 	uint32_t if_num, type = 0;
+@@ -521,7 +521,7 @@ static int nss_match_cmd_procfs_reset_ne
+  * 	Set next hop of an interface to a match instance.
+  * 	Only VAP and physical interfaces are supported as of now.
+  */
+-static int nss_match_cmd_procfs_set_if_nexthop(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_match_cmd_procfs_set_if_nexthop(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	struct net_device *dev;
+ 	uint32_t if_num, type = 0;
+@@ -632,7 +632,7 @@ static int nss_match_cmd_procfs_set_if_n
+  * nss_match_cmd_procfs_read_help()
+  * 	Display help for commands.
+  */
+-static int nss_match_cmd_procfs_read_help(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_match_cmd_procfs_read_help(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+ 
+@@ -688,8 +688,7 @@ static struct ctl_table nss_match_table[
+ 		.maxlen                 = sizeof(nss_match_data),
+ 		.mode			= 0400,
+ 		.proc_handler		= &nss_match_cmd_procfs_read_help,
+-	},
+-	{ }
++	}
+ };
+ 
+ static struct ctl_table_header *nss_match_ctl_header;
+--- a/mirror/nss_mirror_ctl.c
++++ b/mirror/nss_mirror_ctl.c
+@@ -132,7 +132,7 @@ static int nss_mirror_ctl_get_netdev_by_
+ {
+ 	char dev_name[IFNAMSIZ] = {0};
+ 
+-	strlcpy(dev_name, name, IFNAMSIZ);
++	strscpy(dev_name, name, IFNAMSIZ);
+ 	if (dev_name[strlen(dev_name) - 1] == '\n') {
+ 		dev_name[strlen(dev_name) - 1] = '\0';
+ 	}
+@@ -357,7 +357,7 @@ static int nss_mirror_ctl_parse_display_
+ 		return -1;
+ 	}
+ 
+-	strlcpy(dev_name, value, IFNAMSIZ);
++	strscpy(dev_name, value, IFNAMSIZ);
+ 	if (dev_name[strlen(dev_name) - 1] == '\n') {
+ 		dev_name[strlen(dev_name) - 1] = '\0';
+ 	}
+@@ -754,7 +754,7 @@ static int32_t nss_mirror_ctl_parse_cmd(
+  * nss_mirror_ctl_config_handler()
+  *	Mirror sysctl config handler.
+  */
+-static int nss_mirror_ctl_config_handler(struct ctl_table *ctl, int write,
++static int nss_mirror_ctl_config_handler(compat_const struct ctl_table *ctl, int write,
+ 		 void __user *buf, size_t *lenp, loff_t *ppos)
+ {
+ 	char *buffer, *pfree;
+@@ -914,8 +914,7 @@ static struct ctl_table nss_mirror_table
+ 		.maxlen		= sizeof(nss_mirror_config_data),
+ 		.mode		= 0644,
+ 		.proc_handler	= &nss_mirror_ctl_config_handler,
+-	},
+-	{ }
++	}
+ };
+ 
+ /*
+--- a/netlink/nss_nlipv4.c
++++ b/netlink/nss_nlipv4.c
+@@ -129,7 +129,11 @@ static struct neighbour *nss_nlipv4_get_
+ 	/*
+ 	 * search for route entry
+ 	 */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, ip_addr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, ip_addr, 0, 0, 0, 0);
++#endif
+ 	if (IS_ERR(rt)) {
+ 		return NULL;
+ 	}
+--- a/netlink/nss_nludp_st.c
++++ b/netlink/nss_nludp_st.c
+@@ -749,7 +749,11 @@ static struct neighbour *nss_nludp_st_ge
+ 	/*
+ 	 * search for route entry
+ 	 */
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, ip_addr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, ip_addr, 0, 0, 0, 0);
++#endif
+ 	if (IS_ERR(rt)) {
+ 		return NULL;
+ 	}
+--- a/nss_qdisc/nss_bf.c
++++ b/nss_qdisc/nss_bf.c
+@@ -381,7 +381,11 @@ static int nss_bf_graft_class(struct Qdi
+ 	 */
+ 	nss_qdisc_info("Grafting old: %px with new: %px\n", *old, new);
+ 	if (*old != &noop_qdisc) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+ 		struct nss_qdisc *nq_old = (struct nss_qdisc *)qdisc_priv(*old);
++#else
++		struct nss_qdisc *nq_old = (struct nss_qdisc *)qdisc_priv(((struct Qdisc *)(*old)));
++#endif
+ 		nss_qdisc_info("Detaching old: %px\n", *old);
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.qos_tag = cl->nq.qos_tag;
+ 		if (nss_qdisc_node_detach(&cl->nq, nq_old, &nim_detach,
+--- a/nss_qdisc/nss_qdisc.c
++++ b/nss_qdisc/nss_qdisc.c
+@@ -374,7 +374,7 @@ static int nss_qdisc_refresh_bshaper_ass
+ 	br_update.port_list_count = 0;
+ 	br_update.unassign_count = 0;
+ 
+-	read_lock(&dev_base_lock);
++	/* read_lock(&dev_base_lock); */
+ 	dev = first_net_device(&init_net);
+ 
+ 	while(dev) {
+@@ -421,7 +421,7 @@ static int nss_qdisc_refresh_bshaper_ass
+ nextdev:
+ 		dev = next_net_device(dev);
+ 	}
+-	read_unlock(&dev_base_lock);
++	/* read_unlock(&dev_base_lock); */
+ 
+ 	nss_qdisc_info("List count %d\n", br_update.port_list_count);
+ 
+--- a/nss_qdisc/nss_tbl.c
++++ b/nss_qdisc/nss_tbl.c
+@@ -350,7 +350,11 @@ static int nss_tbl_graft(struct Qdisc *s
+ 
+ 	nss_qdisc_info("Grafting old: %px with new: %px\n", *old, new);
+ 	if (*old != &noop_qdisc) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+ 		struct nss_qdisc *nq_old = (struct nss_qdisc *)qdisc_priv(*old);
++#else
++		struct nss_qdisc *nq_old = (struct nss_qdisc *)qdisc_priv(((struct Qdisc *)(*old)));
++#endif
+ 		nss_qdisc_info("Detaching old: %px\n", *old);
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.qos_tag = q->nq.qos_tag;
+ 		if (nss_qdisc_node_detach(&q->nq, nq_old, &nim_detach,
+--- a/openvpn/plugins/nss_ovpn_sk.c
++++ b/openvpn/plugins/nss_ovpn_sk.c
+@@ -225,7 +225,11 @@ static int nss_ovpn_sk_update_ipv4_tuple
+ {
+ 	struct rtable *rt;
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(dev_net(pinfo->dev), tun_data->tun_hdr.dst_ip[0], 0, 0, 0);
++#else
++	rt = ip_route_output(dev_net(pinfo->dev), tun_data->tun_hdr.dst_ip[0], 0, 0, 0, 0);
++#endif
+ 	if (unlikely(IS_ERR(rt))) {
+ 		nss_ovpn_sk_warn("%px: Failed to find IPv4 route.\n", pinfo);
+ 		return -EINVAL;
+--- a/openvpn/src/nss_ovpnmgr_tun.c
++++ b/openvpn/src/nss_ovpnmgr_tun.c
+@@ -69,7 +69,11 @@ static void nss_ovpnmgr_tun_ipv4_forward
+ 	skb_reset_network_header(skb);
+ 	iph = ip_hdr(skb);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(dev_net(app->dev), iph->daddr, iph->saddr, 0, 0);
++#else
++	rt = ip_route_output(dev_net(app->dev), iph->daddr, iph->saddr, 0, 0, 0);
++#endif
+ 	if (unlikely(IS_ERR(rt))) {
+ 		nss_ovpnmgr_warn("%px: Failed to find IPv4 route.\n", skb);
+ 		tun->outer.stats.host_pkt_drop++;
+--- a/tunipip6/nss_connmgr_tunipip6.c
++++ b/tunipip6/nss_connmgr_tunipip6.c
+@@ -174,7 +174,11 @@ static void nss_tunipip6_encap_exception
+ 	nss_tunipip6_info("%px: received - %d bytes name %s ver %x\n",
+ 			skb, skb->len, dev->name, iph->version);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, iph->daddr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, iph->daddr, 0, 0, 0, 0);
++#endif
+ 	if (unlikely(IS_ERR(rt))) {
+ 		nss_tunipip6_info("%px: Failed to find IPv4 route for dest %pI4 src %pI4\n", skb, &iph->daddr, &iph->saddr);
+ 		dev_kfree_skb_any(skb);
+@@ -284,7 +288,11 @@ static void nss_tunipip6_decap_exception
+ 	iph = ip_hdr(skb);
+ 	nss_tunipip6_assert(iph->version == 4);
+ 
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 	rt = ip_route_output(&init_net, iph->daddr, 0, 0, 0);
++#else
++	rt = ip_route_output(&init_net, iph->daddr, 0, 0, 0, 0);
++#endif
+ 	if (unlikely(IS_ERR(rt))) {
+ 		nss_tunipip6_info("%px: Failed to find IPv4 route for %pI4\n", skb, &iph->daddr);
+ 		dev_kfree_skb_any(skb);
+--- a/tunipip6/nss_connmgr_tunipip6_sysctl.c
++++ b/tunipip6/nss_connmgr_tunipip6_sysctl.c
+@@ -52,7 +52,7 @@ enum nss_tunipip6_sysctl_mode {
+ };
+ 
+ 
+-static int nss_tunipip6_data_parser(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos, enum nss_tunipip6_sysctl_mode mode)
++static int nss_tunipip6_data_parser(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos, enum nss_tunipip6_sysctl_mode mode)
+ {
+ 	char dev_name[NETDEV_STR_LEN] = {0}, ipv6_prefix_str[PREFIX_STR_LEN] = {0}, ipv6_suffix_str[PREFIX_STR_LEN] = {0}, ipv4_prefix_str[PREFIX_STR_LEN] = {0};
+ 	uint32_t ipv6_prefix[4], ipv6_prefix_len, ipv6_suffix[4], ipv6_suffix_len, ipv4_prefix, ipv4_prefix_len, ea_len, psid_offset;
+@@ -108,7 +108,7 @@ static int nss_tunipip6_data_parser(stru
+ 		 */
+ 
+ 		if (!strcmp(param, "netdev")) {
+-			strlcpy(dev_name, value, 30);
++			strscpy(dev_name, value, 30);
+ 			dev = dev_get_by_name(&init_net, dev_name);
+ 			if (!dev) {
+ 				kfree(pfree);
+@@ -147,7 +147,7 @@ static int nss_tunipip6_data_parser(stru
+ 		}
+ 
+ 		if (!strcmp(param, "ipv4_prefix")) {
+-			strlcpy(ipv4_prefix_str, value, 30);
++			strscpy(ipv4_prefix_str, value, 30);
+ 			ret = in4_pton(ipv4_prefix_str, -1, (uint8_t *)&ipv4_prefix, -1, NULL);
+ 			if (ret != 1) {
+ 				kfree(pfree);
+@@ -173,7 +173,7 @@ static int nss_tunipip6_data_parser(stru
+ 		}
+ 
+ 		if (!strcmp(param, "ipv6_prefix")) {
+-			strlcpy(ipv6_prefix_str, value, 100);
++			strscpy(ipv6_prefix_str, value, 100);
+ 			ret = in6_pton(ipv6_prefix_str, -1, (uint8_t *)&ipv6_prefix, -1, NULL);
+ 			if (ret != 1) {
+ 				kfree(pfree);
+@@ -199,7 +199,7 @@ static int nss_tunipip6_data_parser(stru
+ 		}
+ 
+ 		if (!strcmp(param, "ipv6_suffix")) {
+-			strlcpy(ipv6_suffix_str, value, 100);
++			strscpy(ipv6_suffix_str, value, 100);
+ 			ret = in6_pton(ipv6_suffix_str, -1, (uint8_t *)&ipv6_suffix, -1, NULL);
+ 			if (ret != 1) {
+ 				kfree(pfree);
+@@ -368,27 +368,27 @@ fail:
+ 	return 0;
+ }
+ 
+-static int nss_tunipip6_cmd_procfs_add_maprule(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_tunipip6_cmd_procfs_add_maprule(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	return nss_tunipip6_data_parser(ctl, write, buffer, lenp, ppos, NSS_TUNIPIP6_SYSCTL_ADD_MAPRULE);
+ }
+ 
+-static int nss_tunipip6_cmd_procfs_del_maprule(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_tunipip6_cmd_procfs_del_maprule(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	return nss_tunipip6_data_parser(ctl, write, buffer, lenp, ppos, NSS_TUNIPIP6_SYSCTL_DEL_MAPRULE);
+ }
+ 
+-static int nss_tunipip6_cmd_procfs_flush_fmr_rule(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_tunipip6_cmd_procfs_flush_fmr_rule(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	return nss_tunipip6_data_parser(ctl, write, buffer, lenp, ppos, NSS_TUNIPIP6_SYSCTL_FLUSH_FMR_RULE);
+ }
+ 
+-static int nss_tunipip6_cmd_procfs_enable_frag_id(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_tunipip6_cmd_procfs_enable_frag_id(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	return nss_tunipip6_data_parser(ctl, write, buffer, lenp, ppos, NSS_TUNIPIP6_SYSCTL_FRAG_ID);
+ }
+ 
+-static int nss_tunipip6_cmd_procfs_read_help(struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
++static int nss_tunipip6_cmd_procfs_read_help(compat_const struct ctl_table *ctl, int write, void __user *buffer, size_t *lenp, loff_t *ppos)
+ {
+ 	int ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+ 
+@@ -445,8 +445,7 @@ static struct ctl_table nss_tunipip6_tab
+ 		.maxlen			= sizeof(nss_tunipip6_data),
+ 		.mode			= 0400,
+ 		.proc_handler		= &nss_tunipip6_cmd_procfs_read_help,
+-	},
+-	{ }
++	}
+ };
+ 
+ static struct ctl_table_header *nss_tunipip6_ctl_header;
+--- a/vlan/nss_vlan_mgr.c
++++ b/vlan/nss_vlan_mgr.c
+@@ -1549,7 +1549,7 @@ static int nss_vlan_mgr_update_ppe_tpid(
+  * nss_vlan_mgr_tpid_proc_handler()
+  *	Sets customer TPID and service TPID
+  */
+-static int nss_vlan_mgr_tpid_proc_handler(struct ctl_table *ctl,
++static int nss_vlan_mgr_tpid_proc_handler(compat_const struct ctl_table *ctl,
+ 					  int write, void __user *buffer,
+ 					  size_t *lenp, loff_t *ppos)
+ {
+@@ -1577,8 +1577,7 @@ static struct ctl_table nss_vlan_table[]
+ 		.maxlen		= sizeof(int),
+ 		.mode		= 0644,
+ 		.proc_handler	= &nss_vlan_mgr_tpid_proc_handler,
+-	},
+-	{ }
++	}
+ };
+ 
+ /*
+--- a/nss_qdisc/nss_htb.c
++++ b/nss_qdisc/nss_htb.c
+@@ -642,7 +642,11 @@ static int nss_htb_graft_class(struct Qd
+ 	nss_qdisc_info("grafting old: %x with new: %x\n", (*old)->handle, new->handle);
+ 	if (*old != &noop_qdisc) {
+ 		nss_qdisc_trace("detaching old: %x\n", (*old)->handle);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
+ 		nq_old = qdisc_priv(*old);
++#else
++		nq_old = qdisc_priv(((struct Qdisc *)(*old)));
++#endif
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.qos_tag = cl->nq.qos_tag;
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.snc.htb_group_detach.child_qos_tag = nq_old->qos_tag;
+ 		if (nss_qdisc_node_detach(&cl->nq, nq_old, &nim_detach,
+--- a/nss_qdisc/nss_wrr.c
++++ b/nss_qdisc/nss_wrr.c
+@@ -488,7 +488,11 @@ static int nss_wrr_graft_class(struct Qd
+ 	 */
+ 	nss_qdisc_info("Grafting old: %px with new: %px\n", *old, new);
+ 	if (*old != &noop_qdisc) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+ 		struct nss_qdisc *nq_child = qdisc_priv(*old);
++#else
++		struct nss_qdisc *nq_child = qdisc_priv(((struct Qdisc *)(*old)));
++#endif
+ 		nss_qdisc_info("Detaching old: %px\n", *old);
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.qos_tag = cl->nq.qos_tag;
+ 		if (nss_qdisc_node_detach(&cl->nq, nq_child, &nim_detach,
+--- a/gre/test/nss_connmgr_gre_test.c
++++ b/gre/test/nss_connmgr_gre_test.c
+@@ -143,7 +143,7 @@ static ssize_t nss_connmgr_gre_test_writ
+ 		 * parameter parsing for delete command
+ 		 */
+ 		if (!strcmp(param, "dev")) {
+-			strlcpy(dev_name, value, IFNAMSIZ);
++			strscpy(dev_name, value, IFNAMSIZ);
+ 			dev_name_valid = true;
+ 			break;
+ 		}
+@@ -153,19 +153,19 @@ static ssize_t nss_connmgr_gre_test_writ
+ 		 * tap create command
+ 		 */
+ 		if (!strcmp(param, "next_dev")) {
+-			strlcpy(dev_name, value, IFNAMSIZ);
++			strscpy(dev_name, value, IFNAMSIZ);
+ 			dev_name_valid = true;
+ 			continue;
+ 		}
+ 
+ 		if (!strcmp(param, "saddr")) {
+-			strlcpy(saddr, value, 20);
++			strscpy(saddr, value, 20);
+ 			saddr_valid = true;
+ 			continue;
+ 		}
+ 
+ 		if (!strcmp(param, "daddr")) {
+-			strlcpy(daddr, value, 20);
++			strscpy(daddr, value, 20);
+ 			daddr_valid = true;
+ 			continue;
+ 		}
+--- a/clmapmgr/nss_clmapmgr.c
++++ b/clmapmgr/nss_clmapmgr.c
+@@ -185,7 +185,7 @@ static void nss_clmapmgr_setup(struct ne
+ {
+ 	char name[IFNAMSIZ] = {0};
+ 
+-	strlcpy(name, "nssclmap%d", IFNAMSIZ);
++	strscpy(name, "nssclmap%d", IFNAMSIZ);
+ 	memcpy(dev->name, name, IFNAMSIZ);
+ 	dev->netdev_ops = &nss_clmapmgr_ops;
+ 	eth_hw_addr_random(dev);
+--- a/portifmgr/nss_portifmgr.c
++++ b/portifmgr/nss_portifmgr.c
+@@ -266,7 +266,7 @@ struct net_device *nss_portifmgr_create_
+ 	ndev->vlan_features |= NSS_PORTIFMGR_SUPPORTED_FEATURES;
+ 	ndev->wanted_features |= NSS_PORTIFMGR_SUPPORTED_FEATURES;
+ 	ndev->mtu = real_dev->mtu - NSS_PORTIFMGR_EXTRA_HEADER_SIZE;
+-	strlcpy(ndev->name, name, IFNAMSIZ);
++	strscpy(ndev->name, name, IFNAMSIZ);
+ 
+ 	/*
+ 	 * Setup temp mac address, this can be changed with ifconfig later
+--- a/profiler/profile.c
++++ b/profiler/profile.c
+@@ -138,7 +138,7 @@ int profile_register_performance_counter
+ 	}
+ 
+ 	profile_counter[i] = counter;
+-	strlcpy(profile_name[i], name, PROFILE_COUNTER_NAME_LENGTH);
++	strscpy(profile_name[i], name, PROFILE_COUNTER_NAME_LENGTH);
+ 	profile_name[i][PROFILE_COUNTER_NAME_LENGTH - 1] = 0;
+ 
+ 	return 1;
+@@ -317,7 +317,7 @@ static int profile_make_stats_packet(cha
+ 	counter_ptr = (struct profile_counter *)ptr;
+ 	for (n = 0; n < profile_num_counters; ++n) {
+ 		counter_ptr->value = htonl(*profile_counter[n]);
+-		strlcpy(counter_ptr->name, profile_name[n],
++		strscpy(counter_ptr->name, profile_name[n],
+ 			PROFILE_COUNTER_NAME_LENGTH);
+ 		counter_ptr++;
+ 	}
+--- a/gre/nss_connmgr_gre_v6.c
++++ b/gre/nss_connmgr_gre_v6.c
+@@ -324,7 +324,7 @@ int nss_connmgr_gre_v6_set_config(struct
+ 
+ 	nss_connmgr_gre_set_gre_flags(cfg, &t->parms.o_flags, &t->parms.i_flags);
+ 
+-	strlcpy(t->parms.name, dev->name, IFNAMSIZ);
++	strscpy(t->parms.name, dev->name, IFNAMSIZ);
+ 	t->dev = dev;
+ 	return GRE_SUCCESS;
+ }
+--- /dev/null
++++ b/compat.h
+@@ -0,0 +1,15 @@
++// compat.h
++#ifndef _COMPAT_H
++#define _COMPAT_H
++
++#include <linux/version.h>
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 10, 0)
++#include <linux/vmalloc.h>
++#define compat_const const
++#define strlcpy strscpy
++#else
++#define compat_const
++#endif
++
++#endif /* _COMPAT_H */
+--- a/nss_qdisc/nss_prio.c
++++ b/nss_qdisc/nss_prio.c
+@@ -341,7 +341,11 @@ static int nss_prio_graft(struct Qdisc *
+ 
+ 	nss_qdisc_info("Grafting old: %px with new: %px\n", *old, new);
+ 	if (*old != &noop_qdisc) {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
+ 		struct nss_qdisc *nq_old = qdisc_priv(*old);
++#else
++		struct nss_qdisc *nq_old = qdisc_priv(((struct Qdisc *)(*old)));
++#endif
+ 		nss_qdisc_info("Detaching old: %px\n", *old);
+ 		nim_detach.msg.shaper_configure.config.msg.shaper_node_config.qos_tag = q->nq.qos_tag;
+ 
+--- a/netlink/nss_nldtls.c
++++ b/netlink/nss_nldtls.c
+@@ -1108,7 +1108,7 @@ static ssize_t nss_nldtls_tunnel_stats_r
+ 	list_for_each_entry(entry, &gbl_ctx.dtls_list_head, list) {
+ 		spin_lock_bh(&gbl_ctx.lock);
+ 		memcpy(&stats, &entry->stats, sizeof(stats));
+-		strlcpy(dev_name, entry->dev_name, IFNAMSIZ);
++		strscpy(dev_name, entry->dev_name, IFNAMSIZ);
+ 		spin_unlock_bh(&gbl_ctx.lock);
+ 
+ 		size_wr += scnprintf(lbuf + size_wr, size_al - size_wr, "\n--------------------------------");
+--- a/netlink/nss_nlipsec.c
++++ b/netlink/nss_nlipsec.c
+@@ -394,7 +394,7 @@ static int nss_nlipsec_op_create_tunnel(
+ 	 * the tunnel I/F name into the same rule and send it
+ 	 * as part of the response for the create operation
+ 	 */
+-	strlcpy(nl_rule->ifname, dev->name, IFNAMSIZ);
++	strscpy(nl_rule->ifname, dev->name, IFNAMSIZ);
+ 
+ 	/*
+ 	 * Send to userspace
+--- a/openvpn/src/nss_ovpnmgr_app.c
++++ b/openvpn/src/nss_ovpnmgr_app.c
+@@ -51,7 +51,11 @@ static struct net_device *nss_ovpnmgr_ap
+ 	struct rtable *rt4;
+ 
+ 	if (rt->ip_version == IPVERSION) {
++#if LINUX_VERSION_CODE <= KERNEL_VERSION(6, 10, 0)
+ 		rt4 = ip_route_output(&init_net, rt->ip_addr[0], 0, 0, 0);
++#else
++		rt4 = ip_route_output(&init_net, rt->ip_addr[0], 0, 0, 0, 0);
++#endif
+ 		if (IS_ERR(rt4)) {
+ 			return NULL;
+ 		}
+--- a/bridge/Makefile
++++ b/bridge/Makefile
+@@ -1,4 +1,4 @@
+-ccflags-y := -I$(obj)/../exports -I$(obj)/..  -I$(obj)/nss_hal/include
++ccflags-y := -I$(obj)/../exports -I$(obj)/..  -I$(obj)/nss_hal/include -include $(obj)/../compat.h
+ ccflags-y += -DNSS_CLIENT_BUILD_ID="$(BUILD_ID)"
+ ccflags-$(NSS_BRIDGE_MGR_OVS_ENABLE) += -DNSS_BRIDGE_MGR_OVS_ENABLE
+ 
+--- a/vlan/Makefile
++++ b/vlan/Makefile
+@@ -1,4 +1,4 @@
+-ccflags-y := -I$(obj)/../exports -I$(obj)/..  -I$(obj)/nss_hal/include
++ccflags-y := -I$(obj)/../exports -I$(obj)/..  -I$(obj)/nss_hal/include -include $(obj)/../compat.h
+ ccflags-y += -DNSS_CLIENT_BUILD_ID="$(BUILD_ID)"
+ 
+ obj-m += qca-nss-vlan.o
