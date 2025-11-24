@@ -1,4 +1,4 @@
-/* 
+/*
  * Taken from fli4l 3.0
  * Make sure you compile it against the same libpcap version used in OpenWrt
  */
