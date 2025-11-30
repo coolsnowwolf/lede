@@ -719,15 +719,29 @@ endef
 
 $(eval $(call KernelPackage,drm-radeon))
 
+define KernelPackage/drm-shmem-helper
+  SUBMENU:=$(VIDEO_MENU)
+  HIDDEN:=1
+  TITLE:=GEM SHMEM helper functions
+  DEPENDS:=+LINUX_6_12:kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_GEM_SHMEM_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_shmem_helper.ko@gt5.17
+  AUTOLOAD:=$(call AutoProbe,drm_shmem_helper)
+endef
+
+define KernelPackage/drm-shmem-helper/description
+  GEM SHMEM helper functions.
+endef
+
+$(eval $(call KernelPackage,drm-shmem-helper))
+
 define KernelPackage/drm-sched
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM helper for ARM GPUs
-  DEPENDS:=+kmod-drm +LINUX_6_12:kmod-drm-kms-helper
+  DEPENDS:=+kmod-drm
   HIDDEN:=1
   KCONFIG:=CONFIG_DRM_SCHED
-  FILES:= \
-	$(LINUX_DIR)/drivers/gpu/drm/drm_shmem_helper.ko@gt5.17 \
-	$(LINUX_DIR)/drivers/gpu/drm/scheduler/gpu-sched.ko
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/scheduler/gpu-sched.ko
   AUTOLOAD:=$(call AutoProbe,gpu-sched)
 endef
 
