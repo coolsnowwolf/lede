@@ -466,6 +466,24 @@ define Device/radxa_e54c
 endef
 TARGET_DEVICES += radxa_e54c
 
+define Device/radxa_rock-2a
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 2A
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := radxa-e20c-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += radxa_rock-2a
+
+define Device/radxa_rock-2f
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 2F
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := radxa-e20c-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script rk3528 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += radxa_rock-2f
+
 define Device/radxa_rock-3a
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK 3A

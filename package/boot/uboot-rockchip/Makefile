@@ -209,6 +209,8 @@ define U-Boot/radxa-e20c-rk3528
   $(U-Boot/rk3528/Default)
   NAME:=Radxa E20C
   BUILD_DEVICES:= \
+    radxa_rock-2a \
+    radxa_rock-2f \
     radxa_e20c \
     radxa_e24c
 endef
