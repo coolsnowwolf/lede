@@ -92,27 +92,38 @@ define Device/lemaker_bananapi
 endef
 TARGET_DEVICES += lemaker_bananapi
 
-define Device/sinovoip_bananapi-m2-berry
+define Device/pine64_pinecube
+  $(call Device/FitImageGzip)
+  DEVICE_VENDOR := Pine64
+  DEVICE_MODEL := PineCube
+  SOC := sun8i-s3
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-pinecube
+endef
+TARGET_DEVICES += pine64_pinecube
+
+define Device/sinovoip_bpi-m2-berry
   $(call Device/FitImageGzip)
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2 Berry
   DEVICE_PACKAGES:=kmod-ata-sunxi kmod-brcmfmac \
 	cypress-firmware-43430-sdio wpad-basic-mbedtls
-  SUPPORTED_DEVICES:=lemaker,bananapi-m2-berry
+  SUPPORTED_DEVICES += lemaker,bananapi-m2-berry
   SOC := sun8i-v40
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-bananapi-m2-berry
 endef
-TARGET_DEVICES += sinovoip_bananapi-m2-berry
+TARGET_DEVICES += sinovoip_bpi-m2-berry
 
-define Device/sinovoip_bananapi-m2-ultra
+define Device/sinovoip_bpi-m2-ultra
   $(call Device/FitImageGzip)
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2 Ultra
   DEVICE_PACKAGES:=kmod-ata-sunxi kmod-brcmfmac \
 	brcmfmac-firmware-43430a0-sdio wpad-basic-mbedtls
-  SUPPORTED_DEVICES:=lemaker,bananapi-m2-ultra
+  SUPPORTED_DEVICES += lemaker,bananapi-m2-ultra
   SOC := sun8i-r40
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-bananapi-m2-ultra
 endef
-TARGET_DEVICES += sinovoip_bananapi-m2-ultra
+TARGET_DEVICES += sinovoip_bpi-m2-ultra
 
 define Device/lemaker_bananapro
   $(call Device/FitImageGzip)
@@ -217,35 +228,38 @@ define Device/roofull_beelink-x2
 endef
 TARGET_DEVICES += roofull_beelink-x2
 
-define Device/sinovoip_bananapi-m2-plus
+define Device/sinovoip_bpi-m2-plus
   $(call Device/FitImageGzip)
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M2+
   DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
 	brcmfmac-firmware-43430a0-sdio wpad-basic-mbedtls
   SOC := sun8i-h3
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-bananapi-m2-plus
 endef
-TARGET_DEVICES += sinovoip_bananapi-m2-plus
+TARGET_DEVICES += sinovoip_bpi-m2-plus
 
-define Device/sinovoip_bananapi-m3
+define Device/sinovoip_bpi-m3
   $(call Device/FitImageGzip)
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi M3
   DEVICE_PACKAGES:=kmod-rtc-sunxi kmod-leds-gpio kmod-rtc-ac100 \
 	kmod-brcmfmac cypress-firmware-43430-sdio wpad-basic-mbedtls
   SOC := sun8i-a83t
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-bananapi-m3
 endef
-TARGET_DEVICES += sinovoip_bananapi-m3
+TARGET_DEVICES += sinovoip_bpi-m3
 
-define Device/sinovoip_bananapi-p2-zero
+define Device/sinovoip_bpi-p2-zero
   $(call Device/FitImageGzip)
   DEVICE_VENDOR := Sinovoip
   DEVICE_MODEL := Banana Pi P2 Zero
   DEVICE_PACKAGES:=kmod-leds-gpio kmod-brcmfmac \
 	cypress-firmware-43430-sdio wpad-basic-mbedtls
   SOC := sun8i-h2-plus
+  SUNXI_DTS := $$(SUNXI_DTS_DIR)$$(SOC)-bananapi-p2-zero
 endef
-TARGET_DEVICES += sinovoip_bananapi-p2-zero
+TARGET_DEVICES += sinovoip_bpi-p2-zero
 
 define Device/xunlong_orangepi-one
   $(call Device/FitImageGzip)
