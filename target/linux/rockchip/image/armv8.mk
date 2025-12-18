@@ -75,6 +75,17 @@ define Device/armsom_sige7
 endef
 TARGET_DEVICES += armsom_sige7
 
+define Device/armsom_w3
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := W3
+  SOC := rk3588
+  DEVICE_DTS := rk3588-armsom-w3
+  UBOOT_DEVICE_NAME := sige7-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss
+endef
+TARGET_DEVICES += armsom_w3
+
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
   DEVICE_MODEL := XiaoBao NAS-I

@@ -428,7 +428,8 @@ define U-Boot/sige7-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=Sige7
   BUILD_DEVICES:= \
-    armsom_sige7
+    armsom_sige7 \
+    armsom_w3
 endef
 
 # RK3588S boards
