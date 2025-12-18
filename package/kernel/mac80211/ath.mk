@@ -393,9 +393,9 @@ define KernelPackage/ath12k
   $(call KernelPackage/mac80211/Default)
   TITLE:=Qualcomm 802.11be wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath12k
-  DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT \
-  +kmod-crypto-michael-mic +kmod-qrtr-mhi \
-  +kmod-qcom-qmi-helpers
+  DEPENDS+= @PCI_SUPPORT +kmod-ath +kmod-crypto-michael-mic \
+  +kmod-qrtr-mhi +kmod-qcom-qmi-helpers +@DRIVER_11AC_SUPPORT \
+  +@DRIVER_11AX_SUPPORT +@DRIVER_11BE_SUPPORT
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ath/ath12k/ath12k.ko
   AUTOLOAD:=$(call AutoProbe,ath12k)
 endef

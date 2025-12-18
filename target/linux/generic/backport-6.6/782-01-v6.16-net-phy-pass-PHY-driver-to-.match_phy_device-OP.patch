@@ -1,0 +1,273 @@
+From 31afd6bc55cc0093c3e5b0a368319e423d4de8ea Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 17 May 2025 22:13:45 +0200
+Subject: [PATCH 1/5] net: phy: pass PHY driver to .match_phy_device OP
+
+Pass PHY driver pointer to .match_phy_device OP in addition to phydev.
+Having access to the PHY driver struct might be useful to check the
+PHY ID of the driver is being matched for in case the PHY ID scanned in
+the phydev is not consistent.
+
+A scenario for this is a PHY that change PHY ID after a firmware is
+loaded, in such case, the PHY ID stored in PHY device struct is not
+valid anymore and PHY will manually scan the ID in the match_phy_device
+function.
+
+Having the PHY driver info is also useful for those PHY driver that
+implement multiple simple .match_phy_device OP to match specific MMD PHY
+ID. With this extra info if the parsing logic is the same, the matching
+function can be generalized by using the phy_id in the PHY driver
+instead of hardcoding.
+
+Rust wrapper callback is updated to align to the new match_phy_device
+arguments.
+
+Suggested-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Reviewed-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Reviewed-by: Benno Lossin <lossin@kernel.org> # for Rust
+Reviewed-by: FUJITA Tomonori <fujita.tomonori@gmail.com>
+Link: https://patch.msgid.link/20250517201353.5137-2-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/bcm87xx.c              |  6 ++++--
+ drivers/net/phy/icplus.c               |  6 ++++--
+ drivers/net/phy/marvell10g.c           | 12 ++++++++----
+ drivers/net/phy/micrel.c               |  6 ++++--
+ drivers/net/phy/nxp-c45-tja11xx.c      | 12 ++++++++----
+ drivers/net/phy/nxp-tja11xx.c          |  6 ++++--
+ drivers/net/phy/phy_device.c           |  2 +-
+ drivers/net/phy/realtek/realtek_main.c | 27 +++++++++++++++++---------
+ drivers/net/phy/teranetics.c           |  3 ++-
+ include/linux/phy.h                    |  3 ++-
+ rust/kernel/net/phy.rs                 |  1 +
+ 11 files changed, 56 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/phy/bcm87xx.c
++++ b/drivers/net/phy/bcm87xx.c
+@@ -185,12 +185,14 @@ static irqreturn_t bcm87xx_handle_interr
+ 	return IRQ_HANDLED;
+ }
+ 
+-static int bcm8706_match_phy_device(struct phy_device *phydev)
++static int bcm8706_match_phy_device(struct phy_device *phydev,
++				    const struct phy_driver *phydrv)
+ {
+ 	return phydev->c45_ids.device_ids[4] == PHY_ID_BCM8706;
+ }
+ 
+-static int bcm8727_match_phy_device(struct phy_device *phydev)
++static int bcm8727_match_phy_device(struct phy_device *phydev,
++				    const struct phy_driver *phydrv)
+ {
+ 	return phydev->c45_ids.device_ids[4] == PHY_ID_BCM8727;
+ }
+--- a/drivers/net/phy/icplus.c
++++ b/drivers/net/phy/icplus.c
+@@ -520,12 +520,14 @@ static int ip101a_g_match_phy_device(str
+ 	return ip101a == !ret;
+ }
+ 
+-static int ip101a_match_phy_device(struct phy_device *phydev)
++static int ip101a_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	return ip101a_g_match_phy_device(phydev, true);
+ }
+ 
+-static int ip101g_match_phy_device(struct phy_device *phydev)
++static int ip101g_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	return ip101a_g_match_phy_device(phydev, false);
+ }
+--- a/drivers/net/phy/marvell10g.c
++++ b/drivers/net/phy/marvell10g.c
+@@ -1221,7 +1221,8 @@ static int mv3310_get_number_of_ports(st
+ 	return ret + 1;
+ }
+ 
+-static int mv3310_match_phy_device(struct phy_device *phydev)
++static int mv3310_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	if ((phydev->c45_ids.device_ids[MDIO_MMD_PMAPMD] &
+ 	     MARVELL_PHY_ID_MASK) != MARVELL_PHY_ID_88X3310)
+@@ -1230,7 +1231,8 @@ static int mv3310_match_phy_device(struc
+ 	return mv3310_get_number_of_ports(phydev) == 1;
+ }
+ 
+-static int mv3340_match_phy_device(struct phy_device *phydev)
++static int mv3340_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	if ((phydev->c45_ids.device_ids[MDIO_MMD_PMAPMD] &
+ 	     MARVELL_PHY_ID_MASK) != MARVELL_PHY_ID_88X3310)
+@@ -1254,12 +1256,14 @@ static int mv211x_match_phy_device(struc
+ 	return !!(val & MDIO_PCS_SPEED_5G) == has_5g;
+ }
+ 
+-static int mv2110_match_phy_device(struct phy_device *phydev)
++static int mv2110_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	return mv211x_match_phy_device(phydev, true);
+ }
+ 
+-static int mv2111_match_phy_device(struct phy_device *phydev)
++static int mv2111_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	return mv211x_match_phy_device(phydev, false);
+ }
+--- a/drivers/net/phy/micrel.c
++++ b/drivers/net/phy/micrel.c
+@@ -670,7 +670,8 @@ static int ksz8051_ksz8795_match_phy_dev
+ 		return !ret;
+ }
+ 
+-static int ksz8051_match_phy_device(struct phy_device *phydev)
++static int ksz8051_match_phy_device(struct phy_device *phydev,
++				    const struct phy_driver *phydrv)
+ {
+ 	return ksz8051_ksz8795_match_phy_device(phydev, true);
+ }
+@@ -790,7 +791,8 @@ static int ksz8061_config_init(struct ph
+ 	return kszphy_config_init(phydev);
+ }
+ 
+-static int ksz8795_match_phy_device(struct phy_device *phydev)
++static int ksz8795_match_phy_device(struct phy_device *phydev,
++				    const struct phy_driver *phydrv)
+ {
+ 	return ksz8051_ksz8795_match_phy_device(phydev, false);
+ }
+--- a/drivers/net/phy/nxp-tja11xx.c
++++ b/drivers/net/phy/nxp-tja11xx.c
+@@ -648,12 +648,14 @@ static int tja1102_match_phy_device(stru
+ 	return !ret;
+ }
+ 
+-static int tja1102_p0_match_phy_device(struct phy_device *phydev)
++static int tja1102_p0_match_phy_device(struct phy_device *phydev,
++				       const struct phy_driver *phydrv)
+ {
+ 	return tja1102_match_phy_device(phydev, true);
+ }
+ 
+-static int tja1102_p1_match_phy_device(struct phy_device *phydev)
++static int tja1102_p1_match_phy_device(struct phy_device *phydev,
++				       const struct phy_driver *phydrv)
+ {
+ 	return tja1102_match_phy_device(phydev, false);
+ }
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -533,7 +533,7 @@ static int phy_bus_match(struct device *
+ 		return 0;
+ 
+ 	if (phydrv->match_phy_device)
+-		return phydrv->match_phy_device(phydev);
++		return phydrv->match_phy_device(phydev, phydrv);
+ 
+ 	if (phydev->is_c45) {
+ 		for (i = 1; i < num_ids; i++) {
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -1315,13 +1315,15 @@ static bool rtlgen_supports_mmd(struct p
+ 	return val > 0;
+ }
+ 
+-static int rtlgen_match_phy_device(struct phy_device *phydev)
++static int rtlgen_match_phy_device(struct phy_device *phydev,
++				   const struct phy_driver *phydrv)
+ {
+ 	return phydev->phy_id == RTL_GENERIC_PHYID &&
+ 	       !rtlgen_supports_2_5gbps(phydev);
+ }
+ 
+-static int rtl8226_match_phy_device(struct phy_device *phydev)
++static int rtl8226_match_phy_device(struct phy_device *phydev,
++				    const struct phy_driver *phydrv)
+ {
+ 	return phydev->phy_id == RTL_GENERIC_PHYID &&
+ 	       rtlgen_supports_2_5gbps(phydev) &&
+@@ -1337,32 +1339,38 @@ static int rtlgen_is_c45_match(struct ph
+ 		return !is_c45 && (id == phydev->phy_id);
+ }
+ 
+-static int rtl8221b_match_phy_device(struct phy_device *phydev)
++static int rtl8221b_match_phy_device(struct phy_device *phydev,
++				     const struct phy_driver *phydrv)
+ {
+ 	return phydev->phy_id == RTL_8221B && rtlgen_supports_mmd(phydev);
+ }
+ 
+-static int rtl8221b_vb_cg_c22_match_phy_device(struct phy_device *phydev)
++static int rtl8221b_vb_cg_c22_match_phy_device(struct phy_device *phydev,
++					       const struct phy_driver *phydrv)
+ {
+ 	return rtlgen_is_c45_match(phydev, RTL_8221B_VB_CG, false);
+ }
+ 
+-static int rtl8221b_vb_cg_c45_match_phy_device(struct phy_device *phydev)
++static int rtl8221b_vb_cg_c45_match_phy_device(struct phy_device *phydev,
++					       const struct phy_driver *phydrv)
+ {
+ 	return rtlgen_is_c45_match(phydev, RTL_8221B_VB_CG, true);
+ }
+ 
+-static int rtl8221b_vn_cg_c22_match_phy_device(struct phy_device *phydev)
++static int rtl8221b_vn_cg_c22_match_phy_device(struct phy_device *phydev,
++					       const struct phy_driver *phydrv)
+ {
+ 	return rtlgen_is_c45_match(phydev, RTL_8221B_VN_CG, false);
+ }
+ 
+-static int rtl8221b_vn_cg_c45_match_phy_device(struct phy_device *phydev)
++static int rtl8221b_vn_cg_c45_match_phy_device(struct phy_device *phydev,
++					       const struct phy_driver *phydrv)
+ {
+ 	return rtlgen_is_c45_match(phydev, RTL_8221B_VN_CG, true);
+ }
+ 
+-static int rtl_internal_nbaset_match_phy_device(struct phy_device *phydev)
++static int rtl_internal_nbaset_match_phy_device(struct phy_device *phydev,
++						const struct phy_driver *phydrv)
+ {
+ 	if (phydev->is_c45)
+ 		return false;
+@@ -1381,7 +1389,8 @@ static int rtl_internal_nbaset_match_phy
+ 	return rtlgen_supports_2_5gbps(phydev) && !rtlgen_supports_mmd(phydev);
+ }
+ 
+-static int rtl8251b_c45_match_phy_device(struct phy_device *phydev)
++static int rtl8251b_c45_match_phy_device(struct phy_device *phydev,
++					 const struct phy_driver *phydrv)
+ {
+ 	return rtlgen_is_c45_match(phydev, RTL_8251B, true);
+ }
+--- a/drivers/net/phy/teranetics.c
++++ b/drivers/net/phy/teranetics.c
+@@ -67,7 +67,8 @@ static int teranetics_read_status(struct
+ 	return 0;
+ }
+ 
+-static int teranetics_match_phy_device(struct phy_device *phydev)
++static int teranetics_match_phy_device(struct phy_device *phydev,
++				       const struct phy_driver *phydrv)
+ {
+ 	return phydev->c45_ids.device_ids[3] == PHY_ID_TN2020;
+ }
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -972,7 +972,8 @@ struct phy_driver {
+ 	 * driver for the given phydev.	 If NULL, matching is based on
+ 	 * phy_id and phy_id_mask.
+ 	 */
+-	int (*match_phy_device)(struct phy_device *phydev);
++	int (*match_phy_device)(struct phy_device *phydev,
++				const struct phy_driver *phydrv);
+ 
+ 	/**
+ 	 * @set_wol: Some devices (e.g. qnap TS-119P II) require PHY

@@ -14,6 +14,6 @@ define Device/phicomm_n1
   SOC := meson-gxl-s905d
   UBOOT_DEVICE_NAME := phicomm-n1
   IMAGE/sysupgrade.img.gz := boot-common | boot-combined-script | aml-img | gzip | append-metadata
-  DEVICE_PACKAGES := ethtool kmod-brcmfmac brcmfmac-firmware-43455-sdio-phicomm-n1 wpad-openssl
+  DEVICE_PACKAGES := kmod-brcmfmac brcmfmac-firmware-43455-sdio-phicomm-n1 wpad-openssl
 endef
 TARGET_DEVICES += phicomm_n1

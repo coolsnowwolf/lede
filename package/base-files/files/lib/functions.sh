@@ -32,12 +32,44 @@ xor() {
 	printf "%0${retlen}x" "$ret"
 }
 
+data_2bin() {
+	local data=$1
+	local len=${#1}
+	local bin_data
+
+	for i in $(seq 0 2 $(($len - 1))); do
+		bin_data="${bin_data}\x${data:i:2}"
+	done
+
+	echo -ne $bin_data
+}
+
+data_2xor_val() {
+	local data=$1
+	local len=${#1}
+	local xor_data
+
+	for i in $(seq 0 4 $(($len - 1))); do
+		xor_data="${xor_data}${data:i:4} "
+	done
+
+	echo -n ${xor_data:0:-1}
+}
+
 append() {
 	local var="$1"
 	local value="$2"
 	local sep="${3:- }"
 
 	eval "export ${NO_EXPORT:+-n} -- \"$var=\${$var:+\${$var}\${value:+\$sep}}\$value\""
+}
+
+prepend() {
+	local var="$1"
+	local value="$2"
+	local sep="${3:- }"
+
+	eval "export ${NO_EXPORT:+-n} -- \"$var=\$value\${$var:+\${sep}\${$var}}\""
 }
 
 list_contains() {
@@ -181,6 +213,7 @@ default_prerm() {
 	local root="${IPKG_INSTROOT}"
 	local pkgname="$(basename ${1%.*})"
 	local ret=0
+	local filelist="${root}/usr/lib/opkg/info/${pkgname}.list"
 
 	if [ -f "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" ]; then
 		( . "$root/usr/lib/opkg/info/${pkgname}.prerm-pkg" )
@@ -188,7 +221,7 @@ default_prerm() {
 	fi
 
 	local shell="$(command -v bash)"
-	for i in $(grep -s "^/etc/init.d/" "$root/usr/lib/opkg/info/${pkgname}.list"); do
+	for i in $(grep -s "^/etc/init.d/" "$filelist"); do
 		if [ -n "$root" ]; then
 			${shell:-/bin/sh} "$root/etc/rc.common" "$root$i" disable
 		else
@@ -203,7 +236,7 @@ default_prerm() {
 }
 
 add_group_and_user() {
-	local pkgname="$1"
+	local pkgname="$(basename ${1%.*})"
 	local rusers="$(sed -ne 's/^Require-User: *//p' $root/usr/lib/opkg/info/${pkgname}.control 2>/dev/null)"
 
 	if [ -n "$rusers" ]; then
@@ -293,7 +326,7 @@ default_postinst() {
 	fi
 
 	local shell="$(command -v bash)"
-	for i in $(grep -s "^/etc/init.d/" "$root$filelist"); do
+	for i in $(grep -s "^/etc/init.d/" "$filelist"); do
 		if [ -n "$root" ]; then
 			${shell:-/bin/sh} "$root/etc/rc.common" "$root$i" enable
 		else
@@ -313,6 +346,11 @@ include() {
 	for file in $(ls $1/*.sh 2>/dev/null); do
 		. $file
 	done
+}
+
+ipcalc() {
+	set -- $(ipcalc.sh "$@")
+	[ $? -eq 0 ] && export -- "$@"
 }
 
 find_mtd_index() {
@@ -344,7 +382,7 @@ find_mmc_part() {
 	fi
 
 	for DEVNAME in /sys/block/$ROOTDEV/mmcblk*p*; do
-		PARTNAME="$(grep PARTNAME ${DEVNAME}/uevent | cut -f2 -d'=')"
+		PARTNAME="$(grep PARTNAME ${DEVNAME}/uevent | cut -f2 -d'=' 2>/dev/null)"
 		[ "$PARTNAME" = "$1" ] && echo "/dev/$(basename $DEVNAME)" && return 0
 	done
 }
@@ -433,4 +471,4 @@ cmdline_get_var() {
 	done
 }
 
-[ -z "$IPKG_INSTROOT" ] && [ -f /lib/config/uci.sh ] && . /lib/config/uci.sh
+[ -z "$IPKG_INSTROOT" ] && [ -f /lib/config/uci.sh ] && . /lib/config/uci.sh || true

@@ -1,0 +1,117 @@
+From 4f3d1be4c2f8a22470f3625cbc778ba2e2130def Mon Sep 17 00:00:00 2001
+From: Vincent Mailhol <mailhol.vincent@wanadoo.fr>
+Date: Thu, 14 Nov 2024 02:18:32 +0900
+Subject: [PATCH] compiler.h: add const_true()
+
+__builtin_constant_p() is known for not always being able to produce
+constant expression [1] which led to the introduction of
+__is_constexpr() [2]. Because of its dependency on
+__builtin_constant_p(), statically_true() suffers from the same
+issues.
+
+For example:
+
+  void foo(int a)
+  {
+  	 /* fail on GCC */
+  	BUILD_BUG_ON_ZERO(statically_true(a));
+
+  	 /* fail on both clang and GCC */
+  	static char arr[statically_true(a) ? 1 : 2];
+  }
+
+For the same reasons why __is_constexpr() was created to cover
+__builtin_constant_p() edge cases, __is_constexpr() can be used to
+resolve statically_true() limitations.
+
+Note that, somehow, GCC is not always able to fold this:
+
+  __is_constexpr(x) && (x)
+
+It is OK in BUILD_BUG_ON_ZERO() but not in array declarations nor in
+static_assert():
+
+  void bar(int a)
+  {
+  	/* success */
+  	BUILD_BUG_ON_ZERO(__is_constexpr(a) && (a));
+
+  	/* fail on GCC */
+  	static char arr[__is_constexpr(a) && (a) ? 1 : 2];
+
+  	/* fail on GCC */
+  	static_assert(__is_constexpr(a) && (a));
+  }
+
+Encapsulating the expression in a __builtin_choose_expr() switch
+resolves all these failed tests.
+
+Define a new const_true() macro which, by making use of the
+__builtin_choose_expr() and __is_constexpr(x) combo, always produces a
+constant expression.
+
+It should be noted that statically_true() is the only one able to fold
+tautological expressions in which at least one on the operands is not a
+constant expression. For example:
+
+  statically_true(true || var)
+  statically_true(var == var)
+  statically_true(var * 0 + 1)
+  statically_true(!(var * 8 % 4))
+
+always evaluates to true, whereas all of these would be false under
+const_true() if var is not a constant expression [3].
+
+For this reason, usage of const_true() should be the exception.
+Reflect in the documentation that const_true() is less powerful and
+that statically_true() is the overall preferred solution.
+
+[1] __builtin_constant_p cannot resolve to const when optimizing
+Link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=19449
+
+[2] commit 3c8ba0d61d04 ("kernel.h: Retain constant expression output for max()/min()")
+Link: https://git.kernel.org/torvalds/c/3c8ba0d61d04
+
+[3] https://godbolt.org/z/c61PMxqbK
+
+CC: Linus Torvalds <torvalds@linux-foundation.org>
+CC: Rasmus Villemoes <linux@rasmusvillemoes.dk>
+CC: Luc Van Oostenryck <luc.vanoostenryck@gmail.com>
+Reviewed-by: Yury Norov <yury.norov@gmail.com>,
+Signed-off-by: Vincent Mailhol <mailhol.vincent@wanadoo.fr>
+Signed-off-by: Yury Norov <yury.norov@gmail.com>
+---
+ include/linux/compiler.h | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+--- a/include/linux/compiler.h
++++ b/include/linux/compiler.h
+@@ -317,6 +317,28 @@ static inline void *offset_to_ptr(const
+ #define const_true(x) __builtin_choose_expr(__is_constexpr(x), x, false)
+ 
+ /*
++ * Similar to statically_true() but produces a constant expression
++ *
++ * To be used in conjunction with macros, such as BUILD_BUG_ON_ZERO(),
++ * which require their input to be a constant expression and for which
++ * statically_true() would otherwise fail.
++ *
++ * This is a trade-off: const_true() requires all its operands to be
++ * compile time constants. Else, it would always returns false even on
++ * the most trivial cases like:
++ *
++ *   true || non_const_var
++ *
++ * On the opposite, statically_true() is able to fold more complex
++ * tautologies and will return true on expressions such as:
++ *
++ *   !(non_const_var * 8 % 4)
++ *
++ * For the general case, statically_true() is better.
++ */
++#define const_true(x) __builtin_choose_expr(__is_constexpr(x), x, false)
++
++/*
+  * This is needed in functions which generate the stack canary, see
+  * arch/x86/kernel/smpboot.c::start_secondary() for an example.
+  */

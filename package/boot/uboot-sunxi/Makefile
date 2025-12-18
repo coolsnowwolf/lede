@@ -9,9 +9,8 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2024.01
-
-PKG_HASH:=b99611f1ed237bf3541bdc8434b68c96a6e05967061f992443cb30aabebef5b3
+PKG_VERSION:=2025.01
+PKG_HASH:=cdef7d507c93f1bbd9f015ea9bc21fa074268481405501945abc6f854d5b686f
 
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
 
@@ -139,6 +138,13 @@ define U-Boot/OLIMEX_A13_SOM
   BUILD_DEVICES:=olimex_a13-olimex-som
 endef
 
+define U-Boot/licheepi_nano
+  BUILD_SUBTARGET:=arm926ejs
+  NAME:=LicheePi Nano
+  UENV:=f1c
+  BUILD_DEVICES:=licheepi-nano
+endef
+
 define U-Boot/Linksprite_pcDuino
   BUILD_SUBTARGET:=cortexa8
   NAME:=Linksprite pcDuino
@@ -256,6 +262,13 @@ define U-Boot/pangolin
   UENV:=pangolin
 endef
 
+define U-Boot/popstick
+  BUILD_SUBTARGET:=arm926ejs
+  NAME:=PopStick
+  UENV:=f1c
+  BUILD_DEVICES:=popstick-v1.1
+endef
+
 define U-Boot/libretech_all_h3_cc_h5
   BUILD_SUBTARGET:=cortexa53
   NAME:=Libre Computer ALL-H3-CC H5
@@ -321,7 +334,6 @@ define U-Boot/sopine_baseboard
   UENV:=a64
   ATF:=a64
 endef
-
 
 define U-Boot/orangepi_zero_plus
   BUILD_SUBTARGET:=cortexa53
@@ -410,6 +422,7 @@ UBOOT_TARGETS := \
 	Marsboard_A10 \
 	Mele_M9 \
 	OLIMEX_A13_SOM \
+	licheepi_nano \
 	LicheePi_Zero \
 	Linksprite_pcDuino \
 	Linksprite_pcDuino3 \
@@ -436,6 +449,7 @@ UBOOT_TARGETS := \
 	orangepi_zero2w \
 	orangepi_zero3 \
 	pangolin \
+	popstick \
 	pine64_plus \
 	Sinovoip_BPI_M3 \
 	sopine_baseboard \
@@ -443,6 +457,11 @@ UBOOT_TARGETS := \
 	libretech_all_h3_cc_h5
 
 UBOOT_CONFIGURE_VARS += USE_PRIVATE_LIBGCC=yes
+
+UBOOT_CUSTOMIZE_CONFIG := \
+	--disable TOOLS_KWBIMAGE \
+	--disable TOOLS_LIBCRYPTO \
+	--disable TOOLS_MKEFICAPSULE
 
 UBOOT_MAKE_FLAGS += \
 	BL31=$(STAGING_DIR_IMAGE)/bl31_sunxi-$(ATF).bin SCP=/dev/null

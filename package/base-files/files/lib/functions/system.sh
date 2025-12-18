@@ -315,3 +315,10 @@ macaddr_canonicalize() {
 dt_is_enabled() {
 	grep -q okay "/proc/device-tree/$1/status"
 }
+
+get_linux_version() {
+	local ver=$(uname -r)
+	local minor=${ver%\.*}
+
+	printf "%d%02d%03d" ${ver%%\.*} ${minor#*\.} ${ver##*\.} 2>/dev/null
+}

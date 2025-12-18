@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mt76
-PKG_RELEASE=2
+PKG_RELEASE=3
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
@@ -15,19 +15,19 @@ PKG_SOURCE_VERSION:=5b509e80384ab019ac11aa90c81ec0dbb5b0d7f2
 PKG_MIRROR_HASH:=6fc25df4d28becd010ff4971b23731c08b53e69381a9e4c868091899712f78a9
 PATCH_DIR:=./patches-5.4
 else ifdef CONFIG_LINUX_6_1
-PKG_SOURCE_DATE:=2024-05-17
-PKG_SOURCE_VERSION:=513c131c6309712a51502870b041f45b4bd6a6d4
-PKG_MIRROR_HASH:=9f5d7a846912e7deafa216c2aabb038ec58666ecbf8a394e947b144001994d78
+PKG_SOURCE_DATE:=2024-09-29
+PKG_SOURCE_VERSION:=ee693260c52191c9c4764915178ce3586e926428
+PKG_MIRROR_HASH:=213ca47f3e7ec8a8c6b4ade2e301f62fcc69793ed06d43eb730fc9a500fd5595
 PATCH_DIR:=./patches-6.x
 else ifdef CONFIG_LINUX_6_6
-PKG_SOURCE_DATE:=2024-05-17
-PKG_SOURCE_VERSION:=513c131c6309712a51502870b041f45b4bd6a6d4
-PKG_MIRROR_HASH:=9f5d7a846912e7deafa216c2aabb038ec58666ecbf8a394e947b144001994d78
+PKG_SOURCE_DATE:=2024-09-29
+PKG_SOURCE_VERSION:=ee693260c52191c9c4764915178ce3586e926428
+PKG_MIRROR_HASH:=213ca47f3e7ec8a8c6b4ade2e301f62fcc69793ed06d43eb730fc9a500fd5595
 PATCH_DIR:=./patches-6.x
 else ifdef CONFIG_LINUX_6_12
-PKG_SOURCE_DATE:=2024-05-17
-PKG_SOURCE_VERSION:=513c131c6309712a51502870b041f45b4bd6a6d4
-PKG_MIRROR_HASH:=9f5d7a846912e7deafa216c2aabb038ec58666ecbf8a394e947b144001994d78
+PKG_SOURCE_DATE:=2024-09-29
+PKG_SOURCE_VERSION:=ee693260c52191c9c4764915178ce3586e926428
+PKG_MIRROR_HASH:=213ca47f3e7ec8a8c6b4ade2e301f62fcc69793ed06d43eb730fc9a500fd5595
 PATCH_DIR:=./patches-6.x
 else
 PKG_SOURCE_DATE:=2023-09-18
@@ -341,15 +341,40 @@ endef
 define KernelPackage/mt7996e
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7996E wireless driver
-  DEPENDS+=@PCI_SUPPORT +kmod-mt76-connac +kmod-hwmon-core +@DRIVER_11AX_SUPPORT +@KERNEL_RELAY
+  DEPENDS+=@PCI_SUPPORT +kmod-mt76-connac +kmod-hwmon-core \
+  	   +@KERNEL_RELAY +@DRIVER_11AX_SUPPORT +@DRIVER_11BE_SUPPORT
   FILES:= $(PKG_BUILD_DIR)/mt7996/mt7996e.ko
   AUTOLOAD:=$(call AutoProbe,mt7996e)
+endef
+
+define KernelPackage/mt7992-firmware
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7992 firmware
+  DEPENDS+=+kmod-mt7996e
+endef
+
+define KernelPackage/mt7992-23-firmware
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7996 firmware (2+3 antenna variant)
+  DEPENDS+=+kmod-mt7996e
+endef
+
+define KernelPackage/mt7996-firmware-common
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7996 firmware (common files)
+  HIDDEN:=1
 endef
 
 define KernelPackage/mt7996-firmware
   $(KernelPackage/mt76-default)
   TITLE:=MediaTek MT7996 firmware
-  DEPENDS+=+kmod-mt7996e
+  DEPENDS+=+kmod-mt7996e +kmod-mt7996-firmware-common
+endef
+
+define KernelPackage/mt7996-233-firmware
+  $(KernelPackage/mt76-default)
+  TITLE:=MediaTek MT7996 firmware (2+3+3 antenna variant)
+  DEPENDS+=+kmod-mt7996e +kmod-mt7996-firmware-common
 endef
 
 define KernelPackage/mt7925-firmware
@@ -653,14 +678,57 @@ define KernelPackage/mt7925-firmware/install
 		$(1)/lib/firmware/mediatek/mt7925
 endef
 
-define KernelPackage/mt7996-firmware/install
+define KernelPackage/mt7992-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_dsp.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_eeprom.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_eeprom_2i5i.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_eeprom_2i5e.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_rom_patch.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_wa.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_wm.bin \
+		$(1)/lib/firmware/mediatek/mt7996
+endef
+
+define KernelPackage/mt7992-23-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_dsp_23.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_eeprom_23.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_eeprom_23_2i5i.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_rom_patch_23.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_wa_23.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7992_wm_23.bin \
+		$(1)/lib/firmware/mediatek/mt7996
+endef
+
+define KernelPackage/mt7996-firmware-common/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
 	cp \
 		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_dsp.bin \
+		$(1)/lib/firmware/mediatek/mt7996
+endef
+
+define KernelPackage/mt7996-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
+	cp \
 		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_eeprom.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_eeprom_2i5i6i.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_rom_patch.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_wa.bin \
 		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_wm.bin \
+		$(1)/lib/firmware/mediatek/mt7996
+endef
+
+define KernelPackage/mt7996-233-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7996
+	cp \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_eeprom_233.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_eeprom_233_2i5i6i.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_rom_patch_233.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_wa_233.bin \
+		$(PKG_BUILD_DIR)/firmware/mt7996/mt7996_wm_233.bin \
 		$(1)/lib/firmware/mediatek/mt7996
 endef
 
@@ -709,6 +777,10 @@ $(eval $(call KernelPackage,mt7921e))
 $(eval $(call KernelPackage,mt7925u))
 $(eval $(call KernelPackage,mt7925e))
 $(eval $(call KernelPackage,mt7996e))
+$(eval $(call KernelPackage,mt7992-firmware))
+$(eval $(call KernelPackage,mt7992-23-firmware))
+$(eval $(call KernelPackage,mt7996-firmware-common))
 $(eval $(call KernelPackage,mt7996-firmware))
+$(eval $(call KernelPackage,mt7996-233-firmware))
 $(eval $(call KernelPackage,mt76))
 $(eval $(call BuildPackage,mt76-test))

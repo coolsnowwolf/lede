@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2020 Tobias Maedel <openwrt@tbspace.de>
+# Copyright (C) 2020 Sarah Maedel <openwrt@tbspace.de>
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -7,12 +7,12 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2.12
+PKG_VERSION:=2.13
 PKG_RELEASE:=1
 
-PKG_HASH:=b4c047493cac1152203e1ba121ae57267e4899b7bf56eb365e22a933342d31c9
+PKG_HASH:=afb5c408392fcec840bd30de9b02a236b0108142024f9853b542b596b0d894e3
 
-PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
+PKG_MAINTAINER:=Sarah Maedel <openwrt@tbspace.de>
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/trusted-firmware-a.mk
@@ -38,6 +38,11 @@ define Trusted-Firmware-A/rk3568
   PLAT:=rk3568
 endef
 
+define Trusted-Firmware-A/rk3576
+  BUILD_SUBTARGET:=armv8
+  PLAT:=rk3576
+endef
+
 define Trusted-Firmware-A/rk3588
   BUILD_SUBTARGET:=armv8
   PLAT:=rk3588
@@ -47,11 +52,12 @@ TFA_TARGETS:= \
 	rk3328 \
 	rk3399 \
 	rk3568 \
+	rk3576 \
 	rk3588
 
 ifeq ($(BUILD_VARIANT),rk3399)
-  M0_GCC_NAME:=gcc-arm
-  M0_GCC_RELEASE:=11.2-2022.02
+  M0_GCC_NAME:=arm-gnu-toolchain
+  M0_GCC_RELEASE:=12.3.rel1
   M0_GCC_VERSION:=$(HOST_ARCH)-arm-none-eabi
   M0_GCC_SOURCE:=$(M0_GCC_NAME)-$(M0_GCC_RELEASE)-$(M0_GCC_VERSION).tar.xz
 
@@ -59,9 +65,9 @@ ifeq ($(BUILD_VARIANT),rk3399)
     FILE:=$(M0_GCC_SOURCE)
     URL:=https://developer.arm.com/-/media/Files/downloads/gnu/$(M0_GCC_RELEASE)/binrel
   ifeq ($(HOST_ARCH),aarch64)
-    HASH:=ef1d82e5894e3908cb7ed49c5485b5b95deefa32872f79c2b5f6f5447cabf55f
+    HASH:=14c0487d5753f6071d24e568881f7c7e67f80dd83165dec5164b3731394af431
   else
-    HASH:=8c5acd5ae567c0100245b0556941c237369f210bceb196edfe5a2e7532c60326
+    HASH:=12a2815644318ebcceaf84beabb665d0924b6e79e21048452c5331a56332b309
   endif
   endef
 

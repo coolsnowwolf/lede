@@ -199,8 +199,8 @@ define Device/bananapi_bpi-r4-common
   DEVICE_DTS_LOADADDR := 0x45f00000
   DEVICE_DTS_OVERLAY:= mt7988a-bananapi-bpi-r4-emmc mt7988a-bananapi-bpi-r4-rtc mt7988a-bananapi-bpi-r4-sd
   DEVICE_DTC_FLAGS := --pad 4096
-  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-mux-pca954x kmod-eeprom-at24 kmod-mt7996-firmware \
-		     kmod-rtc-pcf8563 kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs
+  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-i2c-mux-pca954x kmod-eeprom-at24 kmod-mt7996-233-firmware \
+		     kmod-rtc-pcf8563 kmod-sfp kmod-usb3 e2fsprogs f2fsck mkf2fs mt7988-wo-firmware
   IMAGES := sysupgrade.itb
   KERNEL_LOADADDR := 0x46000000
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
@@ -565,6 +565,21 @@ define Device/huasifei_ws3006
 endef
 TARGET_DEVICES += huasifei_ws3006
 
+define Device/huasifei_ws3009
+  DEVICE_VENDOR := Huasifei
+  DEVICE_MODEL := WS3009
+  DEVICE_DTS := mt7981b-huasifei-ws3009
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_PACKAGES := kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  IMAGE_SIZE := 112640k
+  KERNEL_IN_UBI := 1
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += huasifei_ws3009
+
 define Device/hf_m7986r1-emmc
   DEVICE_VENDOR := HF
   DEVICE_MODEL := M7986R1 (eMMC)
@@ -709,7 +724,7 @@ define Device/mediatek_mt7988a-rfb
   DEVICE_DTS_DIR := $(DTS_DIR)/
   DEVICE_DTC_FLAGS := --pad 4096
   DEVICE_DTS_LOADADDR := 0x45f00000
-  DEVICE_PACKAGES := kmod-sfp
+  DEVICE_PACKAGES := mt7988-2p5g-phy-firmware kmod-sfp kmod-phy-aquantia
   KERNEL_LOADADDR := 0x46000000
   KERNEL := kernel-bin | gzip
   KERNEL_INITRAMFS := kernel-bin | lzma | \

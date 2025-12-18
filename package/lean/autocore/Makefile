@@ -22,6 +22,13 @@ define Package/autocore-arm
   VARIANT:=arm
 endef
 
+define Package/autocore-loongarch64
+  TITLE:=Loongarch64 auto core loadbalance script.
+  MAINTAINER:=LEAN
+  DEPENDS:=@loongarch64 +bc +ethtool +pciutils
+  VARIANT:=loongarch64
+endef
+
 define Package/autocore-x86
   TITLE:=x86/x64 auto core loadbalance script.
   MAINTAINER:=Lean
@@ -30,6 +37,10 @@ define Package/autocore-x86
 endef
 
 define Package/autocore-arm/description
+  A luci autoconfig hotplug script.
+endef
+
+define Package/autocore-loongarch64/description
   A luci autoconfig hotplug script.
 endef
 
@@ -57,6 +68,19 @@ endif
 	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
 endef
 
+define Package/autocore-loongarch64/install
+	$(INSTALL_DIR) $(1)/etc
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) ./files/loongarch64/autocore $(1)/etc/init.d/autocore
+	$(INSTALL_BIN) ./files/60-autocore-reload-rpcd $(1)/etc/uci-defaults/
+	$(INSTALL_DIR) $(1)/sbin
+	$(INSTALL_BIN) ./files/loongarch64/sbin/cpuinfo $(1)/sbin/cpuinfo
+	$(INSTALL_BIN) ./files/loongarch64/sbin/tempinfo $(1)/sbin/tempinfo
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(CP) ./files/luci-mod-status-autocore.json $(1)/usr/share/rpcd/acl.d/
+endef
+
 define Package/autocore-x86/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/x86/autocore $(1)/etc/init.d/autocore
@@ -71,4 +95,5 @@ define Package/autocore-x86/install
 endef
 
 $(eval $(call BuildPackage,autocore-arm))
+$(eval $(call BuildPackage,autocore-loongarch64))
 $(eval $(call BuildPackage,autocore-x86))

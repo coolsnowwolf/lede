@@ -6,9 +6,11 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firmware/qca-wireless.git
-PKG_SOURCE_DATE:=2025-06-13
-PKG_SOURCE_VERSION:=4810aacf3b1c5de99923b9a424a1f0e6341c6bca
-PKG_MIRROR_HASH:=2e2fdf0578e39eb0be36cfd8e11de920c3e8446469dafee0ebbc580f272193a8
+PKG_SOURCE_DATE:=2025-10-22
+PKG_SOURCE_VERSION:=ec6831a43ff066c9873e7c41fd6f68354bb67b4a
+PKG_MIRROR_HASH:=a9fbf572eb8c6dc2f40f167139d7ecdae8dbc86d29e519209ac482a76bcb0fe2
+
+PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -37,15 +39,24 @@ ALLWIFIBOARDS:= \
 	edimax_cax1800 \
 	glinet_gl-ax1800 \
 	glinet_gl-axt1800 \
-	jdcloud_ax1800pro \
+	glinet_gl-b3000 \
 	jdcloud_re-cs-02 \
+	jdcloud_re-ss-01 \
+	linksys_homewrk \
+	linksys_mr5500 \
 	linksys_mr7350 \
+	linksys_mr7500 \
+	linksys_mx2000 \
 	linksys_mx4200 \
 	linksys_mx5300 \
+	linksys_mx5500 \
+	linksys_mx8500 \
 	netgear_lbr20 \
 	netgear_rax120v2 \
 	netgear_wax214 \
 	netgear_wax218 \
+	netgear_wax610 \
+	netgear_wax610y \
 	netgear_wax620 \
 	netgear_wax630 \
 	prpl_haze \
@@ -58,6 +69,7 @@ ALLWIFIBOARDS:= \
 	xiaomi_ax6000 \
 	xiaomi_ax9000 \
 	xiaomi_rm1800 \
+	yuncore_ax830 \
 	yuncore_ax880 \
 	yuncore_fap650 \
 	zbtlink_zbt-z800ax \
@@ -72,7 +84,7 @@ define Package/ipq-wifi-default
   SUBMENU:=ath10k Board-Specific Overrides
   SECTION:=firmware
   CATEGORY:=Firmware
-  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x||TARGET_qualcommax)
+  DEPENDS:=@(TARGET_ipq40xx||TARGET_ipq806x||TARGET_qualcommax||TARGET_qualcommbe)
   TITLE:=Custom Board
 endef
 
@@ -84,6 +96,11 @@ endef
 define ipq-wifi-install-ath11-one-to
   $(INSTALL_DIR)  $(2)/lib/firmware/ath11k/$(3)/
   $(INSTALL_DATA) $(1) $(2)/lib/firmware/ath11k/$(3)/board-2.bin
+endef
+
+define ipq-wifi-install-ath12-one-to
+  $(INSTALL_DIR)  $(2)/lib/firmware/ath12k/$(3)/
+  $(INSTALL_DATA) $(1) $(2)/lib/firmware/ath12k/$(3)/board-2.bin
 endef
 
 define ipq-wifi-install-one
@@ -107,8 +124,10 @@ define ipq-wifi-install-one
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),QCN6122/hw1.0),\
   $(if $(filter $(suffix $(1)),.QCN9074 .qcn9074),\
     $(call ipq-wifi-install-ath11-one-to,$(1),$(2),QCN9074/hw1.0),\
+  $(if $(filter $(suffix $(1)),.QCN9274 .qcn9274),\
+    $(call ipq-wifi-install-ath12-one-to,$(1),$(2),QCN9274/hw2.0),\
     $(error Unrecognized board-file suffix '$(suffix $(1))' for '$(1)')\
-  ))))))))))
+  )))))))))))
 
 endef
 # Blank line required at end of above define due to foreach context
@@ -155,15 +174,24 @@ $(eval $(call generate-ipq-wifi-package,edgecore_eap102,Edgecore EAP102))
 $(eval $(call generate-ipq-wifi-package,edimax_cax1800,Edimax CAX1800))
 $(eval $(call generate-ipq-wifi-package,glinet_gl-ax1800,GL.iNet GL-AX1800))
 $(eval $(call generate-ipq-wifi-package,glinet_gl-axt1800,GL.iNet GL-AXT1800))
-$(eval $(call generate-ipq-wifi-package,jdcloud_ax1800pro,JDCloud AX1800 Pro))
+$(eval $(call generate-ipq-wifi-package,glinet_gl-b3000,GL.iNet GL-B3000))
 $(eval $(call generate-ipq-wifi-package,jdcloud_re-cs-02,JDCloud RE-CS-02))
+$(eval $(call generate-ipq-wifi-package,jdcloud_re-ss-01,JDCloud RE-SS-01))
+$(eval $(call generate-ipq-wifi-package,linksys_homewrk,Linksys HomeWRK))
+$(eval $(call generate-ipq-wifi-package,linksys_mr5500,Linksys MR5500))
 $(eval $(call generate-ipq-wifi-package,linksys_mr7350,Linksys MR7350))
+$(eval $(call generate-ipq-wifi-package,linksys_mr7500,Linksys MR7500))
+$(eval $(call generate-ipq-wifi-package,linksys_mx2000,Linksys MX2000))
 $(eval $(call generate-ipq-wifi-package,linksys_mx4200,Linksys MX4200))
 $(eval $(call generate-ipq-wifi-package,linksys_mx5300,Linksys MX5300))
+$(eval $(call generate-ipq-wifi-package,linksys_mx5500,Linksys MX5500))
+$(eval $(call generate-ipq-wifi-package,linksys_mx8500,Linksys MX8500))
 $(eval $(call generate-ipq-wifi-package,netgear_lbr20,Netgear LBR20))
 $(eval $(call generate-ipq-wifi-package,netgear_rax120v2,Netgear RAX120v2))
 $(eval $(call generate-ipq-wifi-package,netgear_wax214,Netgear WAX214))
 $(eval $(call generate-ipq-wifi-package,netgear_wax218,Netgear WAX218))
+$(eval $(call generate-ipq-wifi-package,netgear_wax610,Netgear WAX610))
+$(eval $(call generate-ipq-wifi-package,netgear_wax610y,Netgear WAX610Y))
 $(eval $(call generate-ipq-wifi-package,netgear_wax620,Netgear WAX620))
 $(eval $(call generate-ipq-wifi-package,netgear_wax630,Netgear WAX630))
 $(eval $(call generate-ipq-wifi-package,qihoo_360v6,Qihoo 360V6))
@@ -176,6 +204,7 @@ $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax6000,Xiaomi AX6000))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax9000,Xiaomi AX9000))
 $(eval $(call generate-ipq-wifi-package,xiaomi_rm1800,Xiaomi RM1800))
+$(eval $(call generate-ipq-wifi-package,yuncore_ax830,Yuncore AX830))
 $(eval $(call generate-ipq-wifi-package,yuncore_ax880,Yuncore AX880))
 $(eval $(call generate-ipq-wifi-package,yuncore_fap650,Yuncore FAP650))
 $(eval $(call generate-ipq-wifi-package,zbtlink_zbt-z800ax,Zbtlink ZBT-Z800AX))

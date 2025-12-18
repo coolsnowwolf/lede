@@ -1,0 +1,109 @@
+From d6c45707ac84c2d9f274ece1cea4dddb97996bde Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 17 May 2025 22:13:48 +0200
+Subject: [PATCH 4/5] net: phy: introduce genphy_match_phy_device()
+
+Introduce new API, genphy_match_phy_device(), to provide a way to check
+to match a PHY driver for a PHY device based on the info stored in the
+PHY device struct.
+
+The function generalize the logic used in phy_bus_match() to check the
+PHY ID whether if C45 or C22 ID should be used for matching.
+
+This is useful for custom .match_phy_device function that wants to use
+the generic logic under some condition. (example a PHY is already setup
+and provide the correct PHY ID)
+
+Reviewed-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Link: https://patch.msgid.link/20250517201353.5137-5-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phy_device.c | 52 +++++++++++++++++++++++++-----------
+ include/linux/phy.h          |  3 +++
+ 2 files changed, 40 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -522,20 +522,26 @@ static int phy_scan_fixups(struct phy_de
+ 	return 0;
+ }
+ 
+-static int phy_bus_match(struct device *dev, struct device_driver *drv)
++/**
++ * genphy_match_phy_device - match a PHY device with a PHY driver
++ * @phydev: target phy_device struct
++ * @phydrv: target phy_driver struct
++ *
++ * Description: Checks whether the given PHY device matches the specified
++ * PHY driver. For Clause 45 PHYs, iterates over the available device
++ * identifiers and compares them against the driver's expected PHY ID,
++ * applying the provided mask. For Clause 22 PHYs, a direct ID comparison
++ * is performed.
++ *
++ * Return: 1 if the PHY device matches the driver, 0 otherwise.
++ */
++int genphy_match_phy_device(struct phy_device *phydev,
++			    struct phy_driver *phydrv)
+ {
+-	struct phy_device *phydev = to_phy_device(dev);
+-	struct phy_driver *phydrv = to_phy_driver(drv);
+-	const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
+-	int i;
+-
+-	if (!(phydrv->mdiodrv.flags & MDIO_DEVICE_IS_PHY))
+-		return 0;
+-
+-	if (phydrv->match_phy_device)
+-		return phydrv->match_phy_device(phydev, phydrv);
+-
+ 	if (phydev->is_c45) {
++		const int num_ids = ARRAY_SIZE(phydev->c45_ids.device_ids);
++		int i;
++
+ 		for (i = 1; i < num_ids; i++) {
+ 			if (phydev->c45_ids.device_ids[i] == 0xffffffff)
+ 				continue;
+@@ -544,11 +550,27 @@ static int phy_bus_match(struct device *
+ 					   phydrv->phy_id, phydrv->phy_id_mask))
+ 				return 1;
+ 		}
++
+ 		return 0;
+-	} else {
+-		return phy_id_compare(phydev->phy_id, phydrv->phy_id,
+-				      phydrv->phy_id_mask);
+ 	}
++
++	return phy_id_compare(phydev->phy_id, phydrv->phy_id,
++			      phydrv->phy_id_mask);
++}
++EXPORT_SYMBOL_GPL(genphy_match_phy_device);
++
++static int phy_bus_match(struct device *dev, struct device_driver *drv)
++{
++	struct phy_device *phydev = to_phy_device(dev);
++	struct phy_driver *phydrv = to_phy_driver(drv);
++
++	if (!(phydrv->mdiodrv.flags & MDIO_DEVICE_IS_PHY))
++		return 0;
++
++	if (phydrv->match_phy_device)
++		return phydrv->match_phy_device(phydev, phydrv);
++
++	return genphy_match_phy_device(phydev, phydrv);
+ }
+ 
+ static ssize_t
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -1812,6 +1812,9 @@ char *phy_attached_info_irq(struct phy_d
+ 	__malloc;
+ void phy_attached_info(struct phy_device *phydev);
+ 
++int genphy_match_phy_device(struct phy_device *phydev,
++			    struct phy_driver *phydrv);
++
+ /* Clause 22 PHY */
+ int genphy_read_abilities(struct phy_device *phydev);
+ int genphy_setup_forced(struct phy_device *phydev);

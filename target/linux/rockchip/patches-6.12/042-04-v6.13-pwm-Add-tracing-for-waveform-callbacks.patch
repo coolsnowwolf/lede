@@ -1,0 +1,236 @@
+From 1afd01db1a76cdd1d96696e3790d66c79621784c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Uwe=20Kleine-K=C3=B6nig?= <u.kleine-koenig@baylibre.com>
+Date: Fri, 20 Sep 2024 10:58:00 +0200
+Subject: [PATCH] pwm: Add tracing for waveform callbacks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This adds trace events for the recently introduced waveform callbacks.
+With the introduction of some helper macros consistency among the
+different events is ensured.
+
+Signed-off-by: Uwe Kleine-K?nig <u.kleine-koenig@baylibre.com>
+Link: https://lore.kernel.org/r/1d71879b0de3bf01459c7a9d0f040d43eb5ace56.1726819463.git.u.kleine-koenig@baylibre.com
+Signed-off-by: Uwe Kleine-K?nig <ukleinek@kernel.org>
+---
+ drivers/pwm/core.c         |  24 +++++--
+ include/trace/events/pwm.h | 134 ++++++++++++++++++++++++++++++++++---
+ 2 files changed, 146 insertions(+), 12 deletions(-)
+
+--- a/drivers/pwm/core.c
++++ b/drivers/pwm/core.c
+@@ -164,30 +164,46 @@ static int __pwm_round_waveform_tohw(str
+ 				     const struct pwm_waveform *wf, void *wfhw)
+ {
+ 	const struct pwm_ops *ops = chip->ops;
++	int ret;
+ 
+-	return ops->round_waveform_tohw(chip, pwm, wf, wfhw);
++	ret = ops->round_waveform_tohw(chip, pwm, wf, wfhw);
++	trace_pwm_round_waveform_tohw(pwm, wf, wfhw, ret);
++
++	return ret;
+ }
+ 
+ static int __pwm_round_waveform_fromhw(struct pwm_chip *chip, struct pwm_device *pwm,
+ 				       const void *wfhw, struct pwm_waveform *wf)
+ {
+ 	const struct pwm_ops *ops = chip->ops;
++	int ret;
++
++	ret = ops->round_waveform_fromhw(chip, pwm, wfhw, wf);
++	trace_pwm_round_waveform_fromhw(pwm, wfhw, wf, ret);
+ 
+-	return ops->round_waveform_fromhw(chip, pwm, wfhw, wf);
++	return ret;
+ }
+ 
+ static int __pwm_read_waveform(struct pwm_chip *chip, struct pwm_device *pwm, void *wfhw)
+ {
+ 	const struct pwm_ops *ops = chip->ops;
++	int ret;
+ 
+-	return ops->read_waveform(chip, pwm, wfhw);
++	ret = ops->read_waveform(chip, pwm, wfhw);
++	trace_pwm_read_waveform(pwm, wfhw, ret);
++
++	return ret;
+ }
+ 
+ static int __pwm_write_waveform(struct pwm_chip *chip, struct pwm_device *pwm, const void *wfhw)
+ {
+ 	const struct pwm_ops *ops = chip->ops;
++	int ret;
++
++	ret = ops->write_waveform(chip, pwm, wfhw);
++	trace_pwm_write_waveform(pwm, wfhw, ret);
+ 
+-	return ops->write_waveform(chip, pwm, wfhw);
++	return ret;
+ }
+ 
+ #define WFHWSIZE 20
+--- a/include/trace/events/pwm.h
++++ b/include/trace/events/pwm.h
+@@ -8,15 +8,135 @@
+ #include <linux/pwm.h>
+ #include <linux/tracepoint.h>
+ 
++#define TP_PROTO_pwm(args...)							\
++	TP_PROTO(struct pwm_device *pwm, args)
++
++#define TP_ARGS_pwm(args...)							\
++	TP_ARGS(pwm, args)
++
++#define TP_STRUCT__entry_pwm(args...)						\
++	TP_STRUCT__entry(							\
++		__field(unsigned int, chipid)					\
++		__field(unsigned int, hwpwm)					\
++		args)
++
++#define TP_fast_assign_pwm(args...)						\
++	TP_fast_assign(								\
++		__entry->chipid = pwm->chip->id;				\
++		__entry->hwpwm = pwm->hwpwm;					\
++		args)
++
++#define TP_printk_pwm(fmt, args...)						\
++	TP_printk("pwmchip%u.%u: " fmt, __entry->chipid, __entry->hwpwm, args)
++
++#define __field_pwmwf(wf)							\
++	__field(u64, wf ## _period_length_ns)					\
++	__field(u64, wf ## _duty_length_ns)					\
++	__field(u64, wf ## _duty_offset_ns)					\
++
++#define fast_assign_pwmwf(wf)							\
++	__entry->wf ## _period_length_ns = wf->period_length_ns;		\
++	__entry->wf ## _duty_length_ns = wf->duty_length_ns;			\
++	__entry->wf ## _duty_offset_ns = wf->duty_offset_ns
++
++#define printk_pwmwf_format(wf)							\
++	"%lld/%lld [+%lld]"
++
++#define printk_pwmwf_formatargs(wf)						\
++	__entry->wf ## _duty_length_ns, __entry->wf ## _period_length_ns, __entry->wf ## _duty_offset_ns
++
++TRACE_EVENT(pwm_round_waveform_tohw,
++
++	TP_PROTO_pwm(const struct pwm_waveform *wf, void *wfhw, int err),
++
++	TP_ARGS_pwm(wf, wfhw, err),
++
++	TP_STRUCT__entry_pwm(
++		__field_pwmwf(wf)
++		__field(void *, wfhw)
++		__field(int, err)
++	),
++
++	TP_fast_assign_pwm(
++		fast_assign_pwmwf(wf);
++		__entry->wfhw = wfhw;
++		__entry->err = err;
++	),
++
++	TP_printk_pwm(printk_pwmwf_format(wf) " > %p err=%d",
++		printk_pwmwf_formatargs(wf), __entry->wfhw, __entry->err)
++);
++
++TRACE_EVENT(pwm_round_waveform_fromhw,
++
++	TP_PROTO_pwm(const void *wfhw, struct pwm_waveform *wf, int err),
++
++	TP_ARGS_pwm(wfhw, wf, err),
++
++	TP_STRUCT__entry_pwm(
++		__field(const void *, wfhw)
++		__field_pwmwf(wf)
++		__field(int, err)
++	),
++
++	TP_fast_assign_pwm(
++		__entry->wfhw = wfhw;
++		fast_assign_pwmwf(wf);
++		__entry->err = err;
++	),
++
++	TP_printk_pwm("%p > " printk_pwmwf_format(wf) " err=%d",
++		__entry->wfhw, printk_pwmwf_formatargs(wf), __entry->err)
++);
++
++TRACE_EVENT(pwm_read_waveform,
++
++	TP_PROTO_pwm(void *wfhw, int err),
++
++	TP_ARGS_pwm(wfhw, err),
++
++	TP_STRUCT__entry_pwm(
++		__field(void *, wfhw)
++		__field(int, err)
++	),
++
++	TP_fast_assign_pwm(
++		__entry->wfhw = wfhw;
++		__entry->err = err;
++	),
++
++	TP_printk_pwm("%p err=%d",
++		__entry->wfhw, __entry->err)
++);
++
++TRACE_EVENT(pwm_write_waveform,
++
++	TP_PROTO_pwm(const void *wfhw, int err),
++
++	TP_ARGS_pwm(wfhw, err),
++
++	TP_STRUCT__entry_pwm(
++		__field(const void *, wfhw)
++		__field(int, err)
++	),
++
++	TP_fast_assign_pwm(
++		__entry->wfhw = wfhw;
++		__entry->err = err;
++	),
++
++	TP_printk_pwm("%p err=%d",
++		__entry->wfhw, __entry->err)
++);
++
++
+ DECLARE_EVENT_CLASS(pwm,
+ 
+ 	TP_PROTO(struct pwm_device *pwm, const struct pwm_state *state, int err),
+ 
+ 	TP_ARGS(pwm, state, err),
+ 
+-	TP_STRUCT__entry(
+-		__field(unsigned int, chipid)
+-		__field(unsigned int, hwpwm)
++	TP_STRUCT__entry_pwm(
+ 		__field(u64, period)
+ 		__field(u64, duty_cycle)
+ 		__field(enum pwm_polarity, polarity)
+@@ -24,9 +144,7 @@ DECLARE_EVENT_CLASS(pwm,
+ 		__field(int, err)
+ 	),
+ 
+-	TP_fast_assign(
+-		__entry->chipid = pwm->chip->id;
+-		__entry->hwpwm = pwm->hwpwm;
++	TP_fast_assign_pwm(
+ 		__entry->period = state->period;
+ 		__entry->duty_cycle = state->duty_cycle;
+ 		__entry->polarity = state->polarity;
+@@ -34,8 +152,8 @@ DECLARE_EVENT_CLASS(pwm,
+ 		__entry->err = err;
+ 	),
+ 
+-	TP_printk("pwmchip%u.%u: period=%llu duty_cycle=%llu polarity=%d enabled=%d err=%d",
+-		  __entry->chipid, __entry->hwpwm, __entry->period, __entry->duty_cycle,
++	TP_printk_pwm("period=%llu duty_cycle=%llu polarity=%d enabled=%d err=%d",
++		  __entry->period, __entry->duty_cycle,
+ 		  __entry->polarity, __entry->enabled, __entry->err)
+ 
+ );

@@ -1,0 +1,133 @@
+From 9837930d6738e9fdc323ad887ace7c236a61d70c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 25 Jan 2023 00:27:49 +0000
+Subject: [PATCH] hwrng: add driver for MediaTek TRNG SMC
+
+Add driver providing kernel-side support for the Random Number
+Generator hardware found on Mediatek SoCs which have a driver in ARM
+TrustedFirmware-A allowing Linux to read random numbers using a
+non-standard vendor-defined Secure Monitor Call.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/char/hw_random/Kconfig      | 16 +++++++
+ drivers/char/hw_random/Makefile     |  1 +
+ drivers/char/hw_random/mtk-rng-v2.c | 74 +++++++++++++++++++++++++++++
+ 3 files changed, 91 insertions(+)
+ create mode 100644 drivers/char/hw_random/mtk-rng-v2.c
+
+--- a/drivers/char/hw_random/Kconfig
++++ b/drivers/char/hw_random/Kconfig
+@@ -451,6 +451,23 @@ config HW_RANDOM_MTK
+ 
+ 	  If unsure, say Y.
+ 
++config HW_RANDOM_MTK_V2
++	tristate "Mediatek Random Number Generator support (v2/SMC)"
++	depends on HAVE_ARM_SMCCC
++	depends on HW_RANDOM
++	depends on (ARM64 && ARCH_MEDIATEK) || COMPILE_TEST
++	default y
++	help
++	  This driver provides kernel-side support for the Random Number
++	  Generator hardware found on Mediatek SoCs which have a driver
++	  in ARM TrustedFirmware-A allowing Linux to read using a non-
++	  standard vendor-defined Secure Monitor Call.
++
++	  To compile this driver as a module, choose M here. the
++	  module will be called mtk-rng-v2.
++
++	  If unsure, say Y.
++
+ config HW_RANDOM_S390
+ 	tristate "S390 True Random Number Generator support"
+ 	depends on S390
+--- a/drivers/char/hw_random/Makefile
++++ b/drivers/char/hw_random/Makefile
+@@ -39,6 +39,7 @@ obj-$(CONFIG_HW_RANDOM_PIC32) += pic32-r
+ obj-$(CONFIG_HW_RANDOM_MESON) += meson-rng.o
+ obj-$(CONFIG_HW_RANDOM_CAVIUM) += cavium-rng.o cavium-rng-vf.o
+ obj-$(CONFIG_HW_RANDOM_MTK)	+= mtk-rng.o
++obj-$(CONFIG_HW_RANDOM_MTK_V2)	+= mtk-rng-v2.o
+ obj-$(CONFIG_HW_RANDOM_S390) += s390-trng.o
+ obj-$(CONFIG_HW_RANDOM_KEYSTONE) += ks-sa-rng.o
+ obj-$(CONFIG_HW_RANDOM_OPTEE) += optee-rng.o
+--- /dev/null
++++ b/drivers/char/hw_random/mtk-rng-v2.c
+@@ -0,0 +1,76 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Driver for Mediatek Hardware Random Number Generator (v2/SMCC)
++ *
++ * Copyright (C) 2023 Daniel Golle <daniel@makrotopia.org>
++ * based on patch from Mingming Su <Mingming.Su@mediatek.com>
++ */
++#define MTK_RNG_DEV KBUILD_MODNAME
++
++#include <linux/arm-smccc.h>
++#include <linux/err.h>
++#include <linux/hw_random.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <linux/soc/mediatek/mtk_sip_svc.h>
++
++#define MTK_SIP_KERNEL_GET_RND		MTK_SIP_SMC_CMD(0x550)
++
++static int mtk_rng_v2_read(struct hwrng *rng, void *buf, size_t max, bool wait)
++{
++	struct arm_smccc_res res;
++	int retval = 0;
++
++	while (max >= sizeof(u32)) {
++		arm_smccc_smc(MTK_SIP_KERNEL_GET_RND, 0, 0, 0, 0, 0, 0, 0,
++			      &res);
++		if (res.a0)
++			break;
++
++		*(u32 *)buf = res.a1;
++		retval += sizeof(u32);
++		buf += sizeof(u32);
++		max -= sizeof(u32);
++	}
++
++	return retval || !wait ? retval : -EIO;
++}
++
++static int mtk_rng_v2_probe(struct platform_device *pdev)
++{
++	struct hwrng *trng;
++
++	trng = devm_kzalloc(&pdev->dev, sizeof(*trng), GFP_KERNEL);
++	if (!trng)
++		return -ENOMEM;
++
++	trng->name = pdev->name;
++	trng->read = mtk_rng_v2_read;
++	trng->quality = 900;
++
++	return devm_hwrng_register(&pdev->dev, trng);
++}
++
++static const struct of_device_id mtk_rng_v2_match[] = {
++	{ .compatible = "mediatek,mt7981-rng" },
++	{ .compatible = "mediatek,mt7987-rng" },
++	{ .compatible = "mediatek,mt7988-rng" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, mtk_rng_v2_match);
++
++static struct platform_driver mtk_rng_v2_driver = {
++	.probe          = mtk_rng_v2_probe,
++	.driver = {
++		.name = KBUILD_MODNAME,
++		.of_match_table = mtk_rng_v2_match,
++	},
++};
++module_platform_driver(mtk_rng_v2_driver);
++
++MODULE_DESCRIPTION("Mediatek Random Number Generator Driver (v2/SMC)");
++MODULE_AUTHOR("Daniel Golle <daniel@makrotopia.org>");
++MODULE_LICENSE("GPL");

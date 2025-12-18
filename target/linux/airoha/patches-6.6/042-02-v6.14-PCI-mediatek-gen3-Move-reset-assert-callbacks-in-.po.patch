@@ -1,0 +1,86 @@
+From e4c7dfd953f7618f0ccb70d87c1629634f306fab Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 8 Jan 2025 10:50:41 +0100
+Subject: [PATCH 2/6] PCI: mediatek-gen3: Move reset/assert callbacks in
+ .power_up()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In order to make the code more readable, the reset_control_bulk_assert()
+function for PHY reset lines is moved to make it pair with
+reset_control_bulk_deassert() in mtk_pcie_power_up() and
+mtk_pcie_en7581_power_up(). The same change is done for
+reset_control_assert() used to assert MAC reset line.
+
+Introduce PCIE_MTK_RESET_TIME_US macro for the time needed to
+complete PCIe reset on MediaTek controller.
+
+Link: https://lore.kernel.org/r/20250108-pcie-en7581-fixes-v6-2-21ac939a3b9b@kernel.org
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Krzysztof Wilczyński <kwilczynski@kernel.org>
+Reviewed-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+Reviewed-by: Manivannan Sadhasivam <manivannan.sadhasivam@linaro.org>
+---
+ drivers/pci/controller/pcie-mediatek-gen3.c | 28 +++++++++++++--------
+ 1 file changed, 18 insertions(+), 10 deletions(-)
+
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -120,6 +120,8 @@
+ 
+ #define MAX_NUM_PHY_RESETS		3
+ 
++#define PCIE_MTK_RESET_TIME_US		10
++
+ /* Time in ms needed to complete PCIe reset on EN7581 SoC */
+ #define PCIE_EN7581_RESET_TIME_MS	100
+ 
+@@ -875,9 +877,14 @@ static int mtk_pcie_en7581_power_up(stru
+ 	u32 val;
+ 
+ 	/*
+-	 * Wait for the time needed to complete the bulk assert in
+-	 * mtk_pcie_setup for EN7581 SoC.
++	 * The controller may have been left out of reset by the bootloader
++	 * so make sure that we get a clean start by asserting resets here.
+ 	 */
++	reset_control_bulk_assert(pcie->soc->phy_resets.num_resets,
++				  pcie->phy_resets);
++	reset_control_assert(pcie->mac_reset);
++
++	/* Wait for the time needed to complete the reset lines assert. */
+ 	mdelay(PCIE_EN7581_RESET_TIME_MS);
+ 
+ 	err = phy_init(pcie->phy);
+@@ -944,6 +951,15 @@ static int mtk_pcie_power_up(struct mtk_
+ 	struct device *dev = pcie->dev;
+ 	int err;
+ 
++	/*
++	 * The controller may have been left out of reset by the bootloader
++	 * so make sure that we get a clean start by asserting resets here.
++	 */
++	reset_control_bulk_assert(pcie->soc->phy_resets.num_resets,
++				  pcie->phy_resets);
++	reset_control_assert(pcie->mac_reset);
++	usleep_range(PCIE_MTK_RESET_TIME_US, 2 * PCIE_MTK_RESET_TIME_US);
++
+ 	/* PHY power on and enable pipe clock */
+ 	err = reset_control_bulk_deassert(pcie->soc->phy_resets.num_resets, pcie->phy_resets);
+ 	if (err) {
+@@ -1016,14 +1032,6 @@ static int mtk_pcie_setup(struct mtk_gen
+ 	 * counter since the bulk is shared.
+ 	 */
+ 	reset_control_bulk_deassert(pcie->soc->phy_resets.num_resets, pcie->phy_resets);
+-	/*
+-	 * The controller may have been left out of reset by the bootloader
+-	 * so make sure that we get a clean start by asserting resets here.
+-	 */
+-	reset_control_bulk_assert(pcie->soc->phy_resets.num_resets, pcie->phy_resets);
+-
+-	reset_control_assert(pcie->mac_reset);
+-	usleep_range(10, 20);
+ 
+ 	/* Don't touch the hardware registers before power up */
+ 	err = pcie->soc->power_up(pcie);

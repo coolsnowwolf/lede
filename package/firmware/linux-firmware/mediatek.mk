@@ -97,6 +97,16 @@ define Package/mt7986-wo-firmware/install
 endef
 $(eval $(call BuildPackage,mt7986-wo-firmware))
 
+Package/mt7987-2p5g-phy-firmware = $(call Package/firmware-default,MT7987 built-in 2.5G Ethernet PHY firmware)
+define Package/mt7987-2p5g-phy-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7987
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7987/i2p5ge-phy-DSPBitTb.bin \
+		$(PKG_BUILD_DIR)/mediatek/mt7987/i2p5ge-phy-pmb.bin \
+		$(1)/lib/firmware/mediatek/mt7987
+endef
+$(eval $(call BuildPackage,mt7987-2p5g-phy-firmware))
+
 Package/mt7988-2p5g-phy-firmware = $(call Package/firmware-default,MT7988 built-in 2.5G Ethernet PHY firmware)
 define Package/mt7988-2p5g-phy-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7988
