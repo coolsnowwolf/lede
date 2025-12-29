@@ -1,0 +1,76 @@
+name: OpenWRT-K2P-A1-CloudBuild
+on:
+  workflow_dispatch:  # 手动触发编译（推荐）
+  # schedule:         # 可选：定时编译，注释掉则仅手动触发
+  #   - cron: 0 8 * * 5
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  FEEDS_CONF: feeds.conf.default
+  CONFIG_FILE: k2p.config  # 编译配置文件（后续创建）
+  DIY_SH: diy.sh           # 自定义脚本（后续创建）
+  UPLOAD_BIN_DIR: false    # 不上传bin目录（节省空间）
+  UPLOAD_FIRMWARE: true    # 上传最终固件（必开）
+  TZ: Asia/Shanghai        # 时区，避免编译时间错乱
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04  # 编译环境（固定ubuntu 22.04）
+    steps:
+    - name: 检查系统环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo apt update -y
+        sudo apt full-upgrade -y
+        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch pkgconf python2.7 python3 python3-pip libpython3-dev qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+
+    - name: 克隆源码
+      run: |
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        echo "OPENWRT_DIR=$PWD" >> $GITHUB_ENV
+
+    - name: 加载自定义脚本（diy.sh）
+      run: |
+        [ -f $DIY_SH ] && chmod +x $DIY_SH && $DIY_SH
+
+    - name: 更新feeds
+      run: |
+        cd $OPENWRT_DIR
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 加载编译配置（k2p.config）
+      run: |
+        [ -f $CONFIG_FILE ] && cp $CONFIG_FILE $OPENWRT_DIR/.config
+        cd $OPENWRT_DIR
+        make defconfig
+
+    - name: 下载编译依赖
+      run: |
+        cd $OPENWRT_DIR
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: 编译固件
+      run: |
+        cd $OPENWRT_DIR
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 V=s  # 编译失败时单线程输出详细日志
+
+    - name: 整理固件文件
+      run: |
+        cd $OPENWRT_DIR
+        mkdir -p ./artifact/firmware
+        cp -rf ./bin/targets/*/*/*.bin ./artifact/firmware/
+        echo "FIRMWARE_PATH=$OPENWRT_DIR/artifact/firmware" >> $GITHUB_ENV
+
+    - name: 上传固件到Actions
+      uses: actions/upload-artifact@main
+      with:
+        name: K2P-A1-OpenWRT-Firmware
+        path: ${{ env.FIRMWARE_PATH }}
