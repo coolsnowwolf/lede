@@ -1,0 +1,68 @@
+name: OpenWRT-Build for newifi d2
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - '.config'
+  workflow_dispatch: # 手动触发编译
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 检查源码
+        uses: actions/checkout@main
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt -y install build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3-distutils rsync unzip zlib1g-dev file wget
+
+      - name: 加载配置文件
+        run: |
+          # 加载newifi d2默认配置
+          cp configs/templates/newifi-d2.config .config
+          # 开启KVR协议、双频WiFi、easymesh插件（关键配置）
+          cat >> .config << EOF
+          # 开启802.11r/k/v（KVR协议）
+          CONFIG_PACKAGE_hostapd-utils=y
+          CONFIG_PACKAGE_kmod-mt7603e=y
+          CONFIG_PACKAGE_kmod-mt7612e=y
+          CONFIG_PACKAGE_wpad-openssl=y # 必须选openssl版本，否则KVR无法生效
+          CONFIG_WPA_MSG_MIN_PRIORITY=3
+          CONFIG_HOSTAPD_WPA3=y
+          CONFIG_HOSTAPD_11R=y
+          CONFIG_HOSTAPD_11K=y
+          CONFIG_HOSTAPD_11V=y
+          
+          # 开启easymesh插件
+          CONFIG_PACKAGE_luci-app-easymesh=y
+          CONFIG_PACKAGE_luci-i18n-easymesh-zh-cn=y
+          
+          # 确保双频WiFi驱动生效
+          CONFIG_PACKAGE_kmod-mt76-core=y
+          CONFIG_PACKAGE_mt7603-firmware=y
+          CONFIG_PACKAGE_mt7612-firmware=y
+          
+          # 保留基础工具
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-theme-argon=y
+          EOF
+          # 自动补全配置
+          make defconfig
+
+      - name: 下载源码和依赖
+        run: |
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: 编译固件
+        run: |
+          make -j$(nproc) || make -j1 V=s # 自动适配线程数，编译失败则单线程调试
+
+      - name: 上传固件
+        uses: actions/upload-artifact@main
+        with:
+          name: OpenWRT-newifi-d2-firmware
+          path: bin/targets/ramips/mt7621/
