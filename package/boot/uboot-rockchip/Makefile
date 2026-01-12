@@ -374,6 +374,13 @@ define U-Boot/generic-rk3576
     friendlyarm_nanopi-r76s
 endef
 
+define U-Boot/rock-4d-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=ROCK 4D
+  BUILD_DEVICES:= \
+    radxa_rock-4d
+endef
+
 define U-Boot/sige5-rk3576
   $(U-Boot/rk3576/Default)
   NAME:=Sige5
@@ -489,6 +496,7 @@ UBOOT_TARGETS := \
   rock-3b-rk3568 \
   station-p2-rk3568 \
   generic-rk3576 \
+  rock-4d-rk3576 \
   sige5-rk3576 \
   generic-rk3588 \
   nanopc-t6-rk3588 \
