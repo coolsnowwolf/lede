@@ -145,6 +145,13 @@ define U-Boot/nanopi-r4se-rk3399
   USE_RKBIN:=1
 endef
 
+define U-Boot/rock-4se-rk3399
+  $(U-Boot/rk3399/Default)
+  NAME:=ROCK 4SE
+  BUILD_DEVICES:= \
+    radxa_rock-4se
+endef
+
 define U-Boot/rock-pi-4-rk3399
   $(U-Boot/rk3399/Default)
   NAME:=Rock Pi 4
@@ -517,6 +524,7 @@ UBOOT_TARGETS := \
   nanopi-r4s-rk3399 \
   nanopi-r4se-rk3399 \
   rock-pi-4-rk3399 \
+  rock-4se-rk3399 \
   rockpro64-rk3399 \
   sv901-eaio-rk3399 \
   guangmiao-g4c-rk3399 \
