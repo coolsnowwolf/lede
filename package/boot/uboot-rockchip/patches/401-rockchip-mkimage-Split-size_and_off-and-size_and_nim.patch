@@ -1,0 +1,121 @@
+From 6b152999908b526c73b2ce91ecf444bae892796e Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Wed, 29 Jan 2025 22:36:27 +0000
+Subject: [PATCH 1/7] rockchip: mkimage: Split size_and_off and size_and_nimage
+
+Split 32-bit size_and_off and size_and_nimage fields of the v2 image
+format header into their own 16-bit size, offset and num_images fields.
+
+Set num_images based on number of images passed by the datafile
+parameter and size based on the offset to the hash field to fix using a
+single init data file and no boot data file for the v2 image format.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ tools/rkcommon.c | 44 ++++++++++++++++++++++++--------------------
+ 1 file changed, 24 insertions(+), 20 deletions(-)
+
+--- a/tools/rkcommon.c
++++ b/tools/rkcommon.c
+@@ -34,15 +34,16 @@ enum hash_type {
+ /**
+  * struct image_entry
+  *
+- * @size_and_off:	[31:16]image size;[15:0]image offset
+- * @address:	default as 0xFFFFFFFF
++ * @offset:	image offset (unit as 512 byte blocks)
++ * @size:	image size (unit as 512 byte blocks)
++ * @address:	load address (default as 0xFFFFFFFF)
+  * @flag:	no use
+  * @counter:	no use
+  * @hash:	hash of image
+- *
+  */
+ struct image_entry {
+-	uint32_t size_and_off;
++	uint16_t offset;
++	uint16_t size;
+ 	uint32_t address;
+ 	uint32_t flag;
+ 	uint32_t counter;
+@@ -56,16 +57,17 @@ struct image_entry {
+  * This is stored at SD card block 64 (where each block is 512 bytes)
+  *
+  * @magic:	Magic (must be RK_MAGIC_V2)
+- * @size_and_nimage:	[31:16]number of images;[15:0]
+- *			offset to hash field of header(unit as 4Byte)
+- * @boot_flag:	[3:0]hash type(0:none,1:sha256,2:sha512)
+- * @signature:	hash or signature for header info
+- *
++ * @size:	offset to hash field of header (unit as 4 bytes)
++ * @num_images:	number of images
++ * @boot_flag:	[3:0] hash type (0:none, 1:sha256, 2:sha512)
++ * @images:	images
++ * @hash:	hash or signature for header info
+  */
+ struct header0_info_v2 {
+ 	uint32_t magic;
+ 	uint8_t reserved[4];
+-	uint32_t size_and_nimage;
++	uint16_t size;
++	uint16_t num_images;
+ 	uint32_t boot_flag;
+ 	uint8_t reserved1[104];
+ 	struct image_entry images[4];
+@@ -350,17 +352,18 @@ static void rkcommon_set_header0_v2(void
+ 	printf("Image Type:   Rockchip %s boot image\n",
+ 		rkcommon_get_spl_hdr(params));
+ 	memset(buf, '\0', RK_INIT_OFFSET * RK_BLK_SIZE);
+-	hdr->magic   = cpu_to_le32(RK_MAGIC_V2);
+-	hdr->size_and_nimage = cpu_to_le32((2 << 16) + 384);
++	hdr->magic = cpu_to_le32(RK_MAGIC_V2);
+ 	hdr->boot_flag = cpu_to_le32(HASH_SHA256);
+ 	sector_offset = 4;
+ 	image_size_array[0] = spl_params.init_size;
+ 	image_size_array[1] = spl_params.boot_size;
+ 
+ 	for (i = 0; i < 2; i++) {
++		if (!image_size_array[i])
++			break;
+ 		image_sector_count = image_size_array[i] / RK_BLK_SIZE;
+-		hdr->images[i].size_and_off = cpu_to_le32((image_sector_count
+-							<< 16) + sector_offset);
++		hdr->images[i].offset = cpu_to_le16(sector_offset);
++		hdr->images[i].size = cpu_to_le16(image_sector_count);
+ 		hdr->images[i].address = 0xFFFFFFFF;
+ 		hdr->images[i].counter = cpu_to_le32(i + 1);
+ 		image_ptr = buf + sector_offset * RK_BLK_SIZE;
+@@ -369,6 +372,8 @@ static void rkcommon_set_header0_v2(void
+ 		sector_offset = sector_offset + image_sector_count;
+ 	}
+ 
++	hdr->num_images = cpu_to_le16(i);
++	hdr->size = cpu_to_le16(offsetof(typeof(*hdr), hash) / sizeof(uint32_t));
+ 	do_sha256_hash(buf, (void *)hdr->hash - buf, hdr->hash);
+ }
+ 
+@@ -515,10 +520,8 @@ void rkcommon_print_header(const void *b
+ 			return;
+ 		}
+ 
+-		init_size = header0_v2.images[0].size_and_off >> 16;
+-		init_size = init_size * RK_BLK_SIZE;
+-		boot_size = header0_v2.images[1].size_and_off >> 16;
+-		boot_size = boot_size * RK_BLK_SIZE;
++		init_size = le16_to_cpu(header0_v2.images[0].size) * RK_BLK_SIZE;
++		boot_size = le16_to_cpu(header0_v2.images[1].size) * RK_BLK_SIZE;
+ 	} else {
+ 		ret = rkcommon_parse_header(buf, &header0, &spl_info);
+ 
+@@ -532,8 +535,9 @@ void rkcommon_print_header(const void *b
+ 		}
+ 
+ 		image_type = ret;
+-		init_size = header0.init_size * RK_BLK_SIZE;
+-		boot_size = header0.init_boot_size * RK_BLK_SIZE - init_size;
++		init_size = le16_to_cpu(header0.init_size) * RK_BLK_SIZE;
++		boot_size = le16_to_cpu(header0.init_boot_size) * RK_BLK_SIZE -
++			    init_size;
+ 
+ 		printf("Image Type:   Rockchip %s (%s) boot image\n",
+ 		       spl_info->spl_hdr,

@@ -1,0 +1,202 @@
+From ed28c9e3d54cbf25dea55030c2f5a889ae3da915 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Wed, 29 Jan 2025 22:36:31 +0000
+Subject: [PATCH 5/7] rockchip: mkimage: Add support for up to 4 input files
+
+The v2 image format can support up to 4 embedded images that can be
+loaded by the BootROM using the back-to-bootrom method.
+
+Currently two input files can be passed in using the datafile parameter,
+separated by a colon (":").
+
+Extend the datafile parameter parsing to support up to 4 input files
+separated by a colon (":") for use with the v2 image format.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ tools/rkcommon.c | 93 +++++++++++++++++++++++-------------------------
+ 1 file changed, 44 insertions(+), 49 deletions(-)
+
+--- a/tools/rkcommon.c
++++ b/tools/rkcommon.c
+@@ -166,17 +166,15 @@ static struct spl_info spl_infos[] = {
+ /**
+  * struct spl_params - spl params parsed in check_params()
+  *
+- * @init_file:		Init data file path
+- * @init_size:		Aligned size of init data in bytes
+- * @boot_file:		Boot data file path
+- * @boot_size:		Aligned size of boot data in bytes
++ * @file:	image file path
++ * @size:	aligned size of image in bytes
+  */
+ 
+ struct spl_params {
+-	char *init_file;
+-	uint32_t init_size;
+-	char *boot_file;
+-	uint32_t boot_size;
++	struct {
++		char *file;
++		uint32_t size;
++	} images[4];
+ };
+ 
+ static struct spl_params spl_params = { 0 };
+@@ -256,31 +254,32 @@ int rkcommon_check_params(struct image_t
+ 	if (!rkcommon_get_spl_info(params->imagename))
+ 		goto err_spl_info;
+ 
+-	spl_params.init_file = params->datafile;
++	spl_params.images[0].file = params->datafile;
++	for (i = 1; i < ARRAY_SIZE(spl_params.images); i++) {
++		spl_params.images[i].file =
++				strchr(spl_params.images[i - 1].file, ':');
++		if (!spl_params.images[i].file)
++			break;
+ 
+-	spl_params.boot_file = strchr(spl_params.init_file, ':');
+-	if (spl_params.boot_file) {
+-		*spl_params.boot_file = '\0';
+-		spl_params.boot_file += 1;
++		*spl_params.images[i].file = '\0';
++		spl_params.images[i].file += 1;
+ 	}
+ 
+-	size = rkcommon_get_aligned_filesize(params, spl_params.init_file);
+-	if (size < 0)
+-		return EXIT_FAILURE;
+-	spl_params.init_size = size;
++	for (i = 0; i < ARRAY_SIZE(spl_params.images); i++) {
++		if (!spl_params.images[i].file)
++			break;
+ 
+-	/* Boot file is optional, and only for back-to-bootrom functionality. */
+-	if (spl_params.boot_file) {
+-		size = rkcommon_get_aligned_filesize(params, spl_params.boot_file);
++		size = rkcommon_get_aligned_filesize(params,
++						     spl_params.images[i].file);
+ 		if (size < 0)
+ 			return EXIT_FAILURE;
+-		spl_params.boot_size = size;
++		spl_params.images[i].size = size;
+ 	}
+ 
+-	if (spl_params.init_size > rkcommon_get_spl_size(params)) {
++	if (spl_params.images[0].size > rkcommon_get_spl_size(params)) {
+ 		fprintf(stderr,
+ 			"Error: SPL image is too large (size %#x than %#x)\n",
+-			spl_params.init_size, rkcommon_get_spl_size(params));
++			spl_params.images[0].size, rkcommon_get_spl_size(params));
+ 		return EXIT_FAILURE;
+ 	}
+ 
+@@ -347,7 +346,7 @@ static void rkcommon_set_header0(void *b
+ 	hdr->magic = cpu_to_le32(RK_MAGIC);
+ 	hdr->disable_rc4 = cpu_to_le32(!rkcommon_need_rc4_spl(params));
+ 	hdr->init_offset = cpu_to_le16(init_offset);
+-	hdr->init_size   = cpu_to_le16(spl_params.init_size / RK_BLK_SIZE);
++	hdr->init_size = cpu_to_le16(spl_params.images[0].size / RK_BLK_SIZE);
+ 
+ 	/*
+ 	 * init_boot_size needs to be set, as it is read by the BootROM
+@@ -357,10 +356,11 @@ static void rkcommon_set_header0(void *b
+ 	 * see https://lists.denx.de/pipermail/u-boot/2017-May/293267.html
+ 	 * for a more detailed explanation by Andy Yan
+ 	 */
+-	if (spl_params.boot_file)
+-		init_boot_size = spl_params.init_size + spl_params.boot_size;
++	if (spl_params.images[1].file)
++		init_boot_size = spl_params.images[0].size +
++				 spl_params.images[1].size;
+ 	else
+-		init_boot_size = spl_params.init_size + RK_MAX_BOOT_SIZE;
++		init_boot_size = spl_params.images[0].size + RK_MAX_BOOT_SIZE;
+ 	hdr->init_boot_size = cpu_to_le16(init_boot_size / RK_BLK_SIZE);
+ 
+ 	rc4_encode(buf, RK_BLK_SIZE, rc4_key);
+@@ -370,7 +370,6 @@ static void rkcommon_set_header0_v2(void
+ {
+ 	struct header0_info_v2 *hdr = buf;
+ 	uint32_t sector_offset, image_sector_count;
+-	uint32_t image_size_array[2];
+ 	uint8_t *image_ptr = NULL;
+ 	int i;
+ 
+@@ -378,19 +377,17 @@ static void rkcommon_set_header0_v2(void
+ 	memset(buf, '\0', sector_offset * RK_BLK_SIZE);
+ 	hdr->magic = cpu_to_le32(RK_MAGIC_V2);
+ 	hdr->boot_flag = cpu_to_le32(HASH_SHA256);
+-	image_size_array[0] = spl_params.init_size;
+-	image_size_array[1] = spl_params.boot_size;
+ 
+-	for (i = 0; i < 2; i++) {
+-		if (!image_size_array[i])
++	for (i = 0; i < ARRAY_SIZE(spl_params.images); i++) {
++		if (!spl_params.images[i].size)
+ 			break;
+-		image_sector_count = image_size_array[i] / RK_BLK_SIZE;
++		image_sector_count = spl_params.images[i].size / RK_BLK_SIZE;
+ 		hdr->images[i].offset = cpu_to_le16(sector_offset);
+ 		hdr->images[i].size = cpu_to_le16(image_sector_count);
+ 		hdr->images[i].address = 0xFFFFFFFF;
+ 		hdr->images[i].counter = cpu_to_le32(i + 1);
+ 		image_ptr = buf + sector_offset * RK_BLK_SIZE;
+-		do_sha256_hash(image_ptr, image_size_array[i],
++		do_sha256_hash(image_ptr, spl_params.images[i].size,
+ 			       hdr->images[i].hash);
+ 		sector_offset = sector_offset + image_sector_count;
+ 	}
+@@ -417,13 +414,13 @@ void rkcommon_set_header(void *buf,  str
+ 
+ 		if (rkcommon_need_rc4_spl(params))
+ 			rkcommon_rc4_encode_spl(buf, header_size,
+-						spl_params.init_size);
++						spl_params.images[0].size);
+ 
+-		if (spl_params.boot_file) {
++		if (spl_params.images[1].file) {
+ 			if (rkcommon_need_rc4_spl(params))
+ 				rkcommon_rc4_encode_spl(buf + header_size,
+-							spl_params.init_size,
+-							spl_params.boot_size);
++							spl_params.images[0].size,
++							spl_params.images[1].size);
+ 		}
+ 	}
+ }
+@@ -661,8 +658,9 @@ int rkcommon_vrec_header(struct image_to
+ 	 * We need to store the original file-size (i.e. before padding), as
+ 	 * imagetool does not set this during its adjustment of file_size.
+ 	 */
+-	params->orig_file_size = tparams->header_size +
+-		spl_params.init_size + spl_params.boot_size;
++	params->orig_file_size = tparams->header_size;
++	for (int i = 0; i < ARRAY_SIZE(spl_params.images); i++)
++		params->orig_file_size += spl_params.images[i].size;
+ 
+ 	params->file_size = rkcommon_get_aligned_size(params,
+ 						      params->orig_file_size);
+@@ -749,16 +747,13 @@ err_close:
+ 
+ int rockchip_copy_image(int ifd, struct image_tool_params *params)
+ {
+-	int ret;
+-
+-	ret = copy_file(params, ifd, spl_params.init_file,
+-			spl_params.init_size);
+-	if (ret)
+-		return ret;
++	int i, ret;
+ 
+-	if (spl_params.boot_file) {
+-		ret = copy_file(params, ifd, spl_params.boot_file,
+-				spl_params.boot_size);
++	for (i = 0; i < ARRAY_SIZE(spl_params.images); i++) {
++		if (!spl_params.images[i].size)
++			break;
++		ret = copy_file(params, ifd, spl_params.images[i].file,
++				spl_params.images[i].size);
+ 		if (ret)
+ 			return ret;
+ 	}
