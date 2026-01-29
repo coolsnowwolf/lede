@@ -524,6 +524,15 @@ define Device/radxa_rock-3c
 endef
 TARGET_DEVICES += radxa_rock-3c
 
+define Device/radxa_rock-4c-plus
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 4C+
+  SOC := rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  UBOOT_DEVICE_NAME := rock-4c-plus-rk3399
+endef
+TARGET_DEVICES += radxa_rock-4c-plus
+
 define Device/radxa_rock-pi-4a
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK Pi 4A
