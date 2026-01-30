@@ -505,7 +505,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	phy_interface_t phy_mode;
  	struct phylink *phylink;
  	struct mtk_mac *mac;
-@@ -4707,16 +4859,41 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -4707,16 +4859,44 @@ static int mtk_add_mac(struct mtk_eth *e
  	mac->id = id;
  	mac->hw = eth;
  	mac->of_node = np;
@@ -513,15 +513,30 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +	if (pcs_np) {
 +		mac->sgmii_pcs = mtk_pcs_lynxi_get(eth->dev, pcs_np);
 +		if (IS_ERR(mac->sgmii_pcs)) {
-+			if (PTR_ERR(mac->sgmii_pcs) == -EPROBE_DEFER)
-+				return -EPROBE_DEFER;
++			if (PTR_ERR(mac->sgmii_pcs) != -EPROBE_DEFER)
++				dev_err(eth->dev,
++					"cannot select SGMII PCS, error %ld\n",
++					PTR_ERR(mac->sgmii_pcs));
++
++			err = PTR_ERR(mac->sgmii_pcs);
++			goto free_netdev;
++		}
++	}
  
 -	err = of_get_ethdev_address(mac->of_node, eth->netdev[id]);
 -	if (err == -EPROBE_DEFER)
 -		return err;
-+			dev_err(eth->dev, "cannot select SGMII PCS, error %ld\n",
-+				PTR_ERR(mac->sgmii_pcs));
-+			return PTR_ERR(mac->sgmii_pcs);
++	pcs_np = of_parse_phandle(mac->of_node, "pcs-handle", 1);
++	if (pcs_np) {
++		mac->usxgmii_pcs = mtk_usxgmii_pcs_get(eth->dev, pcs_np);
++		if (IS_ERR(mac->usxgmii_pcs)) {
++			if (PTR_ERR(mac->usxgmii_pcs) != -EPROBE_DEFER)
++				dev_err(eth->dev,
++					"cannot select USXGMII PCS, error %ld\n",
++					PTR_ERR(mac->usxgmii_pcs));
++
++			err = PTR_ERR(mac->usxgmii_pcs);
++			goto free_netdev;
 +		}
 +	}
  
@@ -530,19 +545,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 -		eth_hw_addr_random(eth->netdev[id]);
 -		dev_err(eth->dev, "generated random MAC address %pM\n",
 -			eth->netdev[id]->dev_addr);
-+	pcs_np = of_parse_phandle(mac->of_node, "pcs-handle", 1);
-+	if (pcs_np) {
-+		mac->usxgmii_pcs = mtk_usxgmii_pcs_get(eth->dev, pcs_np);
-+		if (IS_ERR(mac->usxgmii_pcs)) {
-+			if (PTR_ERR(mac->usxgmii_pcs) == -EPROBE_DEFER)
-+				return -EPROBE_DEFER;
-+
-+			dev_err(eth->dev, "cannot select USXGMII PCS, error %ld\n",
-+				PTR_ERR(mac->usxgmii_pcs));
-+			return PTR_ERR(mac->usxgmii_pcs);
-+		}
-+	}
-+
 +	if (mtk_is_netsys_v3_or_greater(eth) && (mac->sgmii_pcs || mac->usxgmii_pcs)) {
 +		mac->pextp = devm_of_phy_optional_get(eth->dev, mac->of_node, NULL);
 +		if (IS_ERR(mac->pextp)) {
@@ -550,12 +552,13 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +				dev_err(eth->dev, "cannot get PHY, error %ld\n",
 +					PTR_ERR(mac->pextp));
 +
-+			return PTR_ERR(mac->pextp);
++			err = PTR_ERR(mac->pextp);
++			goto free_netdev;
 +		}
  	}
  
  	memset(mac->hwlro_ip, 0, sizeof(mac->hwlro_ip));
-@@ -4799,8 +4976,21 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -4799,8 +4979,21 @@ static int mtk_add_mac(struct mtk_eth *e
  		phy_interface_zero(mac->phylink_config.supported_interfaces);
  		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
  			  mac->phylink_config.supported_interfaces);
@@ -577,7 +580,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	phylink = phylink_create(&mac->phylink_config,
  				 of_fwnode_handle(mac->of_node),
  				 phy_mode, &mtk_phylink_ops);
-@@ -4851,6 +5041,26 @@ free_netdev:
+@@ -4851,6 +5044,26 @@ free_netdev:
  	return err;
  }
  
@@ -604,7 +607,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  void mtk_eth_set_dma_device(struct mtk_eth *eth, struct device *dma_dev)
  {
  	struct net_device *dev, *tmp;
-@@ -4997,7 +5207,8 @@ static int mtk_probe(struct platform_dev
+@@ -4997,7 +5210,8 @@ static int mtk_probe(struct platform_dev
  			regmap_write(cci, 0, 3);
  	}
  
@@ -614,7 +617,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  		err = mtk_sgmii_init(eth);
  
  		if (err)
-@@ -5108,6 +5319,24 @@ static int mtk_probe(struct platform_dev
+@@ -5108,6 +5322,24 @@ static int mtk_probe(struct platform_dev
  		}
  	}
  
@@ -639,7 +642,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SHARED_INT)) {
  		err = devm_request_irq(eth->dev, eth->irq[0],
  				       mtk_handle_irq, 0,
-@@ -5218,6 +5447,11 @@ static void mtk_remove(struct platform_d
+@@ -5218,6 +5450,11 @@ static void mtk_remove(struct platform_d
  		mtk_stop(eth->netdev[i]);
  		mac = netdev_priv(eth->netdev[i]);
  		phylink_disconnect_phy(mac->phylink);
