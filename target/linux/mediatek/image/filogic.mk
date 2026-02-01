@@ -22,6 +22,14 @@ define Build/mt7986-bl31-uboot
 	cat $(STAGING_DIR_IMAGE)/mt7986_$1-u-boot.fip >> $@
 endef
 
+define Build/mt7987-bl2
+	cat $(STAGING_DIR_IMAGE)/mt7987-$1-bl2.img >> $@
+endef
+
+define Build/mt7987-bl31-uboot
+	cat $(STAGING_DIR_IMAGE)/mt7987_$1-u-boot.fip >> $@
+endef
+
 define Build/mt7988-bl2
 	cat $(STAGING_DIR_IMAGE)/mt7988-$1-bl2.img >> $@
 endef
