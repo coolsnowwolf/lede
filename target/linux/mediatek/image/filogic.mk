@@ -536,6 +536,20 @@ define Device/glinet_gl-mt3000
 endef
 TARGET_DEVICES += glinet_gl-mt3000
 
+define Device/glinet_gl-mt5000
+  DEVICE_VENDOR := GL.iNet
+  DEVICE_MODEL := GL-MT5000
+  DEVICE_DTS := mt7987a-gl-mt5000
+  DEVICE_DTS_DIR := ../dts
+  SUPPORTED_DEVICES := glinet,gl-mt5000
+  DEVICE_PACKAGES := mkf2fs blkid blockdev kmod-fs-ext4 mt7987-2p5g-phy-firmware \
+                     kmod-mmc kmod-fs-f2fs kmod-fs-vfat
+  IMAGES += factory.bin
+  IMAGE/factory.bin := append-kernel | pad-to 32M | append-rootfs
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += glinet_gl-mt5000
+
 define Device/glinet_gl-mt6000
   DEVICE_VENDOR := GL.iNet
   DEVICE_MODEL := GL-MT6000
