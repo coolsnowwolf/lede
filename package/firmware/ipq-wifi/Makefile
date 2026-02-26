@@ -64,6 +64,7 @@ ALLWIFIBOARDS:= \
 	qnap_301w \
 	redmi_ax5-jdcloud \
 	redmi_ax6 \
+	thinkplus_fogpod800 \
 	wallys_dr40x9 \
 	xiaomi_ax3600 \
 	xiaomi_ax6000 \
@@ -199,6 +200,7 @@ $(eval $(call generate-ipq-wifi-package,qnap_301w,QNAP 301w))
 $(eval $(call generate-ipq-wifi-package,prpl_haze,prpl Haze))
 $(eval $(call generate-ipq-wifi-package,redmi_ax5-jdcloud,Redmi AX5 JDCloud))
 $(eval $(call generate-ipq-wifi-package,redmi_ax6,Redmi AX6))
+$(eval $(call generate-ipq-wifi-package,thinkplus_fogpod800,ThinkPlus FogPOD800))
 $(eval $(call generate-ipq-wifi-package,wallys_dr40x9,Wallys DR40X9))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax3600,Xiaomi AX3600))
 $(eval $(call generate-ipq-wifi-package,xiaomi_ax6000,Xiaomi AX6000))

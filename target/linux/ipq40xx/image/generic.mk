@@ -997,6 +997,20 @@ define Device/tel_x1pro
 endef
 TARGET_DEVICES += tel_x1pro
 
+define Device/thinkplus_fogpod800
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ThinkPlus
+	DEVICE_MODEL := FogPOD800
+	SOC := qcom-ipq4028
+	KERNEL_SIZE := 4096k
+	DEVICE_DTS_CONFIG := config@ap.dk01.1-c2
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	DEVICE_PACKAGES := kmod-usb-ledtrig-usbport ipq-wifi-thinkplus_fogpod800
+endef
+TARGET_DEVICES += thinkplus_fogpod800
+
 define Device/unielec_u4019-32m
 	$(call Device/FitImage)
 	DEVICE_VENDOR := Unielec
