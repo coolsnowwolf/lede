@@ -118,7 +118,8 @@ platform_do_upgrade() {
 		remove_oem_ubi_volume squashfs
 		nand_do_upgrade "$1"
 		;;
-	xiaomi,ax6000)
+	xiaomi,ax6000|\
+	xiaomi,redmi-ax5400)
 		# Make sure that UART is enabled
 		fw_setenv boot_wait on
 		fw_setenv uart_en 1
@@ -133,6 +134,7 @@ platform_do_upgrade() {
 		# Kernel and rootfs are placed in 2 different UBI
 		CI_KERN_UBIPART="ubi_kernel"
 		CI_ROOT_UBIPART="rootfs"
+		CI_DATA_UBIPART="rootfs"
 		nand_do_upgrade "$1"
 		;;
 	*)
