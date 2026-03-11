@@ -1185,7 +1185,6 @@ static int log_read_rst(struct ntfs_log *log, u32 l_size, bool first,
 	if (!r_page)
 		return -ENOMEM;
 
-	memset(info, 0, sizeof(struct restart_info));
 
 	/* Determine which restart area we are looking for. */
 	if (first) {
@@ -3790,6 +3789,7 @@ int log_replay(struct ntfs_inode *ni, bool *initialized)
 	log = kzalloc(sizeof(struct ntfs_log), GFP_NOFS);
 	if (!log)
 		return -ENOMEM;
+	memset(&rst_info, 0, sizeof(struct restart_info));
 
 	log->ni = ni;
 	log->l_size = l_size;
@@ -3842,6 +3842,7 @@ int log_replay(struct ntfs_inode *ni, bool *initialized)
 	if (rst_info.vbo)
 		goto check_restart_area;
 
+	memset(&rst_info2, 0, sizeof(struct restart_info));
 	err = log_read_rst(log, l_size, false, &rst_info2);
 
 	/* Determine which restart area to use. */
