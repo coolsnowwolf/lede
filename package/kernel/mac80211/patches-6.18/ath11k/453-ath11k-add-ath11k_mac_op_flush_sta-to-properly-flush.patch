@@ -1,0 +1,65 @@
+From b5ade0e0e1c1622a85fbfd2c93b41caff479f305 Mon Sep 17 00:00:00 2001
+From: Florian Maurer <f.maurer@outlook.de>
+Date: Fri, 3 Oct 2025 12:56:13 +0200
+Subject: [PATCH] ath11k: add ath11k_mac_op_flush_sta to properly flush pending
+ packets
+
+When a STA is marked as no longer authorized, if the driver doesn't
+implement flush_sta(), mac80211 calls ieee80211_flush_queues() to
+flush hardware queues to avoid sending unencrypted frames.
+
+This has became a problem for ath11k because ieee80211_flush_queues()
+will stop all traffic and call ath11k_flush, which waits until the
+whole HW queue is empty. In a busy environment this will trigger a
+timeout warning and stalls other STAs.
+
+Fix this by implementing flush_sta method using WMI command to flush
+frames of a specific STA.
+Flushed frames will be marked as discard in tx complete indication.
+
+warning print "ath11k c000000.wifi: failed to flush transmit queue 0"
+was observed on various openwrt devices, and is fixed through this patch.
+
+Tested-by: Florian Maurer  <f.maurer@outlook.de>
+Tested-by: Flole <flole@flole.de>
+Co-developed-by: Benjamin Berg <benjamin@sipsolutions.net>
+Signed-off-by: Benjamin Berg <benjamin@sipsolutions.net>
+Signed-off-by: Florian Maurer <f.maurer@outlook.de>
+---
+ drivers/net/wireless/ath/ath11k/mac.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -8330,6 +8330,23 @@ static void ath11k_mac_op_flush(struct i
+ 	ath11k_mac_flush_tx_complete(ar);
+ }
+ 
++static void ath11k_mac_op_flush_sta(struct ieee80211_hw *hw,
++				    struct ieee80211_vif *vif,
++				    struct ieee80211_sta *sta)
++{
++	struct ath11k_vif *arvif = (void *)vif->drv_priv;
++	struct ath11k *ar = hw->priv;
++	struct peer_flush_params params = {
++		.peer_tid_bitmap = 0xFF,
++		.vdev_id = arvif->vdev_id,
++	};
++	int ret;
++
++	ret = ath11k_wmi_send_peer_flush_tids_cmd(ar, sta->addr, &params);
++	if (ret)
++		ath11k_warn(ar->ab, "failed to flush sta %pM: %d\n", sta->addr, ret);
++}
++
+ static bool
+ ath11k_mac_has_single_legacy_rate(struct ath11k *ar,
+ 				  enum nl80211_band band,
+@@ -9920,6 +9937,7 @@ static const struct ieee80211_ops ath11k
+ 	.set_bitrate_mask		= ath11k_mac_op_set_bitrate_mask,
+ 	.get_survey			= ath11k_mac_op_get_survey,
+ 	.flush				= ath11k_mac_op_flush,
++	.flush_sta			= ath11k_mac_op_flush_sta,
+ 	.sta_statistics			= ath11k_mac_op_sta_statistics,
+ 	CFG80211_TESTMODE_CMD(ath11k_tm_cmd)
+ 

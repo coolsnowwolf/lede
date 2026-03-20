@@ -1,0 +1,129 @@
+From 4c1d4af0ac83705828dd11fded409163a87ea515 Mon Sep 17 00:00:00 2001
+From: Kurt Lee <kurt.lee@cypress.com>
+Date: Thu, 20 Aug 2020 03:07:02 -0500
+Subject: [PATCH] brcmfmac: Fix interoperating DPP and other encryption network
+ access
+
+1. If firmware supports 4-way handshake offload but not supports DPP
+4-way offload, when user first connects encryption network, driver will
+set "sup_wpa 1" to firmware, but it will further result in DPP
+connection failure since firmware won't send EAPOL frame to host.
+
+2. Fix DPP AP mode handling action frames.
+
+3. For some firmware without fwsup support, the join procedure will be
+skipped due to "sup_wpa" iovar returning not-support. Check the fwsup
+feature before do such iovar.
+
+Signed-off-by: Kurt Lee <kurt.lee@cypress.com>
+Signed-off-by: Double Lo <double.lo@cypress.com>
+Signed-off-by: Chi-hsien Lin <chi-hsien.lin@cypress.com>
+---
+ .../broadcom/brcm80211/brcmfmac/cfg80211.c    | 67 ++++++++++---------
+ .../broadcom/brcm80211/brcmfmac/p2p.c         |  5 ++
+ 2 files changed, 42 insertions(+), 30 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -2512,43 +2512,50 @@ brcmf_cfg80211_connect(struct wiphy *wip
+ 		goto done;
+ 	}
+ 
+-	if (sme->crypto.psk &&
+-	    profile->use_fwsup != BRCMF_PROFILE_FWSUP_SAE) {
+-		if (WARN_ON(profile->use_fwsup != BRCMF_PROFILE_FWSUP_NONE)) {
+-			err = -EINVAL;
+-			goto done;
++	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_FWSUP)) {
++		if (sme->crypto.psk) {
++			if (profile->use_fwsup != BRCMF_PROFILE_FWSUP_SAE) {
++				if (WARN_ON(profile->use_fwsup !=
++					BRCMF_PROFILE_FWSUP_NONE)) {
++					err = -EINVAL;
++					goto done;
++				}
++				brcmf_dbg(INFO, "using PSK offload\n");
++				profile->use_fwsup = BRCMF_PROFILE_FWSUP_PSK;
++			}
++		} else {
++			profile->use_fwsup = BRCMF_PROFILE_FWSUP_NONE;
+ 		}
+-		brcmf_dbg(INFO, "using PSK offload\n");
+-		profile->use_fwsup = BRCMF_PROFILE_FWSUP_PSK;
+-	}
+ 
+-	if (profile->use_fwsup != BRCMF_PROFILE_FWSUP_NONE) {
+-		/* enable firmware supplicant for this interface */
+-		err = brcmf_fil_iovar_int_set(ifp, "sup_wpa", 1);
+-		if (err < 0) {
+-			bphy_err(drvr, "failed to enable fw supplicant\n");
+-			goto done;
++		if (profile->use_fwsup != BRCMF_PROFILE_FWSUP_NONE) {
++			/* enable firmware supplicant for this interface */
++			err = brcmf_fil_iovar_int_set(ifp, "sup_wpa", 1);
++			if (err < 0) {
++				bphy_err(drvr, "failed to enable fw supplicant\n");
++				goto done;
++			}
++		} else {
++			err = brcmf_fil_iovar_int_set(ifp, "sup_wpa", 0);
+ 		}
+-	}
+ 
+-	if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_PSK)
+-		err = brcmf_set_pmk(ifp, sme->crypto.psk,
+-				    BRCMF_WSEC_MAX_PSK_LEN);
+-	else if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE) {
+-		/* clean up user-space RSNE */
+-		err = brcmf_fil_iovar_data_set(ifp, "wpaie", NULL, 0);
+-		if (err) {
+-			bphy_err(drvr, "failed to clean up user-space RSNE\n");
+-			goto done;
+-		}
+-		err = brcmf_fwvid_set_sae_password(ifp, &sme->crypto);
+-		if (!err && sme->crypto.psk)
++		if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_PSK) {
+ 			err = brcmf_set_pmk(ifp, sme->crypto.psk,
+ 					    BRCMF_WSEC_MAX_PSK_LEN);
++		} else if (profile->use_fwsup == BRCMF_PROFILE_FWSUP_SAE) {
++			/* clean up user-space RSNE */
++			err = brcmf_fil_iovar_data_set(ifp, "wpaie", NULL, 0);
++			if (err) {
++				bphy_err(drvr, "failed to clean up user-space RSNE\n");
++				goto done;
++			}
++			err = brcmf_fwvid_set_sae_password(ifp, &sme->crypto);
++			if (!err && sme->crypto.psk)
++				err = brcmf_set_pmk(ifp, sme->crypto.psk,
++						    BRCMF_WSEC_MAX_PSK_LEN);
++		}
++		if (err)
++			goto done;
+ 	}
+-	if (err)
+-		goto done;
+-
+ 	/* Join with specific BSSID and cached SSID
+ 	 * If SSID is zero join based on BSSID only
+ 	 */
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/p2p.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/p2p.c
+@@ -1281,6 +1281,10 @@ static s32 brcmf_p2p_abort_action_frame(
+ 	brcmf_dbg(TRACE, "Enter\n");
+ 
+ 	vif = p2p->bss_idx[P2PAPI_BSSCFG_DEVICE].vif;
++
++	if (!vif)
++		vif = p2p->bss_idx[P2PAPI_BSSCFG_PRIMARY].vif;
++
+ 	err = brcmf_fil_bsscfg_data_set(vif->ifp, "actframe_abort", &int_val,
+ 					sizeof(s32));
+ 	if (err)
+@@ -1817,6 +1821,7 @@ bool brcmf_p2p_send_action_frame(struct
+ 	/* validate channel and p2p ies */
+ 	if (config_af_params.search_channel &&
+ 	    IS_P2P_SOCIAL_CHANNEL(le32_to_cpu(af_params->channel)) &&
++	    p2p->bss_idx[P2PAPI_BSSCFG_DEVICE].vif &&
+ 	    p2p->bss_idx[P2PAPI_BSSCFG_DEVICE].vif->saved_ie.probe_req_ie_len) {
+ 		afx_hdl = &p2p->afx_hdl;
+ 		afx_hdl->peer_listen_chan = le32_to_cpu(af_params->channel);
