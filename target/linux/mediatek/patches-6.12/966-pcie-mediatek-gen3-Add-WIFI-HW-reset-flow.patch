@@ -1,0 +1,88 @@
+From f566462daef92eb0074013e32d0332116fc3a2eb Mon Sep 17 00:00:00 2001
+From: Jianguo Zhang <jianguo.zhang@mediatek.com>
+Date: Tue, 14 Oct 2025 16:00:03 +0800
+Subject: [PATCH] pcie: mediatek-gen3: Add WIFI HW reset flow
+
+[Description]
+Add WIFI HW reset before PCIe host detects EP device for reboot.
+
+[Release-log]
+NA
+
+Signed-off-by: Jianguo Zhang <jianguo.zhang@mediatek.com>
+---
+ drivers/pci/controller/pcie-mediatek-gen3.c | 29 +++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -10,6 +10,8 @@
+ #include <linux/clk.h>
+ #include <linux/clk-provider.h>
+ #include <linux/delay.h>
++#include <linux/gpio.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/iopoll.h>
+ #include <linux/irq.h>
+ #include <linux/irqchip/chained_irq.h>
+@@ -18,6 +20,7 @@
+ #include <linux/module.h>
+ #include <linux/msi.h>
+ #include <linux/of_device.h>
++#include <linux/of_gpio.h>
+ #include <linux/of_pci.h>
+ #include <linux/pci.h>
+ #include <linux/phy/phy.h>
+@@ -160,6 +163,8 @@ struct mtk_msi_set {
+  * @phy: PHY controller block
+  * @clks: PCIe clocks
+  * @num_clks: PCIe clocks count for this port
++ * @wifi_reset: reset pin for WIFI chip
++ * @wifi_reset_delay_ms: delay time for WIFI chip reset
+  * @irq: PCIe controller interrupt number
+  * @saved_irq_state: IRQ enable state saved at suspend time
+  * @irq_lock: lock protecting IRQ register access
+@@ -181,6 +186,9 @@ struct mtk_gen3_pcie {
+ 	struct clk_bulk_data *clks;
+ 	int num_clks;
+ 
++	struct gpio_desc *wifi_reset;
++	u32 wifi_reset_delay_ms;
++
+ 	int irq;
+ 	u32 saved_irq_state;
+ 	raw_spinlock_t irq_lock;
+@@ -402,6 +410,12 @@ static int mtk_pcie_startup_port(struct
+ 	val |= PCIE_DISABLE_DVFSRC_VLT_REQ;
+ 	writel_relaxed(val, pcie->base + PCIE_MISC_CTRL_REG);
+ 
++	if (pcie->wifi_reset) {
++		gpiod_set_value_cansleep(pcie->wifi_reset, 1);
++		msleep(pcie->wifi_reset_delay_ms);
++		gpiod_set_value_cansleep(pcie->wifi_reset, 0);
++	}
++
+ 	/* Assert all reset signals */
+ 	val = readl_relaxed(pcie->base + PCIE_RST_CTRL_REG);
+ 	val |= PCIE_MAC_RSTB | PCIE_PHY_RSTB | PCIE_BRG_RSTB | PCIE_PE_RSTB;
+@@ -864,6 +878,20 @@ static int mtk_pcie_parse_port(struct mt
+ 		return pcie->num_clks;
+ 	}
+ 
++	ret = of_property_read_u32(dev->of_node, "wifi-reset-msleep",
++				   &pcie->wifi_reset_delay_ms);
++	if (!ret) {
++		pcie->wifi_reset = devm_gpiod_get_optional(dev, "wifi-reset",
++							   GPIOD_OUT_LOW);
++		if (IS_ERR(pcie->wifi_reset)) {
++			ret = PTR_ERR(pcie->wifi_reset);
++			if (ret != -EPROBE_DEFER)
++				dev_err(dev,
++					"failed to request WIFI reset gpio\n");
++			return ret;
++		}
++	}
++
+ 	return 0;
+ }
+ 
