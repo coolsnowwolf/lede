@@ -1,0 +1,116 @@
+From 5225349f1e750dfd107a4c5dc97d91fa212dc1ed Mon Sep 17 00:00:00 2001
+From: Andrew Lunn <andrew@lunn.ch>
+Date: Sat, 21 Feb 2026 14:51:54 -0600
+Subject: [PATCH] net: phy: register phy led_triggers during probe to avoid
+ AB-BA deadlock
+
+There is an AB-BA deadlock when both LEDS_TRIGGER_NETDEV and
+LED_TRIGGER_PHY are enabled:
+
+[ 1362.049207] [<8054e4b8>] led_trigger_register+0x5c/0x1fc             <-- Trying to get lock "triggers_list_lock" via down_write(&triggers_list_lock);
+[ 1362.054536] [<80662830>] phy_led_triggers_register+0xd0/0x234
+[ 1362.060329] [<8065e200>] phy_attach_direct+0x33c/0x40c
+[ 1362.065489] [<80651fc4>] phylink_fwnode_phy_connect+0x15c/0x23c
+[ 1362.071480] [<8066ee18>] mtk_open+0x7c/0xba0
+[ 1362.075849] [<806d714c>] __dev_open+0x280/0x2b0
+[ 1362.080384] [<806d7668>] __dev_change_flags+0x244/0x24c
+[ 1362.085598] [<806d7698>] dev_change_flags+0x28/0x78
+[ 1362.090528] [<807150e4>] dev_ioctl+0x4c0/0x654                       <-- Hold lock "rtnl_mutex" by calling rtnl_lock();
+[ 1362.094985] [<80694360>] sock_ioctl+0x2f4/0x4e0
+[ 1362.099567] [<802e9c4c>] sys_ioctl+0x32c/0xd8c
+[ 1362.104022] [<80014504>] syscall_common+0x34/0x58
+
+Here LED_TRIGGER_PHY is registering LED triggers during phy_attach
+while holding RTNL and then taking triggers_list_lock.
+
+[ 1362.191101] [<806c2640>] register_netdevice_notifier+0x60/0x168      <-- Trying to get lock "rtnl_mutex" via rtnl_lock();
+[ 1362.197073] [<805504ac>] netdev_trig_activate+0x194/0x1e4
+[ 1362.202490] [<8054e28c>] led_trigger_set+0x1d4/0x360                 <-- Hold lock "triggers_list_lock" by down_read(&triggers_list_lock);
+[ 1362.207511] [<8054eb38>] led_trigger_write+0xd8/0x14c
+[ 1362.212566] [<80381d98>] sysfs_kf_bin_write+0x80/0xbc
+[ 1362.217688] [<8037fcd8>] kernfs_fop_write_iter+0x17c/0x28c
+[ 1362.223174] [<802cbd70>] vfs_write+0x21c/0x3c4
+[ 1362.227712] [<802cc0c4>] ksys_write+0x78/0x12c
+[ 1362.232164] [<80014504>] syscall_common+0x34/0x58
+
+Here LEDS_TRIGGER_NETDEV is being enabled on an LED. It first takes
+triggers_list_lock and then RTNL. A classical AB-BA deadlock.
+
+phy_led_triggers_registers() does not require the RTNL, it does not
+make any calls into the network stack which require protection. There
+is also no requirement the PHY has been attached to a MAC, the
+triggers only make use of phydev state. This allows the call to
+phy_led_triggers_registers() to be placed elsewhere. PHY probe() and
+release() don't hold RTNL, so solving the AB-BA deadlock.
+
+Reported-by: Shiji Yang <yangshiji66@outlook.com>
+Closes: https://lore.kernel.org/all/OS7PR01MB13602B128BA1AD3FA38B6D1FFBC69A@OS7PR01MB13602.jpnprd01.prod.outlook.com/
+Fixes: 06f502f57d0d ("leds: trigger: Introduce a NETDEV trigger")
+Signed-off-by: Andrew Lunn <andrew@lunn.ch>
+---
+ drivers/net/phy/phy_device.c | 25 +++++++++++++++++--------
+ 1 file changed, 17 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -1684,8 +1684,6 @@ int phy_attach_direct(struct net_device
+ 		goto error;
+ 
+ 	phy_resume(phydev);
+-	if (!phydev->is_on_sfp_module)
+-		phy_led_triggers_register(phydev);
+ 
+ 	/**
+ 	 * If the external phy used by current mac interface is managed by
+@@ -2058,9 +2056,6 @@ void phy_detach(struct phy_device *phyde
+ 	}
+ 	phydev->phylink = NULL;
+ 
+-	if (!phydev->is_on_sfp_module)
+-		phy_led_triggers_unregister(phydev);
+-
+ 	if (phydev->mdio.dev.driver)
+ 		module_put(phydev->mdio.dev.driver->owner);
+ 
+@@ -3691,17 +3686,28 @@ static int phy_probe(struct device *dev)
+ 	/* Set the state to READY by default */
+ 	phydev->state = PHY_READY;
+ 
++	/* Register the PHY LED triggers */
++	if (!phydev->is_on_sfp_module)
++		phy_led_triggers_register(phydev);
++
+ 	/* Get the LEDs from the device tree, and instantiate standard
+ 	 * LEDs for them.
+ 	 */
+ 	if (IS_ENABLED(CONFIG_PHYLIB_LEDS) && !phy_driver_is_genphy(phydev) &&
+-	    !phy_driver_is_genphy_10g(phydev))
++	    !phy_driver_is_genphy_10g(phydev)) {
+ 		err = of_phy_leds(phydev);
++		if (err)
++			goto out;
++	}
++
++	return 0;
+ 
+ out:
++	if (!phydev->is_on_sfp_module)
++		phy_led_triggers_unregister(phydev);
++
+ 	/* Re-assert the reset signal on error */
+-	if (err)
+-		phy_device_reset(phydev, 1);
++	phy_device_reset(phydev, 1);
+ 
+ 	return err;
+ }
+@@ -3716,6 +3722,9 @@ static int phy_remove(struct device *dev
+ 	    !phy_driver_is_genphy_10g(phydev))
+ 		phy_leds_unregister(phydev);
+ 
++	if (!phydev->is_on_sfp_module)
++		phy_led_triggers_unregister(phydev);
++
+ 	phydev->state = PHY_DOWN;
+ 
+ 	sfp_bus_del_upstream(phydev->sfp_bus);

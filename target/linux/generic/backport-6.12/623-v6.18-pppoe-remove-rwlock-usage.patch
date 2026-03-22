@@ -1,0 +1,321 @@
+From 72cdc67e7fa74931b055df3a76852bab551f1a04 Mon Sep 17 00:00:00 2001
+From: Qingfang Deng <dqfext@gmail.com>
+Date: Thu, 28 Aug 2025 09:20:16 +0800
+Subject: [PATCH] pppoe: remove rwlock usage
+
+Like ppp_generic.c, convert the PPPoE socket hash table to use RCU for
+lookups and a spinlock for updates. This removes rwlock usage and allows
+lockless readers on the fast path.
+
+- Mark hash table and list pointers as __rcu.
+- Use spin_lock() to protect writers.
+- Readers use rcu_dereference() under rcu_read_lock(). All known callers
+  of get_item() already hold the RCU read lock, so no additional locking
+  is needed.
+- get_item() now uses refcount_inc_not_zero() instead of sock_hold() to
+  safely take a reference. This prevents crashes if a socket is already
+  in the process of being freed (sk_refcnt == 0).
+- Set SOCK_RCU_FREE to defer socket freeing until after an RCU grace
+  period.
+- Move skb_queue_purge() into sk_destruct callback to ensure purge
+  happens after an RCU grace period.
+
+Signed-off-by: Qingfang Deng <dqfext@gmail.com>
+Reviewed-by: Eric Dumazet <edumazet@google.com>
+Link: https://patch.msgid.link/20250828012018.15922-1-dqfext@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ppp/pppoe.c  | 94 ++++++++++++++++++++++------------------
+ include/linux/if_pppox.h |  2 +-
+ 2 files changed, 54 insertions(+), 42 deletions(-)
+
+--- a/drivers/net/ppp/pppoe.c
++++ b/drivers/net/ppp/pppoe.c
+@@ -100,8 +100,8 @@ struct pppoe_net {
+ 	 * as well, moreover in case of SMP less locking
+ 	 * controversy here
+ 	 */
+-	struct pppox_sock *hash_table[PPPOE_HASH_SIZE];
+-	rwlock_t hash_lock;
++	struct pppox_sock __rcu *hash_table[PPPOE_HASH_SIZE];
++	spinlock_t hash_lock;
+ };
+ 
+ /*
+@@ -162,13 +162,13 @@ static struct pppox_sock *__get_item(str
+ 	int hash = hash_item(sid, addr);
+ 	struct pppox_sock *ret;
+ 
+-	ret = pn->hash_table[hash];
++	ret = rcu_dereference(pn->hash_table[hash]);
+ 	while (ret) {
+ 		if (cmp_addr(&ret->pppoe_pa, sid, addr) &&
+ 		    ret->pppoe_ifindex == ifindex)
+ 			return ret;
+ 
+-		ret = ret->next;
++		ret = rcu_dereference(ret->next);
+ 	}
+ 
+ 	return NULL;
+@@ -177,19 +177,20 @@ static struct pppox_sock *__get_item(str
+ static int __set_item(struct pppoe_net *pn, struct pppox_sock *po)
+ {
+ 	int hash = hash_item(po->pppoe_pa.sid, po->pppoe_pa.remote);
+-	struct pppox_sock *ret;
++	struct pppox_sock *ret, *first;
+ 
+-	ret = pn->hash_table[hash];
++	first = rcu_dereference_protected(pn->hash_table[hash], lockdep_is_held(&pn->hash_lock));
++	ret = first;
+ 	while (ret) {
+ 		if (cmp_2_addr(&ret->pppoe_pa, &po->pppoe_pa) &&
+ 		    ret->pppoe_ifindex == po->pppoe_ifindex)
+ 			return -EALREADY;
+ 
+-		ret = ret->next;
++		ret = rcu_dereference_protected(ret->next, lockdep_is_held(&pn->hash_lock));
+ 	}
+ 
+-	po->next = pn->hash_table[hash];
+-	pn->hash_table[hash] = po;
++	RCU_INIT_POINTER(po->next, first);
++	rcu_assign_pointer(pn->hash_table[hash], po);
+ 
+ 	return 0;
+ }
+@@ -198,20 +199,24 @@ static void __delete_item(struct pppoe_n
+ 					char *addr, int ifindex)
+ {
+ 	int hash = hash_item(sid, addr);
+-	struct pppox_sock *ret, **src;
++	struct pppox_sock *ret, __rcu **src;
+ 
+-	ret = pn->hash_table[hash];
++	ret = rcu_dereference_protected(pn->hash_table[hash], lockdep_is_held(&pn->hash_lock));
+ 	src = &pn->hash_table[hash];
+ 
+ 	while (ret) {
+ 		if (cmp_addr(&ret->pppoe_pa, sid, addr) &&
+ 		    ret->pppoe_ifindex == ifindex) {
+-			*src = ret->next;
++			struct pppox_sock *next;
++
++			next = rcu_dereference_protected(ret->next,
++							 lockdep_is_held(&pn->hash_lock));
++			rcu_assign_pointer(*src, next);
+ 			break;
+ 		}
+ 
+ 		src = &ret->next;
+-		ret = ret->next;
++		ret = rcu_dereference_protected(ret->next, lockdep_is_held(&pn->hash_lock));
+ 	}
+ }
+ 
+@@ -225,11 +230,9 @@ static inline struct pppox_sock *get_ite
+ {
+ 	struct pppox_sock *po;
+ 
+-	read_lock_bh(&pn->hash_lock);
+ 	po = __get_item(pn, sid, addr, ifindex);
+-	if (po)
+-		sock_hold(sk_pppox(po));
+-	read_unlock_bh(&pn->hash_lock);
++	if (po && !refcount_inc_not_zero(&sk_pppox(po)->sk_refcnt))
++		po = NULL;
+ 
+ 	return po;
+ }
+@@ -258,9 +261,9 @@ static inline struct pppox_sock *get_ite
+ static inline void delete_item(struct pppoe_net *pn, __be16 sid,
+ 					char *addr, int ifindex)
+ {
+-	write_lock_bh(&pn->hash_lock);
++	spin_lock(&pn->hash_lock);
+ 	__delete_item(pn, sid, addr, ifindex);
+-	write_unlock_bh(&pn->hash_lock);
++	spin_unlock(&pn->hash_lock);
+ }
+ 
+ /***************************************************************************
+@@ -276,14 +279,16 @@ static void pppoe_flush_dev(struct net_d
+ 	int i;
+ 
+ 	pn = pppoe_pernet(dev_net(dev));
+-	write_lock_bh(&pn->hash_lock);
++	spin_lock(&pn->hash_lock);
+ 	for (i = 0; i < PPPOE_HASH_SIZE; i++) {
+-		struct pppox_sock *po = pn->hash_table[i];
++		struct pppox_sock *po = rcu_dereference_protected(pn->hash_table[i],
++								  lockdep_is_held(&pn->hash_lock));
+ 		struct sock *sk;
+ 
+ 		while (po) {
+ 			while (po && po->pppoe_dev != dev) {
+-				po = po->next;
++				po = rcu_dereference_protected(po->next,
++							       lockdep_is_held(&pn->hash_lock));
+ 			}
+ 
+ 			if (!po)
+@@ -300,7 +305,7 @@ static void pppoe_flush_dev(struct net_d
+ 			 */
+ 
+ 			sock_hold(sk);
+-			write_unlock_bh(&pn->hash_lock);
++			spin_unlock(&pn->hash_lock);
+ 			lock_sock(sk);
+ 
+ 			if (po->pppoe_dev == dev &&
+@@ -320,11 +325,12 @@ static void pppoe_flush_dev(struct net_d
+ 			 */
+ 
+ 			BUG_ON(pppoe_pernet(dev_net(dev)) == NULL);
+-			write_lock_bh(&pn->hash_lock);
+-			po = pn->hash_table[i];
++			spin_lock(&pn->hash_lock);
++			po = rcu_dereference_protected(pn->hash_table[i],
++						       lockdep_is_held(&pn->hash_lock));
+ 		}
+ 	}
+-	write_unlock_bh(&pn->hash_lock);
++	spin_unlock(&pn->hash_lock);
+ }
+ 
+ static int pppoe_device_event(struct notifier_block *this,
+@@ -528,6 +534,11 @@ static struct proto pppoe_sk_proto __rea
+ 	.obj_size = sizeof(struct pppox_sock),
+ };
+ 
++static void pppoe_destruct(struct sock *sk)
++{
++	skb_queue_purge(&sk->sk_receive_queue);
++}
++
+ /***********************************************************************
+  *
+  * Initialize a new struct sock.
+@@ -542,11 +553,13 @@ static int pppoe_create(struct net *net,
+ 		return -ENOMEM;
+ 
+ 	sock_init_data(sock, sk);
++	sock_set_flag(sk, SOCK_RCU_FREE);
+ 
+ 	sock->state	= SS_UNCONNECTED;
+ 	sock->ops	= &pppoe_ops;
+ 
+ 	sk->sk_backlog_rcv	= pppoe_rcv_core;
++	sk->sk_destruct		= pppoe_destruct;
+ 	sk->sk_state		= PPPOX_NONE;
+ 	sk->sk_type		= SOCK_STREAM;
+ 	sk->sk_family		= PF_PPPOX;
+@@ -599,7 +612,6 @@ static int pppoe_release(struct socket *
+ 	sock_orphan(sk);
+ 	sock->sk = NULL;
+ 
+-	skb_queue_purge(&sk->sk_receive_queue);
+ 	release_sock(sk);
+ 	sock_put(sk);
+ 
+@@ -681,9 +693,9 @@ static int pppoe_connect(struct socket *
+ 		       &sp->sa_addr.pppoe,
+ 		       sizeof(struct pppoe_addr));
+ 
+-		write_lock_bh(&pn->hash_lock);
++		spin_lock(&pn->hash_lock);
+ 		error = __set_item(pn, po);
+-		write_unlock_bh(&pn->hash_lock);
++		spin_unlock(&pn->hash_lock);
+ 		if (error < 0)
+ 			goto err_put;
+ 
+@@ -1052,11 +1064,11 @@ static inline struct pppox_sock *pppoe_g
+ 	int i;
+ 
+ 	for (i = 0; i < PPPOE_HASH_SIZE; i++) {
+-		po = pn->hash_table[i];
++		po = rcu_dereference(pn->hash_table[i]);
+ 		while (po) {
+ 			if (!pos--)
+ 				goto out;
+-			po = po->next;
++			po = rcu_dereference(po->next);
+ 		}
+ 	}
+ 
+@@ -1065,19 +1077,19 @@ out:
+ }
+ 
+ static void *pppoe_seq_start(struct seq_file *seq, loff_t *pos)
+-	__acquires(pn->hash_lock)
++	__acquires(RCU)
+ {
+ 	struct pppoe_net *pn = pppoe_pernet(seq_file_net(seq));
+ 	loff_t l = *pos;
+ 
+-	read_lock_bh(&pn->hash_lock);
++	rcu_read_lock();
+ 	return l ? pppoe_get_idx(pn, --l) : SEQ_START_TOKEN;
+ }
+ 
+ static void *pppoe_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+ {
+ 	struct pppoe_net *pn = pppoe_pernet(seq_file_net(seq));
+-	struct pppox_sock *po;
++	struct pppox_sock *po, *next;
+ 
+ 	++*pos;
+ 	if (v == SEQ_START_TOKEN) {
+@@ -1085,14 +1097,15 @@ static void *pppoe_seq_next(struct seq_f
+ 		goto out;
+ 	}
+ 	po = v;
+-	if (po->next)
+-		po = po->next;
++	next = rcu_dereference(po->next);
++	if (next)
++		po = next;
+ 	else {
+ 		int hash = hash_item(po->pppoe_pa.sid, po->pppoe_pa.remote);
+ 
+ 		po = NULL;
+ 		while (++hash < PPPOE_HASH_SIZE) {
+-			po = pn->hash_table[hash];
++			po = rcu_dereference(pn->hash_table[hash]);
+ 			if (po)
+ 				break;
+ 		}
+@@ -1103,10 +1116,9 @@ out:
+ }
+ 
+ static void pppoe_seq_stop(struct seq_file *seq, void *v)
+-	__releases(pn->hash_lock)
++	__releases(RCU)
+ {
+-	struct pppoe_net *pn = pppoe_pernet(seq_file_net(seq));
+-	read_unlock_bh(&pn->hash_lock);
++	rcu_read_unlock();
+ }
+ 
+ static const struct seq_operations pppoe_seq_ops = {
+@@ -1149,7 +1161,7 @@ static __net_init int pppoe_init_net(str
+ 	struct pppoe_net *pn = pppoe_pernet(net);
+ 	struct proc_dir_entry *pde;
+ 
+-	rwlock_init(&pn->hash_lock);
++	spin_lock_init(&pn->hash_lock);
+ 
+ 	pde = proc_create_net("pppoe", 0444, net->proc_net,
+ 			&pppoe_seq_ops, sizeof(struct seq_net_private));
+--- a/include/linux/if_pppox.h
++++ b/include/linux/if_pppox.h
+@@ -43,7 +43,7 @@ struct pppox_sock {
+ 	/* struct sock must be the first member of pppox_sock */
+ 	struct sock sk;
+ 	struct ppp_channel chan;
+-	struct pppox_sock	*next;	  /* for hash table */
++	struct pppox_sock __rcu	*next;	  /* for hash table */
+ 	union {
+ 		struct pppoe_opt pppoe;
+ 		struct pptp_opt  pptp;

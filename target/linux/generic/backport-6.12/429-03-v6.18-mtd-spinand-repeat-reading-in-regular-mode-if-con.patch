@@ -1,0 +1,64 @@
+From 010dc7f2dd6a0078ade3f88f627ed5fbf45ceb94 Mon Sep 17 00:00:00 2001
+From: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Date: Thu, 18 Sep 2025 00:54:01 +0300
+Subject: mtd: spinand: repeat reading in regular mode if continuous reading
+ fails
+
+Continuous reading may result in multiple flash pages reading in one
+operation. Unfortunately, not all spinand controllers support such
+large reading. They will read less data. Unfortunately, the operation
+can't be continued.
+
+In this case:
+ * disable continuous reading on this (not good enough) spi controller
+ * repeat reading in regular mode.
+
+Signed-off-by: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+---
+ drivers/mtd/nand/spi/core.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -427,8 +427,16 @@ static int spinand_read_from_cache_op(st
+ 		 * Dirmap accesses are allowed to toggle the CS.
+ 		 * Toggling the CS during a continuous read is forbidden.
+ 		 */
+-		if (nbytes && req->continuous)
+-			return -EIO;
++		if (nbytes && req->continuous) {
++			/*
++			 * Spi controller with broken support of continuous
++			 * reading was detected. Disable future use of
++			 * continuous reading and return -EAGAIN to retry
++			 * reading within regular mode.
++			 */
++			spinand->cont_read_possible = false;
++			return -EAGAIN;
++		}
+ 	}
+ 
+ 	if (req->datalen)
+@@ -841,10 +849,19 @@ static int spinand_mtd_read(struct mtd_i
+ 
+ 	old_stats = mtd->ecc_stats;
+ 
+-	if (spinand_use_cont_read(mtd, from, ops))
++	if (spinand_use_cont_read(mtd, from, ops)) {
+ 		ret = spinand_mtd_continuous_page_read(mtd, from, ops, &max_bitflips);
+-	else
++		if (ret == -EAGAIN && !spinand->cont_read_possible) {
++			/*
++			 * Spi controller with broken support of continuous
++			 * reading was detected (see spinand_read_from_cache_op()),
++			 * repeat reading in regular mode.
++			 */
++			ret = spinand_mtd_regular_page_read(mtd, from, ops, &max_bitflips);
++		}
++	} else {
+ 		ret = spinand_mtd_regular_page_read(mtd, from, ops, &max_bitflips);
++	}
+ 
+ 	if (ops->stats) {
+ 		ops->stats->uncorrectable_errors +=

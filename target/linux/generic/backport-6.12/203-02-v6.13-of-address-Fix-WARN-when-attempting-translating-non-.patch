@@ -1,0 +1,85 @@
+From 6e5773d52f4a2d9c80692245f295069260cff6fc Mon Sep 17 00:00:00 2001
+From: "Rob Herring (Arm)" <robh@kernel.org>
+Date: Fri, 10 Jan 2025 15:50:29 -0600
+Subject: [PATCH] of/address: Fix WARN when attempting translating
+ non-translatable addresses
+
+The recently added WARN() for deprecated #address-cells and #size-cells
+triggered a WARN when of_platform_populate() (which calls
+of_address_to_resource()) is used on nodes with non-translatable
+addresses. This case is expected to return an error.
+
+Rework the bus matching to allow no match and make the default require
+an #address-cells property. That should be safe to do as any platform
+missing #address-cells would have a warning already.
+
+Fixes: 045b14ca5c36 ("of: WARN on deprecated #address-cells/#size-cells handling")
+Tested-by: Sean Anderson <sean.anderson@linux.dev>
+Link: https://lore.kernel.org/r/20250110215030.3637845-2-robh@kernel.org
+Signed-off-by: Rob Herring (Arm) <robh@kernel.org>
+---
+ drivers/of/address.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+--- a/drivers/of/address.c
++++ b/drivers/of/address.c
+@@ -338,6 +338,15 @@ static int of_bus_default_flags_match(st
+ 	return of_property_present(np, "#address-cells") && (of_bus_n_addr_cells(np) == 3);
+ }
+ 
++static int of_bus_default_match(struct device_node *np)
++{
++	/*
++	 * Check for presence first since of_bus_n_addr_cells() will warn when
++	 * walking parent nodes.
++	 */
++	return of_property_present(np, "#address-cells");
++}
++
+ /*
+  * Array of bus specific translators
+  */
+@@ -382,7 +391,7 @@ static struct of_bus of_busses[] = {
+ 	{
+ 		.name = "default",
+ 		.addresses = "reg",
+-		.match = NULL,
++		.match = of_bus_default_match,
+ 		.count_cells = of_bus_default_count_cells,
+ 		.map = of_bus_default_map,
+ 		.translate = of_bus_default_translate,
+@@ -397,7 +406,6 @@ static struct of_bus *of_match_bus(struc
+ 	for (i = 0; i < ARRAY_SIZE(of_busses); i++)
+ 		if (!of_busses[i].match || of_busses[i].match(np))
+ 			return &of_busses[i];
+-	BUG();
+ 	return NULL;
+ }
+ 
+@@ -519,6 +527,8 @@ static u64 __of_translate_address(struct
+ 	if (parent == NULL)
+ 		return OF_BAD_ADDR;
+ 	bus = of_match_bus(parent);
++	if (!bus)
++		return OF_BAD_ADDR;
+ 
+ 	/* Count address cells & copy address locally */
+ 	bus->count_cells(dev, &na, &ns);
+@@ -562,6 +572,8 @@ static u64 __of_translate_address(struct
+ 
+ 		/* Get new parent bus and counts */
+ 		pbus = of_match_bus(parent);
++		if (!pbus)
++			return OF_BAD_ADDR;
+ 		pbus->count_cells(dev, &pna, &pns);
+ 		if (!OF_CHECK_COUNTS(pna, pns)) {
+ 			pr_err("Bad cell count for %pOF\n", dev);
+@@ -701,7 +713,7 @@ const __be32 *__of_get_address(struct de
+ 
+ 	/* match the parent's bus type */
+ 	bus = of_match_bus(parent);
+-	if (strcmp(bus->name, "pci") && (bar_no >= 0))
++	if (!bus || (strcmp(bus->name, "pci") && (bar_no >= 0)))
+ 		return NULL;
+ 
+ 	/* Get "reg" or "assigned-addresses" property */

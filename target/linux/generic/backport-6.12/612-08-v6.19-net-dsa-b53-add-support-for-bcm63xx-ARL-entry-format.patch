@@ -1,0 +1,177 @@
+From 2b3013ac03028a2364d8779719bb6bfbc0212435 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 7 Nov 2025 09:07:49 +0100
+Subject: [PATCH] net: dsa: b53: add support for bcm63xx ARL entry format
+
+The ARL registers of BCM63XX embedded switches are somewhat unique. The
+normal ARL table access registers have the same format as BCM5389, but
+the ARL search registers differ:
+
+* SRCH_CTL is at the same offset of BCM5389, but 16 bits wide. It does
+  not have more fields, just needs to be accessed by a 16 bit read.
+* SRCH_RSLT_MACVID and SRCH_RSLT are aligned to 32 bit, and have shifted
+  offsets.
+* SRCH_RSLT has a different format than the normal ARL data entry
+  register.
+* There is only one set of ENTRY_N registers, implying a 1 bin layout.
+
+So add appropriate ops for bcm63xx and let it use it.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251107080749.26936-9-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 44 +++++++++++++++++++++++++++-----
+ drivers/net/dsa/b53/b53_priv.h   | 15 +++++++++++
+ drivers/net/dsa/b53/b53_regs.h   |  9 +++++++
+ 3 files changed, 61 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -2038,12 +2038,20 @@ static void b53_read_arl_srch_ctl(struct
+ 
+ 	if (is5325(dev) || is5365(dev))
+ 		offset = B53_ARL_SRCH_CTL_25;
+-	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev))
++	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev) ||
++		 is63xx(dev))
+ 		offset = B53_ARL_SRCH_CTL_89;
+ 	else
+ 		offset = B53_ARL_SRCH_CTL;
+ 
+-	b53_read8(dev, B53_ARLIO_PAGE, offset, val);
++	if (is63xx(dev)) {
++		u16 val16;
++
++		b53_read16(dev, B53_ARLIO_PAGE, offset, &val16);
++		*val = val16 & 0xff;
++	} else {
++		b53_read8(dev, B53_ARLIO_PAGE, offset, val);
++	}
+ }
+ 
+ static void b53_write_arl_srch_ctl(struct b53_device *dev, u8 val)
+@@ -2052,12 +2060,16 @@ static void b53_write_arl_srch_ctl(struc
+ 
+ 	if (is5325(dev) || is5365(dev))
+ 		offset = B53_ARL_SRCH_CTL_25;
+-	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev))
++	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev) ||
++		 is63xx(dev))
+ 		offset = B53_ARL_SRCH_CTL_89;
+ 	else
+ 		offset = B53_ARL_SRCH_CTL;
+ 
+-	b53_write8(dev, B53_ARLIO_PAGE, offset, val);
++	if (is63xx(dev))
++		b53_write16(dev, B53_ARLIO_PAGE, offset, val);
++	else
++		b53_write8(dev, B53_ARLIO_PAGE, offset, val);
+ }
+ 
+ static int b53_arl_search_wait(struct b53_device *dev)
+@@ -2111,6 +2123,18 @@ static void b53_arl_search_read_89(struc
+ 	b53_arl_to_entry_89(ent, mac_vid, fwd_entry);
+ }
+ 
++static void b53_arl_search_read_63xx(struct b53_device *dev, u8 idx,
++				     struct b53_arl_entry *ent)
++{
++	u16 fwd_entry;
++	u64 mac_vid;
++
++	b53_read64(dev, B53_ARLIO_PAGE, B53_ARL_SRCH_RSLT_MACVID_63XX,
++		   &mac_vid);
++	b53_read16(dev, B53_ARLIO_PAGE, B53_ARL_SRCH_RSLT_63XX, &fwd_entry);
++	b53_arl_search_to_entry_63xx(ent, mac_vid, fwd_entry);
++}
++
+ static void b53_arl_search_read_95(struct b53_device *dev, u8 idx,
+ 				   struct b53_arl_entry *ent)
+ {
+@@ -2717,6 +2741,12 @@ static const struct b53_arl_ops b53_arl_
+ 	.arl_search_read = b53_arl_search_read_89,
+ };
+ 
++static const struct b53_arl_ops b53_arl_ops_63xx = {
++	.arl_read_entry = b53_arl_read_entry_89,
++	.arl_write_entry = b53_arl_write_entry_89,
++	.arl_search_read = b53_arl_search_read_63xx,
++};
++
+ static const struct b53_arl_ops b53_arl_ops_95 = {
+ 	.arl_read_entry = b53_arl_read_entry_95,
+ 	.arl_write_entry = b53_arl_write_entry_95,
+@@ -2886,14 +2916,14 @@ static const struct b53_chip_data b53_sw
+ 		.dev_name = "BCM63xx",
+ 		.vlans = 4096,
+ 		.enabled_ports = 0, /* pdata must provide them */
+-		.arl_bins = 4,
+-		.arl_buckets = 1024,
++		.arl_bins = 1,
++		.arl_buckets = 4096,
+ 		.imp_port = 8,
+ 		.vta_regs = B53_VTA_REGS_63XX,
+ 		.duplex_reg = B53_DUPLEX_STAT_63XX,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK_63XX,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE_63XX,
+-		.arl_ops = &b53_arl_ops_95,
++		.arl_ops = &b53_arl_ops_63xx,
+ 	},
+ 	{
+ 		.chip_id = BCM53010_DEVICE_ID,
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -409,6 +409,21 @@ static inline void b53_arl_from_entry_89
+ 		*fwd_entry |= ARLTBL_AGE_89;
+ }
+ 
++static inline void b53_arl_search_to_entry_63xx(struct b53_arl_entry *ent,
++						u64 mac_vid, u16 fwd_entry)
++{
++	memset(ent, 0, sizeof(*ent));
++	u64_to_ether_addr(mac_vid, ent->mac);
++	ent->vid = mac_vid >> ARLTBL_VID_S;
++
++	ent->port = fwd_entry & ARL_SRST_PORT_ID_MASK_63XX;
++	ent->port >>= 1;
++
++	ent->is_age = !!(fwd_entry & ARL_SRST_AGE_63XX);
++	ent->is_static = !!(fwd_entry & ARL_SRST_STATIC_63XX);
++	ent->is_valid = 1;
++}
++
+ static inline void b53_arl_read_entry(struct b53_device *dev,
+ 				      struct b53_arl_entry *ent, u8 idx)
+ {
+--- a/drivers/net/dsa/b53/b53_regs.h
++++ b/drivers/net/dsa/b53/b53_regs.h
+@@ -364,11 +364,13 @@
+ #define B53_ARL_SRCH_ADDR_25		0x22
+ #define B53_ARL_SRCH_ADDR_65		0x24
+ #define B53_ARL_SRCH_ADDR_89		0x31
++#define B53_ARL_SRCH_ADDR_63XX		0x32
+ #define  ARL_ADDR_MASK			GENMASK(14, 0)
+ 
+ /* ARL Search MAC/VID Result (64 bit) */
+ #define B53_ARL_SRCH_RSTL_0_MACVID	0x60
+ #define B53_ARL_SRCH_RSLT_MACVID_89	0x33
++#define B53_ARL_SRCH_RSLT_MACVID_63XX	0x34
+ 
+ /* Single register search result on 5325 */
+ #define B53_ARL_SRCH_RSTL_0_MACVID_25	0x24
+@@ -384,6 +386,13 @@
+ #define B53_ARL_SRCH_RSTL_MACVID(x)	(B53_ARL_SRCH_RSTL_0_MACVID + ((x) * 0x10))
+ #define B53_ARL_SRCH_RSTL(x)		(B53_ARL_SRCH_RSTL_0 + ((x) * 0x10))
+ 
++/* 63XX ARL Search Data Result (16 bit) */
++#define B53_ARL_SRCH_RSLT_63XX		0x3c
++#define   ARL_SRST_PORT_ID_MASK_63XX	GENMASK(9, 1)
++#define   ARL_SRST_TC_MASK_63XX		GENMASK(13, 11)
++#define   ARL_SRST_AGE_63XX		BIT(14)
++#define   ARL_SRST_STATIC_63XX		BIT(15)
++
+ /*************************************************************************
+  * IEEE 802.1X Registers
+  *************************************************************************/

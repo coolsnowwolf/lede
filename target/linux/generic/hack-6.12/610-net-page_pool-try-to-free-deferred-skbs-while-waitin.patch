@@ -16,16 +16,18 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 
 --- a/net/core/page_pool.c
 +++ b/net/core/page_pool.c
-@@ -1124,7 +1124,7 @@ static void page_pool_release_retry(stru
+@@ -1155,8 +1155,9 @@ static void page_pool_release_retry(stru
+ {
  	struct delayed_work *dwq = to_delayed_work(wq);
  	struct page_pool *pool = container_of(dwq, typeof(*pool), release_dw);
++	unsigned long flags;
  	void *netdev;
 -	int inflight;
 +	int cpu, inflight;
  
  	inflight = page_pool_release(pool);
  	/* In rare cases, a driver bug may cause inflight to go negative.
-@@ -1136,6 +1136,17 @@ static void page_pool_release_retry(stru
+@@ -1168,6 +1169,21 @@ static void page_pool_release_retry(stru
  	if (inflight <= 0)
  		return;
  
@@ -33,12 +35,16 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +	 * defer_list that can stay in the list until we have enough queued
 +	 * traffic.
 +	 */
++	local_irq_save(flags);
 +	for_each_online_cpu(cpu) {
 +		struct softnet_data *sd = &per_cpu(softnet_data, cpu);
 +
-+		if (!cmpxchg(&sd->defer_ipi_scheduled, 0, 1))
++		if (cpu == raw_smp_processor_id())
++			raise_softirq_irqoff(NET_RX_SOFTIRQ);
++		else if (!cmpxchg(&sd->defer_ipi_scheduled, 0, 1))
 +			smp_call_function_single_async(cpu, &sd->defer_csd);
 +	}
++	local_irq_restore(flags);
 +
  	/* Periodic warning for page pools the user can't see */
  	netdev = READ_ONCE(pool->slow.netdev);

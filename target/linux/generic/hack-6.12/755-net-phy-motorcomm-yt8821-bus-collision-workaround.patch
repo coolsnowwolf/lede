@@ -1,0 +1,85 @@
+From 63161fb6353493c648a260244f6ac7eca65fd48e Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jakub=20Van=C4=9Bk?= <linuxtardis@gmail.com>
+Date: Mon, 2 Mar 2026 20:31:37 +0100
+Subject: [PATCH] net: phy: Work around MDIO collisions in the YT8821 driver
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Cudy M3000 router suffers from a MDIO bus collision:
+- The MT7981B internal gigabit PHY listens on address 0.
+- The Motorcomm YT8821 is strapped to listen on address 1,
+  but it initially also listens on address 0 (Motorcomm
+  incorrectly considers that address a broadcast address).
+
+Without this patch, the YT8821 reacts to MDIO commands intended
+for the internal gigabit PHY and that makes it work unreliably.
+The YT8821 state somehow gets corrupted by the commands for the MT7981
+(e.g. we get 100Mbps speeds on gigabit links).
+
+This dirty workaround resets the PHY to cancel out any earlier
+YT8821 register corruption and then it disables the address 0
+as soon as possible. This should make the YT8821 work reliably.
+
+BEWARE though: the PHY will be reset only if the device tree
+node that defines the PHY carries the reset-gpios attribute.
+The PHY will not be reset if the reset GPIO is either on the MDIO
+bus node or is not defined at all. This might not always be a problem --
+some routers do not require the PHY to be reset (e.g. Cudy WR3000H,
+where there likely is less communication with the MT7981B PHY,
+and so the YT8821 PHY works reasonably well there even without this patch).
+
+This patch also does not address the possible MDIO bus collisions
+when the MT7981B PHY driver initially configures that PHY and invokes
+some read transactions on the bus. I am hoping that the MT7981B MDIO
+bus controller gives priority to the internal PHY and so it would
+not be affected by these collisions. However, I don't have anything
+to base this on apart from it "seeming to be working okay".
+
+This patch is unlikely to be mergeable into the mainline kernel.
+Upstream has strongly indicated that they would prefer this problem
+to be resolved by the platform bootloader (e.g. U-Boot), see
+- https://lore.kernel.org/all/d3bb9c36-5a0e-4339-901d-2dd21bdba395@gmail.com/
+- https://lore.kernel.org/all/20260228232241.1274236-1-linuxtardis@gmail.com/
+
+Signed-off-by: Jakub Vaněk <linuxtardis@gmail.com>
+---
+ drivers/net/phy/motorcomm.c | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+--- a/drivers/net/phy/motorcomm.c
++++ b/drivers/net/phy/motorcomm.c
+@@ -214,6 +214,9 @@
+ #define YT8521_RC1R_RGMII_2_100_NS		14
+ #define YT8521_RC1R_RGMII_2_250_NS		15
+ 
++#define YTPHY_MDIO_ADDRESS_CONTROL_REG		0xA005
++#define YTPHY_MACR_EN_PHY_ADDR_0		BIT(6)
++
+ #define YTPHY_MISC_CONFIG_REG			0xA006
+ #define YTPHY_MCR_FIBER_SPEED_MASK		BIT(0)
+ #define YTPHY_MCR_FIBER_1000BX			(0x1 << 0)
+@@ -2659,6 +2662,23 @@ static int yt8821_config_init(struct phy
+ 	int ret;
+ 	u16 set;
+ 
++	/* Hard-reset the PHY to clear out any register corruption
++	 * from preceding MDIO bus conflicts.
++	 */
++	phy_device_reset(phydev, 1);
++
++	/* Deassert the reset GPIO under the MDIO bus lock to make
++	 * sure that nothing will communicate on the bus until we
++	 * disable the broadcast address in the YT8821.
++	 */
++	phy_lock_mdio_bus(phydev);
++	phy_device_reset(phydev, 0);
++	ret = ytphy_modify_ext(phydev,
++			       YTPHY_MDIO_ADDRESS_CONTROL_REG,
++			       YTPHY_MACR_EN_PHY_ADDR_0,
++			       0);
++	phy_unlock_mdio_bus(phydev);
++
+ 	if (phydev->interface == PHY_INTERFACE_MODE_2500BASEX)
+ 		mode = YT8821_CHIP_MODE_FORCE_BX2500;
+ 

@@ -1,0 +1,117 @@
+From 4a291fe7226736a465ddb3fa93c21fcef7162ec7 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 7 Nov 2025 09:07:43 +0100
+Subject: [PATCH] net: dsa: b53: move reading ARL entries into their own
+ function
+
+Instead of duplicating the whole code iterating over all bins for
+BCM5325, factor out reading and parsing the entry into its own
+functions, and name it the modern one after the first chip with that ARL
+format, (BCM53)95.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251107080749.26936-3-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 69 +++++++++++---------------------
+ 1 file changed, 23 insertions(+), 46 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1830,48 +1830,30 @@ static int b53_arl_rw_op(struct b53_devi
+ 	return b53_arl_op_wait(dev);
+ }
+ 
+-static int b53_arl_read(struct b53_device *dev, const u8 *mac,
+-			u16 vid, struct b53_arl_entry *ent, u8 *idx)
++static void b53_arl_read_entry_25(struct b53_device *dev,
++				  struct b53_arl_entry *ent, u8 idx)
+ {
+-	DECLARE_BITMAP(free_bins, B53_ARLTBL_MAX_BIN_ENTRIES);
+-	unsigned int i;
+-	int ret;
+-
+-	ret = b53_arl_op_wait(dev);
+-	if (ret)
+-		return ret;
++	u64 mac_vid;
+ 
+-	bitmap_zero(free_bins, dev->num_arl_bins);
+-
+-	/* Read the bins */
+-	for (i = 0; i < dev->num_arl_bins; i++) {
+-		u64 mac_vid;
+-		u32 fwd_entry;
+-
+-		b53_read64(dev, B53_ARLIO_PAGE,
+-			   B53_ARLTBL_MAC_VID_ENTRY(i), &mac_vid);
+-		b53_read32(dev, B53_ARLIO_PAGE,
+-			   B53_ARLTBL_DATA_ENTRY(i), &fwd_entry);
+-		b53_arl_to_entry(ent, mac_vid, fwd_entry);
++	b53_read64(dev, B53_ARLIO_PAGE, B53_ARLTBL_MAC_VID_ENTRY(idx),
++		   &mac_vid);
++	b53_arl_to_entry_25(ent, mac_vid);
++}
+ 
+-		if (!ent->is_valid) {
+-			set_bit(i, free_bins);
+-			continue;
+-		}
+-		if (!ether_addr_equal(ent->mac, mac))
+-			continue;
+-		if (dev->vlan_enabled && ent->vid != vid)
+-			continue;
+-		*idx = i;
+-		return 0;
+-	}
++static void b53_arl_read_entry_95(struct b53_device *dev,
++				  struct b53_arl_entry *ent, u8 idx)
++{
++	u32 fwd_entry;
++	u64 mac_vid;
+ 
+-	*idx = find_first_bit(free_bins, dev->num_arl_bins);
+-	return *idx >= dev->num_arl_bins ? -ENOSPC : -ENOENT;
++	b53_read64(dev, B53_ARLIO_PAGE, B53_ARLTBL_MAC_VID_ENTRY(idx),
++		   &mac_vid);
++	b53_read32(dev, B53_ARLIO_PAGE, B53_ARLTBL_DATA_ENTRY(idx), &fwd_entry);
++	b53_arl_to_entry(ent, mac_vid, fwd_entry);
+ }
+ 
+-static int b53_arl_read_25(struct b53_device *dev, const u8 *mac,
+-			   u16 vid, struct b53_arl_entry *ent, u8 *idx)
++static int b53_arl_read(struct b53_device *dev, const u8 *mac,
++			u16 vid, struct b53_arl_entry *ent, u8 *idx)
+ {
+ 	DECLARE_BITMAP(free_bins, B53_ARLTBL_MAX_BIN_ENTRIES);
+ 	unsigned int i;
+@@ -1885,12 +1867,10 @@ static int b53_arl_read_25(struct b53_de
+ 
+ 	/* Read the bins */
+ 	for (i = 0; i < dev->num_arl_bins; i++) {
+-		u64 mac_vid;
+-
+-		b53_read64(dev, B53_ARLIO_PAGE,
+-			   B53_ARLTBL_MAC_VID_ENTRY(i), &mac_vid);
+-
+-		b53_arl_to_entry_25(ent, mac_vid);
++		if (is5325(dev) || is5365(dev))
++			b53_arl_read_entry_25(dev, ent, i);
++		else
++			b53_arl_read_entry_95(dev, ent, i);
+ 
+ 		if (!ent->is_valid) {
+ 			set_bit(i, free_bins);
+@@ -1930,10 +1910,7 @@ static int b53_arl_op(struct b53_device
+ 	if (ret)
+ 		return ret;
+ 
+-	if (is5325(dev) || is5365(dev))
+-		ret = b53_arl_read_25(dev, addr, vid, &ent, &idx);
+-	else
+-		ret = b53_arl_read(dev, addr, vid, &ent, &idx);
++	ret = b53_arl_read(dev, addr, vid, &ent, &idx);
+ 
+ 	/* If this is a read, just finish now */
+ 	if (op)

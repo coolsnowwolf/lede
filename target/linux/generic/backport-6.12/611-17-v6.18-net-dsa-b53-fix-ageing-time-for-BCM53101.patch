@@ -1,0 +1,77 @@
+From 674b34c4c770551e916ae707829c7faea4782d3a Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 5 Sep 2025 14:45:07 +0200
+Subject: [PATCH] net: dsa: b53: fix ageing time for BCM53101
+
+For some reason Broadcom decided that BCM53101 uses 0.5s increments for
+the ageing time register, but kept the field width the same [1]. Due to
+this, the actual ageing time was always half of what was configured.
+
+Fix this by adapting the limits and value calculation for BCM53101.
+
+So far it looks like this is the only chip with the increased tick
+speed:
+
+$ grep -l -r "Specifies the aging time in 0.5 seconds" cdk/PKG/chip | sort
+cdk/PKG/chip/bcm53101/bcm53101_a0_defs.h
+
+$ grep -l -r "Specifies the aging time in seconds" cdk/PKG/chip | sort
+cdk/PKG/chip/bcm53010/bcm53010_a0_defs.h
+cdk/PKG/chip/bcm53020/bcm53020_a0_defs.h
+cdk/PKG/chip/bcm53084/bcm53084_a0_defs.h
+cdk/PKG/chip/bcm53115/bcm53115_a0_defs.h
+cdk/PKG/chip/bcm53118/bcm53118_a0_defs.h
+cdk/PKG/chip/bcm53125/bcm53125_a0_defs.h
+cdk/PKG/chip/bcm53128/bcm53128_a0_defs.h
+cdk/PKG/chip/bcm53134/bcm53134_a0_defs.h
+cdk/PKG/chip/bcm53242/bcm53242_a0_defs.h
+cdk/PKG/chip/bcm53262/bcm53262_a0_defs.h
+cdk/PKG/chip/bcm53280/bcm53280_a0_defs.h
+cdk/PKG/chip/bcm53280/bcm53280_b0_defs.h
+cdk/PKG/chip/bcm53600/bcm53600_a0_defs.h
+cdk/PKG/chip/bcm89500/bcm89500_a0_defs.h
+
+[1] https://github.com/Broadcom/OpenMDK/blob/a5d3fc9b12af3eeb68f2ca0ce7ec4056cd14d6c2/cdk/PKG/chip/bcm53101/bcm53101_a0_defs.h#L28966
+
+Fixes: e39d14a760c0 ("net: dsa: b53: implement setting ageing time")
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20250905124507.59186-1-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1273,9 +1273,15 @@ static int b53_setup(struct dsa_switch *
+ 	 */
+ 	ds->untag_vlan_aware_bridge_pvid = true;
+ 
+-	/* Ageing time is set in seconds */
+-	ds->ageing_time_min = 1 * 1000;
+-	ds->ageing_time_max = AGE_TIME_MAX * 1000;
++	if (dev->chip_id == BCM53101_DEVICE_ID) {
++		/* BCM53101 uses 0.5 second increments */
++		ds->ageing_time_min = 1 * 500;
++		ds->ageing_time_max = AGE_TIME_MAX * 500;
++	} else {
++		/* Everything else uses 1 second increments */
++		ds->ageing_time_min = 1 * 1000;
++		ds->ageing_time_max = AGE_TIME_MAX * 1000;
++	}
+ 
+ 	ret = b53_reset_switch(dev);
+ 	if (ret) {
+@@ -2587,7 +2593,10 @@ int b53_set_ageing_time(struct dsa_switc
+ 	else
+ 		reg = B53_AGING_TIME_CONTROL;
+ 
+-	atc = DIV_ROUND_CLOSEST(msecs, 1000);
++	if (dev->chip_id == BCM53101_DEVICE_ID)
++		atc = DIV_ROUND_CLOSEST(msecs, 500);
++	else
++		atc = DIV_ROUND_CLOSEST(msecs, 1000);
+ 
+ 	if (!is5325(dev) && !is5365(dev))
+ 		atc |= AGE_CHANGE;

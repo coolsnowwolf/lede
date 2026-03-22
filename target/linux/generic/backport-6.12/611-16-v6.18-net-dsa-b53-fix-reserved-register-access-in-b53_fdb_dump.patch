@@ -1,0 +1,72 @@
+From 89eb9a62aed77b409663ba1eac152e8f758815b7 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 15 Aug 2025 22:18:09 +0200
+Subject: [PATCH] net: dsa: b53: fix reserved register access in b53_fdb_dump()
+
+When BCM5325 support was added in c45655386e53 ("net: dsa: b53: add
+support for FDB operations on 5325/5365"), the register used for ARL access
+was made conditional on the chip.
+
+But in b53_fdb_dump(), instead of the register argument the page
+argument was replaced, causing it to write to a reserved page 0x50 on
+!BCM5325*. Writing to this page seems to completely lock the switch up:
+
+[   89.680000] b53-switch spi0.1 lan2: Link is Down
+[   89.680000] WARNING: CPU: 1 PID: 26 at drivers/net/phy/phy.c:1350 _phy_state_machine+0x1bc/0x454
+[   89.720000] phy_check_link_status+0x0/0x114: returned: -5
+[   89.730000] Modules linked in: nft_fib_inet nf_flow_table_inet nft_reject_ipv6 nft_reject_ipv4 nft_reject_inet nft_reject nft_redir nft_quota nft_numgen nft_nat nft_masq nft_log nft_limit nft_hash nft_flow_offload nft_fib_ipv6 nft_fib_ipv4 nft_fib nft_ct nft_chain_nat nf_tables nf_nat nf_flow_table nf_conntrack nfnetlink nf_reject_ipv6 nf_reject_ipv4 nf_log_syslog nf_defrag_ipv6 nf_defrag_ipv4 cls_flower sch_tbf sch_ingress sch_htb sch_hfsc em_u32 cls_u32 cls_route cls_matchall cls_fw cls_flow cls_basic act_skbedit act_mirred act_gact vrf md5 crc32c_cryptoapi
+[   89.780000] CPU: 1 UID: 0 PID: 26 Comm: kworker/u10:0 Tainted: G        W           6.16.0-rc1+ #0 NONE
+[   89.780000] Tainted: [W]=WARN
+[   89.780000] Hardware name: Netgear DGND3700 v1
+[   89.780000] Workqueue: events_power_efficient phy_state_machine
+[   89.780000] Stack : 809c762c 8006b050 00000001 820a9ce3 0000114c 000affff 805d22d0 8200ba00
+[   89.780000]         82005000 6576656e 74735f70 6f776572 5f656666 10008b00 820a9cb8 82088700
+[   89.780000]         00000000 00000000 809c762c 820a9a98 00000000 00000000 ffffefff 80a7a76c
+[   89.780000]         80a70000 820a9af8 80a70000 80a70000 80a70000 00000000 809c762c 820a9dd4
+[   89.780000]         00000000 805d1494 80a029e4 80a70000 00000003 00000000 00000004 81a60004
+[   89.780000]         ...
+[   89.780000] Call Trace:
+[   89.780000] [<800228b8>] show_stack+0x38/0x118
+[   89.780000] [<8001afc4>] dump_stack_lvl+0x6c/0xac
+[   89.780000] [<80046b90>] __warn+0x9c/0x114
+[   89.780000] [<80046da8>] warn_slowpath_fmt+0x1a0/0x1b0
+[   89.780000] [<805d1494>] _phy_state_machine+0x1bc/0x454
+[   89.780000] [<805d22fc>] phy_state_machine+0x2c/0x70
+[   89.780000] [<80066b08>] process_one_work+0x1e8/0x3e0
+[   89.780000] [<80067a1c>] worker_thread+0x354/0x4e4
+[   89.780000] [<800706cc>] kthread+0x130/0x274
+[   89.780000] [<8001d808>] ret_from_kernel_thread+0x14/0x1c
+
+And any further accesses fail:
+
+[  120.790000] b53-switch spi0.1: timeout waiting for ARL to finish: 0x81
+[  120.800000] b53-switch spi0.1: port 2 failed to add 2c:b0:5d:27:9a:bd vid 3 to fdb: -145
+[  121.010000] b53-switch spi0.1: timeout waiting for ARL to finish: 0xbf
+[  121.020000] b53-switch spi0.1: port 3 failed to add 2c:b0:5d:27:9a:bd vid 3 to fdb: -145
+
+Restore the correct page B53_ARLIO_PAGE again, and move the offset
+argument to the correct place.
+
+*On BCM5325, this became a write to the MIB page of Port 1. Still
+a reserved offset, but likely less brokenness from that write.
+
+Fixes: c45655386e53 ("net: dsa: b53: add support for FDB operations on 5325/5365")
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20250815201809.549195-1-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -2100,7 +2100,7 @@ int b53_fdb_dump(struct dsa_switch *ds,
+ 
+ 	/* Start search operation */
+ 	reg = ARL_SRCH_STDN;
+-	b53_write8(priv, offset, B53_ARL_SRCH_CTL, reg);
++	b53_write8(priv, B53_ARLIO_PAGE, offset, reg);
+ 
+ 	do {
+ 		ret = b53_arl_search_wait(priv);

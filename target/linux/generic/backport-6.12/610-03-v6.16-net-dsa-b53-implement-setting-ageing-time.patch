@@ -1,0 +1,105 @@
+From e39d14a760c039af0653e3df967e7525413924a0 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Sat, 10 May 2025 11:22:11 +0200
+Subject: [PATCH] net: dsa: b53: implement setting ageing time
+
+b53 supported switches support configuring ageing time between 1 and
+1,048,575 seconds, so add an appropriate setter.
+
+This allows b53 to pass the FDB learning test for both vlan aware and
+vlan unaware bridges.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20250510092211.276541-1-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 28 ++++++++++++++++++++++++++++
+ drivers/net/dsa/b53/b53_priv.h   |  1 +
+ drivers/net/dsa/b53/b53_regs.h   |  7 +++++++
+ 3 files changed, 36 insertions(+)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -21,6 +21,7 @@
+ #include <linux/export.h>
+ #include <linux/gpio.h>
+ #include <linux/kernel.h>
++#include <linux/math.h>
+ #include <linux/module.h>
+ #include <linux/platform_data/b53.h>
+ #include <linux/phy.h>
+@@ -1227,6 +1228,10 @@ static int b53_setup(struct dsa_switch *
+ 	 */
+ 	ds->untag_vlan_aware_bridge_pvid = true;
+ 
++	/* Ageing time is set in seconds */
++	ds->ageing_time_min = 1 * 1000;
++	ds->ageing_time_max = AGE_TIME_MAX * 1000;
++
+ 	ret = b53_reset_switch(dev);
+ 	if (ret) {
+ 		dev_err(ds->dev, "failed to reset switch\n");
+@@ -2466,6 +2471,28 @@ static int b53_get_max_mtu(struct dsa_sw
+ 	return B53_MAX_MTU;
+ }
+ 
++int b53_set_ageing_time(struct dsa_switch *ds, unsigned int msecs)
++{
++	struct b53_device *dev = ds->priv;
++	u32 atc;
++	int reg;
++
++	if (is63xx(dev))
++		reg = B53_AGING_TIME_CONTROL_63XX;
++	else
++		reg = B53_AGING_TIME_CONTROL;
++
++	atc = DIV_ROUND_CLOSEST(msecs, 1000);
++
++	if (!is5325(dev) && !is5365(dev))
++		atc |= AGE_CHANGE;
++
++	b53_write32(dev, B53_MGMT_PAGE, reg, atc);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(b53_set_ageing_time);
++
+ static const struct phylink_mac_ops b53_phylink_mac_ops = {
+ 	.mac_select_pcs	= b53_phylink_mac_select_pcs,
+ 	.mac_config	= b53_phylink_mac_config,
+@@ -2490,6 +2517,7 @@ static const struct dsa_switch_ops b53_s
+ 	.support_eee		= b53_support_eee,
+ 	.get_mac_eee		= b53_get_mac_eee,
+ 	.set_mac_eee		= b53_set_mac_eee,
++	.set_ageing_time	= b53_set_ageing_time,
+ 	.port_bridge_join	= b53_br_join,
+ 	.port_bridge_leave	= b53_br_leave,
+ 	.port_pre_bridge_flags	= b53_br_flags_pre,
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -343,6 +343,7 @@ void b53_get_strings(struct dsa_switch *
+ void b53_get_ethtool_stats(struct dsa_switch *ds, int port, uint64_t *data);
+ int b53_get_sset_count(struct dsa_switch *ds, int port, int sset);
+ void b53_get_ethtool_phy_stats(struct dsa_switch *ds, int port, uint64_t *data);
++int b53_set_ageing_time(struct dsa_switch *ds, unsigned int msecs);
+ int b53_br_join(struct dsa_switch *ds, int port, struct dsa_bridge bridge,
+ 		bool *tx_fwd_offload, struct netlink_ext_ack *extack);
+ void b53_br_leave(struct dsa_switch *ds, int port, struct dsa_bridge bridge);
+--- a/drivers/net/dsa/b53/b53_regs.h
++++ b/drivers/net/dsa/b53/b53_regs.h
+@@ -224,6 +224,13 @@
+ #define   BRCM_HDR_P5_EN		BIT(1) /* Enable tagging on port 5 */
+ #define   BRCM_HDR_P7_EN		BIT(2) /* Enable tagging on port 7 */
+ 
++/* Aging Time control register (32 bit) */
++#define B53_AGING_TIME_CONTROL		0x06
++#define B53_AGING_TIME_CONTROL_63XX	0x08
++#define  AGE_CHANGE			BIT(20)
++#define  AGE_TIME_MASK			0x7ffff
++#define  AGE_TIME_MAX			1048575
++
+ /* Mirror capture control register (16 bit) */
+ #define B53_MIR_CAP_CTL			0x10
+ #define  CAP_PORT_MASK			0xf

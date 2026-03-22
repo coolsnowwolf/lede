@@ -1,0 +1,329 @@
+From 6b88293aae7fb78872e5cc1ec36e2f750ae12e38 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 10 Sep 2025 14:32:58 -0400
+Subject: mtd: nand: move nand_check_erased_ecc_chunk() to nand/core
+
+The check function for bitflips in erased blocks will be needed
+by the Realtek ECC engine driver (which is currently under
+development). Right now it is located in raw/nand_base.c.
+While this is sufficient for the current usecases, there is
+no real dependency for an ECC engine on the raw nand library.
+
+Move the function over to a more generic place in core library.
+
+Suggested-by: Miquel Raynal <miquel.raynal@bootlin.com>
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+---
+ drivers/mtd/nand/core.c          | 131 +++++++++++++++++++++++++++++++++++++++
+ drivers/mtd/nand/raw/nand_base.c | 131 ---------------------------------------
+ include/linux/mtd/nand.h         |   5 ++
+ include/linux/mtd/rawnand.h      |   5 --
+ 4 files changed, 136 insertions(+), 136 deletions(-)
+
+--- a/drivers/mtd/nand/core.c
++++ b/drivers/mtd/nand/core.c
+@@ -13,6 +13,137 @@
+ #include <linux/mtd/nand.h>
+ 
+ /**
++ * nand_check_erased_buf - check if a buffer contains (almost) only 0xff data
++ * @buf: buffer to test
++ * @len: buffer length
++ * @bitflips_threshold: maximum number of bitflips
++ *
++ * Check if a buffer contains only 0xff, which means the underlying region
++ * has been erased and is ready to be programmed.
++ * The bitflips_threshold specify the maximum number of bitflips before
++ * considering the region is not erased.
++ * Note: The logic of this function has been extracted from the memweight
++ * implementation, except that nand_check_erased_buf function exit before
++ * testing the whole buffer if the number of bitflips exceed the
++ * bitflips_threshold value.
++ *
++ * Returns a positive number of bitflips less than or equal to
++ * bitflips_threshold, or -ERROR_CODE for bitflips in excess of the
++ * threshold.
++ */
++static int nand_check_erased_buf(void *buf, int len, int bitflips_threshold)
++{
++	const unsigned char *bitmap = buf;
++	int bitflips = 0;
++	int weight;
++
++	for (; len && ((uintptr_t)bitmap) % sizeof(long);
++	     len--, bitmap++) {
++		weight = hweight8(*bitmap);
++		bitflips += BITS_PER_BYTE - weight;
++		if (unlikely(bitflips > bitflips_threshold))
++			return -EBADMSG;
++	}
++
++	for (; len >= sizeof(long);
++	     len -= sizeof(long), bitmap += sizeof(long)) {
++		unsigned long d = *((unsigned long *)bitmap);
++		if (d == ~0UL)
++			continue;
++		weight = hweight_long(d);
++		bitflips += BITS_PER_LONG - weight;
++		if (unlikely(bitflips > bitflips_threshold))
++			return -EBADMSG;
++	}
++
++	for (; len > 0; len--, bitmap++) {
++		weight = hweight8(*bitmap);
++		bitflips += BITS_PER_BYTE - weight;
++		if (unlikely(bitflips > bitflips_threshold))
++			return -EBADMSG;
++	}
++
++	return bitflips;
++}
++
++/**
++ * nand_check_erased_ecc_chunk - check if an ECC chunk contains (almost) only
++ *				 0xff data
++ * @data: data buffer to test
++ * @datalen: data length
++ * @ecc: ECC buffer
++ * @ecclen: ECC length
++ * @extraoob: extra OOB buffer
++ * @extraooblen: extra OOB length
++ * @bitflips_threshold: maximum number of bitflips
++ *
++ * Check if a data buffer and its associated ECC and OOB data contains only
++ * 0xff pattern, which means the underlying region has been erased and is
++ * ready to be programmed.
++ * The bitflips_threshold specify the maximum number of bitflips before
++ * considering the region as not erased.
++ *
++ * Note:
++ * 1/ ECC algorithms are working on pre-defined block sizes which are usually
++ *    different from the NAND page size. When fixing bitflips, ECC engines will
++ *    report the number of errors per chunk, and the NAND core infrastructure
++ *    expect you to return the maximum number of bitflips for the whole page.
++ *    This is why you should always use this function on a single chunk and
++ *    not on the whole page. After checking each chunk you should update your
++ *    max_bitflips value accordingly.
++ * 2/ When checking for bitflips in erased pages you should not only check
++ *    the payload data but also their associated ECC data, because a user might
++ *    have programmed almost all bits to 1 but a few. In this case, we
++ *    shouldn't consider the chunk as erased, and checking ECC bytes prevent
++ *    this case.
++ * 3/ The extraoob argument is optional, and should be used if some of your OOB
++ *    data are protected by the ECC engine.
++ *    It could also be used if you support subpages and want to attach some
++ *    extra OOB data to an ECC chunk.
++ *
++ * Returns a positive number of bitflips less than or equal to
++ * bitflips_threshold, or -ERROR_CODE for bitflips in excess of the
++ * threshold. In case of success, the passed buffers are filled with 0xff.
++ */
++int nand_check_erased_ecc_chunk(void *data, int datalen,
++				void *ecc, int ecclen,
++				void *extraoob, int extraooblen,
++				int bitflips_threshold)
++{
++	int data_bitflips = 0, ecc_bitflips = 0, extraoob_bitflips = 0;
++
++	data_bitflips = nand_check_erased_buf(data, datalen,
++					      bitflips_threshold);
++	if (data_bitflips < 0)
++		return data_bitflips;
++
++	bitflips_threshold -= data_bitflips;
++
++	ecc_bitflips = nand_check_erased_buf(ecc, ecclen, bitflips_threshold);
++	if (ecc_bitflips < 0)
++		return ecc_bitflips;
++
++	bitflips_threshold -= ecc_bitflips;
++
++	extraoob_bitflips = nand_check_erased_buf(extraoob, extraooblen,
++						  bitflips_threshold);
++	if (extraoob_bitflips < 0)
++		return extraoob_bitflips;
++
++	if (data_bitflips)
++		memset(data, 0xff, datalen);
++
++	if (ecc_bitflips)
++		memset(ecc, 0xff, ecclen);
++
++	if (extraoob_bitflips)
++		memset(extraoob, 0xff, extraooblen);
++
++	return data_bitflips + ecc_bitflips + extraoob_bitflips;
++}
++EXPORT_SYMBOL(nand_check_erased_ecc_chunk);
++
++/**
+  * nanddev_isbad() - Check if a block is bad
+  * @nand: NAND device
+  * @pos: position pointing to the block we want to check
+--- a/drivers/mtd/nand/raw/nand_base.c
++++ b/drivers/mtd/nand/raw/nand_base.c
+@@ -2784,137 +2784,6 @@ int nand_set_features(struct nand_chip *
+ }
+ 
+ /**
+- * nand_check_erased_buf - check if a buffer contains (almost) only 0xff data
+- * @buf: buffer to test
+- * @len: buffer length
+- * @bitflips_threshold: maximum number of bitflips
+- *
+- * Check if a buffer contains only 0xff, which means the underlying region
+- * has been erased and is ready to be programmed.
+- * The bitflips_threshold specify the maximum number of bitflips before
+- * considering the region is not erased.
+- * Note: The logic of this function has been extracted from the memweight
+- * implementation, except that nand_check_erased_buf function exit before
+- * testing the whole buffer if the number of bitflips exceed the
+- * bitflips_threshold value.
+- *
+- * Returns a positive number of bitflips less than or equal to
+- * bitflips_threshold, or -ERROR_CODE for bitflips in excess of the
+- * threshold.
+- */
+-static int nand_check_erased_buf(void *buf, int len, int bitflips_threshold)
+-{
+-	const unsigned char *bitmap = buf;
+-	int bitflips = 0;
+-	int weight;
+-
+-	for (; len && ((uintptr_t)bitmap) % sizeof(long);
+-	     len--, bitmap++) {
+-		weight = hweight8(*bitmap);
+-		bitflips += BITS_PER_BYTE - weight;
+-		if (unlikely(bitflips > bitflips_threshold))
+-			return -EBADMSG;
+-	}
+-
+-	for (; len >= sizeof(long);
+-	     len -= sizeof(long), bitmap += sizeof(long)) {
+-		unsigned long d = *((unsigned long *)bitmap);
+-		if (d == ~0UL)
+-			continue;
+-		weight = hweight_long(d);
+-		bitflips += BITS_PER_LONG - weight;
+-		if (unlikely(bitflips > bitflips_threshold))
+-			return -EBADMSG;
+-	}
+-
+-	for (; len > 0; len--, bitmap++) {
+-		weight = hweight8(*bitmap);
+-		bitflips += BITS_PER_BYTE - weight;
+-		if (unlikely(bitflips > bitflips_threshold))
+-			return -EBADMSG;
+-	}
+-
+-	return bitflips;
+-}
+-
+-/**
+- * nand_check_erased_ecc_chunk - check if an ECC chunk contains (almost) only
+- *				 0xff data
+- * @data: data buffer to test
+- * @datalen: data length
+- * @ecc: ECC buffer
+- * @ecclen: ECC length
+- * @extraoob: extra OOB buffer
+- * @extraooblen: extra OOB length
+- * @bitflips_threshold: maximum number of bitflips
+- *
+- * Check if a data buffer and its associated ECC and OOB data contains only
+- * 0xff pattern, which means the underlying region has been erased and is
+- * ready to be programmed.
+- * The bitflips_threshold specify the maximum number of bitflips before
+- * considering the region as not erased.
+- *
+- * Note:
+- * 1/ ECC algorithms are working on pre-defined block sizes which are usually
+- *    different from the NAND page size. When fixing bitflips, ECC engines will
+- *    report the number of errors per chunk, and the NAND core infrastructure
+- *    expect you to return the maximum number of bitflips for the whole page.
+- *    This is why you should always use this function on a single chunk and
+- *    not on the whole page. After checking each chunk you should update your
+- *    max_bitflips value accordingly.
+- * 2/ When checking for bitflips in erased pages you should not only check
+- *    the payload data but also their associated ECC data, because a user might
+- *    have programmed almost all bits to 1 but a few. In this case, we
+- *    shouldn't consider the chunk as erased, and checking ECC bytes prevent
+- *    this case.
+- * 3/ The extraoob argument is optional, and should be used if some of your OOB
+- *    data are protected by the ECC engine.
+- *    It could also be used if you support subpages and want to attach some
+- *    extra OOB data to an ECC chunk.
+- *
+- * Returns a positive number of bitflips less than or equal to
+- * bitflips_threshold, or -ERROR_CODE for bitflips in excess of the
+- * threshold. In case of success, the passed buffers are filled with 0xff.
+- */
+-int nand_check_erased_ecc_chunk(void *data, int datalen,
+-				void *ecc, int ecclen,
+-				void *extraoob, int extraooblen,
+-				int bitflips_threshold)
+-{
+-	int data_bitflips = 0, ecc_bitflips = 0, extraoob_bitflips = 0;
+-
+-	data_bitflips = nand_check_erased_buf(data, datalen,
+-					      bitflips_threshold);
+-	if (data_bitflips < 0)
+-		return data_bitflips;
+-
+-	bitflips_threshold -= data_bitflips;
+-
+-	ecc_bitflips = nand_check_erased_buf(ecc, ecclen, bitflips_threshold);
+-	if (ecc_bitflips < 0)
+-		return ecc_bitflips;
+-
+-	bitflips_threshold -= ecc_bitflips;
+-
+-	extraoob_bitflips = nand_check_erased_buf(extraoob, extraooblen,
+-						  bitflips_threshold);
+-	if (extraoob_bitflips < 0)
+-		return extraoob_bitflips;
+-
+-	if (data_bitflips)
+-		memset(data, 0xff, datalen);
+-
+-	if (ecc_bitflips)
+-		memset(ecc, 0xff, ecclen);
+-
+-	if (extraoob_bitflips)
+-		memset(extraoob, 0xff, extraooblen);
+-
+-	return data_bitflips + ecc_bitflips + extraoob_bitflips;
+-}
+-EXPORT_SYMBOL(nand_check_erased_ecc_chunk);
+-
+-/**
+  * nand_read_page_raw_notsupp - dummy read raw page function
+  * @chip: nand chip info structure
+  * @buf: buffer to store read data
+--- a/include/linux/mtd/nand.h
++++ b/include/linux/mtd/nand.h
+@@ -1136,4 +1136,9 @@ static inline bool nanddev_bbt_is_initia
+ int nanddev_mtd_erase(struct mtd_info *mtd, struct erase_info *einfo);
+ int nanddev_mtd_max_bad_blocks(struct mtd_info *mtd, loff_t offs, size_t len);
+ 
++int nand_check_erased_ecc_chunk(void *data, int datalen,
++				void *ecc, int ecclen,
++				void *extraoob, int extraooblen,
++				int threshold);
++
+ #endif /* __LINUX_MTD_NAND_H */
+--- a/include/linux/mtd/rawnand.h
++++ b/include/linux/mtd/rawnand.h
+@@ -1519,11 +1519,6 @@ int rawnand_sw_bch_correct(struct nand_c
+ 			   unsigned char *read_ecc, unsigned char *calc_ecc);
+ void rawnand_sw_bch_cleanup(struct nand_chip *chip);
+ 
+-int nand_check_erased_ecc_chunk(void *data, int datalen,
+-				void *ecc, int ecclen,
+-				void *extraoob, int extraooblen,
+-				int threshold);
+-
+ int nand_ecc_choose_conf(struct nand_chip *chip,
+ 			 const struct nand_ecc_caps *caps, int oobavail);
+ 

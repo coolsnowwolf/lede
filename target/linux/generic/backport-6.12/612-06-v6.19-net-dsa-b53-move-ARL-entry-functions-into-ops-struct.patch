@@ -1,0 +1,348 @@
+From a7e73339ad46ade76d29fb6cc7d7854222608c26 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 7 Nov 2025 09:07:47 +0100
+Subject: [PATCH] net: dsa: b53: move ARL entry functions into ops struct
+
+Now that the differences in ARL entry formats are neatly contained into
+functions per chip family, wrap them into an ops struct and add wrapper
+functions to access them.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251107080749.26936-7-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 67 ++++++++++++++++++++++----------
+ drivers/net/dsa/b53/b53_priv.h   | 30 ++++++++++++++
+ 2 files changed, 76 insertions(+), 21 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1890,10 +1890,7 @@ static int b53_arl_read(struct b53_devic
+ 
+ 	/* Read the bins */
+ 	for (i = 0; i < dev->num_arl_bins; i++) {
+-		if (is5325(dev) || is5365(dev))
+-			b53_arl_read_entry_25(dev, ent, i);
+-		else
+-			b53_arl_read_entry_95(dev, ent, i);
++		b53_arl_read_entry(dev, ent, i);
+ 
+ 		if (!ent->is_valid) {
+ 			set_bit(i, free_bins);
+@@ -1975,10 +1972,7 @@ static int b53_arl_op(struct b53_device
+ 	ent.is_static = true;
+ 	ent.is_age = false;
+ 	memcpy(ent.mac, addr, ETH_ALEN);
+-	if (is5325(dev) || is5365(dev))
+-		b53_arl_write_entry_25(dev, &ent, idx);
+-	else
+-		b53_arl_write_entry_95(dev, &ent, idx);
++	b53_arl_write_entry(dev, &ent, idx);
+ 
+ 	return b53_arl_rw_op(dev, 0);
+ }
+@@ -2089,17 +2083,6 @@ static void b53_arl_search_read_95(struc
+ 	b53_arl_to_entry(ent, mac_vid, fwd_entry);
+ }
+ 
+-static void b53_arl_search_rd(struct b53_device *dev, u8 idx,
+-			      struct b53_arl_entry *ent)
+-{
+-	if (is5325(dev))
+-		b53_arl_search_read_25(dev, idx, ent);
+-	else if (is5365(dev))
+-		b53_arl_search_read_65(dev, idx, ent);
+-	else
+-		b53_arl_search_read_95(dev, idx, ent);
+-}
+-
+ static int b53_fdb_copy(int port, const struct b53_arl_entry *ent,
+ 			dsa_fdb_dump_cb_t *cb, void *data)
+ {
+@@ -2136,13 +2119,13 @@ int b53_fdb_dump(struct dsa_switch *ds,
+ 		if (ret)
+ 			break;
+ 
+-		b53_arl_search_rd(priv, 0, &results[0]);
++		b53_arl_search_read(priv, 0, &results[0]);
+ 		ret = b53_fdb_copy(port, &results[0], cb, data);
+ 		if (ret)
+ 			break;
+ 
+ 		if (results_per_hit == 2) {
+-			b53_arl_search_rd(priv, 1, &results[1]);
++			b53_arl_search_read(priv, 1, &results[1]);
+ 			ret = b53_fdb_copy(port, &results[1], cb, data);
+ 			if (ret)
+ 				break;
+@@ -2675,6 +2658,24 @@ static const struct dsa_switch_ops b53_s
+ 	.port_change_mtu	= b53_change_mtu,
+ };
+ 
++static const struct b53_arl_ops b53_arl_ops_25 = {
++	.arl_read_entry = b53_arl_read_entry_25,
++	.arl_write_entry = b53_arl_write_entry_25,
++	.arl_search_read = b53_arl_search_read_25,
++};
++
++static const struct b53_arl_ops b53_arl_ops_65 = {
++	.arl_read_entry = b53_arl_read_entry_25,
++	.arl_write_entry = b53_arl_write_entry_25,
++	.arl_search_read = b53_arl_search_read_65,
++};
++
++static const struct b53_arl_ops b53_arl_ops_95 = {
++	.arl_read_entry = b53_arl_read_entry_95,
++	.arl_write_entry = b53_arl_write_entry_95,
++	.arl_search_read = b53_arl_search_read_95,
++};
++
+ struct b53_chip_data {
+ 	u32 chip_id;
+ 	const char *dev_name;
+@@ -2688,6 +2689,7 @@ struct b53_chip_data {
+ 	u8 duplex_reg;
+ 	u8 jumbo_pm_reg;
+ 	u8 jumbo_size_reg;
++	const struct b53_arl_ops *arl_ops;
+ };
+ 
+ #define B53_VTA_REGS	\
+@@ -2707,6 +2709,7 @@ static const struct b53_chip_data b53_sw
+ 		.arl_buckets = 1024,
+ 		.imp_port = 5,
+ 		.duplex_reg = B53_DUPLEX_STAT_FE,
++		.arl_ops = &b53_arl_ops_25,
+ 	},
+ 	{
+ 		.chip_id = BCM5365_DEVICE_ID,
+@@ -2717,6 +2720,7 @@ static const struct b53_chip_data b53_sw
+ 		.arl_buckets = 1024,
+ 		.imp_port = 5,
+ 		.duplex_reg = B53_DUPLEX_STAT_FE,
++		.arl_ops = &b53_arl_ops_65,
+ 	},
+ 	{
+ 		.chip_id = BCM5389_DEVICE_ID,
+@@ -2730,6 +2734,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM5395_DEVICE_ID,
+@@ -2743,6 +2748,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM5397_DEVICE_ID,
+@@ -2756,6 +2762,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM5398_DEVICE_ID,
+@@ -2769,6 +2776,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53101_DEVICE_ID,
+@@ -2782,6 +2790,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53115_DEVICE_ID,
+@@ -2795,6 +2804,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53125_DEVICE_ID,
+@@ -2808,6 +2818,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53128_DEVICE_ID,
+@@ -2821,6 +2832,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM63XX_DEVICE_ID,
+@@ -2834,6 +2846,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_63XX,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK_63XX,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE_63XX,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53010_DEVICE_ID,
+@@ -2847,6 +2860,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53011_DEVICE_ID,
+@@ -2860,6 +2874,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53012_DEVICE_ID,
+@@ -2873,6 +2888,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53018_DEVICE_ID,
+@@ -2886,6 +2902,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53019_DEVICE_ID,
+@@ -2899,6 +2916,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM58XX_DEVICE_ID,
+@@ -2912,6 +2930,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM583XX_DEVICE_ID,
+@@ -2925,6 +2944,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	/* Starfighter 2 */
+ 	{
+@@ -2939,6 +2959,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM7445_DEVICE_ID,
+@@ -2952,6 +2973,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM7278_DEVICE_ID,
+@@ -2965,6 +2987,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ 	{
+ 		.chip_id = BCM53134_DEVICE_ID,
+@@ -2979,6 +3002,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
++		.arl_ops = &b53_arl_ops_95,
+ 	},
+ };
+ 
+@@ -3007,6 +3031,7 @@ static int b53_switch_init(struct b53_de
+ 			dev->num_vlans = chip->vlans;
+ 			dev->num_arl_bins = chip->arl_bins;
+ 			dev->num_arl_buckets = chip->arl_buckets;
++			dev->arl_ops = chip->arl_ops;
+ 			break;
+ 		}
+ 	}
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -58,6 +58,17 @@ struct b53_io_ops {
+ 				bool link_up);
+ };
+ 
++struct b53_arl_entry;
++
++struct b53_arl_ops {
++	void (*arl_read_entry)(struct b53_device *dev,
++			       struct b53_arl_entry *ent, u8 idx);
++	void (*arl_write_entry)(struct b53_device *dev,
++				const struct b53_arl_entry *ent, u8 idx);
++	void (*arl_search_read)(struct b53_device *dev, u8 idx,
++				struct b53_arl_entry *ent);
++};
++
+ #define B53_INVALID_LANE	0xff
+ 
+ enum {
+@@ -127,6 +138,7 @@ struct b53_device {
+ 	struct mutex stats_mutex;
+ 	struct mutex arl_mutex;
+ 	const struct b53_io_ops *ops;
++	const struct b53_arl_ops *arl_ops;
+ 
+ 	/* chip specific data */
+ 	u32 chip_id;
+@@ -371,6 +383,24 @@ static inline void b53_arl_from_entry_25
+ 		*mac_vid |= ARLTBL_AGE_25;
+ }
+ 
++static inline void b53_arl_read_entry(struct b53_device *dev,
++				      struct b53_arl_entry *ent, u8 idx)
++{
++	dev->arl_ops->arl_read_entry(dev, ent, idx);
++}
++
++static inline void b53_arl_write_entry(struct b53_device *dev,
++				       const struct b53_arl_entry *ent, u8 idx)
++{
++	dev->arl_ops->arl_write_entry(dev, ent, idx);
++}
++
++static inline void b53_arl_search_read(struct b53_device *dev, u8 idx,
++				       struct b53_arl_entry *ent)
++{
++	dev->arl_ops->arl_search_read(dev, idx, ent);
++}
++
+ #ifdef CONFIG_BCM47XX
+ 
+ #include <linux/bcm47xx_nvram.h>

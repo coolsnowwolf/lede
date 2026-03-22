@@ -1,0 +1,159 @@
+From df874f9e52c340cc6f0a0014a97b778f67d46849 Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 3 Dec 2024 15:31:28 +0000
+Subject: [PATCH 09/13] net: phylink: add pcs_inband_caps() method
+
+Add a pcs_inband_caps() method to query the PCS for its inband link
+capabilities, and use this to determine whether link modes used with
+optical SFPs can be supported.
+
+When a PCS does not provide a method, we allow inband negotiation to
+be either on or off, making this a no-op until the pcs_inband_caps()
+method is implemented by a PCS driver.
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Link: https://patch.msgid.link/E1tIUs4-006IUU-7K@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 60 +++++++++++++++++++++++++++++++++++++++
+ include/linux/phylink.h   | 17 +++++++++++
+ 2 files changed, 77 insertions(+)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -1007,6 +1007,15 @@ static void phylink_resolve_an_pause(str
+ 	}
+ }
+ 
++static unsigned int phylink_pcs_inband_caps(struct phylink_pcs *pcs,
++				    phy_interface_t interface)
++{
++	if (pcs && pcs->ops->pcs_inband_caps)
++		return pcs->ops->pcs_inband_caps(pcs, interface);
++
++	return 0;
++}
++
+ static void phylink_pcs_pre_config(struct phylink_pcs *pcs,
+ 				   phy_interface_t interface)
+ {
+@@ -1060,6 +1069,24 @@ static void phylink_pcs_link_up(struct p
+ 		pcs->ops->pcs_link_up(pcs, neg_mode, interface, speed, duplex);
+ }
+ 
++/* Query inband for a specific interface mode, asking the MAC for the
++ * PCS which will be used to handle the interface mode.
++ */
++static unsigned int phylink_inband_caps(struct phylink *pl,
++					 phy_interface_t interface)
++{
++	struct phylink_pcs *pcs;
++
++	if (!pl->mac_ops->mac_select_pcs)
++		return 0;
++
++	pcs = pl->mac_ops->mac_select_pcs(pl->config, interface);
++	if (!pcs)
++		return 0;
++
++	return phylink_pcs_inband_caps(pcs, interface);
++}
++
+ static void phylink_pcs_poll_stop(struct phylink *pl)
+ {
+ 	if (pl->cfg_link_an_mode == MLO_AN_INBAND)
+@@ -2530,6 +2557,26 @@ int phylink_ethtool_ksettings_get(struct
+ }
+ EXPORT_SYMBOL_GPL(phylink_ethtool_ksettings_get);
+ 
++static bool phylink_validate_pcs_inband_autoneg(struct phylink *pl,
++					        phy_interface_t interface,
++						unsigned long *adv)
++{
++	unsigned int inband = phylink_inband_caps(pl, interface);
++	unsigned int mask;
++
++	/* If the PCS doesn't implement inband support, be permissive. */
++	if (!inband)
++		return true;
++
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_Autoneg_BIT, adv))
++		mask = LINK_INBAND_ENABLE;
++	else
++		mask = LINK_INBAND_DISABLE;
++
++	/* Check whether the PCS implements the required mode */
++	return !!(inband & mask);
++}
++
+ /**
+  * phylink_ethtool_ksettings_set() - set the link settings
+  * @pl: a pointer to a &struct phylink returned from phylink_create()
+@@ -2665,6 +2712,13 @@ int phylink_ethtool_ksettings_set(struct
+ 	    phylink_is_empty_linkmode(config.advertising))
+ 		return -EINVAL;
+ 
++	/* Validate the autonegotiation state. We don't have a PHY in this
++	 * situation, so the PCS is the media-facing entity.
++	 */
++	if (!phylink_validate_pcs_inband_autoneg(pl, config.interface,
++						 config.advertising))
++		return -EINVAL;
++
+ 	mutex_lock(&pl->state_mutex);
+ 	pl->link_config.speed = config.speed;
+ 	pl->link_config.duplex = config.duplex;
+@@ -3349,6 +3403,12 @@ static int phylink_sfp_config_optical(st
+ 	phylink_dbg(pl, "optical SFP: chosen %s interface\n",
+ 		    phy_modes(interface));
+ 
++	if (!phylink_validate_pcs_inband_autoneg(pl, interface,
++						 config.advertising)) {
++		phylink_err(pl, "autoneg setting not compatible with PCS");
++		return -EINVAL;
++	}
++
+ 	config.interface = interface;
+ 
+ 	/* Ignore errors if we're expecting a PHY to attach later */
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -419,6 +419,7 @@ struct phylink_pcs {
+ /**
+  * struct phylink_pcs_ops - MAC PCS operations structure.
+  * @pcs_validate: validate the link configuration.
++ * @pcs_inband_caps: query inband support for interface mode.
+  * @pcs_enable: enable the PCS.
+  * @pcs_disable: disable the PCS.
+  * @pcs_pre_config: pre-mac_config method (for errata)
+@@ -434,6 +435,8 @@ struct phylink_pcs {
+ struct phylink_pcs_ops {
+ 	int (*pcs_validate)(struct phylink_pcs *pcs, unsigned long *supported,
+ 			    const struct phylink_link_state *state);
++	unsigned int (*pcs_inband_caps)(struct phylink_pcs *pcs,
++					phy_interface_t interface);
+ 	int (*pcs_enable)(struct phylink_pcs *pcs);
+ 	void (*pcs_disable)(struct phylink_pcs *pcs);
+ 	void (*pcs_pre_config)(struct phylink_pcs *pcs,
+@@ -471,6 +474,20 @@ int pcs_validate(struct phylink_pcs *pcs
+ 		 const struct phylink_link_state *state);
+ 
+ /**
++ * pcs_inband_caps - query PCS in-band capabilities for interface mode.
++ * @pcs: a pointer to a &struct phylink_pcs.
++ * @interface: interface mode to be queried
++ *
++ * Returns zero if it is unknown what in-band signalling is supported by the
++ * PHY (e.g. because the PHY driver doesn't implement the method.) Otherwise,
++ * returns a bit mask of the LINK_INBAND_* values from
++ * &enum link_inband_signalling to describe which inband modes are supported
++ * for this interface mode.
++ */
++unsigned int pcs_inband_caps(struct phylink_pcs *pcs,
++			     phy_interface_t interface);
++
++/**
+  * pcs_enable() - enable the PCS.
+  * @pcs: a pointer to a &struct phylink_pcs.
+  */
