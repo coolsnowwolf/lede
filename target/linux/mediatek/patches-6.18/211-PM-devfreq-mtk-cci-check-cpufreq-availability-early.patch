@@ -1,0 +1,53 @@
+From b19968e432fe2ebe3af4bc9190923edb70b6aeee Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 13 Apr 2026 15:22:05 +0100
+Subject: [PATCH 2/2] PM / devfreq: mtk-cci: check cpufreq availability early
+
+Check spufreq availablility early at probe so -EPROBE_DEFER is emitted
+before touching any regulators.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/devfreq/mtk-cci-devfreq.c | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+--- a/drivers/devfreq/mtk-cci-devfreq.c
++++ b/drivers/devfreq/mtk-cci-devfreq.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/cpufreq.h>
+ #include <linux/devfreq.h>
+ #include <linux/minmax.h>
+ #include <linux/module.h>
+@@ -263,13 +264,28 @@ static void mtk_ccifreq_opp_of_remove_ta
+ 
+ static int mtk_ccifreq_probe(struct platform_device *pdev)
+ {
++	struct devfreq_passive_data *passive_data;
+ 	struct device *dev = &pdev->dev;
++	struct cpufreq_policy *policy;
+ 	struct mtk_ccifreq_drv *drv;
+-	struct devfreq_passive_data *passive_data;
+ 	struct dev_pm_opp *opp;
+ 	unsigned long rate, opp_volt;
+ 	int ret;
+ 
++	/*
++	 * Check if cpufreq is available before touching any regulators.
++	 * The passive devfreq governor needs cpufreq as its parent and
++	 * will return -EPROBE_DEFER if it is not yet registered. If we
++	 * enable the proc regulator (CPU core power) before this check,
++	 * the subsequent probe failure causes devres to disable that
++	 * regulator, potentially cutting CPU core voltage and hanging
++	 * the system.
++	 */
++	policy = cpufreq_cpu_get(0);
++	if (!policy)
++		return -EPROBE_DEFER;
++	cpufreq_cpu_put(policy);
++
+ 	drv = devm_kzalloc(dev, sizeof(*drv), GFP_KERNEL);
+ 	if (!drv)
+ 		return -ENOMEM;
