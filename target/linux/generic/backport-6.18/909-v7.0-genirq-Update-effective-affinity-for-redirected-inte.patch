@@ -1,0 +1,56 @@
+From df439718afaf23b5aa7b5711b6c14e87b5836cae Mon Sep 17 00:00:00 2001
+From: Radu Rendec <rrendec@redhat.com>
+Date: Mon, 12 Jan 2026 16:14:02 -0500
+Subject: [PATCH] genirq: Update effective affinity for redirected
+ interrupts
+
+For redirected interrupts, irq_chip_redirect_set_affinity() does not
+update the effective affinity mask, which then triggers the warning in
+irq_validate_effective_affinity(). Also, because the effective affinity
+mask is empty, the cpumask_test_cpu(smp_processor_id(), m) condition in
+demux_redirect_remote() is always false, and the interrupt is always
+redirected, even if it's already running on the target CPU.
+
+Set the effective affinity mask to be the same as the requested affinity
+mask. It's worth noting that irq_do_set_affinity() filters out offline
+CPUs before calling chip->irq_set_affinity() (unless `force` is set), so
+the mask passed to irq_chip_redirect_set_affinity() is already filtered.
+
+The solution is not ideal because it may lie about the effective
+affinity of the demultiplexed ("child") interrupt. If the requested
+affinity mask includes multiple CPUs, the effective affinity, in
+reality, is the intersection between the requested mask and the
+demultiplexing ("parent") interrupt's effective affinity mask, plus
+the first CPU in the requested mask.
+
+Accurately describing the effective affinity of the demultiplexed
+interrupt is not trivial because it requires keeping track of the
+demultiplexing interrupt's effective affinity. That is tricky in the
+context of CPU hot(un)plugging, where interrupt migration ordering is
+not guaranteed. The solution in the initial version of the fixed patch,
+which stored the first CPU of the demultiplexing interrupt's effective
+affinity in the `target_cpu` field, has its own drawbacks and
+limitations.
+
+Fixes: fcc1d0dabdb6 ("genirq: Add interrupt redirection infrastructure")
+Reported-by: Jon Hunter <jonathanh@nvidia.com>
+Signed-off-by: Radu Rendec <rrendec@redhat.com>
+Signed-off-by: Thomas Gleixner <tglx@kernel.org>
+Tested-by: Jon Hunter <jonathanh@nvidia.com>
+Link: https://patch.msgid.link/20260112211402.2927336-1-rrendec@redhat.com
+Closes: https://lore.kernel.org/all/44509520-f29b-4b8a-8986-5eae3e022eb7@nvidia.com/
+---
+ kernel/irq/chip.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/kernel/irq/chip.c
++++ b/kernel/irq/chip.c
+@@ -1514,6 +1514,8 @@ int irq_chip_redirect_set_affinity(struc
+ 	struct irq_redirect *redir = &irq_data_to_desc(data)->redirect;
+ 
+ 	WRITE_ONCE(redir->target_cpu, cpumask_first(dest));
++	irq_data_update_effective_affinity(data, dest);
++
+ 	return IRQ_SET_MASK_OK;
+ }
+ EXPORT_SYMBOL_GPL(irq_chip_redirect_set_affinity);

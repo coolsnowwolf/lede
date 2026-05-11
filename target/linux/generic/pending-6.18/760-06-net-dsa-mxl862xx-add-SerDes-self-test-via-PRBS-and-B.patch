@@ -1,0 +1,208 @@
+From ce66c0be462c8500dfc483395e68be4326ebf296 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 24 Mar 2026 18:15:32 +0000
+Subject: [PATCH 06/19] net: dsa: mxl862xx: add SerDes self-test via PRBS and
+ BERT
+
+Implement the dsa_switch_ops.self_test callback for SerDes ports
+(9-16). Two loopback tests are run:
+
+  1. PCS-level PRBS31: enables TX/RX PRBS31 pattern at the PCS layer,
+     waits 100ms, then reads the error counter.
+  2. SerDes-level BERT PRBS31: enables TX/RX BERT with PRBS31 pattern
+     at the SerDes layer, waits 100ms, then reads the error counter.
+
+Both tests clean up (disable pattern generators) regardless of outcome.
+Gated on firmware >= 1.0.80 via mxl862xx_port_has_serdes_stats().
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-api.h     | 45 +++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-cmd.h     |  2 +
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c | 85 +++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.h |  3 +
+ drivers/net/dsa/mxl862xx/mxl862xx.c         |  1 +
+ 5 files changed, 136 insertions(+)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-api.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-api.h
+@@ -1900,4 +1900,49 @@ struct mxl862xx_xpcs_signal_detect {
+ 	__le16 result;
+ } __packed;
+ 
++/**
++ * struct mxl862xx_xpcs_prbs_cfg - PCS-level PRBS31 test pattern
++ * @port_id: XPCS port index (0 or 1)
++ * @tx_en: TX PRBS31 enable
++ * @rx_en: RX PRBS31 enable
++ * @read_err: read error count
++ * @rx_err_cnt: RX PRBS31 error count (valid when read_err=1)
++ * @result: firmware result
++ */
++struct mxl862xx_xpcs_prbs_cfg {
++	u8 port_id:2;
++	u8 tx_en:1;
++	u8 rx_en:1;
++	u8 read_err:1;
++	u8 __rsv:3;
++	u8 __pad;
++	__le16 rx_err_cnt;
++	__le16 result;
++} __packed;
++
++/**
++ * struct mxl862xx_xpcs_bert_cfg - SerDes-level BERT test pattern
++ * @port_id: XPCS port index (0 or 1)
++ * @tx_en: TX BERT enable
++ * @rx_en: RX BERT enable
++ * @read_err: read RX error count
++ * @clear_err: clear RX error counter
++ * @insert_err: insert one TX error
++ * @pattern: PRBS pattern type (1-7; 0 = disable)
++ * @rx_err_cnt: RX BERT error count (valid when read_err=1)
++ * @result: firmware result
++ */
++struct mxl862xx_xpcs_bert_cfg {
++	u8 port_id:2;
++	u8 tx_en:1;
++	u8 rx_en:1;
++	u8 read_err:1;
++	u8 clear_err:1;
++	u8 insert_err:1;
++	u8 __rsv:1;
++	u8 pattern;
++	__le16 rx_err_cnt;
++	__le16 result;
++} __packed;
++
+ #endif /* __MXL862XX_API_H */
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
+@@ -83,6 +83,8 @@
+ #define MXL862XX_XPCS_FORCE_SPEED	(MXL862XX_XPCS_MAGIC + 0x7)
+ #define MXL862XX_XPCS_LOOPBACK		(MXL862XX_XPCS_MAGIC + 0x8)
+ #define MXL862XX_XPCS_RESET		(MXL862XX_XPCS_MAGIC + 0x9)
++#define MXL862XX_XPCS_PRBS_CFG		(MXL862XX_XPCS_MAGIC + 0xa)
++#define MXL862XX_XPCS_BERT_CFG		(MXL862XX_XPCS_MAGIC + 0xb)
+ #define MXL862XX_XPCS_EQ_GET		(MXL862XX_XPCS_MAGIC + 0xc)
+ #define MXL862XX_XPCS_SIGNAL_DETECT	(MXL862XX_XPCS_MAGIC + 0xd)
+ 
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -549,3 +549,88 @@ void mxl862xx_serdes_get_stats(struct ds
+ 		data += 4;
+ 	}
+ }
++
++void mxl862xx_serdes_self_test(struct dsa_switch *ds, int port,
++			struct ethtool_test *etest, u64 *data)
++{
++	struct mxl862xx_xpcs_prbs_cfg prbs = {};
++	struct mxl862xx_xpcs_bert_cfg bert = {};
++	struct mxl862xx_priv *priv = ds->priv;
++	int xpcs_id = mxl862xx_xpcs_port_id(port);
++	int i = 0;
++	int ret;
++
++	if (!mxl862xx_port_has_serdes_stats(ds, port))
++		return;
++
++	/* Test 1: PCS PRBS31 */
++	prbs.port_id = xpcs_id;
++	prbs.tx_en = 1;
++	prbs.rx_en = 1;
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_XPCS_PRBS_CFG, prbs);
++	if (ret) {
++		data[i++] = 1;
++		goto skip_prbs;
++	}
++
++	msleep(100);
++
++	memset(&prbs, 0, sizeof(prbs));
++	prbs.port_id = xpcs_id;
++	prbs.read_err = 1;
++	ret = MXL862XX_API_READ(priv, MXL862XX_XPCS_PRBS_CFG, prbs);
++
++	/* Disable PRBS */
++	memset(&prbs, 0, sizeof(prbs));
++	prbs.port_id = xpcs_id;
++	MXL862XX_API_WRITE(priv, MXL862XX_XPCS_PRBS_CFG, prbs);
++
++	if (ret) {
++		data[i++] = 1;
++	} else {
++		data[i] = le16_to_cpu(prbs.rx_err_cnt) ? 1 : 0;
++		if (data[i])
++			etest->flags |= ETH_TEST_FL_FAILED;
++		i++;
++	}
++
++skip_prbs:
++	/* Test 2: SerDes BERT PRBS31 -- clear error counter first */
++	bert.port_id = xpcs_id;
++	bert.clear_err = 1;
++	MXL862XX_API_WRITE(priv, MXL862XX_XPCS_BERT_CFG, bert);
++
++	/* Enable BERT with PRBS31 pattern */
++	memset(&bert, 0, sizeof(bert));
++	bert.port_id = xpcs_id;
++	bert.tx_en = 1;
++	bert.rx_en = 1;
++	bert.pattern = 6; /* PRBS31 */
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_XPCS_BERT_CFG, bert);
++	if (ret) {
++		data[i++] = 1;
++		return;
++	}
++
++	msleep(100);
++
++	/* Read error count */
++	memset(&bert, 0, sizeof(bert));
++	bert.port_id = xpcs_id;
++	bert.read_err = 1;
++	ret = MXL862XX_API_READ(priv, MXL862XX_XPCS_BERT_CFG, bert);
++
++	/* Disable BERT */
++	memset(&bert, 0, sizeof(bert));
++	bert.port_id = xpcs_id;
++	MXL862XX_API_WRITE(priv, MXL862XX_XPCS_BERT_CFG, bert);
++
++	if (ret) {
++		data[i++] = 1;
++	} else {
++		data[i] = le16_to_cpu(bert.rx_err_cnt) ? 1 : 0;
++		if (data[i])
++			etest->flags |= ETH_TEST_FL_FAILED;
++		i++;
++	}
++}
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
+@@ -3,6 +3,7 @@
+ #ifndef __MXL862XX_PHYLINK_H
+ #define __MXL862XX_PHYLINK_H
+ 
++#include <linux/ethtool.h>
+ #include <linux/phylink.h>
+ 
+ #include "mxl862xx.h"
+@@ -15,5 +16,7 @@ void mxl862xx_setup_pcs(struct mxl862xx_
+ int mxl862xx_serdes_stats_count(struct dsa_switch *ds, int port);
+ void mxl862xx_serdes_get_strings(struct dsa_switch *ds, int port, u8 *data);
+ void mxl862xx_serdes_get_stats(struct dsa_switch *ds, int port, u64 *data);
++void mxl862xx_serdes_self_test(struct dsa_switch *ds, int port,
++			struct ethtool_test *etest, u64 *data);
+ 
+ #endif /* __MXL862XX_PHYLINK_H */
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -2088,6 +2088,7 @@ static const struct dsa_switch_ops mxl86
+ 	.get_pause_stats = mxl862xx_get_pause_stats,
+ 	.get_rmon_stats = mxl862xx_get_rmon_stats,
+ 	.get_stats64 = mxl862xx_get_stats64,
++	.self_test = mxl862xx_serdes_self_test,
+ };
+ 
+ static int mxl862xx_probe(struct mdio_device *mdiodev)

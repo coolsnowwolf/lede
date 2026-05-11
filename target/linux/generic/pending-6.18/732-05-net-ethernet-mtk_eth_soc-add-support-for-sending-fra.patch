@@ -1,0 +1,519 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 14 Jul 2025 10:41:27 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: add support for sending
+ fraglist GSO packets
+
+When primarily forwarding traffic, TCP fraglist GRO can be noticeably more
+efficient than regular TCP GRO. In order to avoid the overhead of
+unnecessary segmentation on ethernet tx, add support for sending fraglist
+GRO packets.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -18,6 +18,8 @@
+ #include <linux/if_vlan.h>
+ #include <linux/reset.h>
+ #include <linux/tcp.h>
++#include <linux/ip.h>
++#include <linux/ipv6.h>
+ #include <linux/interrupt.h>
+ #include <linux/pinctrl/devinfo.h>
+ #include <linux/phylink.h>
+@@ -27,6 +29,7 @@
+ #include <net/dsa.h>
+ #include <net/dst_metadata.h>
+ #include <net/gso.h>
++#include <net/checksum.h>
+ #include <net/page_pool/helpers.h>
+ #include <linux/genalloc.h>
+ 
+@@ -1549,119 +1552,251 @@ static void mtk_tx_set_dma_desc(struct n
+ 		mtk_tx_set_dma_desc_v1(dev, txd, info);
+ }
+ 
++struct mtk_tx_map_state {
++    struct mtk_tx_dma *txd, *txd_pdma;
++    struct mtk_tx_buf *tx_buf;
++    int nbuf;
++    int ndesc;
++};
++
++static void
++mtk_tx_map_set_txd(struct mtk_tx_map_state *state, struct mtk_tx_ring *ring,
++		   const struct mtk_soc_data *soc, struct mtk_tx_dma *txd)
++{
++	state->txd = txd;
++	state->txd_pdma = qdma_to_pdma(ring, txd);
++	state->tx_buf = mtk_desc_to_tx_buf(ring, txd, soc->tx.desc_shift);
++	memset(state->tx_buf, 0, sizeof(*state->tx_buf));
++}
++
++static int
++mtk_tx_map_info(struct mtk_eth *eth, struct mtk_tx_ring *ring,
++		struct net_device *dev, struct mtk_tx_map_state *state,
++		struct mtk_tx_dma_desc_info *txd_info)
++{
++	const struct mtk_soc_data *soc = eth->soc;
++	struct mtk_tx_buf *tx_buf = state->tx_buf;
++	struct mtk_tx_dma *txd = state->txd;
++	struct mtk_mac *mac = netdev_priv(dev);
++
++	if (state->nbuf &&
++	    (MTK_HAS_CAPS(soc->caps, MTK_QDMA) || (state->nbuf & 1) == 0)) {
++		txd = mtk_qdma_phys_to_virt(ring, txd->txd2);
++		if (txd == ring->last_free)
++			return -1;
++
++		mtk_tx_map_set_txd(state, ring, soc, txd);
++		state->ndesc++;
++	}
++
++	mtk_tx_set_dma_desc(dev, txd, txd_info);
++	tx_buf = state->tx_buf;
++	tx_buf->data = (void *)MTK_DMA_DUMMY_DESC;
++	tx_buf->mac_id = mac->id;
++
++	setup_tx_buf(eth, tx_buf, state->txd_pdma, txd_info->addr,
++		     txd_info->size, state->nbuf++);
++	return 0;
++}
++
++static void
++mtk_tx_update_ipaddr(struct sk_buff *skb,
++		     struct iphdr *iph, struct tcphdr *th,
++		     __be32 *old_ip, __be32 new_ip)
++{
++	if (*old_ip == new_ip)
++		return;
++
++	inet_proto_csum_replace4(&th->check, skb, *old_ip, new_ip, true);
++	csum_replace4(&iph->check, *old_ip, new_ip);
++	*old_ip = new_ip;
++}
++
++static void
++mtk_tx_update_ip6addr(struct sk_buff *skb, struct ipv6hdr *iph,
++		      struct tcphdr *th, struct in6_addr *old_ip,
++		      const struct in6_addr *new_ip)
++{
++	if (ipv6_addr_equal(old_ip, new_ip))
++		return;
++
++	inet_proto_csum_replace16(&th->check, skb, old_ip->s6_addr32,
++				  new_ip->s6_addr32, true);
++	*old_ip = *new_ip;
++}
++
++static void
++mtk_tx_update_port(struct sk_buff *skb, struct tcphdr *th,
++		   __be16 *old_port, __be16 new_port)
++{
++	if (*old_port == new_port)
++		return;
++
++	inet_proto_csum_replace2(&th->check, skb, *old_port, new_port, false);
++	*old_port = new_port;
++}
++
+ static int mtk_tx_map(struct sk_buff *skb, struct net_device *dev,
+-		      int tx_num, struct mtk_tx_ring *ring, bool gso)
++		      int tx_num, struct mtk_tx_ring *ring, bool gso,
++		      unsigned int header_len)
+ {
+-	struct mtk_tx_dma_desc_info txd_info = {
+-		.size = skb_headlen(skb),
+-		.gso = gso,
+-		.csum = skb->ip_summed == CHECKSUM_PARTIAL,
+-		.vlan = skb_vlan_tag_present(skb),
+-		.qid = skb_get_queue_mapping(skb),
+-		.vlan_tci = skb_vlan_tag_get(skb),
+-		.first = true,
+-		.last = !skb_is_nonlinear(skb),
++	struct mtk_tx_dma_desc_info txd_info;
++	struct mtk_tx_map_state state = {
++		.ndesc = 1,
+ 	};
+ 	struct netdev_queue *txq;
+ 	struct mtk_mac *mac = netdev_priv(dev);
+ 	struct mtk_eth *eth = mac->hw;
+ 	const struct mtk_soc_data *soc = eth->soc;
+-	struct mtk_tx_dma *itxd, *txd;
+-	struct mtk_tx_dma *itxd_pdma, *txd_pdma;
+-	struct mtk_tx_buf *itx_buf, *tx_buf;
+-	int i, n_desc = 1;
++	struct mtk_tx_dma *itxd;
++	struct sk_buff *cur_skb, *next_skb;
+ 	int queue = skb_get_queue_mapping(skb);
+-	int k = 0;
++	int i, frag_size = skb_headlen(skb);
++	bool gso_v4, gso_fraglist;
++	int offset = 0;
+ 
+ 	txq = netdev_get_tx_queue(dev, queue);
+ 	itxd = ring->next_free;
+-	itxd_pdma = qdma_to_pdma(ring, itxd);
+ 	if (itxd == ring->last_free)
+ 		return -ENOMEM;
+ 
+-	itx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_shift);
+-	memset(itx_buf, 0, sizeof(*itx_buf));
++	cur_skb = skb;
++	next_skb = skb_shinfo(skb)->frag_list;
++	mtk_tx_map_set_txd(&state, ring, soc, itxd);
++	gso_v4 = skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4;
++	gso_fraglist = skb_shinfo(skb)->gso_type & SKB_GSO_FRAGLIST;
+ 
+-	txd_info.addr = dma_map_single(eth->dma_dev, skb->data, txd_info.size,
+-				       DMA_TO_DEVICE);
+-	if (unlikely(dma_mapping_error(eth->dma_dev, txd_info.addr)))
+-		return -ENOMEM;
++next:
++	txd_info = (struct mtk_tx_dma_desc_info){
++		.gso = gso,
++		.qid = queue,
++		.csum = cur_skb->ip_summed == CHECKSUM_PARTIAL || gso,
++		.vlan = skb_vlan_tag_present(skb),
++		.vlan_tci = skb_vlan_tag_get(skb),
++		.first = true,
++	};
+ 
+-	mtk_tx_set_dma_desc(dev, itxd, &txd_info);
++	if (cur_skb != skb) {
++		struct tcphdr *th, *th2;
+ 
+-	itx_buf->mac_id = mac->id;
+-	setup_tx_buf(eth, itx_buf, itxd_pdma, txd_info.addr, txd_info.size,
+-		     k++);
+-
+-	/* TX SG offload */
+-	txd = itxd;
+-	txd_pdma = qdma_to_pdma(ring, txd);
+-
+-	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+-		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+-		unsigned int offset = 0;
+-		int frag_size = skb_frag_size(frag);
++		if (skb_cow_head(cur_skb, header_len))
++			goto err_dma;
+ 
+-		while (frag_size) {
+-			bool new_desc = true;
++		memcpy(cur_skb->data - header_len, skb->data,
++		       skb_network_offset(skb));
+ 
+-			if (MTK_HAS_CAPS(soc->caps, MTK_QDMA) ||
+-			    (i & 0x1)) {
+-				txd = mtk_qdma_phys_to_virt(ring, txd->txd2);
+-				txd_pdma = qdma_to_pdma(ring, txd);
+-				if (txd == ring->last_free)
+-					goto err_dma;
++		th = tcp_hdr(cur_skb);
++		th2 = tcp_hdr(skb);
++		if (gso_v4) {
++			struct iphdr *iph = ip_hdr(cur_skb);
++			struct iphdr *iph2 = ip_hdr(skb);
++
++			mtk_tx_update_ipaddr(skb, iph, th, &iph->saddr,
++					     iph2->saddr);
++			mtk_tx_update_ipaddr(skb, iph, th, &iph->daddr,
++					     iph2->daddr);
++		} else {
++			struct ipv6hdr *iph = ipv6_hdr(cur_skb);
++			struct ipv6hdr *iph2 = ipv6_hdr(skb);
+ 
+-				n_desc++;
+-			} else {
+-				new_desc = false;
+-			}
++			mtk_tx_update_ip6addr(skb, iph, th, &iph->saddr,
++					      &iph2->saddr);
++			mtk_tx_update_ip6addr(skb, iph, th, &iph->daddr,
++					      &iph2->daddr);
++		}
++
++		mtk_tx_update_port(skb, th, &th->source, th2->source);
++		mtk_tx_update_port(skb, th, &th->dest, th2->dest);
++
++		offset = -header_len;
++		frag_size += header_len;
++	} else if (next_skb && gso_fraglist) {
++		unsigned int ip_len = skb_pagelen(skb) - skb_network_offset(skb);
++		if (gso_v4) {
++			struct iphdr *iph = ip_hdr(cur_skb);
++			__be16 ip_len_val = cpu_to_be16(ip_len);
+ 
+-			memset(&txd_info, 0, sizeof(struct mtk_tx_dma_desc_info));
++			csum_replace2(&iph->check, iph->tot_len, ip_len_val);
++			iph->tot_len = ip_len_val;
++		} else {
++			struct ipv6hdr *iph = ipv6_hdr(cur_skb);
++			__be16 ip_len_val = cpu_to_be16(ip_len - sizeof(*iph));
++
++			iph->payload_len = ip_len_val;
++		}
++	}
++
++next_frag:
++	while (frag_size) {
++		txd_info.size = min_t(unsigned int, frag_size,
++				      soc->tx.dma_max_len);
++		txd_info.addr = dma_map_single(eth->dma_dev, cur_skb->data + offset,
++					       txd_info.size, DMA_TO_DEVICE);
++		if (unlikely(dma_mapping_error(eth->dma_dev, txd_info.addr)))
++			goto err_dma;
++
++		frag_size -= txd_info.size;
++		offset += txd_info.size;
++		txd_info.last = !frag_size && !skb_shinfo(cur_skb)->nr_frags &&
++				(gso_fraglist || !next_skb);
++		if (mtk_tx_map_info(eth, ring, dev, &state, &txd_info) < 0)
++			goto err_dma;
++	}
++
++	for (i = 0; i < skb_shinfo(cur_skb)->nr_frags; i++) {
++		skb_frag_t *frag = &skb_shinfo(cur_skb)->frags[i];
++
++		frag_size = skb_frag_size(frag);
++		memset(&txd_info, 0, sizeof(struct mtk_tx_dma_desc_info));
++		txd_info.qid = queue;
++		offset = 0;
++		while (frag_size) {
+ 			txd_info.size = min_t(unsigned int, frag_size,
+ 					      soc->tx.dma_max_len);
+-			txd_info.qid = queue;
+-			txd_info.last = i == skb_shinfo(skb)->nr_frags - 1 &&
+-					!(frag_size - txd_info.size);
+-			txd_info.addr = skb_frag_dma_map(eth->dma_dev, frag,
+-							 offset, txd_info.size,
+-							 DMA_TO_DEVICE);
++			txd_info.addr = skb_frag_dma_map(eth->dma_dev, frag, offset,
++							 txd_info.size, DMA_TO_DEVICE);
+ 			if (unlikely(dma_mapping_error(eth->dma_dev, txd_info.addr)))
+ 				goto err_dma;
+ 
+-			mtk_tx_set_dma_desc(dev, txd, &txd_info);
+-
+-			tx_buf = mtk_desc_to_tx_buf(ring, txd,
+-						    soc->tx.desc_shift);
+-			if (new_desc)
+-				memset(tx_buf, 0, sizeof(*tx_buf));
+-			tx_buf->data = (void *)MTK_DMA_DUMMY_DESC;
+-			tx_buf->mac_id = mac->id;
+-
+-			setup_tx_buf(eth, tx_buf, txd_pdma, txd_info.addr,
+-				     txd_info.size, k++);
+-
+ 			frag_size -= txd_info.size;
+ 			offset += txd_info.size;
++			txd_info.last = i == skb_shinfo(cur_skb)->nr_frags - 1 &&
++					!frag_size && (gso_fraglist || !next_skb);
++			if (mtk_tx_map_info(eth, ring, dev, &state, &txd_info) < 0)
++				goto err_dma;
+ 		}
+ 	}
+ 
+-	/* store skb to cleanup */
+-	itx_buf->type = MTK_TYPE_SKB;
+-	itx_buf->data = skb;
++	if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA) &&
++	    (gso_fraglist || !next_skb)) {
++		if (state.nbuf & 0x1) {
++			state.txd_pdma->txd2 |= TX_DMA_LS0;
++			state.nbuf++;
++		} else {
++			state.txd_pdma->txd2 |= TX_DMA_LS1;
++		}
++	}
++
++	if (next_skb) {
++		cur_skb = next_skb;
++		next_skb = cur_skb->next;
++		offset = 0;
++		frag_size = skb_headlen(cur_skb);
++		if (!gso_fraglist)
++			goto next_frag;
+ 
+-	if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
+-		if (k & 0x1)
+-			txd_pdma->txd2 |= TX_DMA_LS0;
+-		else
+-			txd_pdma->txd2 |= TX_DMA_LS1;
++		goto next;
+ 	}
+ 
++	/* store skb to cleanup */
++	state.tx_buf->type = MTK_TYPE_SKB;
++	state.tx_buf->data = skb;
++
+ 	netdev_tx_sent_queue(txq, skb->len);
+ 	skb_tx_timestamp(skb);
+ 
+-	ring->next_free = mtk_qdma_phys_to_virt(ring, txd->txd2);
+-	atomic_sub(n_desc, &ring->free_count);
++	ring->next_free = mtk_qdma_phys_to_virt(ring, state.txd->txd2);
++	atomic_sub(state.ndesc, &ring->free_count);
+ 
+ 	/* make sure that all changes to the dma ring are flushed before we
+ 	 * continue
+@@ -1670,11 +1805,11 @@ static int mtk_tx_map(struct sk_buff *sk
+ 
+ 	if (MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
+ 		if (netif_xmit_stopped(txq) || !netdev_xmit_more())
+-			mtk_w32(eth, txd->txd2, soc->reg_map->qdma.ctx_ptr);
++			mtk_w32(eth, state.txd->txd2, soc->reg_map->qdma.ctx_ptr);
+ 	} else {
+ 		int next_idx;
+ 
+-		next_idx = NEXT_DESP_IDX(txd_to_idx(ring, txd, soc->tx.desc_shift),
++		next_idx = NEXT_DESP_IDX(txd_to_idx(ring, state.txd, soc->tx.desc_shift),
+ 					 ring->dma_size);
+ 		mtk_w32(eth, next_idx, MT7628_TX_CTX_IDX0);
+ 	}
+@@ -1683,18 +1818,20 @@ static int mtk_tx_map(struct sk_buff *sk
+ 
+ err_dma:
+ 	do {
+-		tx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_shift);
++		struct mtk_tx_dma *itxd_pdma = qdma_to_pdma(ring, itxd);
++		struct mtk_tx_buf *itx_buf;
++
++		itx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_shift);
+ 
+ 		/* unmap dma */
+-		mtk_tx_unmap(eth, tx_buf, NULL, false);
++		mtk_tx_unmap(eth, itx_buf, NULL, false);
+ 
+ 		itxd->txd3 = TX_DMA_LS0 | TX_DMA_OWNER_CPU;
+ 		if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA))
+ 			itxd_pdma->txd2 = TX_DMA_DESP2_DEF;
+ 
+ 		itxd = mtk_qdma_phys_to_virt(ring, itxd->txd2);
+-		itxd_pdma = qdma_to_pdma(ring, itxd);
+-	} while (itxd != txd);
++	} while (itxd != state.txd);
+ 
+ 	return -ENOMEM;
+ }
+@@ -1714,6 +1851,9 @@ static int mtk_cal_txd_req(struct mtk_et
+ 		nfrags += skb_shinfo(skb)->nr_frags;
+ 	}
+ 
++	for (skb = skb_shinfo(skb)->frag_list; skb; skb = skb->next)
++		nfrags += mtk_cal_txd_req(eth, skb) + 1;
++
+ 	return nfrags;
+ }
+ 
+@@ -1754,9 +1894,29 @@ static bool mtk_skb_has_small_frag(struc
+ 		if (skb_frag_size(&skb_shinfo(skb)->frags[i]) < min_size)
+ 			return true;
+ 
++	for (skb = skb_shinfo(skb)->frag_list; skb; skb = skb->next)
++		if (mtk_skb_has_small_frag(skb))
++			return true;
++
+ 	return false;
+ }
+ 
++static bool mtk_skb_valid_gso(struct mtk_eth *eth, struct sk_buff *skb,
++			      unsigned int header_len)
++{
++	if (mtk_is_netsys_v1(eth) && mtk_skb_has_small_frag(skb))
++		return false;
++
++	if (!(skb_shinfo(skb)->gso_type & SKB_GSO_FRAGLIST))
++		return true;
++
++	if (skb->encapsulation)
++		return false;
++
++	return skb_pagelen(skb) - header_len == skb_shinfo(skb)->gso_size &&
++	       skb_headlen(skb) > header_len;
++}
++
+ static netdev_tx_t mtk_start_xmit(struct sk_buff *skb, struct net_device *dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
+@@ -1764,6 +1924,7 @@ static netdev_tx_t mtk_start_xmit(struct
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+ 	struct net_device_stats *stats = &dev->stats;
+ 	struct sk_buff *segs, *next;
++	unsigned int header_len = 0;
+ 	bool gso = false;
+ 	int tx_num;
+ 
+@@ -1792,37 +1953,42 @@ static netdev_tx_t mtk_start_xmit(struct
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
+-	if (mtk_is_netsys_v1(eth) &&
+-	    skb_is_gso(skb) && mtk_skb_has_small_frag(skb)) {
+-		segs = skb_gso_segment(skb, dev->features & ~NETIF_F_ALL_TSO);
+-		if (IS_ERR(segs))
+-			goto drop;
+-
+-		if (segs) {
+-			consume_skb(skb);
+-			skb = segs;
+-		}
+-	}
+-
+-	/* TSO: fill MSS info in tcp checksum field */
+ 	if (skb_is_gso(skb)) {
+-		if (skb_cow_head(skb, 0)) {
+-			netif_warn(eth, tx_err, dev,
+-				   "GSO expand head fail.\n");
+-			goto drop;
++		header_len = skb_tcp_all_headers(skb);
++		if (!mtk_skb_valid_gso(eth, skb, header_len)) {
++			segs = skb_gso_segment(skb, dev->features & ~NETIF_F_ALL_TSO);
++			if (IS_ERR(segs))
++				goto drop;
++
++			if (segs) {
++				consume_skb(skb);
++				skb = segs;
++			}
++			goto send;
+ 		}
+ 
++		if ((skb_shinfo(skb)->gso_type & SKB_GSO_FRAGLIST))
++			goto send;
++
+ 		if (skb_shinfo(skb)->gso_type &
+ 				(SKB_GSO_TCPV4 | SKB_GSO_TCPV6)) {
++			/* TSO: fill MSS info in tcp checksum field */
+ 			gso = true;
++			if (skb_cow_head(skb, 0)) {
++				netif_warn(eth, tx_err, dev,
++					   "GSO expand head fail.\n");
++				goto drop;
++			}
++
+ 			tcp_hdr(skb)->check = htons(skb_shinfo(skb)->gso_size);
+ 		}
+ 	}
+ 
++send:
+ 	skb_list_walk_safe(skb, skb, next) {
+ 		if ((mtk_is_netsys_v1(eth) &&
+ 		     mtk_skb_has_small_frag(skb) && skb_linearize(skb)) ||
+-		    mtk_tx_map(skb, dev, tx_num, ring, gso) < 0) {
++		    mtk_tx_map(skb, dev, tx_num, ring, gso, header_len) < 0) {
+ 				stats->tx_dropped++;
+ 				dev_kfree_skb_any(skb);
+ 		}
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -51,6 +51,8 @@
+ 				 NETIF_F_HW_VLAN_CTAG_TX | \
+ 				 NETIF_F_SG | NETIF_F_TSO | \
+ 				 NETIF_F_TSO6 | \
++				 NETIF_F_FRAGLIST | \
++				 NETIF_F_GSO_FRAGLIST | \
+ 				 NETIF_F_IPV6_CSUM |\
+ 				 NETIF_F_HW_TC)
+ #define MTK_HW_FEATURES_MT7628	(NETIF_F_SG | NETIF_F_RXCSUM)

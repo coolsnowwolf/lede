@@ -1,0 +1,45 @@
+From dc26f882f63c34a4d510fc4326c958da52c6856b Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:23:20 +0100
+Subject: [PATCH 8/9] net: dsa: tag_mxl862xx_8021q: set skb queue_mapping to
+ DSA port index
+
+Conduit drivers that want to assign a dedicated TX queue per DSA
+user port read skb->queue_mapping in their ndo_select_queue and
+map it to a HW queue. The tag_mxl862xx_8021q xmit path currently
+leaves queue_mapping untouched at whatever the stack / qdisc set
+it to, which is typically 0. That collapses every user port to
+the same conduit queue.
+
+Overwrite queue_mapping with dp->index before handing the skb to
+dsa_8021q_xmit(). The original value is read first to derive the
+PCP from the user port's TC map, so per-priority egress still
+works as designed.
+
+The same pattern is already used implicitly by the MTK native
+tag -- DSA cores it on behalf of the tagger -- and is expected
+by mtk_eth_soc's mtk_select_queue().
+
+Signed-off-by: Chad Monroe <chad@monroe.io>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ net/dsa/tag_mxl862xx_8021q.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/net/dsa/tag_mxl862xx_8021q.c
++++ b/net/dsa/tag_mxl862xx_8021q.c
+@@ -23,6 +23,14 @@ static struct sk_buff *mxl862_8021q_xmit
+ 	u16 queue_mapping = skb_get_queue_mapping(skb);
+ 	u8 pcp = netdev_txq_to_tc(netdev, queue_mapping);
+ 
++	/*
++	 * Re-key skb->queue_mapping to the DSA user port index so that
++	 * conduit drivers (e.g. mtk_eth_soc) can map it to a per-port
++	 * QDMA TX queue. Must happen after reading the original
++	 * queue_mapping for PCP derivation.
++	 */
++	skb_set_queue_mapping(skb, dp->index);
++
+ 	return dsa_8021q_xmit(skb, netdev, ETH_P_8021Q,
+ 			      (pcp << VLAN_PRIO_SHIFT) | tx_vid);
+ }

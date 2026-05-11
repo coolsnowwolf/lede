@@ -1,0 +1,319 @@
+From fcc1d0dabdb65ca069f77e5b76d3b20277be4a15 Mon Sep 17 00:00:00 2001
+From: Radu Rendec <rrendec@redhat.com>
+Date: Fri, 28 Nov 2025 16:20:53 -0500
+Subject: [PATCH] genirq: Add interrupt redirection infrastructure
+
+Add infrastructure to redirect interrupt handler execution to a
+different CPU when the current CPU is not part of the interrupt's CPU
+affinity mask.
+
+This is primarily aimed at (de)multiplexed interrupts, where the child
+interrupt handler runs in the context of the parent interrupt handler,
+and therefore CPU affinity control for the child interrupt is typically
+not available.
+
+With the new infrastructure, the child interrupt is allowed to freely
+change its affinity setting, independently of the parent. If the
+interrupt handler happens to be triggered on an "incompatible" CPU (a
+CPU that's not part of the child interrupt's affinity mask), the handler
+is redirected and runs in IRQ work context on a "compatible" CPU.
+
+No functional change is being made to any existing irqchip driver, and
+irqchip drivers must be explicitly modified to use the newly added
+infrastructure to support interrupt redirection.
+
+Originally-by: Thomas Gleixner <tglx@linutronix.de>
+Signed-off-by: Radu Rendec <rrendec@redhat.com>
+Signed-off-by: Thomas Gleixner <tglx@linutronix.de>
+Link: https://lore.kernel.org/linux-pci/878qpg4o4t.ffs@tglx/
+Link: https://patch.msgid.link/20251128212055.1409093-2-rrendec@redhat.com
+---
+ include/linux/irq.h     | 10 +++++
+ include/linux/irqdesc.h | 17 +++++++-
+ kernel/irq/chip.c       | 22 ++++++++++-
+ kernel/irq/irqdesc.c    | 86 ++++++++++++++++++++++++++++++++++++++++-
+ kernel/irq/manage.c     | 15 ++++++-
+ 5 files changed, 144 insertions(+), 6 deletions(-)
+
+--- a/include/linux/irq.h
++++ b/include/linux/irq.h
+@@ -459,6 +459,8 @@ static inline irq_hw_number_t irqd_to_hw
+  *			checks against the supplied affinity mask are not
+  *			required. This is used for CPU hotplug where the
+  *			target CPU is not yet set in the cpu_online_mask.
++ * @irq_pre_redirect:	Optional function to be invoked before redirecting
++ *			an interrupt via irq_work. Called only on CONFIG_SMP.
+  * @irq_retrigger:	resend an IRQ to the CPU
+  * @irq_set_type:	set the flow type (IRQ_TYPE_LEVEL/etc.) of an IRQ
+  * @irq_set_wake:	enable/disable power-management wake-on of an IRQ
+@@ -503,6 +505,7 @@ struct irq_chip {
+ 	void		(*irq_eoi)(struct irq_data *data);
+ 
+ 	int		(*irq_set_affinity)(struct irq_data *data, const struct cpumask *dest, bool force);
++	void		(*irq_pre_redirect)(struct irq_data *data);
+ 	int		(*irq_retrigger)(struct irq_data *data);
+ 	int		(*irq_set_type)(struct irq_data *data, unsigned int flow_type);
+ 	int		(*irq_set_wake)(struct irq_data *data, unsigned int on);
+@@ -688,6 +691,13 @@ extern int irq_chip_set_vcpu_affinity_pa
+ extern int irq_chip_set_type_parent(struct irq_data *data, unsigned int type);
+ extern int irq_chip_request_resources_parent(struct irq_data *data);
+ extern void irq_chip_release_resources_parent(struct irq_data *data);
++#ifdef CONFIG_SMP
++void irq_chip_pre_redirect_parent(struct irq_data *data);
++#endif
++#endif
++
++#ifdef CONFIG_SMP
++int irq_chip_redirect_set_affinity(struct irq_data *data, const struct cpumask *dest, bool force);
+ #endif
+ 
+ /* Disable or mask interrupts during a kernel kexec */
+--- a/include/linux/irqdesc.h
++++ b/include/linux/irqdesc.h
+@@ -2,9 +2,10 @@
+ #ifndef _LINUX_IRQDESC_H
+ #define _LINUX_IRQDESC_H
+ 
+-#include <linux/rcupdate.h>
++#include <linux/irq_work.h>
+ #include <linux/kobject.h>
+ #include <linux/mutex.h>
++#include <linux/rcupdate.h>
+ 
+ /*
+  * Core internal functions to deal with irq descriptors
+@@ -30,6 +31,17 @@ struct irqstat {
+ };
+ 
+ /**
++ * struct irq_redirect - interrupt redirection metadata
++ * @work:	Harg irq_work item for handler execution on a different CPU
++ * @target_cpu:	CPU to run irq handler on in case the current CPU is not part
++ *		of the irq affinity mask
++ */
++struct irq_redirect {
++	struct irq_work	work;
++	unsigned int	target_cpu;
++};
++
++/**
+  * struct irq_desc - interrupt descriptor
+  * @irq_common_data:	per irq and chip data passed down to chip functions
+  * @kstat_irqs:		irq stats per cpu
+@@ -46,6 +58,7 @@ struct irqstat {
+  * @threads_handled:	stats field for deferred spurious detection of threaded handlers
+  * @threads_handled_last: comparator field for deferred spurious detection of threaded handlers
+  * @lock:		locking for SMP
++ * @redirect:		Facility for redirecting interrupts via irq_work
+  * @affinity_hint:	hint to user space for preferred irq affinity
+  * @affinity_notify:	context for notification of affinity changes
+  * @pending_mask:	pending rebalanced interrupts
+@@ -84,6 +97,7 @@ struct irq_desc {
+ 	struct cpumask		*percpu_enabled;
+ 	const struct cpumask	*percpu_affinity;
+ #ifdef CONFIG_SMP
++	struct irq_redirect	redirect;
+ 	const struct cpumask	*affinity_hint;
+ 	struct irq_affinity_notify *affinity_notify;
+ #ifdef CONFIG_GENERIC_PENDING_IRQ
+@@ -186,6 +200,7 @@ int generic_handle_irq_safe(unsigned int
+ int generic_handle_domain_irq(struct irq_domain *domain, irq_hw_number_t hwirq);
+ int generic_handle_domain_irq_safe(struct irq_domain *domain, irq_hw_number_t hwirq);
+ int generic_handle_domain_nmi(struct irq_domain *domain, irq_hw_number_t hwirq);
++bool generic_handle_demux_domain_irq(struct irq_domain *domain, irq_hw_number_t hwirq);
+ #endif
+ 
+ /* Test to see if a driver has successfully requested an irq */
+--- a/kernel/irq/chip.c
++++ b/kernel/irq/chip.c
+@@ -1143,7 +1143,7 @@ void irq_cpu_offline(void)
+ }
+ #endif
+ 
+-#ifdef	CONFIG_IRQ_DOMAIN_HIERARCHY
++#ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
+ 
+ #ifdef CONFIG_IRQ_FASTEOI_HIERARCHY_HANDLERS
+ /**
+@@ -1215,6 +1215,15 @@ EXPORT_SYMBOL_GPL(handle_fasteoi_mask_ir
+ 
+ #endif /* CONFIG_IRQ_FASTEOI_HIERARCHY_HANDLERS */
+ 
++#ifdef CONFIG_SMP
++void irq_chip_pre_redirect_parent(struct irq_data *data)
++{
++	data = data->parent_data;
++	data->chip->irq_pre_redirect(data);
++}
++EXPORT_SYMBOL_GPL(irq_chip_pre_redirect_parent);
++#endif
++
+ /**
+  * irq_chip_set_parent_state - set the state of a parent interrupt.
+  *
+@@ -1497,6 +1506,17 @@ void irq_chip_release_resources_parent(s
+ 		data->chip->irq_release_resources(data);
+ }
+ EXPORT_SYMBOL_GPL(irq_chip_release_resources_parent);
++#endif /* CONFIG_IRQ_DOMAIN_HIERARCHY */
++
++#ifdef CONFIG_SMP
++int irq_chip_redirect_set_affinity(struct irq_data *data, const struct cpumask *dest, bool force)
++{
++	struct irq_redirect *redir = &irq_data_to_desc(data)->redirect;
++
++	WRITE_ONCE(redir->target_cpu, cpumask_first(dest));
++	return IRQ_SET_MASK_OK;
++}
++EXPORT_SYMBOL_GPL(irq_chip_redirect_set_affinity);
+ #endif
+ 
+ /**
+--- a/kernel/irq/irqdesc.c
++++ b/kernel/irq/irqdesc.c
+@@ -78,8 +78,12 @@ static int alloc_masks(struct irq_desc *
+ 	return 0;
+ }
+ 
+-static void desc_smp_init(struct irq_desc *desc, int node,
+-			  const struct cpumask *affinity)
++static void irq_redirect_work(struct irq_work *work)
++{
++	handle_irq_desc(container_of(work, struct irq_desc, redirect.work));
++}
++
++static void desc_smp_init(struct irq_desc *desc, int node, const struct cpumask *affinity)
+ {
+ 	if (!affinity)
+ 		affinity = irq_default_affinity;
+@@ -91,6 +95,7 @@ static void desc_smp_init(struct irq_des
+ #ifdef CONFIG_NUMA
+ 	desc->irq_common_data.node = node;
+ #endif
++	desc->redirect.work = IRQ_WORK_INIT_HARD(irq_redirect_work);
+ }
+ 
+ static void free_masks(struct irq_desc *desc)
+@@ -766,6 +771,83 @@ int generic_handle_domain_nmi(struct irq
+ 	WARN_ON_ONCE(!in_nmi());
+ 	return handle_irq_desc(irq_resolve_mapping(domain, hwirq));
+ }
++
++#ifdef CONFIG_SMP
++static bool demux_redirect_remote(struct irq_desc *desc)
++{
++	guard(raw_spinlock)(&desc->lock);
++	const struct cpumask *m = irq_data_get_effective_affinity_mask(&desc->irq_data);
++	unsigned int target_cpu = READ_ONCE(desc->redirect.target_cpu);
++
++	if (desc->irq_data.chip->irq_pre_redirect)
++		desc->irq_data.chip->irq_pre_redirect(&desc->irq_data);
++
++	/*
++	 * If the interrupt handler is already running on a CPU that's included
++	 * in the interrupt's affinity mask, redirection is not necessary.
++	 */
++	if (cpumask_test_cpu(smp_processor_id(), m))
++		return false;
++
++	/*
++	 * The desc->action check protects against IRQ shutdown: __free_irq() sets
++	 * desc->action to NULL while holding desc->lock, which we also hold.
++	 *
++	 * Calling irq_work_queue_on() here is safe w.r.t. CPU unplugging:
++	 *   - takedown_cpu() schedules multi_cpu_stop() on all active CPUs,
++	 *     including the one that's taken down.
++	 *   - multi_cpu_stop() acts like a barrier, which means all active
++	 *     CPUs go through MULTI_STOP_DISABLE_IRQ and disable hard IRQs
++	 *     *before* the dying CPU runs take_cpu_down() in MULTI_STOP_RUN.
++	 *   - Hard IRQs are re-enabled at the end of multi_cpu_stop(), *after*
++	 *     the dying CPU has run take_cpu_down() in MULTI_STOP_RUN.
++	 *   - Since we run in hard IRQ context, we run either before or after
++	 *     take_cpu_down() but never concurrently.
++	 *   - If we run before take_cpu_down(), the dying CPU hasn't been marked
++	 *     offline yet (it's marked via take_cpu_down() -> __cpu_disable()),
++	 *     so the WARN in irq_work_queue_on() can't occur.
++	 *   - Furthermore, the work item we queue will be flushed later via
++	 *     take_cpu_down() -> cpuhp_invoke_callback_range_nofail() ->
++	 *     smpcfd_dying_cpu() -> irq_work_run().
++	 *   - If we run after take_cpu_down(), target_cpu has been already
++	 *     updated via take_cpu_down() -> __cpu_disable(), which eventually
++	 *     calls irq_do_set_affinity() during IRQ migration. So, target_cpu
++	 *     no longer points to the dying CPU in this case.
++	 */
++	if (desc->action)
++		irq_work_queue_on(&desc->redirect.work, target_cpu);
++
++	return true;
++}
++#else /* CONFIG_SMP */
++static bool demux_redirect_remote(struct irq_desc *desc)
++{
++	return false;
++}
++#endif
++
++/**
++ * generic_handle_demux_domain_irq - Invoke the handler for a hardware interrupt
++ *				     of a demultiplexing domain.
++ * @domain:	The domain where to perform the lookup
++ * @hwirq:	The hardware interrupt number to convert to a logical one
++ *
++ * Returns:	True on success, or false if lookup has failed
++ */
++bool generic_handle_demux_domain_irq(struct irq_domain *domain, irq_hw_number_t hwirq)
++{
++	struct irq_desc *desc = irq_resolve_mapping(domain, hwirq);
++
++	if (unlikely(!desc))
++		return false;
++
++	if (demux_redirect_remote(desc))
++		return true;
++
++	return !handle_irq_desc(desc);
++}
++EXPORT_SYMBOL_GPL(generic_handle_demux_domain_irq);
++
+ #endif
+ 
+ /* Dynamic interrupt handling */
+--- a/kernel/irq/manage.c
++++ b/kernel/irq/manage.c
+@@ -35,6 +35,16 @@ static int __init setup_forced_irqthread
+ early_param("threadirqs", setup_forced_irqthreads);
+ #endif
+ 
++#ifdef CONFIG_SMP
++static inline void synchronize_irqwork(struct irq_desc *desc)
++{
++	/* Synchronize pending or on the fly redirect work */
++	irq_work_sync(&desc->redirect.work);
++}
++#else
++static inline void synchronize_irqwork(struct irq_desc *desc) { }
++#endif
++
+ static int __irq_get_irqchip_state(struct irq_data *d, enum irqchip_irq_state which, bool *state);
+ 
+ static void __synchronize_hardirq(struct irq_desc *desc, bool sync_chip)
+@@ -107,7 +117,9 @@ EXPORT_SYMBOL(synchronize_hardirq);
+ 
+ static void __synchronize_irq(struct irq_desc *desc)
+ {
++	synchronize_irqwork(desc);
+ 	__synchronize_hardirq(desc, true);
++
+ 	/*
+ 	 * We made sure that no hardirq handler is running. Now verify that no
+ 	 * threaded handlers are active.
+@@ -217,8 +229,7 @@ static inline void irq_validate_effectiv
+ 
+ static DEFINE_PER_CPU(struct cpumask, __tmp_mask);
+ 
+-int irq_do_set_affinity(struct irq_data *data, const struct cpumask *mask,
+-			bool force)
++int irq_do_set_affinity(struct irq_data *data, const struct cpumask *mask, bool force)
+ {
+ 	struct cpumask *tmp_mask = this_cpu_ptr(&__tmp_mask);
+ 	struct irq_desc *desc = irq_data_to_desc(data);

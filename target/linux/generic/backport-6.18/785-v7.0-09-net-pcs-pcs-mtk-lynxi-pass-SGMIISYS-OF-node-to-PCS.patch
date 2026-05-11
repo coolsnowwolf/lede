@@ -1,0 +1,160 @@
+From bde1ae2d52ab3599e1c7ca68a90af8407d20f91d Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Mon, 19 Jan 2026 11:12:19 +0200
+Subject: [PATCH 2/3] net: pcs: pcs-mtk-lynxi: pass SGMIISYS OF node to PCS
+
+The Mediatek LynxI PCS is used from the MT7530 DSA driver (where it does
+not have an OF presence) and from mtk_eth_soc, where it does
+(Documentation/devicetree/bindings/net/pcs/mediatek,sgmiisys.yaml
+informs of a combined clock provider + SGMII PCS "SGMIISYS" syscon
+block).
+
+Currently, mtk_eth_soc parses the SGMIISYS OF node for the
+"mediatek,pnswap" property and sets a bit in the "flags" argument of
+mtk_pcs_lynxi_create() if set.
+
+I'd like to deprecate "mediatek,pnswap" in favour of a property which
+takes the current phy-mode into consideration. But this is only known at
+mtk_pcs_lynxi_config() time, and not known at mtk_pcs_lynxi_create(),
+when the SGMIISYS OF node is parsed.
+
+To achieve that, we must pass the OF node of the PCS, if it exists, to
+mtk_pcs_lynxi_create(), and let the PCS take a reference on it and
+handle property parsing whenever it wants.
+
+Use the fwnode API which is more general than OF (in case we ever need
+to describe the PCS using some other format). This API should be NULL
+tolerant, so add no particular tests for the mt7530 case.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Link: https://patch.msgid.link/20260119091220.1493761-5-vladimir.oltean@nxp.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mt7530-mdio.c               |  4 ++--
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 19 ++++++++-----------
+ drivers/net/pcs/pcs-mtk-lynxi.c             | 15 ++++++++++-----
+ include/linux/pcs/pcs-mtk-lynxi.h           |  5 ++---
+ 4 files changed, 22 insertions(+), 21 deletions(-)
+
+--- a/drivers/net/dsa/mt7530-mdio.c
++++ b/drivers/net/dsa/mt7530-mdio.c
+@@ -113,8 +113,8 @@ mt7531_create_sgmii(struct mt7530_priv *
+ 			ret = PTR_ERR(regmap);
+ 			break;
+ 		}
+-		pcs = mtk_pcs_lynxi_create(priv->dev, regmap,
+-					   MT7531_PHYA_CTRL_SIGNAL3, 0);
++		pcs = mtk_pcs_lynxi_create(priv->dev, NULL, regmap,
++					   MT7531_PHYA_CTRL_SIGNAL3);
+ 		if (!pcs) {
+ 			ret = -ENXIO;
+ 			break;
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -5020,7 +5020,6 @@ static int mtk_sgmii_init(struct mtk_eth
+ {
+ 	struct device_node *np;
+ 	struct regmap *regmap;
+-	u32 flags;
+ 	int i;
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+@@ -5029,18 +5028,16 @@ static int mtk_sgmii_init(struct mtk_eth
+ 			break;
+ 
+ 		regmap = syscon_node_to_regmap(np);
+-		flags = 0;
+-		if (of_property_read_bool(np, "mediatek,pnswap"))
+-			flags |= MTK_SGMII_FLAG_PN_SWAP;
+-
+-		of_node_put(np);
+-
+-		if (IS_ERR(regmap))
++		if (IS_ERR(regmap)) {
++			of_node_put(np);
+ 			return PTR_ERR(regmap);
++		}
+ 
+-		eth->sgmii_pcs[i] = mtk_pcs_lynxi_create(eth->dev, regmap,
+-							 eth->soc->ana_rgc3,
+-							 flags);
++		eth->sgmii_pcs[i] = mtk_pcs_lynxi_create(eth->dev,
++							 of_fwnode_handle(np),
++							 regmap,
++							 eth->soc->ana_rgc3);
++		of_node_put(np);
+ 	}
+ 
+ 	return 0;
+--- a/drivers/net/pcs/pcs-mtk-lynxi.c
++++ b/drivers/net/pcs/pcs-mtk-lynxi.c
+@@ -81,6 +81,7 @@ struct mtk_pcs_lynxi {
+ 	phy_interface_t		interface;
+ 	struct			phylink_pcs pcs;
+ 	u32			flags;
++	struct fwnode_handle	*fwnode;
+ };
+ 
+ static struct mtk_pcs_lynxi *pcs_to_mtk_pcs_lynxi(struct phylink_pcs *pcs)
+@@ -166,7 +167,7 @@ static int mtk_pcs_lynxi_config(struct p
+ 		regmap_set_bits(mpcs->regmap, SGMSYS_RESERVED_0,
+ 				SGMII_SW_RESET);
+ 
+-		if (mpcs->flags & MTK_SGMII_FLAG_PN_SWAP)
++		if (fwnode_property_read_bool(mpcs->fwnode, "mediatek,pnswap"))
+ 			regmap_update_bits(mpcs->regmap, SGMSYS_QPHY_WRAP_CTRL,
+ 					   SGMII_PN_SWAP_MASK,
+ 					   SGMII_PN_SWAP_TX_RX);
+@@ -266,8 +267,8 @@ static const struct phylink_pcs_ops mtk_
+ };
+ 
+ struct phylink_pcs *mtk_pcs_lynxi_create(struct device *dev,
+-					 struct regmap *regmap, u32 ana_rgc3,
+-					 u32 flags)
++					 struct fwnode_handle *fwnode,
++					 struct regmap *regmap, u32 ana_rgc3)
+ {
+ 	struct mtk_pcs_lynxi *mpcs;
+ 	u32 id, ver;
+@@ -301,10 +302,10 @@ struct phylink_pcs *mtk_pcs_lynxi_create
+ 
+ 	mpcs->ana_rgc3 = ana_rgc3;
+ 	mpcs->regmap = regmap;
+-	mpcs->flags = flags;
+ 	mpcs->pcs.ops = &mtk_pcs_lynxi_ops;
+ 	mpcs->pcs.poll = true;
+ 	mpcs->interface = PHY_INTERFACE_MODE_NA;
++	mpcs->fwnode = fwnode_handle_get(fwnode);
+ 
+ 	__set_bit(PHY_INTERFACE_MODE_SGMII, mpcs->pcs.supported_interfaces);
+ 	__set_bit(PHY_INTERFACE_MODE_1000BASEX, mpcs->pcs.supported_interfaces);
+@@ -316,10 +317,14 @@ EXPORT_SYMBOL(mtk_pcs_lynxi_create);
+ 
+ void mtk_pcs_lynxi_destroy(struct phylink_pcs *pcs)
+ {
++	struct mtk_pcs_lynxi *mpcs;
++
+ 	if (!pcs)
+ 		return;
+ 
+-	kfree(pcs_to_mtk_pcs_lynxi(pcs));
++	mpcs = pcs_to_mtk_pcs_lynxi(pcs);
++	fwnode_handle_put(mpcs->fwnode);
++	kfree(mpcs);
+ }
+ EXPORT_SYMBOL(mtk_pcs_lynxi_destroy);
+ 
+--- a/include/linux/pcs/pcs-mtk-lynxi.h
++++ b/include/linux/pcs/pcs-mtk-lynxi.h
+@@ -5,9 +5,8 @@
+ #include <linux/phylink.h>
+ #include <linux/regmap.h>
+ 
+-#define MTK_SGMII_FLAG_PN_SWAP BIT(0)
+ struct phylink_pcs *mtk_pcs_lynxi_create(struct device *dev,
+-					 struct regmap *regmap,
+-					 u32 ana_rgc3, u32 flags);
++					 struct fwnode_handle *fwnode,
++					 struct regmap *regmap, u32 ana_rgc3);
+ void mtk_pcs_lynxi_destroy(struct phylink_pcs *pcs);
+ #endif

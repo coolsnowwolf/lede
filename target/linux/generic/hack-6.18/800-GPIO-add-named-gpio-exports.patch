@@ -1,0 +1,171 @@
+From cc809a441d8f2924f785eb863dfa6aef47a25b0b Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Tue, 12 Aug 2014 20:49:27 +0200
+Subject: [PATCH 30/36] GPIO: add named gpio exports
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+--- a/drivers/gpio/gpiolib-of.c
++++ b/drivers/gpio/gpiolib-of.c
+@@ -21,6 +21,8 @@
+ 
+ #include <linux/gpio/consumer.h>
+ #include <linux/gpio/machine.h>
++#include <linux/init.h>
++#include <linux/platform_device.h>
+ 
+ #include "gpiolib.h"
+ #include "gpiolib-of.h"
+@@ -1295,3 +1297,73 @@ bool of_gpiochip_instance_match(struct g
+ 
+ 	return false;
+ }
++
++#ifdef CONFIG_GPIO_SYSFS
++
++static const struct of_device_id gpio_export_ids[] = {
++	{ .compatible = "gpio-export" },
++	{ /* sentinel */ }
++};
++
++static int of_gpio_export_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct device_node *cnp;
++	u32 val;
++	int nb = 0;
++
++	for_each_child_of_node(np, cnp) {
++		const char *name = NULL;
++		int gpio;
++		bool dmc;
++		int max_gpio = 1;
++		int i;
++
++		of_property_read_string(cnp, "gpio-export,name", &name);
++
++		if (!name)
++			max_gpio = of_gpio_named_count(cnp, "gpios");
++
++		for (i = 0; i < max_gpio; i++) {
++			struct gpio_desc *desc;
++			unsigned flags = 0;
++			enum of_gpio_flags of_flags;
++
++			desc = of_get_named_gpiod_flags(cnp, "gpios", i, &of_flags);
++			if (IS_ERR(desc))
++				return PTR_ERR(desc);
++			gpio = desc_to_gpio(desc);
++
++			if (!of_property_read_u32(cnp, "gpio-export,output", &val))
++				flags |= val ? GPIOF_OUT_INIT_HIGH : GPIOF_OUT_INIT_LOW;
++			else
++				flags |= GPIOF_IN;
++
++			if (devm_gpio_request_one(&pdev->dev, gpio, flags, name ? name : of_node_full_name(np)))
++				continue;
++
++			if (of_flags & OF_GPIO_ACTIVE_LOW)
++				gpiod_toggle_active_low(gpio_to_desc(gpio));
++
++			dmc = of_property_read_bool(cnp, "gpio-export,direction_may_change");
++			gpio_export_with_name(gpio_to_desc(gpio), dmc, name);
++			nb++;
++		}
++	}
++
++	dev_info(&pdev->dev, "%d gpio(s) exported\n", nb);
++
++	return 0;
++}
++
++static struct platform_driver gpio_export_driver = {
++	.driver		= {
++		.name		= "gpio-export",
++		.of_match_table	= of_match_ptr(gpio_export_ids),
++	},
++	.probe		= of_gpio_export_probe,
++};
++
++module_platform_driver(gpio_export_driver);
++
++#endif
+--- a/include/linux/gpio/consumer.h
++++ b/include/linux/gpio/consumer.h
+@@ -651,18 +651,35 @@ static inline int devm_acpi_dev_add_driv
+ 
+ #if IS_ENABLED(CONFIG_GPIOLIB) && IS_ENABLED(CONFIG_GPIO_SYSFS)
+ 
++int __gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name);
+ int gpiod_export(struct gpio_desc *desc, bool direction_may_change);
++int gpio_export_with_name(struct gpio_desc *desc, bool direction_may_change,
++			  const char *name);
+ int gpiod_export_link(struct device *dev, const char *name,
+ 		      struct gpio_desc *desc);
+ void gpiod_unexport(struct gpio_desc *desc);
+ 
+ #else  /* CONFIG_GPIOLIB && CONFIG_GPIO_SYSFS */
+ 
++static inline int __gpiod_export(struct gpio_desc *desc,
++			       bool direction_may_change,
++			       const char *name)
++{
++	return -ENOSYS;
++}
++
+ static inline int gpiod_export(struct gpio_desc *desc,
+ 			       bool direction_may_change)
+ {
+ 	return -ENOSYS;
+ }
++
++static inline int gpio_export_with_name(struct gpio_desc *desc,
++					bool direction_may_change,
++					const char *name)
++{
++	return -ENOSYS;
++}
+ 
+ static inline int gpiod_export_link(struct device *dev, const char *name,
+ 				    struct gpio_desc *desc)
+--- a/drivers/gpio/gpiolib-sysfs.c
++++ b/drivers/gpio/gpiolib-sysfs.c
+@@ -724,7 +724,7 @@ static void gpiod_attr_init(struct devic
+  * Returns:
+  * 0 on success, or negative errno on failure.
+  */
+-int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
++int __gpiod_export(struct gpio_desc *desc, bool direction_may_change, const char *name)
+ {
+ 	char *path __free(kfree) = NULL;
+ 	struct gpiodev_data *gdev_data;
+@@ -801,7 +801,7 @@ int gpiod_export(struct gpio_desc *desc,
+ 	desc_data->dev = device_create_with_groups(&gpio_class, &gdev->dev,
+ 						   MKDEV(0, 0), desc_data,
+ 						   desc_data->class_attr_groups,
+-						   "gpio%u",
++						   name ? name : "gpio%u",
+ 						   desc_to_gpio(desc));
+ 	if (IS_ERR(desc_data->dev)) {
+ 		status = PTR_ERR(desc_data->dev);
+@@ -870,8 +870,21 @@ err_clear_bit:
+ 	gpiod_dbg(desc, "%s: status %d\n", __func__, status);
+ 	return status;
+ }
++EXPORT_SYMBOL_GPL(__gpiod_export);
++
++int gpiod_export(struct gpio_desc *desc, bool direction_may_change)
++{
++	return __gpiod_export(desc, direction_may_change, NULL);
++}
+ EXPORT_SYMBOL_GPL(gpiod_export);
+ 
++int gpio_export_with_name(struct gpio_desc *desc, bool direction_may_change,
++			  const char *name)
++{
++	return __gpiod_export(desc, direction_may_change, name);
++}
++EXPORT_SYMBOL_GPL(gpio_export_with_name);
++
+ #if IS_ENABLED(CONFIG_GPIO_SYSFS_LEGACY)
+ static int match_export(struct device *dev, const void *desc)
+ {

@@ -1,0 +1,135 @@
+From 1cb4e56c3ba32ac1bce89dc9c34ef2dbc9b89ad4 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Mon, 31 Mar 2025 19:10:24 +0200
+Subject: [PATCH 3/7] net: phylink: add phylink_release_pcs() to externally
+ release a PCS
+
+Add phylink_release_pcs() to externally release a PCS from a phylink
+instance. This can be used to handle case when a single PCS needs to be
+removed and the phylink instance needs to be refreshed.
+
+On calling phylink_release_pcs(), the PCS will be removed from the
+phylink internal PCS list and the phylink supported_interfaces value is
+reparsed with the remaining PCS interfaces.
+
+Also a phylink resolve is triggered to handle the PCS removal.
+
+It's also added to phylink a flag to make phylink resolve reconfigure
+the interface mode (even if it didn't change). This is needed to handle
+the special case when the current PCS used by phylink is removed and a
+major_config is needed to propagae the configuration change. With this
+option enabled we also force mac_config even if the PHY link is not up
+for the in-band case.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/phy/phylink.c | 57 ++++++++++++++++++++++++++++++++++++++-
+ include/linux/phylink.h   |  2 ++
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -86,6 +86,7 @@ struct phylink {
+ 	bool link_failed;
+ 	bool suspend_link_up;
+ 	bool major_config_failed;
++	bool reconfig_interface;
+ 	bool mac_supports_eee_ops;
+ 	bool mac_supports_eee;
+ 	bool phy_enable_tx_lpi;
+@@ -917,6 +918,55 @@ static void phylink_resolve_an_pause(str
+ 	}
+ }
+ 
++/**
++ * phylink_release_pcs - Removes a PCS from the phylink PCS available list
++ * @pcs: a pointer to the phylink_pcs struct to be released
++ *
++ * This function release a PCS from the phylink PCS available list if
++ * actually in use. It also refreshes the supported interfaces of the
++ * phylink instance by copying the supported interfaces from the phylink
++ * conf and merging the supported interfaces of the remaining available PCS
++ * in the list and trigger a resolve.
++ */
++void phylink_release_pcs(struct phylink_pcs *pcs)
++{
++	struct phylink *pl;
++
++	ASSERT_RTNL();
++
++	pl = pcs->phylink;
++	if (!pl)
++		return;
++
++	list_del(&pcs->list);
++	pcs->phylink = NULL;
++
++	/* Check if we are removing the PCS currently
++	 * in use by phylink. If this is the case,
++	 * force phylink resolve to reconfigure the interface
++	 * mode and set the phylink PCS to NULL.
++	 */
++	if (pl->pcs == pcs) {
++		mutex_lock(&pl->state_mutex);
++
++		pl->reconfig_interface = true;
++		pl->pcs = NULL;
++
++		mutex_unlock(&pl->state_mutex);
++	}
++
++	/* Refresh supported interfaces */
++	phy_interface_copy(pl->supported_interfaces,
++			   pl->config->supported_interfaces);
++	list_for_each_entry(pcs, &pl->pcs_list, list)
++		phy_interface_or(pl->supported_interfaces,
++				 pl->supported_interfaces,
++				 pcs->supported_interfaces);
++
++	phylink_run_resolve(pl);
++}
++EXPORT_SYMBOL_GPL(phylink_release_pcs);
++
+ static unsigned int phylink_pcs_inband_caps(struct phylink_pcs *pcs,
+ 				    phy_interface_t interface)
+ {
+@@ -1730,6 +1780,10 @@ static void phylink_resolve(struct work_
+ 		if (phy)
+ 			link_state.link &= pl->phy_state.link;
+ 
++		/* Force mac_config if we need to reconfig the interface */
++		if (pl->reconfig_interface)
++			mac_config = true;
++
+ 		/* Only update if the PHY link is up */
+ 		if (phy && pl->phy_state.link) {
+ 			/* If the interface has changed, force a link down
+@@ -1763,7 +1817,8 @@ static void phylink_resolve(struct work_
+ 	if (pl->act_link_an_mode != MLO_AN_FIXED)
+ 		phylink_apply_manual_flow(pl, &link_state);
+ 
+-	if (mac_config && link_state.interface != pl->link_config.interface) {
++	if ((mac_config && link_state.interface != pl->link_config.interface) ||
++	    pl->reconfig_interface) {
+ 		/* The interface has changed, so force the link down and then
+ 		 * reconfigure.
+ 		 */
+@@ -1773,6 +1828,7 @@ static void phylink_resolve(struct work_
+ 		}
+ 		phylink_major_config(pl, false, &link_state);
+ 		pl->link_config.interface = link_state.interface;
++		pl->reconfig_interface = false;
+ 	}
+ 
+ 	/* If configuration of the interface failed, force the link down
+--- a/include/linux/phylink.h
++++ b/include/linux/phylink.h
+@@ -717,6 +717,8 @@ void phylink_disconnect_phy(struct phyli
+ int phylink_set_fixed_link(struct phylink *,
+ 			   const struct phylink_link_state *);
+ 
++void phylink_release_pcs(struct phylink_pcs *pcs);
++
+ void phylink_mac_change(struct phylink *, bool up);
+ void phylink_pcs_change(struct phylink_pcs *, bool up);
+ 

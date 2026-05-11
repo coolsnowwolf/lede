@@ -1,0 +1,54 @@
+From 6916564f8a24970e36102b56bcec577f5129cfe1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:20:54 +0100
+Subject: [PATCH 7/9] net: ethernet: mtk_ppe_offload: use DSA queue map in flow
+ offload path
+
+Convert mtk_flow_set_output_device() to use the per-conduit DSA
+queue map for PPE-offloaded flows targeting a DSA user port,
+matching the two SW TX paths already converted in the previous
+patch.
+
+mtk_flow_get_dsa_port() substitutes *dev with the DSA conduit's
+netdev on success, so by the time we pick the QDMA queue for the
+offloaded flow we have the conduit's struct mtk_mac and can
+compute queue = mac->dsa_queue_base + mac->dsa_port_rank[dsa_port]
+just like SW xmit does.
+
+Behavior is unchanged for any existing configuration (single DSA
+switch per conduit with contiguous dp->index); the allocator only
+produces different results for multi-switch trees and for switches
+with sparse dp->index layouts. The dsa_port < MTK_DSA_USER_PORT_MAX
+guard matches the SW TX path and is purely defensive -- no shipped
+DSA driver today has dp->index in that range.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_ppe_offload.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -193,6 +193,7 @@ mtk_flow_set_output_device(struct mtk_et
+ 			   int *wed_index)
+ {
+ 	struct mtk_wdma_info info = {};
++	struct mtk_mac *mac;
+ 	int pse_port, dsa_port, queue;
+ 
+ 	if (mtk_flow_get_wdma_info(dev, dest_mac, &info) == 0) {
+@@ -230,9 +231,12 @@ mtk_flow_set_output_device(struct mtk_et
+ 	else
+ 		return -EOPNOTSUPP;
+ 
+-	if (dsa_port >= 0) {
++	if (dsa_port >= 0)
+ 		mtk_foe_entry_set_dsa(eth, foe, dsa_port);
+-		queue = 3 + dsa_port;
++
++	if (dsa_port >= 0 && dsa_port < MTK_DSA_USER_PORT_MAX) {
++		mac = netdev_priv(dev);
++		queue = mac->dsa_queue_base + mac->dsa_port_rank[dsa_port];
+ 	} else {
+ 		queue = pse_port - 1;
+ 	}

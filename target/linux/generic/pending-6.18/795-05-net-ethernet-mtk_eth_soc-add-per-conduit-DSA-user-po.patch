@@ -1,0 +1,168 @@
+From e404de9968c4010b1f5fea4fba78ddbb220ba97a Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:19:04 +0100
+Subject: [PATCH 5/9] net: ethernet: mtk_eth_soc: add per-conduit DSA user-port
+ queue map
+
+Today the driver maps every DSA user port to QDMA TX queue
+dp->index + 3 at three call sites (link-speed notifier, SW TX
+select_queue, and PPE flow offload). The mapping is correct for a
+single DSA switch per conduit with contiguous port indices, which
+covers every current MediaTek SoC paired with MT7530/MT7531/built-in
+switch.
+
+It falls apart in two scenarios that start to matter:
+
+  1) Multiple DSA switches on one MT7988 (built-in MT7530 on GMAC2
+     plus an external switch on a SerDes GMAC). Each switch has its
+     own dp->index space starting at 0, so port 0 of switch A and
+     port 0 of switch B both map to QDMA queue 3 and stomp each
+     other's shaping and offload state.
+
+  2) Switches with non-contiguous user-port indices (CPU port in the
+     middle of the range, some indices reserved), where "queue =
+     dp->index + 3" leaves gaps or overshoots num_tx_queues.
+
+Introduce a per-conduit queue map so those three call sites can
+convert dp->index to a collision-free queue ID:
+
+  - mac->dsa_queue_base: queue index where this conduit's DSA user
+    ports start. Zeroth conduit uses MTK_MAX_DEVS (skipping the
+    queues reserved for non-DSA egress), later conduits start after
+    the previous conduit's user-port range.
+
+  - mac->dsa_port_rank[dp->index]: rank (0..N-1) of dp within its
+    switch's user-port sequence, so sparse dp->index layouts become
+    dense queue assignments.
+
+mtk_update_dsa_queue_map() walks every conduit and rebuilds both.
+It is called from the existing DSA user-port NETDEV_CHANGE notifier
+so link-up of any DSA user port triggers a recompute. Initial
+values at mac creation reproduce the old "queue = dp->index + 3"
+layout, so behavior does not change until the next patches switch
+call sites over.
+
+MTK_DSA_USER_PORT_MAX is 32, comfortably covering the 16-port
+MxL862xx; bump it if a larger switch needs per-port queuing.
+
+This patch only adds infrastructure; no call sites are converted
+yet so there is no functional change.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 56 ++++++++++++++++++++-
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h | 10 ++++
+ 2 files changed, 65 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -3751,6 +3751,48 @@ static bool mtk_uses_dsa(struct net_devi
+ #endif
+ }
+ 
++/*
++ * Recompute the per-conduit DSA user-port queue map.  Each conduit's mac
++ * gets a queue base (queues 0..MTK_MAX_DEVS-1 are reserved for non-DSA
++ * egress via GDM{1,2,3}), followed by a contiguous rank for every user
++ * port of the DSA switch attached to that conduit.  dsa_port_rank[]
++ * translates dp->index (which may be non-contiguous and may collide
++ * across switches) into that rank.
++ *
++ * Call this on DSA topology changes.  Idempotent.
++ */
++static void mtk_update_dsa_queue_map(struct mtk_eth *eth)
++{
++	struct net_device *conduit;
++	struct dsa_switch *ds;
++	struct mtk_mac *mac;
++	struct dsa_port *dp;
++	u8 base = MTK_MAX_DEVS;
++	u8 rank;
++	int i;
++
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		conduit = eth->netdev[i];
++		if (!conduit)
++			continue;
++
++		mac = netdev_priv(conduit);
++		mac->dsa_queue_base = base;
++
++		if (!netdev_uses_dsa(conduit))
++			continue;
++
++		ds = conduit->dsa_ptr->ds;
++		rank = 0;
++		dsa_switch_for_each_user_port(dp, ds) {
++			if (dp->index < MTK_DSA_USER_PORT_MAX)
++				mac->dsa_port_rank[dp->index] = rank;
++			rank++;
++		}
++		base += rank;
++	}
++}
++
+ static int mtk_device_event(struct notifier_block *n, unsigned long event, void *ptr)
+ {
+ 	struct mtk_mac *mac = container_of(n, struct mtk_mac, device_notifier);
+@@ -3775,6 +3817,8 @@ found:
+ 	if (!dsa_user_dev_check(dev))
+ 		return NOTIFY_DONE;
+ 
++	mtk_update_dsa_queue_map(eth);
++
+ 	if (__ethtool_get_link_ksettings(dev, &s))
+ 		return NOTIFY_DONE;
+ 
+@@ -5030,7 +5074,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	phy_interface_t phy_mode;
+ 	struct phylink *phylink;
+ 	struct mtk_mac *mac;
+-	int id, err, count;
++	int id, err, count, i;
+ 	unsigned int sid;
+ 	int txqs = 1;
+ 	u32 val;
+@@ -5065,6 +5109,16 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	mac->hw = eth;
+ 	mac->of_node = np;
+ 
++	/*
++	 * Initialize the DSA user-port queue map to an identity mapping
++	 * starting at MTK_MAX_DEVS, so that a mac without any DSA switch
++	 * attached keeps the historic "queue = dp->index + 3" layout.
++	 * mtk_update_dsa_queue_map() rewrites this once DSA state is up.
++	 */
++	mac->dsa_queue_base = MTK_MAX_DEVS;
++	for (i = 0; i < MTK_DSA_USER_PORT_MAX; i++)
++		mac->dsa_port_rank[i] = i;
++
+ 	memset(mac->hwlro_ip, 0, sizeof(mac->hwlro_ip));
+ 	mac->hwlro_ip_cnt = 0;
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -25,6 +25,14 @@
+ #define MTK_MAX_DSA_PORTS	7
+ #define MTK_DSA_PORT_MASK	GENMASK(2, 0)
+ 
++/*
++ * Upper bound on dp->index across all DSA switches we support attaching
++ * to an MT7988 / MT7986 / MT7622 / MT7621 conduit.  Sized to cover the
++ * 16-port MaxLinear MxL862xx with room to spare; increase when a larger
++ * switch needs per-port queue mapping.
++ */
++#define MTK_DSA_USER_PORT_MAX	32
++
+ #define MTK_QTX_PER_PAGE	16
+ #define MTK_QDMA_PAGE_SIZE	2048
+ #define MTK_MAX_RX_LENGTH	1536
+@@ -1414,6 +1422,8 @@ struct mtk_mac {
+ 	int				hwlro_ip_cnt;
+ 	unsigned int			syscfg0;
+ 	struct notifier_block		device_notifier;
++	u8				dsa_queue_base;
++	u8				dsa_port_rank[MTK_DSA_USER_PORT_MAX];
+ };
+ 
+ /* the struct describing the SoC. these are declared in the soc_xyz.c files */

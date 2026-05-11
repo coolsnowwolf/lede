@@ -1,0 +1,85 @@
+From 199cb88e7127b469d3a4b17346129dcea2b719d9 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:19:58 +0100
+Subject: [PATCH 6/9] net: ethernet: mtk_eth_soc: use DSA queue map in TX paths
+
+Convert the two SW TX paths that map DSA user ports to QDMA queues
+to use the per-conduit queue map introduced by the previous patch:
+
+ - mtk_device_event(), the DSA user-port link-speed notifier, now
+   computes the queue ID as mac->dsa_queue_base +
+   mac->dsa_port_rank[dp->index] instead of dp->index + 3.
+
+ - mtk_select_queue() does the same for SW xmit, keying on
+   skb_get_queue_mapping(skb) which DSA taggers set to dp->index.
+
+The default identity map set up at mac creation keeps the resulting
+queue IDs identical to the old formula as long as only one DSA
+switch with contiguous dp->index is attached to the conduit -- the
+current common case. When mtk_update_dsa_queue_map() runs on DSA
+attach, multi-switch trees (e.g. MT7988 + built-in MT7530 + external
+MxL862xx) and non-contiguous dp->index layouts (e.g. MxL862xx with
+CPU port 0 and user ports 1..15) get collision-free queue IDs.
+
+Also tighten the bound check: the old code rejected
+"dp->index >= soc->num_tx_queues", which on V1 with a 16-port
+switch could still compute queue=18 and write out of range.
+Now reject on dp->index >= MTK_DSA_USER_PORT_MAX first (the array
+bound), then on queue >= soc->num_tx_queues (the HW bound).
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -3802,6 +3802,7 @@ static int mtk_device_event(struct notif
+ 	struct net_device *ldev;
+ 	struct list_head *iter;
+ 	struct dsa_port *dp;
++	unsigned int queue;
+ 
+ 	if (event != NETDEV_CHANGE)
+ 		return NOTIFY_DONE;
+@@ -3826,13 +3827,17 @@ found:
+ 		return NOTIFY_DONE;
+ 
+ 	dp = dsa_port_from_netdev(dev);
+-	if (dp->index >= eth->soc->num_tx_queues)
++	if (dp->index >= MTK_DSA_USER_PORT_MAX)
++		return NOTIFY_DONE;
++
++	queue = mac->dsa_queue_base + mac->dsa_port_rank[dp->index];
++	if (queue >= eth->soc->num_tx_queues)
+ 		return NOTIFY_DONE;
+ 
+ 	if (mac->speed > 0 && mac->speed <= s.base.speed)
+ 		s.base.speed = 0;
+ 
+-	mtk_set_queue_speed(eth, dp->index + 3, s.base.speed);
++	mtk_set_queue_speed(eth, queue, s.base.speed);
+ 
+ 	return NOTIFY_DONE;
+ }
+@@ -5014,12 +5019,17 @@ static u16 mtk_select_queue(struct net_d
+ 			    struct net_device *sb_dev)
+ {
+ 	struct mtk_mac *mac = netdev_priv(dev);
++	unsigned int dp_idx;
+ 	unsigned int queue = 0;
+ 
+-	if (netdev_uses_dsa(dev))
+-		queue = skb_get_queue_mapping(skb) + 3;
+-	else
++	if (netdev_uses_dsa(dev)) {
++		dp_idx = skb_get_queue_mapping(skb);
++		if (dp_idx < MTK_DSA_USER_PORT_MAX)
++			queue = mac->dsa_queue_base +
++				mac->dsa_port_rank[dp_idx];
++	} else {
+ 		queue = mac->id;
++	}
+ 
+ 	if (queue >= dev->num_tx_queues)
+ 		queue = 0;

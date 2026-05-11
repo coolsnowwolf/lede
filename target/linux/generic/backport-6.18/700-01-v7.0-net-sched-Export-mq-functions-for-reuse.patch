@@ -1,0 +1,255 @@
+From 8560edcc05114e42d4d580baaf124bce8c291d55 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@redhat.com>
+Date: Fri, 9 Jan 2026 14:15:30 +0100
+Subject: [PATCH 1/7] net/sched: Export mq functions for reuse
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+To enable the cake_mq qdisc to reuse code from the mq qdisc, export a
+bunch of functions from sch_mq. Split common functionality out from some
+functions so it can be composed with other code, and export other
+functions wholesale. To discourage wanton reuse, put the symbols into a
+new NET_SCHED_INTERNAL namespace, and a sch_priv.h header file.
+
+No functional change intended.
+
+Reviewed-by: Willem de Bruijn <willemb@google.com>
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Link: https://patch.msgid.link/20260109-mq-cake-sub-qdisc-v8-1-8d613fece5d8@redhat.com
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ MAINTAINERS            |  1 +
+ include/net/sch_priv.h | 27 ++++++++++++++++
+ net/sched/sch_mq.c     | 71 +++++++++++++++++++++++++++++-------------
+ 3 files changed, 77 insertions(+), 22 deletions(-)
+ create mode 100644 include/net/sch_priv.h
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -25056,6 +25056,7 @@ L:	netdev@vger.kernel.org
+ S:	Maintained
+ F:	include/net/pkt_cls.h
+ F:	include/net/pkt_sched.h
++F:	include/net/sch_priv.h
+ F:	include/net/tc_act/
+ F:	include/uapi/linux/pkt_cls.h
+ F:	include/uapi/linux/pkt_sched.h
+--- /dev/null
++++ b/include/net/sch_priv.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __NET_SCHED_PRIV_H
++#define __NET_SCHED_PRIV_H
++
++#include <net/sch_generic.h>
++
++struct mq_sched {
++	struct Qdisc		**qdiscs;
++};
++
++int mq_init_common(struct Qdisc *sch, struct nlattr *opt,
++		   struct netlink_ext_ack *extack,
++		   const struct Qdisc_ops *qdisc_ops);
++void mq_destroy_common(struct Qdisc *sch);
++void mq_attach(struct Qdisc *sch);
++void mq_dump_common(struct Qdisc *sch, struct sk_buff *skb);
++struct netdev_queue *mq_select_queue(struct Qdisc *sch,
++				     struct tcmsg *tcm);
++struct Qdisc *mq_leaf(struct Qdisc *sch, unsigned long cl);
++unsigned long mq_find(struct Qdisc *sch, u32 classid);
++int mq_dump_class(struct Qdisc *sch, unsigned long cl,
++		  struct sk_buff *skb, struct tcmsg *tcm);
++int mq_dump_class_stats(struct Qdisc *sch, unsigned long cl,
++			struct gnet_dump *d);
++void mq_walk(struct Qdisc *sch, struct qdisc_walker *arg);
++
++#endif
+--- a/net/sched/sch_mq.c
++++ b/net/sched/sch_mq.c
+@@ -15,11 +15,7 @@
+ #include <net/netlink.h>
+ #include <net/pkt_cls.h>
+ #include <net/pkt_sched.h>
+-#include <net/sch_generic.h>
+-
+-struct mq_sched {
+-	struct Qdisc		**qdiscs;
+-};
++#include <net/sch_priv.h>
+ 
+ static int mq_offload(struct Qdisc *sch, enum tc_mq_command cmd)
+ {
+@@ -49,23 +45,29 @@ static int mq_offload_stats(struct Qdisc
+ 	return qdisc_offload_dump_helper(sch, TC_SETUP_QDISC_MQ, &opt);
+ }
+ 
+-static void mq_destroy(struct Qdisc *sch)
++void mq_destroy_common(struct Qdisc *sch)
+ {
+ 	struct net_device *dev = qdisc_dev(sch);
+ 	struct mq_sched *priv = qdisc_priv(sch);
+ 	unsigned int ntx;
+ 
+-	mq_offload(sch, TC_MQ_DESTROY);
+-
+ 	if (!priv->qdiscs)
+ 		return;
+ 	for (ntx = 0; ntx < dev->num_tx_queues && priv->qdiscs[ntx]; ntx++)
+ 		qdisc_put(priv->qdiscs[ntx]);
+ 	kfree(priv->qdiscs);
+ }
++EXPORT_SYMBOL_NS_GPL(mq_destroy_common, "NET_SCHED_INTERNAL");
+ 
+-static int mq_init(struct Qdisc *sch, struct nlattr *opt,
+-		   struct netlink_ext_ack *extack)
++static void mq_destroy(struct Qdisc *sch)
++{
++	mq_offload(sch, TC_MQ_DESTROY);
++	mq_destroy_common(sch);
++}
++
++int mq_init_common(struct Qdisc *sch, struct nlattr *opt,
++		   struct netlink_ext_ack *extack,
++		   const struct Qdisc_ops *qdisc_ops)
+ {
+ 	struct net_device *dev = qdisc_dev(sch);
+ 	struct mq_sched *priv = qdisc_priv(sch);
+@@ -87,7 +89,8 @@ static int mq_init(struct Qdisc *sch, st
+ 
+ 	for (ntx = 0; ntx < dev->num_tx_queues; ntx++) {
+ 		dev_queue = netdev_get_tx_queue(dev, ntx);
+-		qdisc = qdisc_create_dflt(dev_queue, get_default_qdisc_ops(dev, ntx),
++		qdisc = qdisc_create_dflt(dev_queue,
++					  qdisc_ops ?: get_default_qdisc_ops(dev, ntx),
+ 					  TC_H_MAKE(TC_H_MAJ(sch->handle),
+ 						    TC_H_MIN(ntx + 1)),
+ 					  extack);
+@@ -98,12 +101,24 @@ static int mq_init(struct Qdisc *sch, st
+ 	}
+ 
+ 	sch->flags |= TCQ_F_MQROOT;
++	return 0;
++}
++EXPORT_SYMBOL_NS_GPL(mq_init_common, "NET_SCHED_INTERNAL");
++
++static int mq_init(struct Qdisc *sch, struct nlattr *opt,
++		   struct netlink_ext_ack *extack)
++{
++	int ret;
++
++	ret = mq_init_common(sch, opt, extack, NULL);
++	if (ret)
++		return ret;
+ 
+ 	mq_offload(sch, TC_MQ_CREATE);
+ 	return 0;
+ }
+ 
+-static void mq_attach(struct Qdisc *sch)
++void mq_attach(struct Qdisc *sch)
+ {
+ 	struct net_device *dev = qdisc_dev(sch);
+ 	struct mq_sched *priv = qdisc_priv(sch);
+@@ -124,8 +139,9 @@ static void mq_attach(struct Qdisc *sch)
+ 	kfree(priv->qdiscs);
+ 	priv->qdiscs = NULL;
+ }
++EXPORT_SYMBOL_NS_GPL(mq_attach, "NET_SCHED_INTERNAL");
+ 
+-static int mq_dump(struct Qdisc *sch, struct sk_buff *skb)
++void mq_dump_common(struct Qdisc *sch, struct sk_buff *skb)
+ {
+ 	struct net_device *dev = qdisc_dev(sch);
+ 	struct Qdisc *qdisc;
+@@ -152,7 +168,12 @@ static int mq_dump(struct Qdisc *sch, st
+ 
+ 		spin_unlock_bh(qdisc_lock(qdisc));
+ 	}
++}
++EXPORT_SYMBOL_NS_GPL(mq_dump_common, "NET_SCHED_INTERNAL");
+ 
++static int mq_dump(struct Qdisc *sch, struct sk_buff *skb)
++{
++	mq_dump_common(sch, skb);
+ 	return mq_offload_stats(sch);
+ }
+ 
+@@ -166,11 +187,12 @@ static struct netdev_queue *mq_queue_get
+ 	return netdev_get_tx_queue(dev, ntx);
+ }
+ 
+-static struct netdev_queue *mq_select_queue(struct Qdisc *sch,
+-					    struct tcmsg *tcm)
++struct netdev_queue *mq_select_queue(struct Qdisc *sch,
++				     struct tcmsg *tcm)
+ {
+ 	return mq_queue_get(sch, TC_H_MIN(tcm->tcm_parent));
+ }
++EXPORT_SYMBOL_NS_GPL(mq_select_queue, "NET_SCHED_INTERNAL");
+ 
+ static int mq_graft(struct Qdisc *sch, unsigned long cl, struct Qdisc *new,
+ 		    struct Qdisc **old, struct netlink_ext_ack *extack)
+@@ -198,14 +220,15 @@ static int mq_graft(struct Qdisc *sch, u
+ 	return 0;
+ }
+ 
+-static struct Qdisc *mq_leaf(struct Qdisc *sch, unsigned long cl)
++struct Qdisc *mq_leaf(struct Qdisc *sch, unsigned long cl)
+ {
+ 	struct netdev_queue *dev_queue = mq_queue_get(sch, cl);
+ 
+ 	return rtnl_dereference(dev_queue->qdisc_sleeping);
+ }
++EXPORT_SYMBOL_NS_GPL(mq_leaf, "NET_SCHED_INTERNAL");
+ 
+-static unsigned long mq_find(struct Qdisc *sch, u32 classid)
++unsigned long mq_find(struct Qdisc *sch, u32 classid)
+ {
+ 	unsigned int ntx = TC_H_MIN(classid);
+ 
+@@ -213,9 +236,10 @@ static unsigned long mq_find(struct Qdis
+ 		return 0;
+ 	return ntx;
+ }
++EXPORT_SYMBOL_NS_GPL(mq_find, "NET_SCHED_INTERNAL");
+ 
+-static int mq_dump_class(struct Qdisc *sch, unsigned long cl,
+-			 struct sk_buff *skb, struct tcmsg *tcm)
++int mq_dump_class(struct Qdisc *sch, unsigned long cl,
++		  struct sk_buff *skb, struct tcmsg *tcm)
+ {
+ 	struct netdev_queue *dev_queue = mq_queue_get(sch, cl);
+ 
+@@ -224,9 +248,10 @@ static int mq_dump_class(struct Qdisc *s
+ 	tcm->tcm_info = rtnl_dereference(dev_queue->qdisc_sleeping)->handle;
+ 	return 0;
+ }
++EXPORT_SYMBOL_NS_GPL(mq_dump_class, "NET_SCHED_INTERNAL");
+ 
+-static int mq_dump_class_stats(struct Qdisc *sch, unsigned long cl,
+-			       struct gnet_dump *d)
++int mq_dump_class_stats(struct Qdisc *sch, unsigned long cl,
++			struct gnet_dump *d)
+ {
+ 	struct netdev_queue *dev_queue = mq_queue_get(sch, cl);
+ 
+@@ -236,8 +261,9 @@ static int mq_dump_class_stats(struct Qd
+ 		return -1;
+ 	return 0;
+ }
++EXPORT_SYMBOL_NS_GPL(mq_dump_class_stats, "NET_SCHED_INTERNAL");
+ 
+-static void mq_walk(struct Qdisc *sch, struct qdisc_walker *arg)
++void mq_walk(struct Qdisc *sch, struct qdisc_walker *arg)
+ {
+ 	struct net_device *dev = qdisc_dev(sch);
+ 	unsigned int ntx;
+@@ -251,6 +277,7 @@ static void mq_walk(struct Qdisc *sch, s
+ 			break;
+ 	}
+ }
++EXPORT_SYMBOL_NS_GPL(mq_walk, "NET_SCHED_INTERNAL");
+ 
+ static const struct Qdisc_class_ops mq_class_ops = {
+ 	.select_queue	= mq_select_queue,
