@@ -11,62 +11,70 @@ packets which are treated as active.
 
 Signed-off-by: Jo-Philipp Wich <jo@mein.io>
 
---- a/pppd/Makefile.linux
-+++ b/pppd/Makefile.linux
-@@ -51,6 +51,9 @@ MPPE=y
- # and that the kernel driver support PPP packet filtering.
- #FILTER=y
+--- a/configure.ac
++++ b/configure.ac
+@@ -306,6 +306,9 @@ AM_CONDITIONAL(PPP_WITH_PAM, test "x${wi
+ # With libpcap support, activate pppd on network activity
+ AX_CHECK_PCAP
  
-+# Support for precompiled filters
-+PRECOMPILED_FILTER=y
++# internal statically linked pcap
++AM_CONDITIONAL(PPP_WITH_PRECOMPILED_FILTER, test "x${with_static_pcap}" = "xyes")
 +
- # Uncomment the next line to enable multilink PPP (enabled by default)
- # Linux distributions: Please leave multilink ENABLED in your builds
- # of pppd!
-@@ -214,6 +217,14 @@ LIBS    += -lpcap -L$(STAGING_DIR)/usr/l
- CFLAGS  += -DPPP_FILTER -I$(STAGING_DIR)/usr/include
+ #
+ # SunOS provides a version of libpcap that would work, but SunOS has no support for activity filter
+ AM_CONDITIONAL([PPP_WITH_FILTER], [ test "x${with_pcap}" = "xyes" && test "x${build_sunos}" != "xyes" ])
+@@ -348,6 +351,7 @@ $PACKAGE_NAME version $PACKAGE_VERSION
+     With libatm..........: ${with_atm:-no}
+     With libpam..........: ${with_pam:-no}
+     With libpcap.........: ${with_pcap:-no}
++    With static libpcap..: ${with_static_pcap:-no}
+     With libsrp..........: ${with_srp:-no}
+     C Compiler...........: $CC $CFLAGS
+     Linker...............: $LD $LDFLAGS $LIBS
+--- a/pppd/Makefile.am
++++ b/pppd/Makefile.am
+@@ -137,6 +137,12 @@ pppd_LDFLAGS += $(PCAP_LDFLAGS)
+ pppd_LIBS += $(PCAP_LIBS)
  endif
  
-+ifdef PRECOMPILED_FILTER
-+PPPDSRCS += pcap_pcc.c
-+HEADERS  += pcap_pcc.h
-+PPPDOBJS += pcap_pcc.o
-+LIBS	+= $(STAGING_DIR)/usr/lib/libpcap.a
-+CFLAGS	+= -DPPP_FILTER -DPPP_PRECOMPILED_FILTER -I$(STAGING_DIR)/usr/include
++if PPP_WITH_PRECOMPILED_FILTER
++pppd_SOURCES += pcap_pcc.c
++pppd_include_HEADERS += pcap_pcc.h
++pppd_LIBS += $(STAGING_DIR)/usr/lib/libpcap.a
 +endif
 +
- ifdef HAVE_INET6
-      PPPDSRCS += ipv6cp.c eui64.c
-      HEADERS  += ipv6cp.h eui64.h
+ if PPP_WITH_PLUGINS
+ pppd_CPPFLAGS += -DPPPD_PLUGIN_DIR='"@PPPD_PLUGIN_DIR@"'
+ pppd_LIBS += -ldl
 --- a/pppd/options.c
 +++ b/pppd/options.c
-@@ -56,6 +56,7 @@
+@@ -62,6 +62,7 @@
  
- #ifdef PPP_FILTER
+ #ifdef PPP_WITH_FILTER
  #include <pcap.h>
 +#include <pcap-bpf.h>
  /*
   * There have been 3 or 4 different names for this in libpcap CVS, but
   * this seems to be what they have settled on...
-@@ -168,6 +169,13 @@ static int setlogfile(char **);
+@@ -182,6 +183,13 @@ static int setlogfile(char **);
  static int loadplugin(char **);
  #endif
  
-+#ifdef PPP_PRECOMPILED_FILTER
++#ifdef PPP_WITH_PRECOMPILED_FILTER
 +#include "pcap_pcc.h"
 +static int setprecompiledpassfilter(char **);
 +static int setprecompiledactivefilter(char **);
-+#undef PPP_FILTER
++#undef PPP_WITH_FILTER
 +#endif
 +
- #ifdef PPP_FILTER
+ #ifdef PPP_WITH_FILTER
  static int setpassfilter(char **);
  static int setactivefilter(char **);
-@@ -360,6 +368,14 @@ option_t general_options[] = {
+@@ -391,6 +399,14 @@ struct option general_options[] = {
        "set filter for active pkts", OPT_PRIO },
  #endif
  
-+#ifdef PPP_PRECOMPILED_FILTER
++#ifdef PPP_WITH_PRECOMPILED_FILTER
 +    { "precompiled-pass-filter", 1, setprecompiledpassfilter,
 +      "set precompiled filter for packets to pass", OPT_PRIO },
 +
@@ -74,14 +82,14 @@ Signed-off-by: Jo-Philipp Wich <jo@mein.io>
 +      "set precompiled filter for active pkts", OPT_PRIO },
 +#endif
 +
- #ifdef MAXOCTETS
      { "maxoctets", o_int, &maxoctets,
        "Set connection traffic limit",
-@@ -1468,6 +1484,27 @@ callfile(char **argv)
+       OPT_PRIO | OPT_LLIMIT | OPT_NOINCR | OPT_ZEROINF },
+@@ -1666,6 +1682,27 @@ callfile(char **argv)
      return ok;
  }
  
-+#ifdef PPP_PRECOMPILED_FILTER
++#ifdef PPP_WITH_PRECOMPILED_FILTER
 +/*
 + * setprecompiledpassfilter - Set the pass filter for packets using a
 + * precompiled expression
@@ -102,18 +110,19 @@ Signed-off-by: Jo-Philipp Wich <jo@mein.io>
 +}
 +#endif
 +
- #ifdef PPP_FILTER
+ #ifdef PPP_WITH_FILTER
  /*
   * setpassfilter - Set the pass filter for packets
 --- /dev/null
 +++ b/pppd/pcap_pcc.c
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +#include <pcap.h>
 +#include <pcap-bpf.h>
 +#include <stdio.h>
 +#include <stdlib.h>
 +#include <string.h>
 +#include <errno.h>
++#include "options.h"
 +#include "pppd.h"
 +
 +int pcap_pre_compiled (char * fname, struct bpf_program *p)
@@ -123,7 +132,7 @@ Signed-off-by: Jo-Philipp Wich <jo@mein.io>
 +    FILE *f = fopen (fname, "r");
 +    if (!f)
 +    {
-+       option_error("error opening precompiled active-filter '%s': %s",
++       ppp_option_error("error opening precompiled active-filter '%s': %s",
 +                    fname, strerror (errno));
 +       return 0;
 +    }
@@ -167,18 +176,18 @@ Signed-off-by: Jo-Philipp Wich <jo@mein.io>
 +    } 
 +    if (size != index)
 +    {
-+       option_error("error in precompiled active-filter,"
-+                    " expected %d expressions, got %dn",
-+                    size, index);
++       ppp_option_error("error in precompiled active-filter,"
++                        " expected %d expressions, got %dn",
++                        size, index);
 +       ret = 0;
 +    }
 +    fclose(f);
 +    return ret;
 +
 +err:
-+  option_error("error in precompiled active-filter"
-+              " expression line %s:%d (wrong size)\n", 
-+              fname, line);
++  ppp_option_error("error in precompiled active-filter"
++                   " expression line %s:%d (wrong size)\n",
++                   fname, line);
 +  fclose (f);
 +  return 0;
 +}

@@ -1,0 +1,53 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 6 Aug 2025 10:52:03 +0200
+Subject: [PATCH] mac80211: estimate expected throughput if not provided by
+ driver/rc
+
+Estimate the tx throughput based on the expected per-packet tx time.
+This is useful for mesh implementations that rely on expected throughput,
+e.g. 802.11s or batman-adv.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -2977,6 +2977,29 @@ static void sta_set_link_sinfo(struct st
+ 	}
+ }
+ 
++static u32 sta_estimate_expected_throughput(struct sta_info *sta,
++					    struct station_info *sinfo)
++{
++	struct ieee80211_sub_if_data *sdata = sta->sdata;
++	struct ieee80211_local *local = sdata->local;
++	struct rate_info *ri = &sinfo->txrate;
++	struct ieee80211_hw *hw = &local->hw;
++	struct ieee80211_chanctx_conf *conf;
++	u32 duration;
++	u8 band = 0;
++
++	conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
++	if (conf)
++			band = conf->def.chan->band;
++
++	duration = ieee80211_rate_expected_tx_airtime(hw, NULL, ri, band, true, 1024);
++	duration += duration >> 4; /* add assumed packet error rate of ~6% */
++	if (!duration)
++		return 0;
++
++	return ((1024 * USEC_PER_SEC) / duration) * 8;
++}
++
+ void sta_set_sinfo(struct sta_info *sta, struct station_info *sinfo,
+ 		   bool tidstats)
+ {
+@@ -3201,6 +3224,8 @@ void sta_set_sinfo(struct sta_info *sta,
+ 		sinfo->sta_flags.set |= BIT(NL80211_STA_FLAG_TDLS_PEER);
+ 
+ 	thr = sta_get_expected_throughput(sta);
++	if (!thr && (sinfo->filled & BIT_ULL(NL80211_STA_INFO_TX_BITRATE)))
++	    thr = sta_estimate_expected_throughput(sta, sinfo);
+ 
+ 	if (thr != 0) {
+ 		sinfo->filled |= BIT_ULL(NL80211_STA_INFO_EXPECTED_THROUGHPUT);

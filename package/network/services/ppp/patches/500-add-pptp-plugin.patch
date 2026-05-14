@@ -1,59 +1,43 @@
---- a/configure
-+++ b/configure
-@@ -133,7 +133,7 @@ if [ -d "$ksrc" ]; then
-     mkmkf $ksrc/Makedefs$compiletype Makedefs.com
-     for dir in pppd pppstats chat pppdump pppd/plugins pppd/plugins/pppoe \
- 	       pppd/plugins/radius pppd/plugins/pppoatm \
--	       pppd/plugins/pppol2tp; do
-+	       pppd/plugins/pppol2tp pppd/plugins/pptp ; do
- 	mkmkf $dir/Makefile.$makext $dir/Makefile
-     done
-     if [ -f $ksrc/Makefile.$makext$archvariant ]; then
---- a/pppd/plugins/Makefile.linux
-+++ b/pppd/plugins/Makefile.linux
-@@ -14,7 +14,7 @@ INSTALL	= install
- # EAP-TLS
- CFLAGS += -DUSE_EAPTLS=1
+--- a/configure.ac
++++ b/configure.ac
+@@ -333,6 +333,7 @@ AC_CONFIG_FILES([
+     pppd/plugins/pppoatm/Makefile
+     pppd/plugins/pppol2tp/Makefile
+     pppd/plugins/radius/Makefile
++    pppd/plugins/pptp/Makefile
+     pppdump/Makefile
+     pppstats/Makefile
+     scripts/Makefile
+--- a/pppd/plugins/Makefile.am
++++ b/pppd/plugins/Makefile.am
+@@ -17,5 +17,5 @@ winbind_la_LDFLAGS = $(PLUGIN_LDFLAGS)
+ winbind_la_SOURCES = winbind.c
  
--SUBDIRS := pppoe pppoatm pppol2tp
-+SUBDIRS := pppoe pppoatm pppol2tp pptp
- # Uncomment the next line to include the radius authentication plugin
- SUBDIRS += radius
- PLUGINS := minconn.so passprompt.so passwordfd.so winbind.so
+ if !SUNOS
+-SUBDIRS = pppoe pppoatm pppol2tp radius
++SUBDIRS = pppoe pppoatm pppol2tp radius pptp
+ endif
 --- /dev/null
-+++ b/pppd/plugins/pptp/Makefile.linux
-@@ -0,0 +1,31 @@
-+#
-+# This program may be distributed according to the terms of the GNU
-+# General Public License, version 2 or (at your option) any later version.
-+#
-+# $Id: Makefile.linux,v 1.9 2012/05/04 21:48:00 dgolle Exp $
-+#***********************************************************************
++++ b/pppd/plugins/pptp/Makefile.am
+@@ -0,0 +1,18 @@
++pppd_plugin_LTLIBRARIES = pptp.la
++pppd_plugindir = $(PPPD_PLUGIN_DIR)
 +
-+DESTDIR = $(INSTROOT)@DESTDIR@
-+LIBDIR = $(DESTDIR)/lib/pppd/$(PPPDVERSION)
++noinst_HEADERS = \
++    dirutil.h \
++    orckit_quirks.h \
++    pptp_callmgr.h \
++    pptp_ctrl.h \
++    pptp_msg.h \
++    pptp_options.h \
++    pptp_quirks.h \
++    util.h \
++    vector.h
 +
-+PPPDVERSION = $(shell awk -F '"' '/VERSION/ { print $$2; }' ../../patchlevel.h)
-+
-+INSTALL	= install
-+
-+COPTS=-O2 -g
-+CFLAGS  = $(COPTS) -I. -I../.. -I../../../include -fPIC -DPPPD_VERSION=\"$(PPPDVERSION)\"
-+all: pptp.so
-+
-+%.o: %.c
-+	$(CC) $(CFLAGS) -c -o $@ $<
-+
-+pptp.so: dirutil.o orckit_quirks.o pptp.o pptp_callmgr.o pptp_ctrl.o pptp_quirks.o util.o vector.o
-+	$(CC) -o pptp.so -shared dirutil.o orckit_quirks.o pptp.o pptp_callmgr.o pptp_ctrl.o pptp_quirks.o util.o vector.o
-+
-+install: all
-+	$(INSTALL) -d -m 755 $(LIBDIR)
-+	$(INSTALL) -c -m 4550 pptp.so $(LIBDIR)
-+
-+clean:
-+	rm -f *.o *.so
-+
++pptp_la_CPPFLAGS = -I${top_srcdir} -DSYSCONFDIR=\"${sysconfdir}\" -DPLUGIN
++pptp_la_LDFLAGS = -fPIC -module -avoid-version
++pptp_la_SOURCES = dirutil.c orckit_quirks.c pptp.c pptp_callmgr.c pptp_ctrl.c \
++    pptp_quirks.c util.c vector.c
 --- /dev/null
 +++ b/pppd/plugins/pptp/dirutil.c
 @@ -0,0 +1,68 @@
@@ -334,7 +318,7 @@
 +xeb xeb@mail.ru
 --- /dev/null
 +++ b/pppd/plugins/pptp/pptp.c
-@@ -0,0 +1,323 @@
+@@ -0,0 +1,325 @@
 +/***************************************************************************
 + *   Copyright (C) 2006 by Kozlov D. <xeb@mail.ru>                         *
 + *   some cleanup done (C) 2012 by Daniel Golle <dgolle@allnet.de>         *
@@ -377,6 +361,8 @@
 +#include <sys/ioctl.h>
 +
 +#include "pppd.h"
++#include "pppd-private.h"
++#include "options.h"
 +#include "fsm.h"
 +#include "lcp.h"
 +#include "ipcp.h"
@@ -385,7 +371,7 @@
 +
 +#include "pptp_callmgr.h"
 +#include <net/if.h>
-+#include <net/ethernet.h>
++#include <linux/if_ether.h>
 +#include <linux/if_pppox.h>
 +
 +#include <stdio.h>
@@ -437,8 +423,8 @@
 +    check_options: NULL,
 +    connect: &pptp_connect,
 +    disconnect: &pptp_disconnect,
-+    establish_ppp: &generic_establish_ppp,
-+    disestablish_ppp: &generic_disestablish_ppp,
++    establish_ppp: &ppp_generic_establish,
++    disestablish_ppp: &ppp_generic_disestablish,
 +    close: NULL,
 +    cleanup: NULL
 +};
@@ -446,7 +432,7 @@
 +static int pptp_start_server(void)
 +{
 +	pptp_fd=pptp_sock;
-+	sprintf(ppp_devnam,"pptp (%s)",pptp_client);
++	sprintf(ppp_devname,"pptp (%s)",pptp_client);
 +
 +	return pptp_fd;
 +}
@@ -527,7 +513,7 @@
 +		return -1;
 +	}
 +
-+	sprintf(ppp_devnam,"pptp (%s)",pptp_server);
++	sprintf(ppp_devname,"pptp (%s)",pptp_server);
 +
 +	return pptp_fd;
 +}
@@ -651,7 +637,7 @@
 +
 +void plugin_init(void)
 +{
-+    add_options(Options);
++    ppp_add_options(Options);
 +
 +    info("PPTP plugin version %s", PPTP_VERSION);
 +

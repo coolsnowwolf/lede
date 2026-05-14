@@ -1,0 +1,199 @@
+From 02ac5f9d6caec96071103f7c62b5117526e47b64 Mon Sep 17 00:00:00 2001
+From: Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
+Date: Thu, 24 Oct 2024 02:20:02 +0000
+Subject: [PATCH] of: property: add of_graph_get_next_port()
+
+We have endpoint base functions
+	- of_graph_get_next_endpoint()
+	- of_graph_get_endpoint_count()
+	- for_each_endpoint_of_node()
+
+Here, for_each_endpoint_of_node() loop finds each endpoints
+
+	ports {
+		port@0 {
+(1)			endpoint {...};
+		};
+		port@1 {
+(2)			endpoint {...};
+		};
+		...
+	};
+
+In above case, it finds endpoint as (1) -> (2) -> ...
+
+Basically, user/driver knows which port is used for what, but not in
+all cases. For example on flexible/generic driver case, how many ports
+are used is not fixed.
+
+For example Sound Generic Card driver which is very flexible/generic and
+used from many venders can't know how many ports are used, and used for
+what, because it depends on each vender SoC and/or its used board.
+
+And more, the port can have multi endpoints. For example Generic Sound
+Card case, it supports many type of connection between CPU / Codec, and
+some of them uses multi endpoint in one port. see below.
+
+	ports {
+(A)		port@0 {
+(1)			endpoint@0 {...};
+(2)			endpoint@1 {...};
+		};
+(B)		port@1 {
+(3)			endpoint {...};
+		};
+		...
+	};
+
+Generic Sound Card want to handle each connection via "port" base instead
+of "endpoint" base. But, it is very difficult to handle each "port" via
+existing for_each_endpoint_of_node(). Because getting each "port" via
+of_get_parent() from each "endpoint" doesn't work. For example in above
+case, both (1) (2) endpoint has same "port" (= A).
+
+Add "port" base functions.
+
+Signed-off-by: Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
+Link: https://lore.kernel.org/r/87ldyeb5t9.wl-kuninori.morimoto.gx@renesas.com
+Signed-off-by: Rob Herring (Arm) <robh@kernel.org>
+---
+ drivers/of/property.c    | 54 ++++++++++++++++++++++++++++++++++++++++
+ include/linux/of_graph.h | 28 +++++++++++++++++++++
+ 2 files changed, 82 insertions(+)
+
+--- a/drivers/of/property.c
++++ b/drivers/of/property.c
+@@ -631,6 +631,43 @@ struct device_node *of_graph_get_port_by
+ EXPORT_SYMBOL(of_graph_get_port_by_id);
+ 
+ /**
++ * of_graph_get_next_port() - get next port node.
++ * @parent: pointer to the parent device node, or parent ports node
++ * @prev: previous port node, or NULL to get first
++ *
++ * Parent device node can be used as @parent whether device node has ports node
++ * or not. It will work same as ports@0 node.
++ *
++ * Return: A 'port' node pointer with refcount incremented. Refcount
++ * of the passed @prev node is decremented.
++ */
++struct device_node *of_graph_get_next_port(const struct device_node *parent,
++					   struct device_node *prev)
++{
++	if (!parent)
++		return NULL;
++
++	if (!prev) {
++		struct device_node *node __free(device_node) =
++			of_get_child_by_name(parent, "ports");
++
++		if (node)
++			parent = node;
++
++		return of_get_child_by_name(parent, "port");
++	}
++
++	do {
++		prev = of_get_next_child(parent, prev);
++		if (!prev)
++			break;
++	} while (!of_node_name_eq(prev, "port"));
++
++	return prev;
++}
++EXPORT_SYMBOL(of_graph_get_next_port);
++
++/**
+  * of_graph_get_next_endpoint() - get next endpoint node
+  * @parent: pointer to the parent device node
+  * @prev: previous endpoint node, or NULL to get first
+@@ -824,6 +861,23 @@ unsigned int of_graph_get_endpoint_count
+ EXPORT_SYMBOL(of_graph_get_endpoint_count);
+ 
+ /**
++ * of_graph_get_port_count() - get the number of port in a device or ports node
++ * @np: pointer to the device or ports node
++ *
++ * Return: count of port of this device or ports node
++ */
++unsigned int of_graph_get_port_count(struct device_node *np)
++{
++	unsigned int num = 0;
++
++	for_each_of_graph_port(np, port)
++		num++;
++
++	return num;
++}
++EXPORT_SYMBOL(of_graph_get_port_count);
++
++/**
+  * of_graph_get_remote_node() - get remote parent device_node for given port/endpoint
+  * @node: pointer to parent device_node containing graph port/endpoint
+  * @port: identifier (value of reg property) of the parent port node
+--- a/include/linux/of_graph.h
++++ b/include/linux/of_graph.h
+@@ -11,6 +11,7 @@
+ #ifndef __LINUX_OF_GRAPH_H
+ #define __LINUX_OF_GRAPH_H
+ 
++#include <linux/cleanup.h>
+ #include <linux/types.h>
+ #include <linux/errno.h>
+ 
+@@ -37,14 +38,29 @@ struct of_endpoint {
+ 	for (child = of_graph_get_next_endpoint(parent, NULL); child != NULL; \
+ 	     child = of_graph_get_next_endpoint(parent, child))
+ 
++/**
++ * for_each_of_graph_port - iterate over every port in a device or ports node
++ * @parent: parent device or ports node containing port
++ * @child: loop variable pointing to the current port node
++ *
++ * When breaking out of the loop, and continue to use the @child, you need to
++ * use return_ptr(@child) or no_free_ptr(@child) not to call __free() for it.
++ */
++#define for_each_of_graph_port(parent, child)			\
++	for (struct device_node *child __free(device_node) = of_graph_get_next_port(parent, NULL);\
++	     child != NULL; child = of_graph_get_next_port(parent, child))
++
+ #ifdef CONFIG_OF
+ bool of_graph_is_present(const struct device_node *node);
+ int of_graph_parse_endpoint(const struct device_node *node,
+ 				struct of_endpoint *endpoint);
+ unsigned int of_graph_get_endpoint_count(const struct device_node *np);
++unsigned int of_graph_get_port_count(struct device_node *np);
+ struct device_node *of_graph_get_port_by_id(struct device_node *node, u32 id);
+ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
+ 					struct device_node *previous);
++struct device_node *of_graph_get_next_port(const struct device_node *parent,
++					   struct device_node *port);
+ struct device_node *of_graph_get_endpoint_by_regs(
+ 		const struct device_node *parent, int port_reg, int reg);
+ struct device_node *of_graph_get_remote_endpoint(
+@@ -73,6 +89,11 @@ static inline unsigned int of_graph_get_
+ 	return 0;
+ }
+ 
++static inline unsigned int of_graph_get_port_count(struct device_node *np)
++{
++	return 0;
++}
++
+ static inline struct device_node *of_graph_get_port_by_id(
+ 					struct device_node *node, u32 id)
+ {
+@@ -83,6 +104,13 @@ static inline struct device_node *of_gra
+ 					const struct device_node *parent,
+ 					struct device_node *previous)
+ {
++	return NULL;
++}
++
++static inline struct device_node *of_graph_get_next_port(
++					const struct device_node *parent,
++					struct device_node *previous)
++{
+ 	return NULL;
+ }
+ 

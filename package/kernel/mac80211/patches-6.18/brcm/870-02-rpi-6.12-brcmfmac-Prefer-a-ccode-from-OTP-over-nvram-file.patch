@@ -1,0 +1,130 @@
+From 3ac592da09acb47b728ef320e9fecde55c8e0824 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Fri, 26 Jun 2020 11:51:05 +0100
+Subject: [PATCH] brcmfmac: Prefer a ccode from OTP over nvram file
+
+Allow the nvram file to set a default ccode (regulatory domain) without
+overriding one set in OTP.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../broadcom/brcm80211/brcmfmac/cfg80211.c    | 39 +++++++++++++------
+ .../broadcom/brcm80211/brcmfmac/firmware.c    | 21 +++++++++-
+ 2 files changed, 47 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cfg80211.c
+@@ -9,6 +9,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/module.h>
+ #include <linux/vmalloc.h>
++#include <linux/ctype.h>
+ #include <net/cfg80211.h>
+ #include <net/netlink.h>
+ #include <uapi/linux/if_arp.h>
+@@ -8270,31 +8271,45 @@ static void brcmf_cfg80211_reg_notifier(
+ 	struct brcmf_if *ifp = brcmf_get_ifp(cfg->pub, 0);
+ 	struct brcmf_pub *drvr = cfg->pub;
+ 	struct brcmf_fil_country_le ccreq;
++	char *alpha2;
+ 	s32 err;
+ 	int i;
+ 
+-	/* The country code gets set to "00" by default at boot, ignore */
+-	if (req->alpha2[0] == '0' && req->alpha2[1] == '0')
++	err = brcmf_fil_iovar_data_get(ifp, "country", &ccreq, sizeof(ccreq));
++	if (err) {
++		bphy_err(drvr, "Country code iovar returned err = %d\n", err);
+ 		return;
++	}
++
++	/* The country code gets set to "00" by default at boot - substitute
++	 * any saved ccode from the nvram file unless there is a valid code
++	 * already set.
++	 */
++	alpha2 = req->alpha2;
++	if (alpha2[0] == '0' && alpha2[1] == '0') {
++		extern char saved_ccode[2];
++
++		if ((isupper(ccreq.country_abbrev[0]) &&
++		     isupper(ccreq.country_abbrev[1])) ||
++		    !saved_ccode[0])
++			return;
++		alpha2 = saved_ccode;
++		pr_debug("brcmfmac: substituting saved ccode %c%c\n",
++			 alpha2[0], alpha2[1]);
++	}
+ 
+ 	/* ignore non-ISO3166 country codes */
+ 	for (i = 0; i < 2; i++)
+-		if (req->alpha2[i] < 'A' || req->alpha2[i] > 'Z') {
++		if (alpha2[i] < 'A' || alpha2[i] > 'Z') {
+ 			bphy_err(drvr, "not an ISO3166 code (0x%02x 0x%02x)\n",
+-				 req->alpha2[0], req->alpha2[1]);
++				 alpha2[0], alpha2[1]);
+ 			return;
+ 		}
+ 
+ 	brcmf_dbg(TRACE, "Enter: initiator=%d, alpha=%c%c\n", req->initiator,
+-		  req->alpha2[0], req->alpha2[1]);
+-
+-	err = brcmf_fil_iovar_data_get(ifp, "country", &ccreq, sizeof(ccreq));
+-	if (err) {
+-		bphy_err(drvr, "Country code iovar returned err = %d\n", err);
+-		return;
+-	}
++		  alpha2[0], alpha2[1]);
+ 
+-	err = brcmf_translate_country_code(ifp->drvr, req->alpha2, &ccreq);
++	err = brcmf_translate_country_code(ifp->drvr, alpha2, &ccreq);
+ 	if (err)
+ 		return;
+ 
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/firmware.c
+@@ -10,6 +10,7 @@
+ #include <linux/firmware.h>
+ #include <linux/module.h>
+ #include <linux/bcm47xx_nvram.h>
++#include <linux/ctype.h>
+ 
+ #include "debug.h"
+ #include "firmware.h"
+@@ -32,6 +33,8 @@ enum nvram_parser_state {
+ 	END
+ };
+ 
++char saved_ccode[2] = {};
++
+ /**
+  * struct nvram_parser - internal info for parser.
+  *
+@@ -566,11 +569,27 @@ static int brcmf_fw_request_nvram_done(c
+ 		}
+ 	}
+ 
+-	if (data)
++	if (data) {
++		char *ccode = strnstr((char *)data, "ccode=", data_len);
++		/* Ensure this is a whole token */
++		if (ccode && ((void *)ccode == (void *)data || isspace(ccode[-1]))) {
++			/* Comment out the line */
++			ccode[0] = '#';
++			ccode += 6;
++			if (isupper(ccode[0]) && isupper(ccode[1]) &&
++			    isspace(ccode[2])) {
++				pr_debug("brcmfmac: intercepting ccode=%c%c\n",
++					 ccode[0], ccode[1]);
++				saved_ccode[0] = ccode[0];
++				saved_ccode[1] = ccode[1];
++			}
++		};
++
+ 		nvram = brcmf_fw_nvram_strip(data, data_len, &nvram_length,
+ 					     fwctx->req->domain_nr,
+ 					     fwctx->req->bus_nr,
+ 					     fwctx->dev);
++	}
+ 
+ 	if (free_bcm47xx_nvram)
+ 		bcm47xx_nvram_release_contents(data);

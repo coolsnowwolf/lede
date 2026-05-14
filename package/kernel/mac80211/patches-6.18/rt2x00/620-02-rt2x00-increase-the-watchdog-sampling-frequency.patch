@@ -1,0 +1,74 @@
+From aec50d1a30349759de0ac535f54c3441bf7ebef7 Mon Sep 17 00:00:00 2001
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Sun, 22 Dec 2024 17:06:59 +0800
+Subject: [PATCH 2/2] rt2x00: increase the watchdog sampling frequency
+
+Increase the sampling frequency of the watchdog when the hung
+counter reaches the threshold to avoid some unnecessary resets.
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ .../net/wireless/ralink/rt2x00/rt2800lib.c    | 45 +++++++++++++------
+ 1 file changed, 32 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
+@@ -1320,26 +1320,45 @@ static bool rt2800_watchdog_hung(struct
+ 	return true;
+ }
+ 
++static inline bool check_dma_busy_rx(u32 reg_cfg, u32 reg_int)
++{
++	return (rt2x00_get_field32(reg_cfg, WPDMA_GLO_CFG_RX_DMA_BUSY) &&
++		rt2x00_get_field32(reg_int, INT_SOURCE_CSR_RX_COHERENT));
++}
++
++static inline bool check_dma_busy_tx(u32 reg_cfg, u32 reg_int)
++{
++	return (rt2x00_get_field32(reg_cfg, WPDMA_GLO_CFG_TX_DMA_BUSY) &&
++		rt2x00_get_field32(reg_int, INT_SOURCE_CSR_TX_COHERENT));
++}
++
+ static bool rt2800_watchdog_dma_busy(struct rt2x00_dev *rt2x00dev)
+ {
+ 	bool busy_rx, busy_tx;
+ 	u32 reg_cfg = rt2800_register_read(rt2x00dev, WPDMA_GLO_CFG);
+ 	u32 reg_int = rt2800_register_read(rt2x00dev, INT_SOURCE_CSR);
+ 
+-	if (rt2x00_get_field32(reg_cfg, WPDMA_GLO_CFG_RX_DMA_BUSY) &&
+-	    rt2x00_get_field32(reg_int, INT_SOURCE_CSR_RX_COHERENT))
+-		rt2x00dev->rxdma_busy++;
+-	else
+-		rt2x00dev->rxdma_busy = 0;
+-
+-	if (rt2x00_get_field32(reg_cfg, WPDMA_GLO_CFG_TX_DMA_BUSY) &&
+-	    rt2x00_get_field32(reg_int, INT_SOURCE_CSR_TX_COHERENT))
+-		rt2x00dev->txdma_busy++;
+-	else
+-		rt2x00dev->txdma_busy = 0;
++	rt2x00dev->rxdma_busy = check_dma_busy_rx(reg_cfg, reg_int) ?
++				rt2x00dev->rxdma_busy + 1 : 0;
++	rt2x00dev->txdma_busy = check_dma_busy_tx(reg_cfg, reg_int) ?
++				rt2x00dev->txdma_busy + 1 : 0;
++
++	if (rt2x00dev->rxdma_busy > 25 || rt2x00dev->txdma_busy > 25) {
++		int cnt;
++		for (cnt = 0; cnt < 10; cnt++) {
++			msleep(5);
++			reg_cfg = rt2800_register_read(rt2x00dev, WPDMA_GLO_CFG);
++			reg_int = rt2800_register_read(rt2x00dev, INT_SOURCE_CSR);
++
++			if (!check_dma_busy_rx(reg_cfg, reg_int))
++				rt2x00dev->rxdma_busy = 0;
++			if (!check_dma_busy_tx(reg_cfg, reg_int))
++				rt2x00dev->txdma_busy = 0;
++		}
++	}
+ 
+-	busy_rx = rt2x00dev->rxdma_busy > 30;
+-	busy_tx = rt2x00dev->txdma_busy > 30;
++	busy_rx = rt2x00dev->rxdma_busy > 40;
++	busy_tx = rt2x00dev->txdma_busy > 40;
+ 
+ 	if (!busy_rx && !busy_tx)
+ 		return false;

@@ -1,0 +1,69 @@
+From 88f17c87ddc9ee7467acdc322d383e5a443a55ab Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Mon, 8 Dec 2025 20:50:47 +0100
+Subject: [PATCH 1/2] wifi: ath11k: fix wrong usage of resource_size() causing
+ firmware panic
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On converting to the of_reserved_mem_region_to_resource() helper with
+commit 900730dc4705 ("wifi: ath: Use
+of_reserved_mem_region_to_resource() for "memory-region"") a logic error
+was introduced in the ath11k_core_coldboot_cal_support() if condition.
+
+The original code checked for hremote_node presence and skipped
+ath11k_core_coldboot_cal_support() in the other switch case but now
+everything is driven entirely on the values of the resource struct.
+
+resource_size() (in this case) is wrongly assumed to return a size of
+zero if the passed resource struct is init to zero. This is not the case
+as a resource struct should be always init with correct values (or at
+best set the end value to -1 to signal it's not configured)
+(the return value of resource_size() for a resource struct with start
+and end set to zero is 1)
+
+On top of this, using resource_size() to check if a resource struct is
+initialized or not is generally wrong and other measure should be used
+instead.
+
+To better handle this, use the DEFINE_RES macro to initialize the
+resource struct and set the IORESOURCE_UNSET flag by default.
+
+Replace the resource_size() check with checking for the resource struct
+flags and check if it's IORESOURCE_UNSET.
+
+This change effectively restore the original logic and restore correct
+loading of the ath11k firmware (restoring correct functionality of
+Wi-Fi)
+
+Cc: stable@vger.kernel.org
+Fixes: 900730dc4705 ("wifi: ath: Use of_reserved_mem_region_to_resource() for "memory-region"")
+Link: https://lore.kernel.org/all/20251207215359.28895-1-ansuelsmth@gmail.com/T/#m990492684913c5a158ff0e5fc90697d8ad95351b
+Cc: Ilpo Järvinen <ilpo.jarvinen@linux.intel.com>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/wireless/ath/ath11k/qmi.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -2039,8 +2039,8 @@ static int ath11k_qmi_alloc_target_mem_c
+ 
+ static int ath11k_qmi_assign_target_mem_chunk(struct ath11k_base *ab)
+ {
++	struct resource res = DEFINE_RES_NAMED(0, 0, NULL, IORESOURCE_UNSET);
+ 	struct device *dev = ab->dev;
+-	struct resource res = {};
+ 	u32 host_ddr_sz;
+ 	int i, idx, ret;
+ 
+@@ -2086,7 +2086,7 @@ static int ath11k_qmi_assign_target_mem_
+ 			}
+ 
+ 			if (ath11k_core_coldboot_cal_support(ab)) {
+-				if (resource_size(&res)) {
++				if (res.flags != IORESOURCE_UNSET) {
+ 					ab->qmi.target_mem[idx].paddr =
+ 							res.start + host_ddr_sz;
+ 					ab->qmi.target_mem[idx].iaddr =

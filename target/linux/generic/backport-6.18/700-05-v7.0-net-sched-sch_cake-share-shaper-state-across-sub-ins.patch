@@ -1,0 +1,175 @@
+From 090dde0780266eb80126fa970870bafdb4e937c3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20K=C3=B6ppeler?= <j.koeppeler@tu-berlin.de>
+Date: Fri, 9 Jan 2026 14:15:34 +0100
+Subject: [PATCH 5/7] net/sched: sch_cake: share shaper state across
+ sub-instances of cake_mq
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This commit adds shared shaper state across the cake instances beneath a
+cake_mq qdisc. It works by periodically tracking the number of active
+instances, and scaling the configured rate by the number of active
+queues.
+
+The scan is lockless and simply reads the qlen and the last_active state
+variable of each of the instances configured beneath the parent cake_mq
+instance. Locking is not required since the values are only updated by
+the owning instance, and eventual consistency is sufficient for the
+purpose of estimating the number of active queues.
+
+The interval for scanning the number of active queues is set to 200 us.
+We found this to be a good tradeoff between overhead and response time.
+For a detailed analysis of this aspect see the Netdevconf talk:
+
+https://netdevconf.info/0x19/docs/netdev-0x19-paper16-talk-paper.pdf
+
+Reviewed-by: Jamal Hadi Salim <jhs@mojatatu.com>
+Signed-off-by: Jonas Köppeler <j.koeppeler@tu-berlin.de>
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Link: https://patch.msgid.link/20260109-mq-cake-sub-qdisc-v8-5-8d613fece5d8@redhat.com
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ Documentation/netlink/specs/tc.yaml |  3 ++
+ include/uapi/linux/pkt_sched.h      |  1 +
+ net/sched/sch_cake.c                | 51 +++++++++++++++++++++++++++++
+ 3 files changed, 55 insertions(+)
+
+--- a/Documentation/netlink/specs/tc.yaml
++++ b/Documentation/netlink/specs/tc.yaml
+@@ -2207,6 +2207,9 @@ attribute-sets:
+       -
+         name: blue-timer-us
+         type: s32
++      -
++        name: active-queues
++        type: u32
+   -
+     name: cake-tin-stats-attrs
+     name-prefix: tca-cake-tin-stats-
+--- a/include/uapi/linux/pkt_sched.h
++++ b/include/uapi/linux/pkt_sched.h
+@@ -1036,6 +1036,7 @@ enum {
+ 	TCA_CAKE_STATS_DROP_NEXT_US,
+ 	TCA_CAKE_STATS_P_DROP,
+ 	TCA_CAKE_STATS_BLUE_TIMER_US,
++	TCA_CAKE_STATS_ACTIVE_QUEUES,
+ 	__TCA_CAKE_STATS_MAX
+ };
+ #define TCA_CAKE_STATS_MAX (__TCA_CAKE_STATS_MAX - 1)
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -202,6 +202,7 @@ struct cake_sched_config {
+ 	u64		rate_bps;
+ 	u64		interval;
+ 	u64		target;
++	u64		sync_time;
+ 	u32		buffer_config_limit;
+ 	u32		fwmark_mask;
+ 	u16		fwmark_shft;
+@@ -258,6 +259,11 @@ struct cake_sched_data {
+ 	u16		max_adjlen;
+ 	u16		min_netlen;
+ 	u16		min_adjlen;
++
++	/* mq sync state */
++	u64		last_checked_active;
++	u64		last_active;
++	u32		active_queues;
+ };
+ 
+ enum {
+@@ -384,6 +390,8 @@ static const u32 inv_sqrt_cache[REC_INV_
+ 	1239850263, 1191209601, 1147878294, 1108955788
+ };
+ 
++static void cake_set_rate(struct cake_tin_data *b, u64 rate, u32 mtu,
++			  u64 target_ns, u64 rtt_est_ns);
+ /* http://en.wikipedia.org/wiki/Methods_of_computing_square_roots
+  * new_invsqrt = (invsqrt / 2) * (3 - count * invsqrt^2)
+  *
+@@ -2009,6 +2017,40 @@ static struct sk_buff *cake_dequeue(stru
+ 	u64 delay;
+ 	u32 len;
+ 
++	if (q->config->is_shared && now - q->last_checked_active >= q->config->sync_time) {
++		struct net_device *dev = qdisc_dev(sch);
++		struct cake_sched_data *other_priv;
++		u64 new_rate = q->config->rate_bps;
++		u64 other_qlen, other_last_active;
++		struct Qdisc *other_sch;
++		u32 num_active_qs = 1;
++		unsigned int ntx;
++
++		for (ntx = 0; ntx < dev->num_tx_queues; ntx++) {
++			other_sch = rcu_dereference(netdev_get_tx_queue(dev, ntx)->qdisc_sleeping);
++			other_priv = qdisc_priv(other_sch);
++
++			if (other_priv == q)
++				continue;
++
++			other_qlen = READ_ONCE(other_sch->q.qlen);
++			other_last_active = READ_ONCE(other_priv->last_active);
++
++			if (other_qlen || other_last_active > q->last_checked_active)
++				num_active_qs++;
++		}
++
++		if (num_active_qs > 1)
++			new_rate = div64_u64(q->config->rate_bps, num_active_qs);
++
++		/* mtu = 0 is used to only update the rate and not mess with cobalt params */
++		cake_set_rate(b, new_rate, 0, 0, 0);
++		q->last_checked_active = now;
++		q->active_queues = num_active_qs;
++		q->rate_ns = b->tin_rate_ns;
++		q->rate_shft = b->tin_rate_shft;
++	}
++
+ begin:
+ 	if (!sch->q.qlen)
+ 		return NULL;
+@@ -2208,6 +2250,7 @@ retry:
+ 
+ 	b->tin_ecn_mark += !!flow->cvars.ecn_marked;
+ 	qdisc_bstats_update(sch, skb);
++	WRITE_ONCE(q->last_active, now);
+ 
+ 	/* collect delay stats */
+ 	delay = ktime_to_ns(ktime_sub(now, cobalt_get_enqueue_time(skb)));
+@@ -2308,6 +2351,9 @@ static void cake_set_rate(struct cake_ti
+ 	b->tin_rate_ns   = rate_ns;
+ 	b->tin_rate_shft = rate_shft;
+ 
++	if (mtu == 0)
++		return;
++
+ 	byte_target_ns = (byte_target * rate_ns) >> rate_shft;
+ 
+ 	b->cparams.target = max((byte_target_ns * 3) / 2, target_ns);
+@@ -2774,6 +2820,7 @@ static void cake_config_init(struct cake
+ 			       */
+ 	q->rate_flags |= CAKE_FLAG_SPLIT_GSO;
+ 	q->is_shared = is_shared;
++	q->sync_time = 200 * NSEC_PER_USEC;
+ }
+ 
+ static int cake_init(struct Qdisc *sch, struct nlattr *opt,
+@@ -2845,6 +2892,9 @@ static int cake_init(struct Qdisc *sch,
+ 	qd->avg_peak_bandwidth = q->rate_bps;
+ 	qd->min_netlen = ~0;
+ 	qd->min_adjlen = ~0;
++	qd->active_queues = 0;
++	qd->last_checked_active = 0;
++
+ 	return 0;
+ err:
+ 	kvfree(qd->config);
+@@ -2977,6 +3027,7 @@ static int cake_dump_stats(struct Qdisc
+ 	PUT_STAT_U32(MAX_ADJLEN, q->max_adjlen);
+ 	PUT_STAT_U32(MIN_NETLEN, q->min_netlen);
+ 	PUT_STAT_U32(MIN_ADJLEN, q->min_adjlen);
++	PUT_STAT_U32(ACTIVE_QUEUES, q->active_queues);
+ 
+ #undef PUT_STAT_U32
+ #undef PUT_STAT_U64

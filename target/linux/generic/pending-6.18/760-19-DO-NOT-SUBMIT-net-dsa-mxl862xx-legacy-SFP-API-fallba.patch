@@ -1,0 +1,252 @@
+From 20be48bbcc89f5ca91e9d6adadeda9bd29d75c53 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 24 Mar 2026 18:19:56 +0000
+Subject: [PATCH 19/19] DO NOT SUBMIT: net: dsa: mxl862xx: legacy SFP API
+ fallback for old firmware
+
+Re-introduce the SYS_MISC_SFP_SET-based PCS implementation as a
+fallback for firmware versions older than 1.0.80 which lack the
+XPCS API. mxl862xx_setup_pcs() selects between the XPCS ops and
+legacy SFP ops based on firmware version.
+
+This commit is for downstream use only and must not be submitted
+upstream.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-api.h     |  22 +++
+ drivers/net/dsa/mxl862xx/mxl862xx-cmd.h     |   1 +
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c | 160 +++++++++++++++++++-
+ 3 files changed, 178 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-api.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-api.h
+@@ -2400,6 +2400,28 @@ struct mxl862xx_sys_fw_image_version {
+ } __packed;
+ 
+ /**
++ * struct mxl862xx_sys_sfp_cfg - legacy SFP/SerDes port configuration
++ * @port_id: port id (0 or 1)
++ * @option: config options (0 - SFP mode/speed/link-status, 1 - flow control)
++ * @mode: SFP mode (0 - auto, 1 - fix, 2 - disable)
++ * @speed: select speed when mode is 1
++ * @link: get link state
++ * @fc_en: flow control (0 - disable, 1 - enable)
++ */
++struct mxl862xx_sys_sfp_cfg {
++	u8 port_id:4;
++	u8 option:4;
++	union {
++		struct {
++			u8 mode;
++			u8 speed;
++			u8 link;
++		};
++		u8 fc_en;
++	};
++} __packed;
++
++/**
+  * enum mxl862xx_rmon_port_type - RMON counter table type
+  * @MXL862XX_RMON_CTP_PORT_RX: CTP RX counters
+  * @MXL862XX_RMON_CTP_PORT_TX: CTP TX counters
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
+@@ -85,6 +85,7 @@
+ 
+ #define SYS_MISC_FW_UPDATE		(SYS_MISC_MAGIC + 0x1)
+ #define SYS_MISC_FW_VERSION		(SYS_MISC_MAGIC + 0x2)
++#define SYS_MISC_SFP_SET		(SYS_MISC_MAGIC + 0xe)
+ 
+ #define MXL862XX_XPCS_MAGIC		0x1a00
+ #define MXL862XX_XPCS_PCS_CONFIG	(MXL862XX_XPCS_MAGIC + 0x1)
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -52,6 +52,156 @@ static struct mxl862xx_pcs *pcs_to_mxl86
+ 	return container_of(pcs, struct mxl862xx_pcs, pcs);
+ }
+ 
++/* Legacy SFP-based PCS implementation for firmware < 1.0.80 */
++static int mxl862xx_legacy_pcs_config(struct phylink_pcs *pcs,
++				      unsigned int neg_mode,
++				      phy_interface_t interface,
++				      const unsigned long *advertising,
++				      bool permit_pause_to_mac)
++{
++	struct mxl862xx_priv *priv = pcs_to_mxl862xx_pcs(pcs)->priv;
++	int port = pcs_to_mxl862xx_pcs(pcs)->port;
++	struct mxl862xx_sys_sfp_cfg ser_intf = {
++		.option = 0,
++		.mode = 1,
++	};
++
++	if (port != 9 && port != 13)
++		return 0;
++
++	if (port == 9)
++		ser_intf.port_id = 0;
++	else
++		ser_intf.port_id = 1;
++
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++		ser_intf.speed = 8;
++		break;
++	case PHY_INTERFACE_MODE_1000BASEX:
++		ser_intf.speed = (neg_mode & PHYLINK_PCS_NEG_INBAND) ? 1 : 7;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		ser_intf.speed = 4;
++		break;
++	case PHY_INTERFACE_MODE_10GBASER:
++		ser_intf.speed = 2;
++		break;
++	case PHY_INTERFACE_MODE_USXGMII:
++		ser_intf.speed = 3;
++		break;
++	default:
++		dev_err(priv->ds->dev, "unsupported interface: %s\n",
++			phy_modes(interface));
++		return -EINVAL;
++	}
++
++	return MXL862XX_API_WRITE(priv, SYS_MISC_SFP_SET, ser_intf);
++}
++
++static void mxl862xx_legacy_pcs_get_state(struct phylink_pcs *pcs,
++					  unsigned int neg_mode,
++					  struct phylink_link_state *state)
++{
++	struct mxl862xx_priv *priv = pcs_to_mxl862xx_pcs(pcs)->priv;
++	int port = pcs_to_mxl862xx_pcs(pcs)->port;
++	struct mxl862xx_port_link_cfg port_link_cfg = {
++		.port_id = port,
++	};
++	struct mxl862xx_port_cfg port_cfg = {
++		.port_id = port,
++	};
++	int ret;
++
++	ret = MXL862XX_API_READ(priv, MXL862XX_COMMON_PORTLINKCFGGET,
++				port_link_cfg);
++	if (ret)
++		return;
++
++	ret = MXL862XX_API_READ(priv, MXL862XX_COMMON_PORTCFGGET, port_cfg);
++	if (ret)
++		return;
++
++	state->link = (port_link_cfg.link == MXL862XX_PORT_LINK_UP);
++	state->an_complete = state->link;
++
++	switch (port_link_cfg.speed) {
++	case MXL862XX_PORT_SPEED_10:
++		state->speed = SPEED_10;
++		break;
++	case MXL862XX_PORT_SPEED_100:
++		state->speed = SPEED_100;
++		break;
++	case MXL862XX_PORT_SPEED_1000:
++		state->speed = SPEED_1000;
++		break;
++	case MXL862XX_PORT_SPEED_2500:
++		state->speed = SPEED_2500;
++		break;
++	case MXL862XX_PORT_SPEED_5000:
++		state->speed = SPEED_5000;
++		break;
++	case MXL862XX_PORT_SPEED_10000:
++		state->speed = SPEED_10000;
++		break;
++	default:
++		state->speed = SPEED_UNKNOWN;
++		break;
++	}
++
++	switch (port_link_cfg.duplex) {
++	case MXL862XX_DUPLEX_HALF:
++		state->duplex = DUPLEX_HALF;
++		break;
++	case MXL862XX_DUPLEX_FULL:
++		state->duplex = DUPLEX_FULL;
++		break;
++	default:
++		state->duplex = DUPLEX_UNKNOWN;
++		break;
++	}
++
++	state->pause &= ~(MLO_PAUSE_RX | MLO_PAUSE_TX);
++	switch (port_cfg.flow_ctrl) {
++	case MXL862XX_FLOW_RXTX:
++		state->pause |= MLO_PAUSE_TXRX_MASK;
++		break;
++	case MXL862XX_FLOW_TX:
++		state->pause |= MLO_PAUSE_TX;
++		break;
++	case MXL862XX_FLOW_RX:
++		state->pause |= MLO_PAUSE_RX;
++		break;
++	case MXL862XX_FLOW_OFF:
++	default:
++		break;
++	}
++}
++
++static unsigned int
++mxl862xx_legacy_pcs_inband_caps(struct phylink_pcs *pcs,
++				phy_interface_t interface)
++{
++	switch (interface) {
++	case PHY_INTERFACE_MODE_SGMII:
++	case PHY_INTERFACE_MODE_USXGMII:
++		return LINK_INBAND_ENABLE;
++	case PHY_INTERFACE_MODE_1000BASEX:
++		return LINK_INBAND_DISABLE | LINK_INBAND_ENABLE;
++	case PHY_INTERFACE_MODE_10GBASER:
++	case PHY_INTERFACE_MODE_2500BASEX:
++		return LINK_INBAND_DISABLE;
++	default:
++		return 0;
++	}
++}
++
++static const struct phylink_pcs_ops mxl862xx_legacy_pcs_ops = {
++	.pcs_get_state = mxl862xx_legacy_pcs_get_state,
++	.pcs_config = mxl862xx_legacy_pcs_config,
++	.pcs_inband_caps = mxl862xx_legacy_pcs_inband_caps,
++};
++
+ static int mxl862xx_xpcs_port_id(int port)
+ {
+ 	return port >= 13;
+@@ -390,7 +540,10 @@ void mxl862xx_setup_pcs(struct mxl862xx_
+ 	pcs->priv = priv;
+ 	pcs->port = port;
+ 
+-	pcs->pcs.ops = &mxl862xx_pcs_ops;
++	if (MXL862XX_FW_VER_MIN(priv, 1, 0, 80))
++		pcs->pcs.ops = &mxl862xx_pcs_ops;
++	else
++		pcs->pcs.ops = &mxl862xx_legacy_pcs_ops;
+ 	pcs->pcs.poll = true;
+ 
+ 	/* Sub-ports only support QSGMII (quad mode with dedicated
+@@ -418,9 +571,6 @@ mxl862xx_phylink_mac_select_pcs(struct p
+ 	struct mxl862xx_priv *priv = dp->ds->priv;
+ 	int port = dp->index;
+ 
+-	if (!MXL862XX_FW_VER_MIN(priv, 1, 0, 80))
+-		return NULL;
+-
+ 	switch (port) {
+ 	case 9 ... 16:
+ 		return &priv->serdes_ports[port - 9].pcs;
+@@ -551,7 +701,7 @@ void mxl862xx_serdes_get_stats(struct ds
+ }
+ 
+ void mxl862xx_serdes_self_test(struct dsa_switch *ds, int port,
+-			struct ethtool_test *etest, u64 *data)
++			      struct ethtool_test *etest, u64 *data)
+ {
+ 	struct mxl862xx_xpcs_prbs_cfg prbs = {};
+ 	struct mxl862xx_xpcs_bert_cfg bert = {};

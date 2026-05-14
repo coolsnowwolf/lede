@@ -96,7 +96,7 @@ $(eval $(call KernelPackage,atl1e))
 define KernelPackage/libphy
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=PHY library
-  KCONFIG:=CONFIG_PHYLIB \
+  KCONFIG:=CONFIG_PHYLIB CONFIG_MDIO_BUS=y
 	   CONFIG_PHYLIB_LEDS=y
   FILES:=$(LINUX_DIR)/drivers/net/phy/libphy.ko
   AUTOLOAD:=$(call AutoLoad,15,libphy,1)
@@ -143,8 +143,8 @@ $(eval $(call KernelPackage,mii))
 define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
-  DEPENDS:=@!LINUX_5_4 +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
-  KCONFIG:=CONFIG_MDIO_DEVRES
+   DEPENDS:=@!LINUX_5_4 +kmod-libphy +(TARGET_armvirt||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+  KCONFIG:=CONFIG_MDIO_DEVRES=y
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
   AUTOLOAD:=$(call AutoProbe,mdio-devres)
@@ -441,7 +441,7 @@ define KernelPackage/phy-smsc
    SUBMENU:=$(NETWORK_DEVICES_MENU)
    TITLE:=SMSC PHY driver
    KCONFIG:=CONFIG_SMSC_PHY
-   DEPENDS:=+kmod-libphy +(LINUX_6_6||LINUX_6_12):kmod-lib-crc16
+   DEPENDS:=+kmod-libphy +(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_6_18):kmod-lib-crc16
    FILES:=$(LINUX_DIR)/drivers/net/phy/smsc.ko
    AUTOLOAD:=$(call AutoProbe,smsc)
 endef
@@ -507,7 +507,7 @@ define KernelPackage/phy-aquantia
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Aquantia Ethernet PHYs
   DEPENDS:=+kmod-libphy +kmod-hwmon-core \
-	+!LINUX_6_12:kmod-lib-crc-ccitt +LINUX_6_12:kmod-lib-crc-itu-t
+	+!LINUX_6_12||LINUX_6_18:kmod-lib-crc-ccitt +LINUX_6_12||LINUX_6_18:kmod-lib-crc-itu-t
   KCONFIG:=CONFIG_AQUANTIA_PHY
   FILES:=$(LINUX_DIR)/drivers/net/phy/aquantia.ko@lt6.1 \
 	$(LINUX_DIR)/drivers/net/phy/aquantia/aquantia.ko@ge6.1
@@ -597,7 +597,7 @@ $(eval $(call KernelPackage,dsa-qca8k))
 define KernelPackage/dsa-realtek
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Realtek common module RTL83xx DSA switch family
-  DEPENDS:=@LINUX_6_6||LINUX_6_12 +kmod-dsa +kmod-phy-realtek +kmod-regmap-core
+  DEPENDS:=@LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_6_18 +kmod-dsa +kmod-phy-realtek +kmod-regmap-core
   KCONFIG:= \
 	CONFIG_NET_DSA_REALTEK \
 	CONFIG_NET_DSA_REALTEK_MDIO=y \
@@ -1077,10 +1077,12 @@ $(eval $(call KernelPackage,e1000e))
 define KernelPackage/libie
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel Ethernet library
-  DEPENDS:=@LINUX_6_12 +kmod-libeth
+  DEPENDS:=@LINUX_6_12||LINUX_6_18 +kmod-libeth
   KCONFIG:=CONFIG_LIBIE
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libie/libie.ko
+  FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/libie/libie.ko \
+  $(LINUX_DIR)/drivers/net/ethernet/intel/libie/libie_adminq.ko@ge6.18  \
+  $(LINUX_DIR)/drivers/net/ethernet/intel/libie/libie_fwlog.ko@ge6.18
 endef
 
 define KernelPackage/libie/description
@@ -1142,7 +1144,7 @@ $(eval $(call KernelPackage,igbvf))
 define KernelPackage/ixgbe
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) 82598/82599 PCI-Express 10 Gigabit Ethernet support
-  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +!LINUX_5_4:kmod-mdio-devres
+  DEPENDS:=@PCI_SUPPORT +kmod-mdio +kmod-ptp +kmod-hwmon-core +kmod-libphy +kmod-mdio-devres +(LINUX_6_12||LINUX_6_18):kmod-libie
   KCONFIG:=CONFIG_IXGBE \
     CONFIG_IXGBE_HWMON=y \
     CONFIG_IXGBE_DCA=n
@@ -1178,7 +1180,7 @@ $(eval $(call KernelPackage,ixgbevf))
 define KernelPackage/i40e
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller XL710 Family support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp +LINUX_6_12:kmod-libie
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +LINUX_6_12||LINUX_6_18:kmod-libie
   KCONFIG:=CONFIG_I40E \
     CONFIG_I40E_DCB=y
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/intel/i40e/i40e.ko
@@ -1195,7 +1197,7 @@ $(eval $(call KernelPackage,i40e))
 define KernelPackage/iavf
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Adaptive Virtual Function support
-  DEPENDS:=@PCI_SUPPORT +LINUX_6_12:kmod-libie
+  DEPENDS:=@PCI_SUPPORT +LINUX_6_12||LINUX_6_18:kmod-libie
   KCONFIG:= \
        CONFIG_I40EVF \
        CONFIG_IAVF
@@ -1216,7 +1218,7 @@ $(eval $(call KernelPackage,iavf))
 define KernelPackage/ice
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Intel(R) Ethernet Controller E810 Series support
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +LINUX_6_12:kmod-libie
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-hwmon-core +LINUX_6_12||LINUX_6_18:kmod-libie
   KCONFIG:=CONFIG_ICE \
     CONFIG_ICE_HWMON=y \
     CONFIG_ICE_HWTS=n \
@@ -1702,7 +1704,7 @@ $(eval $(call KernelPackage,mlx4-core))
 define KernelPackage/mlx5-core
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Mellanox ConnectX(R) mlx5 core Network Driver
-  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mlxfw +(LINUX_6_6||LINUX_6_12):kmod-hwmon-core
+  DEPENDS:=@PCI_SUPPORT +kmod-ptp +kmod-mlxfw +(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_6_18):kmod-hwmon-core
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/mellanox/mlx5/core/mlx5_core.ko
   KCONFIG:= CONFIG_MLX5_CORE \
 	CONFIG_MLX5_CORE_EN=y \
@@ -1981,7 +1983,7 @@ $(eval $(call KernelPackage,sfc-siena))
 define KernelPackage/pcs-xpcs
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Synopsis DesignWare PCS driver
-  DEPENDS:=@(TARGET_x86_64||TARGET_armsr) +kmod-phylink +LINUX_6_12:kmod-mdio-devres
+  DEPENDS:=@(TARGET_x86_64||TARGET_armsr) +kmod-phylink +LINUX_6_12||LINUX_6_18:kmod-mdio-devres
   KCONFIG:=CONFIG_PCS_XPCS
   FILES:=$(LINUX_DIR)/drivers/net/pcs/pcs_xpcs.ko
   AUTOLOAD:=$(call AutoLoad,20,pcs_xpcs)
@@ -2077,7 +2079,7 @@ $(eval $(call KernelPackage,mhi-wwan-mbim))
 define KernelPackage/mtk-t7xx
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=MediaTek T7xx 5G modem
-  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12) @PCI_SUPPORT +kmod-wwan
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_6_18) @PCI_SUPPORT +kmod-wwan
   KCONFIG:=CONFIG_MTK_T7XX
   FILES:=$(LINUX_DIR)/drivers/net/wwan/t7xx/mtk_t7xx.ko
   AUTOLOAD:=$(call AutoProbe,mtk_t7xx)
@@ -2125,7 +2127,7 @@ define KernelPackage/lan743x
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Microchip LAN743x PCI Express Gigabit Ethernet NIC
   DEPENDS:=@PCI_SUPPORT +kmod-ptp \
-	+!LINUX_5_4:kmod-mdio-devres +(LINUX_6_6||LINUX_6_12):kmod-fixed-phy +LINUX_6_12:kmod-phylink
+	+!LINUX_5_4:kmod-mdio-devres +(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_6_18):kmod-fixed-phy +LINUX_6_12||LINUX_6_18:kmod-phylink
   KCONFIG:=CONFIG_LAN743X
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/microchip/lan743x.ko
   AUTOLOAD:=$(call AutoProbe,lan743x)

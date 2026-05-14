@@ -576,7 +576,7 @@ define KernelPackage/usb-audio
 	CONFIG_SND_USB_AUDIO
   $(call AddDepends/usb)
   $(call AddDepends/sound)
-  DEPENDS+=+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-media-core
+  DEPENDS+=+(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-media-core
   FILES:= \
 	$(LINUX_DIR)/sound/usb/snd-usbmidi-lib.ko \
 	$(LINUX_DIR)/sound/usb/snd-usb-audio.ko
@@ -661,7 +661,7 @@ define KernelPackage/usb-serial-ch348
   KCONFIG:=CONFIG_USB_SERIAL_CH348
   FILES:=$(LINUX_DIR)/drivers/usb/serial/ch348.ko
   AUTOLOAD:=$(call AutoProbe,ch348)
-  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12)
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18)
   $(call AddDepends/usb-serial)
 endef
 
@@ -1333,7 +1333,7 @@ $(eval $(call KernelPackage,usb-net-smsc75xx))
 define KernelPackage/usb-net-smsc95xx
   TITLE:=SMSC LAN95XX based USB 2.0 10/100 ethernet devices
   DEPENDS:=+!LINUX_5_4:kmod-libphy +kmod-phy-smsc \
-	+(LINUX_6_1||LINUX_6_6||LINUX_6_12):kmod-net-selftests
+	+(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-net-selftests
   KCONFIG:=CONFIG_USB_NET_SMSC95XX
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/smsc95xx.ko
   AUTOLOAD:=$(call AutoProbe,smsc95xx)
@@ -1626,7 +1626,7 @@ define KernelPackage/usb-hid-mcp2221
   SUBMENU:=$(USB_MENU)
   TITLE:=Microchip USB 2.0 to I2C/UART Protocol Converter with GPIO
   KCONFIG:=CONFIG_HID_MCP2221
-  DEPENDS:=@GPIO_SUPPORT +kmod-usb-hid +kmod-i2c-core +LINUX_6_6||LINUX_6_12:kmod-iio-core
+  DEPENDS:=@GPIO_SUPPORT +kmod-usb-hid +kmod-i2c-core +LINUX_6_6||LINUX_6_12||LINUX_6_18:kmod-iio-core
   FILES:=$(LINUX_DIR)/drivers/hid/hid-mcp2221.ko
   AUTOLOAD:=$(call AutoProbe,hid-mcp2221)
 endef

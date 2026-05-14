@@ -1,0 +1,101 @@
+From e1a31c41bef678afe0d99b7f0dc3711a80c68447 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Tue, 18 Nov 2025 01:40:31 +0200
+Subject: [PATCH] net: phy: realtek: allow CLKOUT to be disabled on
+ RTL8211F(D)(I)-VD-CG
+
+Add CLKOUT disable support for RTL8211F(D)(I)-VD-CG. Like with other PHY
+variants, this feature might be requested by customers when the clock
+output is not used, in order to reduce electromagnetic interference (EMI).
+
+In the common driver, the CLKOUT configuration is done through PHYCR2.
+The RTL_8211FVD_PHYID is singled out as not having that register, and
+execution in rtl8211f_config_init() returns early after commit
+2c67301584f2 ("net: phy: realtek: Avoid PHYCR2 access if PHYCR2 not
+present").
+
+But actually CLKOUT is configured through a different register for this
+PHY. Instead of pretending this is PHYCR2 (which it is not), just add
+some code for modifying this register inside the rtl8211f_disable_clk_out()
+function, and move that outside the code portion that runs only if
+PHYCR2 exists.
+
+In practice this reorders the PHYCR2 writes to disable PHY-mode EEE and
+to disable the CLKOUT for the normal RTL8211F variants, but this should
+be perfectly fine.
+
+It was not noted that RTL8211F(D)(I)-VD-CG would need a genphy_soft_reset()
+call after disabling the CLKOUT. Despite that, we do it out of caution
+and for symmetry with the other RTL8211F models.
+
+Co-developed-by: Clark Wang <xiaoning.wang@nxp.com>
+Signed-off-by: Clark Wang <xiaoning.wang@nxp.com>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20251117234033.345679-5-vladimir.oltean@nxp.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 31 ++++++++++++++++++--------
+ 1 file changed, 22 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -90,6 +90,14 @@
+ #define RTL8211F_LEDCR_MASK			GENMASK(4, 0)
+ #define RTL8211F_LEDCR_SHIFT			5
+ 
++/* RTL8211F(D)(I)-VD-CG CLKOUT configuration is specified via magic values
++ * to undocumented register pages. The names here do not reflect the datasheet.
++ * Unlike other PHY models, CLKOUT configuration does not go through PHYCR2.
++ */
++#define RTL8211FVD_CLKOUT_PAGE			0xd05
++#define RTL8211FVD_CLKOUT_REG			0x11
++#define RTL8211FVD_CLKOUT_EN			BIT(8)
++
+ /* RTL8211F RGMII configuration */
+ #define RTL8211F_RGMII_PAGE			0xd08
+ 
+@@ -653,8 +661,13 @@ static int rtl8211f_config_clk_out(struc
+ 	if (!priv->disable_clk_out)
+ 		return 0;
+ 
+-	ret = phy_modify_paged(phydev, RTL8211F_PHYCR_PAGE,
+-			       RTL8211F_PHYCR2, RTL8211F_CLKOUT_EN, 0);
++	if (phydev->drv->phy_id == RTL_8211FVD_PHYID)
++		ret = phy_modify_paged(phydev, RTL8211FVD_CLKOUT_PAGE,
++				       RTL8211FVD_CLKOUT_REG,
++				       RTL8211FVD_CLKOUT_EN, 0);
++	else
++		ret = phy_modify_paged(phydev, RTL8211F_PHYCR_PAGE,
++				       RTL8211F_PHYCR2, RTL8211F_CLKOUT_EN, 0);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -680,6 +693,13 @@ static int rtl8211f_config_init(struct p
+ 	if (ret)
+ 		return ret;
+ 
++	ret = rtl8211f_config_clk_out(phydev);
++	if (ret) {
++		dev_err(dev, "clkout configuration failed: %pe\n",
++			ERR_PTR(ret));
++		return ret;
++	}
++
+ 	/* RTL8211FVD has no PHYCR2 register */
+ 	if (phydev->drv->phy_id == RTL_8211FVD_PHYID)
+ 		return 0;
+@@ -690,13 +710,6 @@ static int rtl8211f_config_init(struct p
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = rtl8211f_config_clk_out(phydev);
+-	if (ret) {
+-		dev_err(dev, "clkout configuration failed: %pe\n",
+-			ERR_PTR(ret));
+-		return ret;
+-	}
+-
+ 	return 0;
+ }
+ 

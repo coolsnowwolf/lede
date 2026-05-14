@@ -33,6 +33,7 @@ sub target_config_features(@) {
 		/^pci$/ and $ret .= "\tselect PCI_SUPPORT\n";
 		/^pcie$/ and $ret .= "\tselect PCIE_SUPPORT\n";
 		/^pcmcia$/ and $ret .= "\tselect PCMCIA_SUPPORT\n";
+		/^pinctrl$/ and $ret .= "\tselect PINCTRL_SUPPORT\n";
 		/^powerpc64$/ and $ret .= "\tselect powerpc64\n";
 		/^pwm$/ and $ret .= "\select PWM_SUPPORT\n";
 		/^ramdisk$/ and $ret .= "\tselect USES_INITRAMFS\n";

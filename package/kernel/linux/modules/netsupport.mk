@@ -1615,3 +1615,68 @@ define KernelPackage/qrtr-mhi/description
 endef
 
 $(eval $(call KernelPackage,qrtr-mhi))
+
+define KernelPackage/team
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Ethernet team driver
+  KCONFIG:=CONFIG_NET_TEAM
+  FILES:=$(LINUX_DIR)/drivers/net/team/team.ko
+  AUTOLOAD:=$(call AutoProbe,team)
+endef
+
+$(eval $(call KernelPackage,team))
+
+define KernelPackage/team-mode-broadcast
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Broadcast mode support
+  DEPENDS:=kmod-team
+  KCONFIG:=CONFIG_NET_TEAM_MODE_BROADCAST
+  FILES:=$(LINUX_DIR)/drivers/net/team/team_mode_broadcast.ko
+  AUTOLOAD:=$(call AutoProbe,team_mode_broadcast)
+endef
+
+$(eval $(call KernelPackage,team-mode-broadcast))
+
+define KernelPackage/team-mode-roundrobin
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Round-robin mode support
+  DEPENDS:=kmod-team
+  KCONFIG:=CONFIG_NET_TEAM_MODE_ROUNDROBIN
+  FILES:=$(LINUX_DIR)/drivers/net/team/team_mode_roundrobin.ko
+  AUTOLOAD:=$(call AutoProbe,team_mode_roundrobin)
+endef
+
+$(eval $(call KernelPackage,team-mode-roundrobin))
+
+define KernelPackage/team-mode-random
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Random mode support
+  DEPENDS:=kmod-team
+  KCONFIG:=CONFIG_NET_TEAM_MODE_RANDOM
+  FILES:=$(LINUX_DIR)/drivers/net/team/team_mode_random.ko
+  AUTOLOAD:=$(call AutoProbe,team_mode_random)
+endef
+
+$(eval $(call KernelPackage,team-mode-random))
+
+define KernelPackage/team-mode-activebackup
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Active-backup mode support
+  DEPENDS:=kmod-team
+  KCONFIG:=CONFIG_NET_TEAM_MODE_ACTIVEBACKUP
+  FILES:=$(LINUX_DIR)/drivers/net/team/team_mode_activebackup.ko
+  AUTOLOAD:=$(call AutoProbe,team_mode_activebackup)
+endef
+
+$(eval $(call KernelPackage,team-mode-activebackup))
+
+define KernelPackage/team-mode-loadbalance
+  SUBMENU:=$(NETWORK_SUPPORT_MENU)
+  TITLE:=Load-balance mode support
+  DEPENDS:=kmod-team
+  KCONFIG:=CONFIG_NET_TEAM_MODE_LOADBALANCE
+  FILES:=$(LINUX_DIR)/drivers/net/team/team_mode_loadbalance.ko
+  AUTOLOAD:=$(call AutoProbe,team_mode_loadbalance)
+endef
+
+$(eval $(call KernelPackage,team-mode-loadbalance))

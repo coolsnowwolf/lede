@@ -10,8 +10,9 @@ LIB_MENU:=Libraries
 define KernelPackage/lib-crc-ccitt
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC-CCITT support
-  KCONFIG:=CONFIG_CRC_CCITT
-  FILES:=$(LINUX_DIR)/lib/crc-ccitt.ko
+  KCONFIG:=CONFIG_CRC_CCITT=y
+  FILES:=$(LINUX_DIR)/lib/crc-ccitt.ko@lt6.18 \
+  $(LINUX_DIR)/lib/crc/crc-ccitt.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,crc-ccitt)
 endef
 
@@ -70,8 +71,8 @@ $(eval $(call KernelPackage,lib-crc8))
 define KernelPackage/lib-crc16
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC16 support
-  KCONFIG:=CONFIG_CRC16
-  FILES:=$(LINUX_DIR)/lib/crc16.ko
+  KCONFIG:=CONFIG_CRC16=y
+  FILES:=$(LINUX_DIR)/lib/crc16.ko@lt6.18
   AUTOLOAD:=$(call AutoLoad,20,crc16,1)
 endef
 

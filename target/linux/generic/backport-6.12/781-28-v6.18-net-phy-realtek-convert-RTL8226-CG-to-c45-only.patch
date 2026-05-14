@@ -1,0 +1,169 @@
+From 34167f1a024d2c5abae0b0325a6d0b8257160f86 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 13 Aug 2025 01:44:07 -0400
+Subject: net: phy: realtek: convert RTL8226-CG to c45 only
+
+Short: Convert the RTL8226-CG to c45 so it can be used in its
+Realtek based ecosystems.
+
+Long: The RTL8226-CG can be mainly found on devices of the
+Realtek Otto switch platform. Devices like the Zyxel XGS1210-12
+are based on it. These implement a hardware based phy polling
+in the background to update SoC status registers.
+
+The hardware provides 4 smi busses where phys are attached to.
+For each bus one can decide if it is polled in c45 or c22 mode.
+See https://svanheule.net/realtek/longan/register/smi_glb_ctrl
+With this setting the register access will be limited by the
+hardware. This is very complex (including caching and special
+c45-over-c22 handling). But basically it boils down to "enable
+protocol x and SoC will disable register access via protocol y".
+
+Mainline already gained support for the rtl9300 mdio driver
+in commit 24e31e474769 ("net: mdio: Add RTL9300 MDIO driver").
+
+It covers the basic features, but a lot effort is still needed
+to understand hardware properly. So it runs a simple setup by
+selecting the proper bus mode during startup.
+
+	/* Put the interfaces into C45 mode if required */
+	glb_ctrl_mask = GENMASK(19, 16);
+	for (i = 0; i < MAX_SMI_BUSSES; i++)
+		if (priv->smi_bus_is_c45[i])
+			glb_ctrl_val |= GLB_CTRL_INTF_SEL(i);
+	...
+	err = regmap_update_bits(regmap, SMI_GLB_CTRL,
+				 glb_ctrl_mask, glb_ctrl_val);
+
+To avoid complex coding later on, it limits access by only
+providing either c22 or c45:
+
+	bus->name = "Realtek Switch MDIO Bus";
+	if (priv->smi_bus_is_c45[mdio_bus]) {
+		bus->read_c45 = rtl9300_mdio_read_c45;
+		bus->write_c45 =  rtl9300_mdio_write_c45;
+	} else {
+		bus->read = rtl9300_mdio_read_c22;
+		bus->write = rtl9300_mdio_write_c22;
+	}
+
+Because of these limitations the existing RTL8226 phy driver
+is not working at all on Realtek switches. Convert the driver
+to c45-only.
+
+Luckily the RTL8226 seems to support proper MDIO_PMA_EXTABLE
+flags. So standard function genphy_c45_pma_read_abilities() can
+call genphy_c45_pma_read_ext_abilities() and 10/100/1000 is
+populated right. Thus conversion is straight forward.
+
+Outputs before - REMARK: For this a "hacked" bus was used that
+toggles the mode for each c22/c45 access. But that is slow and
+produces unstable data in the SoC status registers).
+
+Settings for lan9:
+        Supported ports: [ TP MII ]
+        Supported link modes:   10baseT/Half 10baseT/Full
+                                100baseT/Half 100baseT/Full
+                                1000baseT/Full
+                                2500baseT/Full
+        Supported pause frame use: Symmetric Receive-only
+        Supports auto-negotiation: Yes
+        Supported FEC modes: Not reported
+        Advertised link modes:  10baseT/Half 10baseT/Full
+                                100baseT/Half 100baseT/Full
+                                1000baseT/Full
+                                2500baseT/Full
+        Advertised pause frame use: Symmetric Receive-only
+        Advertised auto-negotiation: Yes
+        Advertised FEC modes: Not reported
+        Speed: Unknown!
+        Duplex: Unknown! (255)
+        Port: Twisted Pair
+        PHYAD: 24
+        Transceiver: external
+        Auto-negotiation: on
+        MDI-X: Unknown
+        Supports Wake-on: d
+        Wake-on: d
+        Link detected: no
+
+Outputs with this commit:
+
+Settings for lan9:
+        Supported ports: [ TP ]
+        Supported link modes:   10baseT/Half 10baseT/Full
+                                100baseT/Half 100baseT/Full
+                                1000baseT/Full
+                                2500baseT/Full
+        Supported pause frame use: Symmetric Receive-only
+        Supports auto-negotiation: Yes
+        Supported FEC modes: Not reported
+        Advertised link modes:  10baseT/Half 10baseT/Full
+                                100baseT/Half 100baseT/Full
+                                1000baseT/Full
+                                2500baseT/Full
+        Advertised pause frame use: Symmetric Receive-only
+        Advertised auto-negotiation: Yes
+        Advertised FEC modes: Not reported
+        Speed: Unknown!
+        Duplex: Unknown! (255)
+        Port: Twisted Pair
+        PHYAD: 24
+        Transceiver: external
+        Auto-negotiation: on
+        MDI-X: Unknown
+        Supports Wake-on: d
+        Wake-on: d
+        Link detected: no
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20250813054407.1108285-1-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 28 +++++++++++++++++++++-------
+ 1 file changed, 21 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -1274,6 +1274,21 @@ static int rtl822x_c45_read_status(struc
+ 	return 0;
+ }
+ 
++static int rtl822x_c45_soft_reset(struct phy_device *phydev)
++{
++	int ret, val;
++
++	ret = phy_modify_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_CTRL1,
++			     MDIO_CTRL1_RESET, MDIO_CTRL1_RESET);
++	if (ret < 0)
++		return ret;
++
++	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_PMAPMD,
++					 MDIO_CTRL1, val,
++					 !(val & MDIO_CTRL1_RESET),
++					 5000, 100000, true);
++}
++
+ static int rtl822xb_c45_read_status(struct phy_device *phydev)
+ {
+ 	int ret;
+@@ -1660,13 +1675,12 @@ static struct phy_driver realtek_drvs[]
+ 	}, {
+ 		PHY_ID_MATCH_EXACT(0x001cc838),
+ 		.name           = "RTL8226-CG 2.5Gbps PHY",
+-		.get_features   = rtl822x_get_features,
+-		.config_aneg    = rtl822x_config_aneg,
+-		.read_status    = rtl822x_read_status,
+-		.suspend        = genphy_suspend,
+-		.resume         = rtlgen_resume,
+-		.read_page      = rtl821x_read_page,
+-		.write_page     = rtl821x_write_page,
++		.soft_reset     = rtl822x_c45_soft_reset,
++		.get_features   = rtl822x_c45_get_features,
++		.config_aneg    = rtl822x_c45_config_aneg,
++		.read_status    = rtl822x_c45_read_status,
++		.suspend        = genphy_c45_pma_suspend,
++		.resume         = rtlgen_c45_resume,
+ 	}, {
+ 		PHY_ID_MATCH_EXACT(0x001cc848),
+ 		.name           = "RTL8226B-CG_RTL8221B-CG 2.5Gbps PHY",

@@ -1,15 +1,16 @@
---- a/pppd/chap-new.c
-+++ b/pppd/chap-new.c
-@@ -37,6 +37,8 @@
- #include "chap-new.h"
+--- a/pppd/chap.c
++++ b/pppd/chap.c
+@@ -42,6 +42,9 @@
+ #include "chap.h"
  #include "chap-md5.h"
  
++#include <semaphore.h>
 +#include "syncppp.h"
 +
- #ifdef CHAPMS
+ #ifdef PPP_WITH_CHAPMS
  #include "chap_ms.h"
  #define MDTYPE_ALL (MDTYPE_MICROSOFT_V2 | MDTYPE_MICROSOFT | MDTYPE_MD5)
-@@ -523,6 +525,18 @@ chap_respond(struct chap_client_state *cs, int id,
+@@ -520,6 +523,18 @@ chap_respond(struct chap_client_state *c
  	p[2] = len >> 8;
  	p[3] = len;
  
@@ -28,40 +29,36 @@
  	output(0, response, PPP_HDRLEN + len);
  }
  
---- a/pppd/Makefile.linux
-+++ b/pppd/Makefile.linux
-@@ -17,16 +17,16 @@ TARGETS = pppd
+--- a/pppd/Makefile.am
++++ b/pppd/Makefile.am
+@@ -67,6 +67,7 @@ noinst_HEADERS = \
+     peap.h \
+     pppd-private.h \
+     spinlock.h \
++    syncppp.h \
+     tls.h \
+     tdb.h
  
- PPPDSRCS = main.c magic.c fsm.c lcp.c ipcp.c upap.c chap-new.c md5.c ccp.c \
- 	   ecp.c ipxcp.c auth.c options.c sys-linux.c md4.c chap_ms.c \
--	   demand.c utils.c tty.c eap.c chap-md5.c session.c
-+	   demand.c utils.c tty.c eap.c chap-md5.c session.c syncppp.c
+@@ -85,6 +86,7 @@ pppd_SOURCES = \
+     main.c \
+     options.c \
+     session.c \
++    syncppp.c \
+     tty.c \
+     upap.c \
+     utils.c
+@@ -95,7 +97,7 @@ BUILT_SOURCE = \
  
- HEADERS = ccp.h session.h chap-new.h ecp.h fsm.h ipcp.h \
- 	ipxcp.h lcp.h magic.h md5.h patchlevel.h pathnames.h pppd.h \
--	upap.h eap.h
-+	upap.h eap.h syncppp.h
+ pppd_CPPFLAGS = -DSYSCONFDIR=\"${sysconfdir}\" -DPPPD_RUNTIME_DIR='"@PPPD_RUNTIME_DIR@"' -DPPPD_LOGFILE_DIR='"@PPPD_LOGFILE_DIR@"'
+ pppd_LDFLAGS =
+-pppd_LIBS =
++pppd_LIBS = -lpthread
  
- MANPAGES = pppd.8
- PPPDOBJS = main.o magic.o fsm.o lcp.o ipcp.o upap.o chap-new.o md5.o ccp.o \
- 	   ecp.o auth.o options.o demand.o utils.o sys-linux.o ipxcp.o tty.o \
--	   eap.o chap-md5.o session.o
-+	   eap.o chap-md5.o session.o syncppp.o
- 
- #
- # include dependencies if present
-@@ -34,7 +34,7 @@ ifeq (.depend,$(wildcard .depend))
- include .depend
- endif
- 
--LIBS = -lrt
-+LIBS = -lpthread
- 
- # Uncomment the next line to include support for Microsoft's
- # MS-CHAP authentication protocol.  Also, edit plugins/radius/Makefile.linux.
+ if PPP_WITH_SYSTEM_CA_PATH
+ pppd_CPPFLAGS += -DSYSTEM_CA_PATH='"@SYSTEM_CA_PATH@"'
 --- a/pppd/options.c
 +++ b/pppd/options.c
-@@ -127,6 +127,7 @@ bool	dump_options;		/* print out option values */
+@@ -136,6 +136,7 @@ bool	show_options;		/* print all support
  bool	dryrun;			/* print out option values and exit */
  char	*domain;		/* domain name set by domain option */
  int	child_wait = 5;		/* # seconds to wait for children at exit */
@@ -69,7 +66,7 @@
  struct userenv *userenv_list;	/* user environment variables */
  int	dfl_route_metric = -1;	/* metric of the default route to set over the PPP link */
  
-@@ -323,6 +324,9 @@ option_t general_options[] = {
+@@ -339,6 +340,9 @@ struct option general_options[] = {
        "Unset user environment variable",
        OPT_A2PRINTER | OPT_NOPRINT, (void *)user_unsetprint },
  
@@ -79,16 +76,16 @@
      { "defaultroute-metric", o_int, &dfl_route_metric,
        "Metric to use for the default route (Linux only; -1 for default behavior)",
        OPT_PRIV|OPT_LLIMIT|OPT_INITONLY, NULL, 0, -1 },
---- a/pppd/pppd.h
-+++ b/pppd/pppd.h
-@@ -335,6 +335,7 @@ extern char	*bundle_name;	/* bundle name for multilink */
- extern bool	dump_options;	/* print out option values */
+--- a/pppd/pppd-private.h
++++ b/pppd/pppd-private.h
+@@ -207,6 +207,7 @@ extern bool	dump_options;	/* print out o
+ extern bool	show_options;	/* show all option names and descriptions */
  extern bool	dryrun;		/* check everything, print options, exit */
  extern int	child_wait;	/* # seconds to wait for children at end */
 +extern int	npppd;		/* synchronize between multiple pppd */
- 
- #ifdef USE_EAPTLS
- extern char	*crl_dir;
+ extern char *current_option;    /* the name of the option being parsed */
+ extern int  privileged_option;  /* set iff the current option came from root */
+ extern char *option_source;     /* string saying where the option came from */
 --- /dev/null
 +++ b/pppd/syncppp.c
 @@ -0,0 +1,75 @@
@@ -98,14 +95,14 @@
 +#include<stdlib.h>
 +#include<time.h>
 +#include<errno.h>
-+#include "pppd.h"
++#include "pppd-private.h"
 +#include "syncppp.h"
 +
 +int syncppp(int nproc)
 +{
 +    int flags;
 +    int value;
-+    sem_t *block; 
++    sem_t *block;
 +    sem_t *count;
 +    struct timespec ts;
 +
@@ -169,21 +166,23 @@
 +
 --- /dev/null
 +++ b/pppd/syncppp.h
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,4 @@
 +#define SEM_BLOCK_NAME  "block"
 +#define SEM_COUNT_NAME  "count"
 +#define SYNCPPP_TIMEOUT 5
++extern int syncppp(int nproc);
 --- a/pppd/upap.c
 +++ b/pppd/upap.c
-@@ -50,6 +50,7 @@
- #include "pppd.h"
+@@ -55,6 +55,8 @@
+ #include "options.h"
  #include "upap.h"
  
++#include <semaphore.h>
 +#include "syncppp.h"
  
  static bool hide_password = 1;
  
-@@ -540,6 +541,18 @@ upap_sauthreq(upap_state *u)
+@@ -545,6 +547,18 @@ upap_sauthreq(upap_state *u)
      PUTCHAR(u->us_passwdlen, outp);
      BCOPY(u->us_passwd, outp, u->us_passwdlen);
  

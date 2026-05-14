@@ -1,0 +1,112 @@
+From 060969bc048d2f85149b7f1a8bbb56e6b1434cae Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Toke=20H=C3=B8iland-J=C3=B8rgensen?= <toke@redhat.com>
+Date: Tue, 13 Jan 2026 15:31:56 +0100
+Subject: [PATCH 7/7] net/sched: cake: avoid separate allocation of struct
+ cake_sched_config
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Paolo pointed out that we can avoid separately allocating struct
+cake_sched_config even in the non-mq case, by embedding it into struct
+cake_sched_data. This reduces the complexity of the logic that swaps the
+pointers and frees the old value, at the cost of adding 56 bytes to the
+latter. Since cake_sched_data is already almost 17k bytes, this seems
+like a reasonable tradeoff.
+
+Suggested-by: Paolo Abeni <pabeni@redhat.com>
+Signed-off-by: Toke Høiland-Jørgensen <toke@redhat.com>
+Fixes: bc0ce2bad36c ("net/sched: sch_cake: Factor out config variables into separate struct")
+Link: https://patch.msgid.link/20260113143157.2581680-1-toke@redhat.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ net/sched/sch_cake.c | 29 ++++++-----------------------
+ 1 file changed, 6 insertions(+), 23 deletions(-)
+
+--- a/net/sched/sch_cake.c
++++ b/net/sched/sch_cake.c
+@@ -221,6 +221,7 @@ struct cake_sched_data {
+ 	struct tcf_block *block;
+ 	struct cake_tin_data *tins;
+ 	struct cake_sched_config *config;
++	struct cake_sched_config initial_config;
+ 
+ 	struct cake_heap_entry overflow_heap[CAKE_QUEUES * CAKE_MAX_TINS];
+ 
+@@ -2797,8 +2798,6 @@ static void cake_destroy(struct Qdisc *s
+ 	qdisc_watchdog_cancel(&q->watchdog);
+ 	tcf_block_put(q->block);
+ 	kvfree(q->tins);
+-	if (q->config && !q->config->is_shared)
+-		kvfree(q->config);
+ }
+ 
+ static void cake_config_init(struct cake_sched_config *q, bool is_shared)
+@@ -2821,13 +2820,9 @@ static int cake_init(struct Qdisc *sch,
+ 		     struct netlink_ext_ack *extack)
+ {
+ 	struct cake_sched_data *qd = qdisc_priv(sch);
+-	struct cake_sched_config *q;
++	struct cake_sched_config *q = &qd->initial_config;
+ 	int i, j, err;
+ 
+-	q = kzalloc(sizeof(*q), GFP_KERNEL);
+-	if (!q)
+-		return -ENOMEM;
+-
+ 	cake_config_init(q, false);
+ 
+ 	sch->limit = 10240;
+@@ -2839,14 +2834,13 @@ static int cake_init(struct Qdisc *sch,
+ 
+ 	if (opt) {
+ 		err = cake_change(sch, opt, extack);
+-
+ 		if (err)
+-			goto err;
++			return err;
+ 	}
+ 
+ 	err = tcf_block_get(&qd->block, &qd->filter_list, sch, extack);
+ 	if (err)
+-		goto err;
++		return err;
+ 
+ 	quantum_div[0] = ~0;
+ 	for (i = 1; i <= CAKE_QUEUES; i++)
+@@ -2854,10 +2848,8 @@ static int cake_init(struct Qdisc *sch,
+ 
+ 	qd->tins = kvcalloc(CAKE_MAX_TINS, sizeof(struct cake_tin_data),
+ 			    GFP_KERNEL);
+-	if (!qd->tins) {
+-		err = -ENOMEM;
+-		goto err;
+-	}
++	if (!qd->tins)
++		return -ENOMEM;
+ 
+ 	for (i = 0; i < CAKE_MAX_TINS; i++) {
+ 		struct cake_tin_data *b = qd->tins + i;
+@@ -2890,22 +2882,13 @@ static int cake_init(struct Qdisc *sch,
+ 	qd->last_checked_active = 0;
+ 
+ 	return 0;
+-err:
+-	kvfree(qd->config);
+-	qd->config = NULL;
+-	return err;
+ }
+ 
+ static void cake_config_replace(struct Qdisc *sch, struct cake_sched_config *cfg)
+ {
+ 	struct cake_sched_data *qd = qdisc_priv(sch);
+-	struct cake_sched_config *q = qd->config;
+ 
+ 	qd->config = cfg;
+-
+-	if (!q->is_shared)
+-		kvfree(q);
+-
+ 	cake_reconfigure(sch);
+ }
+ 

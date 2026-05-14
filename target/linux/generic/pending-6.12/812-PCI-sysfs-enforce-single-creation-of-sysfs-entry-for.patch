@@ -1,0 +1,142 @@
+From d33941523a8379e30070374b133b28a2077dcef8 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Mon, 13 Oct 2025 20:45:25 +0200
+Subject: [PATCH] PCI/sysfs: enforce single creation of sysfs entry for pdev
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In some specific scenario it's possible that the
+pci_create_resource_files() gets called multiple times and the created
+entry actually gets wrongly deleted with extreme case of having a NULL
+pointer dereference when the PCI is removed.
+
+This mainly happen due to bad timing where the PCI bus is adding PCI
+devices and at the same time the sysfs code is adding the entry causing
+double execution of the pci_create_resource_files function and kernel
+WARNING.
+
+To be more precise there is a race between the late_initcall of
+pci-sysfs with pci_sysfs_init and PCI bus.c pci_bus_add_device that also
+call pci_create_sysfs_dev_files.
+
+With correct amount of ""luck"" (or better say bad luck)
+pci_create_sysfs_dev_files in bus.c might be called with pci_sysfs_init
+is executing the loop.
+
+This has been reported multiple times and on multiple system, like imx6
+system, ipq806x systems...
+
+To address this, imlement multiple improvement to the implementation:
+1. Add a bool to pci_dev to flag when sysfs entry are created
+   (sysfs_init)
+2. Implement a simple completion to wait pci_sysfs_init execution.
+3. Permit additional call of pci_create_sysfs_dev_files only after
+   pci_sysfs_init has finished.
+
+With such logic in place, we address al kind of timing problem with
+minimal change to any driver.
+
+A notice worth to mention is that the remove function are not affected
+by this as the pci_remove_resource_files have enough check in place to
+always work and it's always called by pci_stop_dev.
+
+Cc: stable@vger.kernel.org
+Reported-by: Krzysztof Hałasa <khalasa@piap.pl>
+Closes: https://bugzilla.kernel.org/show_bug.cgi?id=215515
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/pci/pci-sysfs.c | 34 +++++++++++++++++++++++++++++-----
+ include/linux/pci.h     |  1 +
+ 2 files changed, 30 insertions(+), 5 deletions(-)
+
+--- a/drivers/pci/pci-sysfs.c
++++ b/drivers/pci/pci-sysfs.c
+@@ -13,6 +13,7 @@
+  */
+ 
+ #include <linux/bitfield.h>
++#include <linux/completion.h>
+ #include <linux/kernel.h>
+ #include <linux/sched.h>
+ #include <linux/pci.h>
+@@ -36,6 +37,7 @@
+ #endif
+ 
+ static int sysfs_initialized;	/* = 0 */
++static DECLARE_COMPLETION(sysfs_init_completion);
+ 
+ /* show configuration fields */
+ #define pci_config_attr(field, format_string)				\
+@@ -1551,12 +1553,32 @@ static const struct attribute_group pci_
+ 	.is_visible = resource_resize_is_visible,
+ };
+ 
++static int __pci_create_sysfs_dev_files(struct pci_dev *pdev)
++{
++	int ret;
++
++	ret = pci_create_resource_files(pdev);
++	if (ret)
++		return ret;
++
++	/* on success set sysfs correctly created */
++	pdev->sysfs_init = true;
++	return 0;
++}
++
+ int __must_check pci_create_sysfs_dev_files(struct pci_dev *pdev)
+ {
+ 	if (!sysfs_initialized)
+ 		return -EACCES;
+ 
+-	return pci_create_resource_files(pdev);
++	/* sysfs entry already created */
++	if (pdev->sysfs_init)
++		return 0;
++
++	/* wait for pci_sysfs_init */
++	wait_for_completion(&sysfs_init_completion);
++
++	return __pci_create_sysfs_dev_files(pdev);
+ }
+ 
+ /**
+@@ -1577,21 +1599,23 @@ static int __init pci_sysfs_init(void)
+ {
+ 	struct pci_dev *pdev = NULL;
+ 	struct pci_bus *pbus = NULL;
+-	int retval;
++	int retval = 0;
+ 
+ 	sysfs_initialized = 1;
+ 	for_each_pci_dev(pdev) {
+-		retval = pci_create_sysfs_dev_files(pdev);
++		retval = __pci_create_sysfs_dev_files(pdev);
+ 		if (retval) {
+ 			pci_dev_put(pdev);
+-			return retval;
++			goto exit;
+ 		}
+ 	}
+ 
+ 	while ((pbus = pci_find_next_bus(pbus)))
+ 		pci_create_legacy_files(pbus);
+ 
+-	return 0;
++exit:
++	complete_all(&sysfs_init_completion);
++	return retval;
+ }
+ late_initcall(pci_sysfs_init);
+ 
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -484,6 +484,7 @@ struct pci_dev {
+ 	unsigned int	rom_attr_enabled:1;	/* Display of ROM attribute enabled? */
+ 	pci_dev_flags_t dev_flags;
+ 	atomic_t	enable_cnt;	/* pci_enable_device has been called */
++	bool		sysfs_init;	/* sysfs entry has been created */
+ 
+ 	spinlock_t	pcie_cap_lock;		/* Protects RMW ops in capability accessors */
+ 	u32		saved_config_space[16]; /* Config space saved at suspend time */

@@ -234,7 +234,8 @@ platform_do_upgrade() {
 	netgear,wac510 |\
 	p2w,r619ac-64m |\
 	p2w,r619ac-128m |\
-	qxwlan,e2600ac-c2)
+	qxwlan,e2600ac-c2 |\
+	thinkplus,fogpod800)
 		nand_do_upgrade "$1"
 		;;
 	glinet,gl-b2200)

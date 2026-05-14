@@ -1,13 +1,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ksmbd
-PKG_RELEASE:=1
+PKG_VERSION:=3.5.4
+PKG_RELEASE:=2
 
-PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2025-04-04
-PKG_SOURCE_URL:=https://github.com/namjaejeon/ksmbd.git
-PKG_SOURCE_VERSION:=5ce517e5d08fa748074ba1422592da739da31e07
-PKG_MIRROR_HASH:=c088ea320fe7ff15f940774884b7c3a70178f58a8e9ddc425c8ddb37df67ab2a
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+PKG_SOURCE_URL:=https://codeload.github.com/cifsd-team/cifsd/tar.gz/$(PKG_VERSION)?
+PKG_HASH:=ad49d8e893240b831adffecc41c69e2b0baaa92105849b40dc32030512b96521
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=COPYING
@@ -38,7 +37,6 @@ define KernelPackage/fs-ksmbd
 		+kmod-oid-registry
 endef
 
-
 # The last two DEPENDS are hacks in order to get CONFIG_ASN1 and CONFIG_OID_REGISTRY
 # which it seems can't be selected independently. Some bug in either base or upstream.
 
@@ -51,9 +49,9 @@ define KernelPackage/fs-ksmbd/config
 config KSMBD_SMB_INSECURE_SERVER
 	bool "Support for insecure SMB1/CIFS and SMB2.0 protocols"
 	depends on PACKAGE_kmod-fs-ksmbd
-	default n
 	help
 		This enables deprecated insecure protocols dialects: SMB1/CIFS and SMB2.0.
+	default y
 endef
 
 ifeq ($(CONFIG_KSMBD_SMB_INSECURE_SERVER),y)
@@ -63,7 +61,7 @@ endif
 
 define Build/Compile
 	$(KERNEL_MAKE) M="$(PKG_BUILD_DIR)" \
-	EXTRA_CFLAGS="$(EXTRA_CFLAGS)" \
+	KCFLAGS+=" $(EXTRA_CFLAGS)" \
 	$(PKG_EXTRA_KCONFIG) \
 	CONFIG_SMB_SERVER=m \
 	modules

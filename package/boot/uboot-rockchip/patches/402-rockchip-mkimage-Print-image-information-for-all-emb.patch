@@ -1,0 +1,108 @@
+From beea345ad405bd236d15d53da1256eaa95014c7b Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Wed, 29 Jan 2025 22:36:28 +0000
+Subject: [PATCH 2/7] rockchip: mkimage: Print image information for all
+ embedded images
+
+The v2 image format can embed up to 4 data files compared to the two
+init and boot data files using the older image format.
+
+Add support for displaying more of the image header information that
+exists in the v2 image format, e.g. image load address and flag.
+
+Example for v2 image format:
+
+  > tools/mkimage -l rk3576_idblock_v1.09.107.img
+  Rockchip Boot Image (v2)
+  Image 1: 4096 @ 0x1000
+  - Load address: 0x3ffc0000
+  Image 2: 77824 @ 0x2000
+  - Load address: 0x3ff81000
+  Image 3: 262144 @ 0x15000
+
+Example for older image format:
+
+  > tools/mkimage -l u-boot-rockchip.bin
+  Rockchip RK32 (SD/MMC) Boot Image
+  Init Data: 20480 @ 0x800
+  Boot Data: 112640 @ 0x5800
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ tools/rkcommon.c | 41 +++++++++++++++++++++++++++++++----------
+ 1 file changed, 31 insertions(+), 10 deletions(-)
+
+--- a/tools/rkcommon.c
++++ b/tools/rkcommon.c
+@@ -349,8 +349,6 @@ static void rkcommon_set_header0_v2(void
+ 	uint8_t *image_ptr = NULL;
+ 	int i;
+ 
+-	printf("Image Type:   Rockchip %s boot image\n",
+-		rkcommon_get_spl_hdr(params));
+ 	memset(buf, '\0', RK_INIT_OFFSET * RK_BLK_SIZE);
+ 	hdr->magic = cpu_to_le32(RK_MAGIC_V2);
+ 	hdr->boot_flag = cpu_to_le32(HASH_SHA256);
+@@ -504,6 +502,29 @@ int rkcommon_verify_header(unsigned char
+ 	return -ENOENT;
+ }
+ 
++static void rkcommon_print_header_v2(const struct header0_info_v2 *hdr)
++{
++	uint32_t val;
++	int i;
++
++	printf("Rockchip Boot Image (v2)\n");
++
++	for (i = 0; i < le16_to_cpu(hdr->num_images); i++) {
++		printf("Image %u: %u @ 0x%x\n",
++		       le32_to_cpu(hdr->images[i].counter),
++		       le16_to_cpu(hdr->images[i].size) * RK_BLK_SIZE,
++		       le16_to_cpu(hdr->images[i].offset) * RK_BLK_SIZE);
++
++		val = le32_to_cpu(hdr->images[i].address);
++		if (val != 0xFFFFFFFF)
++			printf("- Load address: 0x%x\n", val);
++
++		val = le32_to_cpu(hdr->images[i].flag);
++		if (val)
++			printf("- Flag: 0x%x\n", val);
++	}
++}
++
+ void rkcommon_print_header(const void *buf, struct image_tool_params *params)
+ {
+ 	struct header0_info header0;
+@@ -520,8 +541,7 @@ void rkcommon_print_header(const void *b
+ 			return;
+ 		}
+ 
+-		init_size = le16_to_cpu(header0_v2.images[0].size) * RK_BLK_SIZE;
+-		boot_size = le16_to_cpu(header0_v2.images[1].size) * RK_BLK_SIZE;
++		rkcommon_print_header_v2(&header0_v2);
+ 	} else {
+ 		ret = rkcommon_parse_header(buf, &header0, &spl_info);
+ 
+@@ -539,15 +559,16 @@ void rkcommon_print_header(const void *b
+ 		boot_size = le16_to_cpu(header0.init_boot_size) * RK_BLK_SIZE -
+ 			    init_size;
+ 
+-		printf("Image Type:   Rockchip %s (%s) boot image\n",
+-		       spl_info->spl_hdr,
++		printf("Rockchip %s (%s) Boot Image\n", spl_info->spl_hdr,
+ 		       (image_type == IH_TYPE_RKSD) ? "SD/MMC" : "SPI");
+-	}
+ 
+-	printf("Init Data Size: %d bytes\n", init_size);
++		printf("Init Data: %d @ 0x%x\n", init_size,
++		       le16_to_cpu(header0.init_offset) * RK_BLK_SIZE);
+ 
+-	if (boot_size != RK_MAX_BOOT_SIZE)
+-		printf("Boot Data Size: %d bytes\n", boot_size);
++		if (boot_size != RK_MAX_BOOT_SIZE)
++			printf("Boot Data: %d @ 0x%x\n", boot_size, init_size +
++			       le16_to_cpu(header0.init_offset) * RK_BLK_SIZE);
++	}
+ }
+ 
+ void rkcommon_rc4_encode_spl(void *buf, unsigned int offset, unsigned int size)

@@ -1,0 +1,81 @@
+From d85d0380292a7e618915069c3579ae23c7c80339 Mon Sep 17 00:00:00 2001
+From: Gabor Juhos <j4g8y7@gmail.com>
+Date: Wed, 18 Jun 2025 22:22:49 +0200
+Subject: spi: spi-qpic-snand: reallocate BAM transactions
+
+Using the mtd_nandbiterrs module for testing the driver occasionally
+results in weird things like below.
+
+1. swiotlb mapping fails with the following message:
+
+  [   85.926216] qcom_snand 79b0000.spi: swiotlb buffer is full (sz: 4294967294 bytes), total 512 (slots), used 0 (slots)
+  [   85.932937] qcom_snand 79b0000.spi: failure in mapping desc
+  [   87.999314] qcom_snand 79b0000.spi: failure to write raw page
+  [   87.999352] mtd_nandbiterrs: error: write_oob failed (-110)
+
+  Rebooting the board after this causes a panic due to a NULL pointer
+  dereference.
+
+2. If the swiotlb mapping does not fail, rebooting the board may result
+   in a different panic due to a bad spinlock magic:
+
+  [  256.104459] BUG: spinlock bad magic on CPU#3, procd/2241
+  [  256.104488] Unable to handle kernel paging request at virtual address ffffffff0000049b
+  ...
+
+Investigating the issue revealed that these symptoms are results of
+memory corruption which is caused by out of bounds access within the
+driver.
+
+The driver uses a dynamically allocated structure for BAM transactions,
+which structure must have enough space for all possible variations of
+different flash operations initiated by the driver. The required space
+heavily depends on the actual number of 'codewords' which is calculated
+from the pagesize of the actual NAND chip.
+
+Although the qcom_nandc_alloc() function allocates memory for the BAM
+transactions during probe, but since the actual number of 'codewords'
+is not yet know the allocation is done for one 'codeword' only.
+
+Because of this, whenever the driver does a flash operation, and the
+number of the required transactions exceeds the size of the allocated
+arrays the driver accesses memory out of the allocated range.
+
+To avoid this, change the code to free the initially allocated BAM
+transactions memory, and allocate a new one once the actual number of
+'codewords' required for a given NAND chip is known.
+
+Fixes: 7304d1909080 ("spi: spi-qpic: add driver for QCOM SPI NAND flash Interface")
+Reviewed-by: Md Sadre Alam <quic_mdalam@quicinc.com>
+Signed-off-by: Gabor Juhos <j4g8y7@gmail.com>
+Link: https://patch.msgid.link/20250618-qpic-snand-avoid-mem-corruption-v3-1-319c71296cda@gmail.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ drivers/spi/spi-qpic-snand.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+--- a/drivers/spi/spi-qpic-snand.c
++++ b/drivers/spi/spi-qpic-snand.c
+@@ -315,6 +315,22 @@ static int qcom_spi_ecc_init_ctx_pipelin
+ 
+ 	mtd_set_ooblayout(mtd, &qcom_spi_ooblayout);
+ 
++	/*
++	 * Free the temporary BAM transaction allocated initially by
++	 * qcom_nandc_alloc(), and allocate a new one based on the
++	 * updated max_cwperpage value.
++	 */
++	qcom_free_bam_transaction(snandc);
++
++	snandc->max_cwperpage = cwperpage;
++
++	snandc->bam_txn = qcom_alloc_bam_transaction(snandc);
++	if (!snandc->bam_txn) {
++		dev_err(snandc->dev, "failed to allocate BAM transaction\n");
++		ret = -ENOMEM;
++		goto err_free_ecc_cfg;
++	}
++
+ 	ecc_cfg->cfg0 = FIELD_PREP(CW_PER_PAGE_MASK, (cwperpage - 1)) |
+ 			FIELD_PREP(UD_SIZE_BYTES_MASK, ecc_cfg->cw_data) |
+ 			FIELD_PREP(DISABLE_STATUS_AFTER_WRITE, 1) |

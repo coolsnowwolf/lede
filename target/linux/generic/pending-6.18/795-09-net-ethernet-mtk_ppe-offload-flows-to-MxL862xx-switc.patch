@@ -1,0 +1,153 @@
+From 031ec521141aaa7fe13a937e0f942319f501cc4d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:24:32 +0100
+Subject: [PATCH] net: ethernet: mtk_ppe: offload flows to MxL862xx switches in
+ tag_8021q mode
+
+Extend the PPE flow-offload output path to handle egress through
+an MxL862xx switch running in tag_8021q mode
+(DSA_TAG_PROTO_MXL862_8021Q), in addition to the existing support
+for MediaTek's native 8-byte DSA tag (DSA_TAG_PROTO_MTK).
+
+In tag_8021q mode MxL862xx expects every ingress frame on the CPU port
+to carry an outer 802.1Q tag whose VID identifies the target user
+port; the switch's per-port egress catchall rule then strips that
+outer tag. The VID to use is the one produced by
+dsa_tag_8021q_standalone_vid(dp), which bakes the tag_8021q reserved
+marker (RSV = GENMASK(11, 10)), the DSA tree's switch ID, and the user
+port's dp->index into the low 12 bits of the VID.
+
+Change mtk_flow_get_dsa_port() to return, alongside dp->index, the VID
+the PPE should push on the offloaded frame, in a new push_vid
+out-parameter:
+
+  - DSA_TAG_PROTO_MTK               -> push_vid = 0;
+                                       caller uses mtk_foe_entry_set_dsa()
+                                       (magic etype) as before.
+  - DSA_TAG_PROTO_MXL862_8021Q      -> push_vid = standalone VID;
+                                       caller pushes it as a VLAN via
+                                       mtk_foe_entry_set_vlan().
+
+The switch statement is intentionally scoped: other tag_8021q-based
+taggers (sja1105, ocelot_8021q, ...) use different tag layers
+(CTAG-in-range rather than Q-in-Q) and/or bridge-scoped VIDs and are
+not interchangeable here.
+
+The prerequisite reorder commit ("mtk_ppe_offload: set output device
+before VLAN/PPPoE push") put mtk_flow_set_output_device() ahead of the
+user VLAN push loop, so the outer MxL862xx VID lands in vlan1 and a
+subsequent user VLAN stacks into vlan2. Queue selection stays with the
+DSA queue map introduced in the preceding patch.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../net/ethernet/mediatek/mtk_ppe_offload.c   | 54 +++++++++++++++++--
+ 1 file changed, 49 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -10,6 +10,7 @@
+ #include <net/flow_offload.h>
+ #include <net/pkt_cls.h>
+ #include <net/dsa.h>
++#include <linux/dsa/8021q.h>
+ #include "mtk_eth_soc.h"
+ #include "mtk_wed.h"
+ 
+@@ -166,8 +167,25 @@ mtk_flow_mangle_ipv4(const struct flow_a
+ 	return 0;
+ }
+ 
++/*
++ * Inspect *dev as a DSA user netdev.  On success, substitute *dev with
++ * the conduit netdev, return the DSA user port's dp->index, and in
++ * *push_vid hand back either 0 (native MTK tag; the PPE injects its
++ * magic etype later via mtk_foe_entry_set_dsa()) or the outer 802.1Q
++ * VID the PPE should push on the egressing frame (tag_8021q taggers
++ * that use an outer Q-in-Q tag with a standalone per-port VID, i.e.
++ * the MxL862xx tag_8021q tagger).
++ *
++ * push_vid may be NULL for callers that only want the idev->conduit
++ * substitution (e.g. ingress-side ppe_idx selection, where no VID
++ * is to be pushed on the flow entry).
++ *
++ * Other tag_8021q-based taggers (sja1105, ocelot_8021q, ...) use
++ * different tag layers and/or bridge-scoped VIDs; do not extend the
++ * switch below to cover them without per-tagger review.
++ */
+ static int
+-mtk_flow_get_dsa_port(struct net_device **dev)
++mtk_flow_get_dsa_port(struct net_device **dev, u16 *push_vid)
+ {
+ #if IS_ENABLED(CONFIG_NET_DSA)
+ 	struct dsa_port *dp;
+@@ -176,8 +194,18 @@ mtk_flow_get_dsa_port(struct net_device
+ 	if (IS_ERR(dp))
+ 		return -ENODEV;
+ 
+-	if (dp->cpu_dp->tag_ops->proto != DSA_TAG_PROTO_MTK)
++	switch (dp->cpu_dp->tag_ops->proto) {
++	case DSA_TAG_PROTO_MTK:
++		if (push_vid)
++			*push_vid = 0;
++		break;
++	case DSA_TAG_PROTO_MXL862_8021Q:
++		if (push_vid)
++			*push_vid = dsa_tag_8021q_standalone_vid(dp);
++		break;
++	default:
+ 		return -ENODEV;
++	}
+ 
+ 	*dev = dsa_port_to_conduit(dp);
+ 
+@@ -195,6 +223,7 @@ mtk_flow_set_output_device(struct mtk_et
+ 	struct mtk_wdma_info info = {};
+ 	struct mtk_mac *mac;
+ 	int pse_port, dsa_port, queue;
++	u16 push_vid = 0;
+ 
+ 	if (mtk_flow_get_wdma_info(dev, dest_mac, &info) == 0) {
+ 		mtk_foe_entry_set_wdma(eth, foe, info.wdma_idx, info.queue,
+@@ -220,7 +249,7 @@ mtk_flow_set_output_device(struct mtk_et
+ 		goto out;
+ 	}
+ 
+-	dsa_port = mtk_flow_get_dsa_port(&dev);
++	dsa_port = mtk_flow_get_dsa_port(&dev, &push_vid);
+ 
+ 	if (dev == eth->netdev[0])
+ 		pse_port = PSE_GDM1_PORT;
+@@ -231,8 +260,12 @@ mtk_flow_set_output_device(struct mtk_et
+ 	else
+ 		return -EOPNOTSUPP;
+ 
+-	if (dsa_port >= 0)
+-		mtk_foe_entry_set_dsa(eth, foe, dsa_port);
++	if (dsa_port >= 0) {
++		if (push_vid)
++			mtk_foe_entry_set_vlan(eth, foe, push_vid);
++		else
++			mtk_foe_entry_set_dsa(eth, foe, dsa_port);
++	}
+ 
+ 	if (dsa_port >= 0 && dsa_port < MTK_DSA_USER_PORT_MAX) {
+ 		mac = netdev_priv(dev);
+@@ -294,6 +327,17 @@ mtk_flow_offload_replace(struct mtk_eth
+ 		flow_rule_match_meta(rule, &match);
+ 		if (mtk_is_netsys_v2_or_greater(eth)) {
+ 			idev = __dev_get_by_index(&init_net, match.key->ingress_ifindex);
++			/*
++			 * If idev is a DSA user netdev, substitute it with
++			 * its conduit so the valid-idev check below passes
++			 * and ppe_index picks up the conduit's PPE engine.
++			 * Without this, upstream flows from a DSA user port
++			 * (e.g. MxL862xx lanN) install on ppe[0] while the
++			 * conduit's GDMA routes ingress through its own
++			 * ppe[mac->ppe_idx]; the lookup misses and the
++			 * flow never binds in HW.
++			 */
++			mtk_flow_get_dsa_port(&idev, NULL);
+ 			if (mtk_flow_is_valid_idev(eth, idev)) {
+ 				struct mtk_mac *mac = netdev_priv(idev);
+ 

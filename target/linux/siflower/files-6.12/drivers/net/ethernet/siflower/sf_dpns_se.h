@@ -1,0 +1,77 @@
+#ifndef __SF_DPNS_SE_H__
+#define __SF_DPNS_SE_H__
+#include "dpns.h"
+
+#define SE_INT_STATUS			0x180000
+#define  SE_INT_EVACT_SCH_OVF		BIT(14)
+#define  SE_INT_L2_MF_SPL_OVF		BIT(13)
+#define  SE_INT_L2_MP_SCH_OVF		BIT(12)
+#define  SE_INT_MODIFY_OVF		BIT(11)
+#define  SE_INT_EVXLT_LKP_OVF		BIT(10)
+#define  SE_INT_EVLAN_LKP_OVF		BIT(9)
+#define  SE_INT_EVSCH_OVF		BIT(8)
+#define  SE_INT_MACSCH_OVF		BIT(7)
+#define  SE_INT_MSPLS_OVF		BIT(6)
+#define  SE_INT_MACSPL_LKP_OVF		BIT(5)
+#define  SE_INT_L2_LKP_BUF_OVF		BIT(4)
+#define  SE_INT_L2_LKP_SCH_OVF		BIT(3)
+#define  SE_INT_IVXLT_OVF		BIT(2)
+#define  SE_INT_IVLKP_OVF		BIT(1)
+#define  SE_INT_IVPSPL_LKP_OVF		BIT(0)
+
+#define SE_CLR_RAM_CTRL			0x180004
+#define  SE_CLR_RAM_ALL			GENMASK(20, 0)
+
+#define SE_CONFIG0			0x180008
+#define  SE_L2_VID_ZERO_MODE		BIT(27)
+#define  SE_IPSPL_DIS_STEP		BIT(26)
+#define  SE_IPSPL_CMPT_LEN		GENMASK(25, 20)
+#define  SE_IPSPL_ZERO_LIMIT		BIT(19)
+#define  SE_IPSPL_CNT_MODE		GENMASK(18, 17)
+#define  SE_IVLKP_CFG_DISABLE		BIT(16)
+#define  SE_IVLKP_CFG_ENTR_MINUS1	GENMASK(15, 10)
+#define  SE_PORTBV_TABLE_VALID		BIT(9)
+#define  SE_IPORT_TABLE_VALID		BIT(8)
+#define  SE_IVXLT_CFG_DISABLE		BIT(7)
+#define  SE_IVXLT_CFG_ENTR_MINUS1	GENMASK(6, 1)
+#define  SE_IPSPL_MODE			BIT(0)
+
+#define SE_CONFIG1			0x18000c
+#define  SE_UNUC_SPL_CNT_MODE		BIT(30)
+#define  SE_L2_HASH_POLY_SEL(x)		GENMASK((x) * 3 + 2, (x) * 3)
+
+#define SE_CONFIG2			0x180010
+#define  SE_EVACT_TABLE_VALID		BIT(31)
+#define  SE_EVXLT_CFG_DIS		BIT(30)
+#define  SE_EVXLT_CFG_ENTR_MINUS1	GENMASK(29, 24)
+#define  SE_L2_MFSPL_ZERO_LIMIT		BIT(23)
+#define  SE_L2_MFSPL_CNT_MODE		GENMASK(22, 21)
+#define  SE_MFSPL_MODE			BIT(20)
+#define  SE_MACSPL_ZERO_LIMIT		BIT(19)
+#define  SE_MACSPL_CNT_MODE		GENMASK(18, 17)
+#define  SE_PTPID_TABLE_VALID		BIT(16)
+#define  SE_OTPID_TABLE_VALID		BIT(15)
+#define  SE_EVLKP_CFG_DIS_TB		BIT(14)
+#define  SE_EVLKP_CFG_ENTR_MINUS1	GENMASK(13, 8)
+#define  SE_INTF_TABLE_VALID		BIT(7)
+#define  SE_MAC_TABLE_VALID		BIT(6)
+#define  SE_MACSPL_MODE			BIT(5)
+#define  SE_L2_AGE_CLR_AFTER_RD		BIT(4)
+#define  SE_L2_SEG_NUM_MINUS1		GENMASK(3, 0)
+
+#define SE_TB_OP			0x18003c
+#define  SE_TB_OP_BUSY			BIT(31)
+#define  SE_TB_OP_WR			BIT(24)
+#define  SE_TB_OP_REQ_ID		GENMASK(21, 16)
+#define   SE_TB_IPORT			1
+#define  SE_TB_OP_REQ_ADDR		GENMASK(15, 0)
+
+#define SE_TB_WRDATA(x)			(0x180040 + 4 * (x))
+#define SE_TB_RDDATA(x)			(0x180080 + 4 * (x))
+
+#define SE_TCAM_CLR			0x190004
+#define  SE_TCAM_CLR_ALL		GENMASK(5, 0)
+#define  SE_TCAM_CLR_ACL_SPL		BIT(5)
+#define  SE_TCAM_CLR_BLK(x)		BIT(x)
+
+#endif

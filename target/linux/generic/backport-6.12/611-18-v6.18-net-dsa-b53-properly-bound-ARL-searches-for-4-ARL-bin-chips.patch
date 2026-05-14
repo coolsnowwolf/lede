@@ -1,0 +1,61 @@
+From e57723fe536f040cc2635ec1545dd0a7919a321e Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Sun, 2 Nov 2025 11:07:58 +0100
+Subject: [PATCH] net: dsa: b53: properly bound ARL searches for < 4 ARL bin
+ chips
+
+When iterating over the ARL table we stop at max ARL entries / 2, but
+this is only valid if the chip actually returns 2 results at once. For
+chips with only one result register we will stop before reaching the end
+of the table if it is more than half full.
+
+Fix this by only dividing the maximum results by two if we have a chip
+with more than one result register (i.e. those with 4 ARL bins).
+
+Fixes: cd169d799bee ("net: dsa: b53: Bound check ARL searches")
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251102100758.28352-4-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -2090,13 +2090,16 @@ static int b53_fdb_copy(int port, const
+ int b53_fdb_dump(struct dsa_switch *ds, int port,
+ 		 dsa_fdb_dump_cb_t *cb, void *data)
+ {
++	unsigned int count = 0, results_per_hit = 1;
+ 	struct b53_device *priv = ds->priv;
+ 	struct b53_arl_entry results[2];
+-	unsigned int count = 0;
+ 	u8 offset;
+ 	int ret;
+ 	u8 reg;
+ 
++	if (priv->num_arl_bins > 2)
++		results_per_hit = 2;
++
+ 	mutex_lock(&priv->arl_mutex);
+ 
+ 	if (is5325(priv) || is5365(priv))
+@@ -2118,7 +2121,7 @@ int b53_fdb_dump(struct dsa_switch *ds,
+ 		if (ret)
+ 			break;
+ 
+-		if (priv->num_arl_bins > 2) {
++		if (results_per_hit == 2) {
+ 			b53_arl_search_rd(priv, 1, &results[1]);
+ 			ret = b53_fdb_copy(port, &results[1], cb, data);
+ 			if (ret)
+@@ -2128,7 +2131,7 @@ int b53_fdb_dump(struct dsa_switch *ds,
+ 				break;
+ 		}
+ 
+-	} while (count++ < b53_max_arl_entries(priv) / 2);
++	} while (count++ < b53_max_arl_entries(priv) / results_per_hit);
+ 
+ 	mutex_unlock(&priv->arl_mutex);
+ 

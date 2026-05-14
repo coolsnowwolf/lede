@@ -1,0 +1,257 @@
+From 654653e718f6c55c6f29fd94cc8152a92c8166ac Mon Sep 17 00:00:00 2001
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Tue, 24 Dec 2024 08:36:32 +0800
+Subject: [PATCH 1/2] rt2x00: respect the rt2800 hardware TX queue index
+
+The Ralink TX queue register index is different from the Linux
+IEEE80211 queue id definition. Their conversion table is as follows:
+
+Queue   IEEE80211   Ralink
+AC_VO      0          3
+AC_VI      1          2
+AC_BE      2          0
+AC_BK      3          1
+
+The TX queues are still functioning properly under the current
+configuration. I don't have evidence, but I believe there should
+be some differences in the internal hardware implementation of
+different TX queues, e.g. interrupt priority. so it's better to
+respect the queue index defined by the Ralink when we construct
+the TX rings and descriptors.
+
+And the more important thing is that we are using the wrong queue
+index to calculate the register offset and mask in .conf_tx(),
+which resulted in writing incorrect AIFSN, CWMAX, CWMIN and TXOP
+values for all TX queues. This patch introduces a index conversion
+table to fix these parameters.
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ drivers/net/wireless/ralink/rt2x00/rt2800.h   | 24 ++++++------
+ .../net/wireless/ralink/rt2x00/rt2800lib.c    | 20 +++++++---
+ .../net/wireless/ralink/rt2x00/rt2800mmio.c   | 38 ++++++++++---------
+ .../net/wireless/ralink/rt2x00/rt2x00queue.h  | 20 ++++++++++
+ 4 files changed, 67 insertions(+), 35 deletions(-)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800.h
+@@ -379,10 +379,10 @@
+ 
+ /*
+  * WMM_AIFSN_CFG: Aifsn for each EDCA AC
+- * AIFSN0: AC_VO
+- * AIFSN1: AC_VI
+- * AIFSN2: AC_BE
+- * AIFSN3: AC_BK
++ * AIFSN0: AC_BE
++ * AIFSN1: AC_BK
++ * AIFSN2: AC_VI
++ * AIFSN3: AC_VO
+  */
+ #define WMM_AIFSN_CFG			0x0214
+ #define WMM_AIFSN_CFG_AIFSN0		FIELD32(0x0000000f)
+@@ -392,10 +392,10 @@
+ 
+ /*
+  * WMM_CWMIN_CSR: CWmin for each EDCA AC
+- * CWMIN0: AC_VO
+- * CWMIN1: AC_VI
+- * CWMIN2: AC_BE
+- * CWMIN3: AC_BK
++ * CWMIN0: AC_BE
++ * CWMIN1: AC_BK
++ * CWMIN2: AC_VI
++ * CWMIN3: AC_VO
+  */
+ #define WMM_CWMIN_CFG			0x0218
+ #define WMM_CWMIN_CFG_CWMIN0		FIELD32(0x0000000f)
+@@ -405,10 +405,10 @@
+ 
+ /*
+  * WMM_CWMAX_CSR: CWmax for each EDCA AC
+- * CWMAX0: AC_VO
+- * CWMAX1: AC_VI
+- * CWMAX2: AC_BE
+- * CWMAX3: AC_BK
++ * CWMAX0: AC_BE
++ * CWMAX1: AC_BK
++ * CWMAX2: AC_VI
++ * CWMAX3: AC_VO
+  */
+ #define WMM_CWMAX_CFG			0x021c
+ #define WMM_CWMAX_CFG_CWMAX0		FIELD32(0x0000000f)
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
+@@ -835,7 +835,8 @@ void rt2800_write_tx_data(struct queue_e
+ 			   txdesc->key_idx : txdesc->u.ht.wcid);
+ 	rt2x00_set_field32(&word, TXWI_W1_MPDU_TOTAL_BYTE_COUNT,
+ 			   txdesc->length);
+-	rt2x00_set_field32(&word, TXWI_W1_PACKETID_QUEUE, entry->queue->qid);
++	rt2x00_set_field32(&word, TXWI_W1_PACKETID_QUEUE,
++			   rt2x00_ac_to_hwq(entry->queue->qid));
+ 	rt2x00_set_field32(&word, TXWI_W1_PACKETID_ENTRY, (entry->entry_idx % 3) + 1);
+ 	rt2x00_desc_write(txwi, 1, word);
+ 
+@@ -1125,6 +1126,12 @@ void rt2800_txdone(struct rt2x00_dev *rt
+ 	u32 reg;
+ 	u8 qid;
+ 	bool match;
++	static const u8 rt2ac[] = {
++		IEEE80211_AC_BE,
++		IEEE80211_AC_BK,
++		IEEE80211_AC_VI,
++		IEEE80211_AC_VO,
++	};
+ 
+ 	while (quota-- > 0 && kfifo_get(&rt2x00dev->txstatus_fifo, &reg)) {
+ 		/*
+@@ -1132,6 +1139,8 @@ void rt2800_txdone(struct rt2x00_dev *rt
+ 		 * guaranteed to be one of the TX QIDs .
+ 		 */
+ 		qid = rt2x00_get_field32(reg, TX_STA_FIFO_PID_QUEUE);
++		/* Convert Ralink hardware queue index to IEEE80211 queue id. */
++		qid = rt2ac[qid];
+ 		queue = rt2x00queue_get_tx_queue(rt2x00dev, qid);
+ 
+ 		if (unlikely(rt2x00queue_empty(queue))) {
+@@ -12182,8 +12191,9 @@ int rt2800_conf_tx(struct ieee80211_hw *
+ 	queue = rt2x00queue_get_tx_queue(rt2x00dev, queue_idx);
+ 
+ 	/* Update WMM TXOP register */
+-	offset = WMM_TXOP0_CFG + (sizeof(u32) * (!!(queue_idx & 2)));
+-	field.bit_offset = (queue_idx & 1) * 16;
++	offset = WMM_TXOP0_CFG +
++		 (sizeof(u32) * (!!(rt2x00_ac_to_hwq(queue_idx) & 2)));
++	field.bit_offset = (rt2x00_ac_to_hwq(queue_idx) & 1) * 16;
+ 	field.bit_mask = 0xffff << field.bit_offset;
+ 
+ 	reg = rt2800_register_read(rt2x00dev, offset);
+@@ -12191,7 +12201,7 @@ int rt2800_conf_tx(struct ieee80211_hw *
+ 	rt2800_register_write(rt2x00dev, offset, reg);
+ 
+ 	/* Update WMM registers */
+-	field.bit_offset = queue_idx * 4;
++	field.bit_offset = rt2x00_ac_to_hwq(queue_idx) * 4;
+ 	field.bit_mask = 0xf << field.bit_offset;
+ 
+ 	reg = rt2800_register_read(rt2x00dev, WMM_AIFSN_CFG);
+@@ -12207,7 +12217,7 @@ int rt2800_conf_tx(struct ieee80211_hw *
+ 	rt2800_register_write(rt2x00dev, WMM_CWMAX_CFG, reg);
+ 
+ 	/* Update EDCA registers */
+-	offset = EDCA_AC0_CFG + (sizeof(u32) * queue_idx);
++	offset = EDCA_AC0_CFG + (sizeof(u32) * rt2x00_ac_to_hwq(queue_idx));
+ 
+ 	reg = rt2800_register_read(rt2x00dev, offset);
+ 	rt2x00_set_field32(&reg, EDCA_AC0_CFG_TX_OP, queue->txop);
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800mmio.c
+@@ -35,7 +35,7 @@ unsigned int rt2800mmio_get_dma_done(str
+ 	case QID_AC_VI:
+ 	case QID_AC_BE:
+ 	case QID_AC_BK:
+-		qid = queue->qid;
++		qid = rt2x00_ac_to_hwq(queue->qid);
+ 		idx = rt2x00mmio_register_read(rt2x00dev, TX_DTX_IDX(qid));
+ 		break;
+ 	case QID_MGMT:
+@@ -456,6 +456,7 @@ void rt2800mmio_kick_queue(struct data_q
+ {
+ 	struct rt2x00_dev *rt2x00dev = queue->rt2x00dev;
+ 	struct queue_entry *entry;
++	u8 qid;
+ 
+ 	switch (queue->qid) {
+ 	case QID_AC_VO:
+@@ -464,7 +465,8 @@ void rt2800mmio_kick_queue(struct data_q
+ 	case QID_AC_BK:
+ 		WARN_ON_ONCE(rt2x00queue_empty(queue));
+ 		entry = rt2x00queue_get_entry(queue, Q_INDEX);
+-		rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX(queue->qid),
++		qid = rt2x00_ac_to_hwq(queue->qid);
++		rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX(qid),
+ 					  entry->entry_idx);
+ 		hrtimer_start(&rt2x00dev->txstatus_timer,
+ 			      TXSTATUS_TIMEOUT, HRTIMER_MODE_REL);
+@@ -666,36 +668,36 @@ int rt2800mmio_init_queues(struct rt2x00
+ 	 * Initialize registers.
+ 	 */
+ 	entry_priv = rt2x00dev->tx[0].entries[0].priv_data;
+-	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR0,
++	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR3,
+ 				  entry_priv->desc_dma);
+-	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT0,
++	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT3,
+ 				  rt2x00dev->tx[0].limit);
+-	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX0, 0);
+-	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX0, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX3, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX3, 0);
+ 
+ 	entry_priv = rt2x00dev->tx[1].entries[0].priv_data;
+-	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR1,
++	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR2,
+ 				  entry_priv->desc_dma);
+-	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT1,
++	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT2,
+ 				  rt2x00dev->tx[1].limit);
+-	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX1, 0);
+-	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX1, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX2, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX2, 0);
+ 
+ 	entry_priv = rt2x00dev->tx[2].entries[0].priv_data;
+-	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR2,
++	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR0,
+ 				  entry_priv->desc_dma);
+-	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT2,
++	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT0,
+ 				  rt2x00dev->tx[2].limit);
+-	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX2, 0);
+-	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX2, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX0, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX0, 0);
+ 
+ 	entry_priv = rt2x00dev->tx[3].entries[0].priv_data;
+-	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR3,
++	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR1,
+ 				  entry_priv->desc_dma);
+-	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT3,
++	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT1,
+ 				  rt2x00dev->tx[3].limit);
+-	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX3, 0);
+-	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX3, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_CTX_IDX1, 0);
++	rt2x00mmio_register_write(rt2x00dev, TX_DTX_IDX1, 0);
+ 
+ 	rt2x00mmio_register_write(rt2x00dev, TX_BASE_PTR4, 0);
+ 	rt2x00mmio_register_write(rt2x00dev, TX_MAX_CNT4, 0);
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00queue.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00queue.h
+@@ -57,6 +57,26 @@ enum data_queue_qid {
+ };
+ 
+ /**
++ * rt2x00_ac_to_hwq - Convert IEEE80211 queue id to Ralink hardware
++ * queue register index.
++ * @ac: TX queue id.
++ */
++static inline u8 rt2x00_ac_to_hwq(enum data_queue_qid ac)
++{
++	static const u8 ralink_queue_map[] = {
++		[IEEE80211_AC_BE] = 0,
++		[IEEE80211_AC_BK] = 1,
++		[IEEE80211_AC_VI] = 2,
++		[IEEE80211_AC_VO] = 3,
++	};
++
++	if (unlikely(ac >= IEEE80211_NUM_ACS))
++		return ac;
++
++	return ralink_queue_map[ac];
++}
++
++/**
+  * enum skb_frame_desc_flags: Flags for &struct skb_frame_desc
+  *
+  * @SKBDESC_DMA_MAPPED_RX: &skb_dma field has been mapped for RX

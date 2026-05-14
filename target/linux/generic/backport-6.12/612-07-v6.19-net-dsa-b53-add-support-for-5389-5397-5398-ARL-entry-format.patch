@@ -1,0 +1,221 @@
+From 300f78e8b6b7be17c2c78afeded75be68acb1aa7 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Fri, 7 Nov 2025 09:07:48 +0100
+Subject: [PATCH] net: dsa: b53: add support for 5389/5397/5398 ARL entry
+ format
+
+BCM5389, BCM5397 and BCM5398 use a different ARL entry format with just
+a 16 bit fwdentry register, as well as different search control and data
+offsets.
+
+So add appropriate ops for them and switch those chips to use them.
+
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251107080749.26936-8-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 53 ++++++++++++++++++++++++++++++--
+ drivers/net/dsa/b53/b53_priv.h   | 26 ++++++++++++++++
+ drivers/net/dsa/b53/b53_regs.h   | 13 ++++++++
+ 3 files changed, 89 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1850,6 +1850,31 @@ static void b53_arl_write_entry_25(struc
+ 		    mac_vid);
+ }
+ 
++static void b53_arl_read_entry_89(struct b53_device *dev,
++				  struct b53_arl_entry *ent, u8 idx)
++{
++	u64 mac_vid;
++	u16 fwd_entry;
++
++	b53_read64(dev, B53_ARLIO_PAGE, B53_ARLTBL_MAC_VID_ENTRY(idx),
++		   &mac_vid);
++	b53_read16(dev, B53_ARLIO_PAGE, B53_ARLTBL_DATA_ENTRY(idx), &fwd_entry);
++	b53_arl_to_entry_89(ent, mac_vid, fwd_entry);
++}
++
++static void b53_arl_write_entry_89(struct b53_device *dev,
++				   const struct b53_arl_entry *ent, u8 idx)
++{
++	u32 fwd_entry;
++	u64 mac_vid;
++
++	b53_arl_from_entry_89(&mac_vid, &fwd_entry, ent);
++	b53_write64(dev, B53_ARLIO_PAGE,
++		    B53_ARLTBL_MAC_VID_ENTRY(idx), mac_vid);
++	b53_write16(dev, B53_ARLIO_PAGE,
++		    B53_ARLTBL_DATA_ENTRY(idx), fwd_entry);
++}
++
+ static void b53_arl_read_entry_95(struct b53_device *dev,
+ 				  struct b53_arl_entry *ent, u8 idx)
+ {
+@@ -2013,6 +2038,8 @@ static void b53_read_arl_srch_ctl(struct
+ 
+ 	if (is5325(dev) || is5365(dev))
+ 		offset = B53_ARL_SRCH_CTL_25;
++	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev))
++		offset = B53_ARL_SRCH_CTL_89;
+ 	else
+ 		offset = B53_ARL_SRCH_CTL;
+ 
+@@ -2025,6 +2052,8 @@ static void b53_write_arl_srch_ctl(struc
+ 
+ 	if (is5325(dev) || is5365(dev))
+ 		offset = B53_ARL_SRCH_CTL_25;
++	else if (dev->chip_id == BCM5389_DEVICE_ID || is5397_98(dev))
++		offset = B53_ARL_SRCH_CTL_89;
+ 	else
+ 		offset = B53_ARL_SRCH_CTL;
+ 
+@@ -2070,6 +2099,18 @@ static void b53_arl_search_read_65(struc
+ 	b53_arl_to_entry_25(ent, mac_vid);
+ }
+ 
++static void b53_arl_search_read_89(struct b53_device *dev, u8 idx,
++				   struct b53_arl_entry *ent)
++{
++	u16 fwd_entry;
++	u64 mac_vid;
++
++	b53_read64(dev, B53_ARLIO_PAGE, B53_ARL_SRCH_RSLT_MACVID_89,
++		   &mac_vid);
++	b53_read16(dev, B53_ARLIO_PAGE, B53_ARL_SRCH_RSLT_89, &fwd_entry);
++	b53_arl_to_entry_89(ent, mac_vid, fwd_entry);
++}
++
+ static void b53_arl_search_read_95(struct b53_device *dev, u8 idx,
+ 				   struct b53_arl_entry *ent)
+ {
+@@ -2670,6 +2711,12 @@ static const struct b53_arl_ops b53_arl_
+ 	.arl_search_read = b53_arl_search_read_65,
+ };
+ 
++static const struct b53_arl_ops b53_arl_ops_89 = {
++	.arl_read_entry = b53_arl_read_entry_89,
++	.arl_write_entry = b53_arl_write_entry_89,
++	.arl_search_read = b53_arl_search_read_89,
++};
++
+ static const struct b53_arl_ops b53_arl_ops_95 = {
+ 	.arl_read_entry = b53_arl_read_entry_95,
+ 	.arl_write_entry = b53_arl_write_entry_95,
+@@ -2734,7 +2781,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
+-		.arl_ops = &b53_arl_ops_95,
++		.arl_ops = &b53_arl_ops_89,
+ 	},
+ 	{
+ 		.chip_id = BCM5395_DEVICE_ID,
+@@ -2762,7 +2809,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
+-		.arl_ops = &b53_arl_ops_95,
++		.arl_ops = &b53_arl_ops_89,
+ 	},
+ 	{
+ 		.chip_id = BCM5398_DEVICE_ID,
+@@ -2776,7 +2823,7 @@ static const struct b53_chip_data b53_sw
+ 		.duplex_reg = B53_DUPLEX_STAT_GE,
+ 		.jumbo_pm_reg = B53_JUMBO_PORT_MASK,
+ 		.jumbo_size_reg = B53_JUMBO_MAX_SIZE,
+-		.arl_ops = &b53_arl_ops_95,
++		.arl_ops = &b53_arl_ops_89,
+ 	},
+ 	{
+ 		.chip_id = BCM53101_DEVICE_ID,
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -353,6 +353,18 @@ static inline void b53_arl_to_entry_25(s
+ 	ent->vid = mac_vid >> ARLTBL_VID_S_65;
+ }
+ 
++static inline void b53_arl_to_entry_89(struct b53_arl_entry *ent,
++				       u64 mac_vid, u16 fwd_entry)
++{
++	memset(ent, 0, sizeof(*ent));
++	ent->port = fwd_entry & ARLTBL_DATA_PORT_ID_MASK_89;
++	ent->is_valid = !!(fwd_entry & ARLTBL_VALID_89);
++	ent->is_age = !!(fwd_entry & ARLTBL_AGE_89);
++	ent->is_static = !!(fwd_entry & ARLTBL_STATIC_89);
++	u64_to_ether_addr(mac_vid, ent->mac);
++	ent->vid = mac_vid >> ARLTBL_VID_S;
++}
++
+ static inline void b53_arl_from_entry(u64 *mac_vid, u32 *fwd_entry,
+ 				      const struct b53_arl_entry *ent)
+ {
+@@ -383,6 +395,20 @@ static inline void b53_arl_from_entry_25
+ 		*mac_vid |= ARLTBL_AGE_25;
+ }
+ 
++static inline void b53_arl_from_entry_89(u64 *mac_vid, u32 *fwd_entry,
++					 const struct b53_arl_entry *ent)
++{
++	*mac_vid = ether_addr_to_u64(ent->mac);
++	*mac_vid |= (u64)(ent->vid & ARLTBL_VID_MASK) << ARLTBL_VID_S;
++	*fwd_entry = ent->port & ARLTBL_DATA_PORT_ID_MASK_89;
++	if (ent->is_valid)
++		*fwd_entry |= ARLTBL_VALID_89;
++	if (ent->is_static)
++		*fwd_entry |= ARLTBL_STATIC_89;
++	if (ent->is_age)
++		*fwd_entry |= ARLTBL_AGE_89;
++}
++
+ static inline void b53_arl_read_entry(struct b53_device *dev,
+ 				      struct b53_arl_entry *ent, u8 idx)
+ {
+--- a/drivers/net/dsa/b53/b53_regs.h
++++ b/drivers/net/dsa/b53/b53_regs.h
+@@ -342,12 +342,20 @@
+ #define   ARLTBL_STATIC			BIT(15)
+ #define   ARLTBL_VALID			BIT(16)
+ 
++/* BCM5389 ARL Table Data Entry N Register format (16 bit) */
++#define   ARLTBL_DATA_PORT_ID_MASK_89	GENMASK(8, 0)
++#define   ARLTBL_TC_MASK_89		GENMASK(12, 10)
++#define   ARLTBL_AGE_89			BIT(13)
++#define   ARLTBL_STATIC_89		BIT(14)
++#define   ARLTBL_VALID_89		BIT(15)
++
+ /* Maximum number of bin entries in the ARL for all switches */
+ #define B53_ARLTBL_MAX_BIN_ENTRIES	4
+ 
+ /* ARL Search Control Register (8 bit) */
+ #define B53_ARL_SRCH_CTL		0x50
+ #define B53_ARL_SRCH_CTL_25		0x20
++#define B53_ARL_SRCH_CTL_89		0x30
+ #define   ARL_SRCH_VLID			BIT(0)
+ #define   ARL_SRCH_STDN			BIT(7)
+ 
+@@ -355,10 +363,12 @@
+ #define B53_ARL_SRCH_ADDR		0x51
+ #define B53_ARL_SRCH_ADDR_25		0x22
+ #define B53_ARL_SRCH_ADDR_65		0x24
++#define B53_ARL_SRCH_ADDR_89		0x31
+ #define  ARL_ADDR_MASK			GENMASK(14, 0)
+ 
+ /* ARL Search MAC/VID Result (64 bit) */
+ #define B53_ARL_SRCH_RSTL_0_MACVID	0x60
++#define B53_ARL_SRCH_RSLT_MACVID_89	0x33
+ 
+ /* Single register search result on 5325 */
+ #define B53_ARL_SRCH_RSTL_0_MACVID_25	0x24
+@@ -368,6 +378,9 @@
+ /* ARL Search Data Result (32 bit) */
+ #define B53_ARL_SRCH_RSTL_0		0x68
+ 
++/* BCM5389 ARL Search Data Result (16 bit) */
++#define B53_ARL_SRCH_RSLT_89		0x3b
++
+ #define B53_ARL_SRCH_RSTL_MACVID(x)	(B53_ARL_SRCH_RSTL_0_MACVID + ((x) * 0x10))
+ #define B53_ARL_SRCH_RSTL(x)		(B53_ARL_SRCH_RSTL_0 + ((x) * 0x10))
+ 

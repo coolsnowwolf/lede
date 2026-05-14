@@ -7,10 +7,10 @@
 
 include $(TOPDIR)/rules.mk
 
-PKG_VERSION:=2.13
+PKG_VERSION:=2.14
 PKG_RELEASE:=1
 
-PKG_HASH:=afb5c408392fcec840bd30de9b02a236b0108142024f9853b542b596b0d894e3
+PKG_HASH:=14fb6101f2ef424ec84c0296c3cbdeb7f79b22f5fbb46529bea0e362d0fab0d5
 
 PKG_MAINTAINER:=Sarah Maedel <openwrt@tbspace.de>
 

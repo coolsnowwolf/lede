@@ -1,0 +1,64 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Thu, 28 Aug 2025 14:41:57 +0200
+Subject: [PATCH] wifi: mac80211: add MLO support to ieee80211_probe_client
+
+Use the first available link to probe the client.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -4584,7 +4584,9 @@ static int ieee80211_probe_client(struct
+ 	struct ieee80211_tx_info *info;
+ 	struct sta_info *sta;
+ 	struct ieee80211_chanctx_conf *chanctx_conf;
++	struct ieee80211_bss_conf *link_conf;
+ 	enum nl80211_band band;
++	u8 link_id;
+ 	int ret;
+ 
+ 	/* the lock is needed to assign the cookie later */
+@@ -4599,7 +4601,23 @@ static int ieee80211_probe_client(struct
+ 
+ 	qos = sta->sta.wme;
+ 
+-	chanctx_conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
++	if (ieee80211_vif_is_mld(&sdata->vif)) {
++		if (sta->sta.valid_links)
++			link_id = ffs(sta->sta.valid_links) - 1;
++		else
++			link_id = sta->deflink.link_id;
++
++		link_conf = rcu_dereference(sdata->vif.link_conf[link_id]);
++		if (unlikely(!link_conf)) {
++			ret = -ENOLINK;
++			goto unlock;
++		}
++	} else {
++		link_id = IEEE80211_LINK_UNSPECIFIED;
++		link_conf = &sdata->vif.bss_conf;
++	}
++
++	chanctx_conf = rcu_dereference(link_conf->chanctx_conf);
+ 	if (WARN_ON(!chanctx_conf)) {
+ 		ret = -EINVAL;
+ 		goto unlock;
+@@ -4631,14 +4649,15 @@ static int ieee80211_probe_client(struct
+ 	nullfunc->frame_control = fc;
+ 	nullfunc->duration_id = 0;
+ 	memcpy(nullfunc->addr1, sta->sta.addr, ETH_ALEN);
+-	memcpy(nullfunc->addr2, sdata->vif.addr, ETH_ALEN);
+-	memcpy(nullfunc->addr3, sdata->vif.addr, ETH_ALEN);
++	memcpy(nullfunc->addr2, link_conf->addr, ETH_ALEN);
++	memcpy(nullfunc->addr3, link_conf->addr, ETH_ALEN);
+ 	nullfunc->seq_ctrl = 0;
+ 
+ 	info = IEEE80211_SKB_CB(skb);
+ 
+ 	info->flags |= IEEE80211_TX_CTL_REQ_TX_STATUS |
+ 		       IEEE80211_TX_INTFL_NL80211_FRAME_TX;
++	info->control.flags |= u32_encode_bits(link_id, IEEE80211_TX_CTRL_MLO_LINK);
+ 	info->band = band;
+ 
+ 	skb_set_queue_mapping(skb, IEEE80211_AC_VO);

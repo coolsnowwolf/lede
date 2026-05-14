@@ -1,0 +1,241 @@
+From b61fcc3c7f95734e14741d8787fc9eb69b8437d4 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 11 Apr 2026 22:47:15 +0100
+Subject: [PATCH 1/2] PM / devfreq: mtk-cci: use devres for resource management
+ in probe
+
+Convert mtk_ccifreq_probe() to use devm-managed resource cleanup
+instead of manual goto-based error handling.
+
+This pattern (devm_add_action_or_reset with a regulator disable
+callback) is well-established in the kernel, used by drivers such as
+ads7846, max6639 and others.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/devfreq/mtk-cci-devfreq.c | 150 +++++++++++++++---------------
+ 1 file changed, 73 insertions(+), 77 deletions(-)
+
+--- a/drivers/devfreq/mtk-cci-devfreq.c
++++ b/drivers/devfreq/mtk-cci-devfreq.c
+@@ -246,6 +246,21 @@ static struct devfreq_dev_profile mtk_cc
+ 	.target = mtk_ccifreq_target,
+ };
+ 
++static void mtk_ccifreq_regulator_disable(void *data)
++{
++	regulator_disable(data);
++}
++
++static void mtk_ccifreq_clk_disable_unprepare(void *data)
++{
++	clk_disable_unprepare(data);
++}
++
++static void mtk_ccifreq_opp_of_remove_table(void *data)
++{
++	dev_pm_opp_of_remove_table(data);
++}
++
+ static int mtk_ccifreq_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -266,44 +281,47 @@ static int mtk_ccifreq_probe(struct plat
+ 	platform_set_drvdata(pdev, drv);
+ 
+ 	drv->cci_clk = devm_clk_get(dev, "cci");
+-	if (IS_ERR(drv->cci_clk)) {
+-		ret = PTR_ERR(drv->cci_clk);
+-		return dev_err_probe(dev, ret, "failed to get cci clk\n");
+-	}
++	if (IS_ERR(drv->cci_clk))
++		return dev_err_probe(dev, PTR_ERR(drv->cci_clk),
++				     "failed to get cci clk\n");
+ 
+ 	drv->inter_clk = devm_clk_get(dev, "intermediate");
+-	if (IS_ERR(drv->inter_clk)) {
+-		ret = PTR_ERR(drv->inter_clk);
+-		return dev_err_probe(dev, ret,
++	if (IS_ERR(drv->inter_clk))
++		return dev_err_probe(dev, PTR_ERR(drv->inter_clk),
+ 				     "failed to get intermediate clk\n");
+-	}
+ 
+ 	drv->proc_reg = devm_regulator_get_optional(dev, "proc");
+-	if (IS_ERR(drv->proc_reg)) {
+-		ret = PTR_ERR(drv->proc_reg);
+-		return dev_err_probe(dev, ret,
++	if (IS_ERR(drv->proc_reg))
++		return dev_err_probe(dev, PTR_ERR(drv->proc_reg),
+ 				     "failed to get proc regulator\n");
+-	}
+ 
+ 	ret = regulator_enable(drv->proc_reg);
+-	if (ret) {
+-		dev_err(dev, "failed to enable proc regulator\n");
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to enable proc regulator\n");
++
++	ret = devm_add_action_or_reset(dev, mtk_ccifreq_regulator_disable,
++				       drv->proc_reg);
++	if (ret)
+ 		return ret;
+-	}
+ 
+ 	drv->sram_reg = devm_regulator_get_optional(dev, "sram");
+ 	if (IS_ERR(drv->sram_reg)) {
+-		ret = PTR_ERR(drv->sram_reg);
+-		if (ret == -EPROBE_DEFER)
+-			goto out_free_resources;
++		if (PTR_ERR(drv->sram_reg) == -EPROBE_DEFER)
++			return -EPROBE_DEFER;
+ 
+ 		drv->sram_reg = NULL;
+ 	} else {
+ 		ret = regulator_enable(drv->sram_reg);
+-		if (ret) {
+-			dev_err(dev, "failed to enable sram regulator\n");
+-			goto out_free_resources;
+-		}
++		if (ret)
++			return dev_err_probe(dev, ret,
++					     "failed to enable sram regulator\n");
++
++		ret = devm_add_action_or_reset(dev,
++					       mtk_ccifreq_regulator_disable,
++					       drv->sram_reg);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	/*
+@@ -317,31 +335,36 @@ static int mtk_ccifreq_probe(struct plat
+ 
+ 	ret = clk_prepare_enable(drv->cci_clk);
+ 	if (ret)
+-		goto out_free_resources;
++		return ret;
++
++	ret = devm_add_action_or_reset(dev, mtk_ccifreq_clk_disable_unprepare,
++				       drv->cci_clk);
++	if (ret)
++		return ret;
+ 
+ 	ret = dev_pm_opp_of_add_table(dev);
+-	if (ret) {
+-		dev_err(dev, "failed to add opp table: %d\n", ret);
+-		goto out_disable_cci_clk;
+-	}
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to add opp table\n");
++
++	ret = devm_add_action_or_reset(dev, mtk_ccifreq_opp_of_remove_table,
++				       dev);
++	if (ret)
++		return ret;
+ 
+ 	rate = clk_get_rate(drv->inter_clk);
+ 	opp = dev_pm_opp_find_freq_ceil(dev, &rate);
+-	if (IS_ERR(opp)) {
+-		ret = PTR_ERR(opp);
+-		dev_err(dev, "failed to get intermediate opp: %d\n", ret);
+-		goto out_remove_opp_table;
+-	}
++	if (IS_ERR(opp))
++		return dev_err_probe(dev, PTR_ERR(opp),
++				     "failed to get intermediate opp\n");
++
+ 	drv->inter_voltage = dev_pm_opp_get_voltage(opp);
+ 	dev_pm_opp_put(opp);
+ 
+ 	rate = U32_MAX;
+ 	opp = dev_pm_opp_find_freq_floor(drv->dev, &rate);
+-	if (IS_ERR(opp)) {
+-		dev_err(dev, "failed to get opp\n");
+-		ret = PTR_ERR(opp);
+-		goto out_remove_opp_table;
+-	}
++	if (IS_ERR(opp))
++		return dev_err_probe(dev, PTR_ERR(opp),
++				     "failed to get opp\n");
+ 
+ 	opp_volt = dev_pm_opp_get_voltage(opp);
+ 	dev_pm_opp_put(opp);
+@@ -349,63 +372,36 @@ static int mtk_ccifreq_probe(struct plat
+ 	if (ret) {
+ 		dev_err(dev, "failed to scale to highest voltage %lu in proc_reg\n",
+ 			opp_volt);
+-		goto out_remove_opp_table;
++		return ret;
+ 	}
+ 
+ 	passive_data = devm_kzalloc(dev, sizeof(*passive_data), GFP_KERNEL);
+-	if (!passive_data) {
+-		ret = -ENOMEM;
+-		goto out_remove_opp_table;
+-	}
++	if (!passive_data)
++		return -ENOMEM;
+ 
+ 	passive_data->parent_type = CPUFREQ_PARENT_DEV;
+ 	drv->devfreq = devm_devfreq_add_device(dev, &mtk_ccifreq_profile,
+ 					       DEVFREQ_GOV_PASSIVE,
+ 					       passive_data);
+-	if (IS_ERR(drv->devfreq)) {
+-		ret = -EPROBE_DEFER;
+-		dev_err(dev, "failed to add devfreq device: %ld\n",
+-			PTR_ERR(drv->devfreq));
+-		goto out_remove_opp_table;
+-	}
++	if (IS_ERR(drv->devfreq))
++		return dev_err_probe(dev, -EPROBE_DEFER,
++				     "failed to add devfreq device: %ld\n",
++				     PTR_ERR(drv->devfreq));
+ 
+ 	drv->opp_nb.notifier_call = mtk_ccifreq_opp_notifier;
+ 	ret = dev_pm_opp_register_notifier(dev, &drv->opp_nb);
+-	if (ret) {
+-		dev_err(dev, "failed to register opp notifier: %d\n", ret);
+-		goto out_remove_opp_table;
+-	}
+-	return 0;
+-
+-out_remove_opp_table:
+-	dev_pm_opp_of_remove_table(dev);
+-
+-out_disable_cci_clk:
+-	clk_disable_unprepare(drv->cci_clk);
+-
+-out_free_resources:
+-	if (regulator_is_enabled(drv->proc_reg))
+-		regulator_disable(drv->proc_reg);
+-	if (!IS_ERR_OR_NULL(drv->sram_reg) &&
+-	    regulator_is_enabled(drv->sram_reg))
+-		regulator_disable(drv->sram_reg);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to register opp notifier\n");
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ static void mtk_ccifreq_remove(struct platform_device *pdev)
+ {
+-	struct device *dev = &pdev->dev;
+-	struct mtk_ccifreq_drv *drv;
+-
+-	drv = platform_get_drvdata(pdev);
++	struct mtk_ccifreq_drv *drv = platform_get_drvdata(pdev);
+ 
+-	dev_pm_opp_unregister_notifier(dev, &drv->opp_nb);
+-	dev_pm_opp_of_remove_table(dev);
+-	clk_disable_unprepare(drv->cci_clk);
+-	regulator_disable(drv->proc_reg);
+-	if (drv->sram_reg)
+-		regulator_disable(drv->sram_reg);
++	dev_pm_opp_unregister_notifier(&pdev->dev, &drv->opp_nb);
+ }
+ 
+ static const struct mtk_ccifreq_platform_data mt8183_platform_data = {

@@ -1,0 +1,208 @@
+From 3df6b71b8226dfd34d587b01d0674a22ef4ca440 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Wed, 29 Jan 2025 22:36:30 +0000
+Subject: [PATCH 4/7] rockchip: mkimage: Add option to change image offset
+ alignment
+
+The vendor boot_merger tool support a ALIGN parameter that is used to
+define offset alignment of the embedded images.
+
+Vendor use this for RK3576 to change offset alignment from the common
+2 KiB to 4 KiB, presumably it may have something to do with UFS.
+Testing with eMMC has shown that using a 512-byte alignment also work.
+
+Add support for overriding offset alignment in case this is needed for
+e.g. RK3576 in the future.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ tools/rkcommon.c | 75 +++++++++++++++++++++++++++++++-----------------
+ tools/rkcommon.h |  2 --
+ 2 files changed, 49 insertions(+), 28 deletions(-)
+
+--- a/tools/rkcommon.c
++++ b/tools/rkcommon.c
+@@ -140,6 +140,7 @@ struct spl_info {
+ 	const uint32_t spl_size;
+ 	const bool spl_rc4;
+ 	const uint32_t header_ver;
++	const uint32_t align;
+ };
+ 
+ static struct spl_info spl_infos[] = {
+@@ -199,14 +200,19 @@ static struct spl_info *rkcommon_get_spl
+ 	return NULL;
+ }
+ 
+-static int rkcommon_get_aligned_size(struct image_tool_params *params,
+-				     const char *fname)
++static bool rkcommon_is_header_v2(struct image_tool_params *params)
+ {
+-	int size;
++	struct spl_info *info = rkcommon_get_spl_info(params->imagename);
+ 
+-	size = imagetool_get_filesize(params, fname);
+-	if (size < 0)
+-		return -1;
++	return (info->header_ver == RK_HEADER_V2);
++}
++
++static int rkcommon_get_aligned_size(struct image_tool_params *params, int size)
++{
++	struct spl_info *info = rkcommon_get_spl_info(params->imagename);
++
++	if (info->align)
++		return ROUND(size, info->align * RK_BLK_SIZE);
+ 
+ 	/*
+ 	 * Pad to a 2KB alignment, as required for init/boot size by the ROM
+@@ -215,6 +221,27 @@ static int rkcommon_get_aligned_size(str
+ 	return ROUND(size, RK_SIZE_ALIGN);
+ }
+ 
++static int rkcommon_get_header_size(struct image_tool_params *params)
++{
++	int header_size = rkcommon_is_header_v2(params) ?
++			  sizeof(struct header0_info_v2) :
++			  sizeof(struct header0_info);
++
++	return rkcommon_get_aligned_size(params, header_size);
++}
++
++static int rkcommon_get_aligned_filesize(struct image_tool_params *params,
++					 const char *fname)
++{
++	int size;
++
++	size = imagetool_get_filesize(params, fname);
++	if (size < 0)
++		return -1;
++
++	return rkcommon_get_aligned_size(params, size);
++}
++
+ int rkcommon_check_params(struct image_tool_params *params)
+ {
+ 	int i, size;
+@@ -237,14 +264,14 @@ int rkcommon_check_params(struct image_t
+ 		spl_params.boot_file += 1;
+ 	}
+ 
+-	size = rkcommon_get_aligned_size(params, spl_params.init_file);
++	size = rkcommon_get_aligned_filesize(params, spl_params.init_file);
+ 	if (size < 0)
+ 		return EXIT_FAILURE;
+ 	spl_params.init_size = size;
+ 
+ 	/* Boot file is optional, and only for back-to-bootrom functionality. */
+ 	if (spl_params.boot_file) {
+-		size = rkcommon_get_aligned_size(params, spl_params.boot_file);
++		size = rkcommon_get_aligned_filesize(params, spl_params.boot_file);
+ 		if (size < 0)
+ 			return EXIT_FAILURE;
+ 		spl_params.boot_size = size;
+@@ -301,13 +328,6 @@ bool rkcommon_need_rc4_spl(struct image_
+ 	return info->spl_rc4;
+ }
+ 
+-static bool rkcommon_is_header_v2(struct image_tool_params *params)
+-{
+-	struct spl_info *info = rkcommon_get_spl_info(params->imagename);
+-
+-	return (info->header_ver == RK_HEADER_V2);
+-}
+-
+ static void do_sha256_hash(uint8_t *buf, uint32_t size, uint8_t *out)
+ {
+ 	sha256_context ctx;
+@@ -320,12 +340,13 @@ static void do_sha256_hash(uint8_t *buf,
+ static void rkcommon_set_header0(void *buf, struct image_tool_params *params)
+ {
+ 	struct header0_info *hdr = buf;
+-	uint32_t init_boot_size;
++	uint32_t init_boot_size, init_offset;
+ 
+-	memset(buf, '\0', RK_INIT_OFFSET * RK_BLK_SIZE);
++	init_offset = rkcommon_get_header_size(params) / RK_BLK_SIZE;
++	memset(buf, '\0', init_offset * RK_BLK_SIZE);
+ 	hdr->magic = cpu_to_le32(RK_MAGIC);
+ 	hdr->disable_rc4 = cpu_to_le32(!rkcommon_need_rc4_spl(params));
+-	hdr->init_offset = cpu_to_le16(RK_INIT_OFFSET);
++	hdr->init_offset = cpu_to_le16(init_offset);
+ 	hdr->init_size   = cpu_to_le16(spl_params.init_size / RK_BLK_SIZE);
+ 
+ 	/*
+@@ -353,10 +374,10 @@ static void rkcommon_set_header0_v2(void
+ 	uint8_t *image_ptr = NULL;
+ 	int i;
+ 
+-	memset(buf, '\0', RK_INIT_OFFSET * RK_BLK_SIZE);
++	sector_offset = rkcommon_get_header_size(params) / RK_BLK_SIZE;
++	memset(buf, '\0', sector_offset * RK_BLK_SIZE);
+ 	hdr->magic = cpu_to_le32(RK_MAGIC_V2);
+ 	hdr->boot_flag = cpu_to_le32(HASH_SHA256);
+-	sector_offset = 4;
+ 	image_size_array[0] = spl_params.init_size;
+ 	image_size_array[1] = spl_params.boot_size;
+ 
+@@ -382,11 +403,12 @@ static void rkcommon_set_header0_v2(void
+ void rkcommon_set_header(void *buf,  struct stat *sbuf,  int ifd,
+ 			 struct image_tool_params *params)
+ {
+-	struct header1_info *hdr = buf + RK_SPL_HDR_START;
+-
+ 	if (rkcommon_is_header_v2(params)) {
+ 		rkcommon_set_header0_v2(buf, params);
+ 	} else {
++		int header_size = rkcommon_get_header_size(params);
++		struct header1_info *hdr = buf + header_size;
++
+ 		rkcommon_set_header0(buf, params);
+ 
+ 		/* Set up the SPL name (i.e. copy spl_hdr over) */
+@@ -394,12 +416,12 @@ void rkcommon_set_header(void *buf,  str
+ 			memcpy(&hdr->magic, rkcommon_get_spl_hdr(params), RK_SPL_HDR_SIZE);
+ 
+ 		if (rkcommon_need_rc4_spl(params))
+-			rkcommon_rc4_encode_spl(buf, RK_SPL_HDR_START,
++			rkcommon_rc4_encode_spl(buf, header_size,
+ 						spl_params.init_size);
+ 
+ 		if (spl_params.boot_file) {
+ 			if (rkcommon_need_rc4_spl(params))
+-				rkcommon_rc4_encode_spl(buf + RK_SPL_HDR_START,
++				rkcommon_rc4_encode_spl(buf + header_size,
+ 							spl_params.init_size,
+ 							spl_params.boot_size);
+ 		}
+@@ -624,7 +646,7 @@ int rkcommon_vrec_header(struct image_to
+ 	 * 4 bytes of these images can safely be overwritten using the
+ 	 * boot magic.
+ 	 */
+-	tparams->header_size = RK_SPL_HDR_START;
++	tparams->header_size = rkcommon_get_header_size(params);
+ 
+ 	/* Allocate, clear and install the header */
+ 	tparams->hdr = malloc(tparams->header_size);
+@@ -642,7 +664,8 @@ int rkcommon_vrec_header(struct image_to
+ 	params->orig_file_size = tparams->header_size +
+ 		spl_params.init_size + spl_params.boot_size;
+ 
+-	params->file_size = ROUND(params->orig_file_size, RK_SIZE_ALIGN);
++	params->file_size = rkcommon_get_aligned_size(params,
++						      params->orig_file_size);
+ 
+ 	/* Ignoring pad len, since we are using our own copy_image() */
+ 	return 0;
+--- a/tools/rkcommon.h
++++ b/tools/rkcommon.h
+@@ -10,9 +10,7 @@
+ enum {
+ 	RK_BLK_SIZE		= 512,
+ 	RK_SIZE_ALIGN		= 2048,
+-	RK_INIT_OFFSET		= 4,
+ 	RK_MAX_BOOT_SIZE	= 512 << 10,
+-	RK_SPL_HDR_START	= RK_INIT_OFFSET * RK_BLK_SIZE,
+ 	RK_SPL_HDR_SIZE		= 4,
+ };
+ 

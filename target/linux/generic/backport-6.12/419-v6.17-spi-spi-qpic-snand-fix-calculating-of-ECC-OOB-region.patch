@@ -1,0 +1,69 @@
+From 13d0fe84a214658254a7412b2b46ec1507dc51f0 Mon Sep 17 00:00:00 2001
+From: Gabor Juhos <j4g8y7@gmail.com>
+Date: Tue, 5 Aug 2025 18:05:42 +0200
+Subject: spi: spi-qpic-snand: fix calculating of ECC OOB regions' properties
+
+The OOB layout used by the driver has two distinct regions which contains
+hardware specific ECC data, yet the qcom_spi_ooblayout_ecc() function sets
+the same offset and length values for both regions which is clearly wrong.
+
+Change the code to calculate the correct values for both regions.
+
+For reference, the following table shows the computed offset and length
+values for various OOB size/ECC strength configurations:
+
+                              +-----------------+-----------------+
+                              |before the change| after the change|
+  +-------+----------+--------+--------+--------+--------+--------+
+  |  OOB  |   ECC    | region | region | region | region | region |
+  |  size | strength | index  | offset | length | offset | length |
+  +-------+----------+--------+--------+--------+--------+--------+
+  |  128  |     8    |    0   |   113  |   15   |    0   |   49   |
+  |       |          |    1   |   113  |   15   |   65   |   63   |
+  +-------+----------+--------+--------+--------+--------+--------+
+  |  128  |     4    |    0   |   117  |   11   |    0   |   37   |
+  |       |          |    1   |   117  |   11   |   53   |   75   |
+  +-------+----------+--------+--------+--------+--------+--------+
+  |   64  |     4    |    0   |    53  |   11   |    0   |   37   |
+  |       |          |    1   |    53  |   11   |   53   |   11   |
+  +-------+----------+--------+--------+--------+--------+--------+
+
+Fixes: 7304d1909080 ("spi: spi-qpic: add driver for QCOM SPI NAND flash Interface")
+Signed-off-by: Gabor Juhos <j4g8y7@gmail.com>
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Link: https://patch.msgid.link/20250805-qpic-snand-oob-ecc-fix-v2-1-e6f811c70d6f@gmail.com
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ drivers/spi/spi-qpic-snand.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+--- a/drivers/spi/spi-qpic-snand.c
++++ b/drivers/spi/spi-qpic-snand.c
+@@ -216,13 +216,21 @@ static int qcom_spi_ooblayout_ecc(struct
+ 	struct qcom_nand_controller *snandc = nand_to_qcom_snand(nand);
+ 	struct qpic_ecc *qecc = snandc->qspi->ecc;
+ 
+-	if (section > 1)
+-		return -ERANGE;
++	switch (section) {
++	case 0:
++		oobregion->offset = 0;
++		oobregion->length = qecc->bytes * (qecc->steps - 1) +
++				    qecc->bbm_size;
++		return 0;
++	case 1:
++		oobregion->offset = qecc->bytes * (qecc->steps - 1) +
++				    qecc->bbm_size +
++				    qecc->steps * 4;
++		oobregion->length = mtd->oobsize - oobregion->offset;
++		return 0;
++	}
+ 
+-	oobregion->length = qecc->ecc_bytes_hw + qecc->spare_bytes;
+-	oobregion->offset = mtd->oobsize - oobregion->length;
+-
+-	return 0;
++	return -ERANGE;
+ }
+ 
+ static int qcom_spi_ooblayout_free(struct mtd_info *mtd, int section,

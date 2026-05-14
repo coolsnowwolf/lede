@@ -299,6 +299,12 @@ ifeq ($(DUMP),1)
     ifneq ($(CONFIG_PCIEPORTBUS),)
       FEATURES += pcie
     endif
+    ifneq ($(CONFIG_PINCTRL),)
+      FEATURES += pinctrl
+    endif
+    ifneq ($(CONFIG_PWM),)
+      FEATURES += pwm
+    endif
     ifneq ($(CONFIG_USB)$(CONFIG_USB_SUPPORT),)
       ifneq ($(CONFIG_USB_ARCH_HAS_HCD)$(CONFIG_USB_EHCI_HCD),)
         FEATURES += usb

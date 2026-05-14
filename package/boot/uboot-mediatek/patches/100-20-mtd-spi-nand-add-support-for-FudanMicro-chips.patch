@@ -1,0 +1,154 @@
+From 83cd1b0984bf53da247eb8fca1119668eb0ba7ea Mon Sep 17 00:00:00 2001
+From: Weijie Gao <weijie.gao@mediatek.com>
+Date: Wed, 15 Jan 2025 14:41:03 +0800
+Subject: [PATCH 20/30] mtd: spi-nand: add support for FudanMicro chips
+
+Sdd support for FudanMicro SPI-NAND flashes
+
+Signed-off-by: Weijie Gao <weijie.gao@mediatek.com>
+---
+ drivers/mtd/nand/spi/Makefile     |   1 +
+ drivers/mtd/nand/spi/core.c       |   1 +
+ drivers/mtd/nand/spi/fudanmicro.c | 107 ++++++++++++++++++++++++++++++
+ include/linux/mtd/spinand.h       |   1 +
+ 4 files changed, 110 insertions(+)
+ create mode 100644 drivers/mtd/nand/spi/fudanmicro.c
+
+--- a/drivers/mtd/nand/spi/Makefile
++++ b/drivers/mtd/nand/spi/Makefile
+@@ -3,4 +3,5 @@
+ spinand-objs := core.o esmt.o gigadevice.o macronix.o micron.o paragon.o
+ spinand-objs += toshiba.o winbond.o xtx.o
+ spinand-objs += etron.o
++spinand-objs += fudanmicro.o
+ obj-$(CONFIG_MTD_SPI_NAND) += spinand.o
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -827,6 +827,7 @@ static const struct nand_ops spinand_ops
+ 
+ static const struct spinand_manufacturer *spinand_manufacturers[] = {
+ 	&etron_spinand_manufacturer,
++	&fudan_spinand_manufacturer,
+ 	&gigadevice_spinand_manufacturer,
+ 	&macronix_spinand_manufacturer,
+ 	&micron_spinand_manufacturer,
+--- /dev/null
++++ b/drivers/mtd/nand/spi/fudanmicro.c
+@@ -0,0 +1,107 @@
++#ifndef __UBOOT__
++#include <malloc.h>
++#include <linux/device.h>
++#include <linux/kernel.h>
++#endif
++#include <linux/bitops.h>
++#include <linux/mtd/spinand.h>
++
++#define SPINAND_MFR_FUDAN		0xA1
++
++#define FM25S01B_STATUS_ECC_MASK		(7 << 4)
++#define STATUS_ECC_1_3_BITFLIPS	(1 << 4)
++#define STATUS_ECC_4_6_BITFLIPS	(3 << 4)
++#define STATUS_ECC_7_8_BITFLIPS	(5 << 4)
++
++static SPINAND_OP_VARIANTS(read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_X4_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_X2_OP(0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(true, 0, 1, NULL, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_OP(false, 0, 1, NULL, 0));
++
++static SPINAND_OP_VARIANTS(write_cache_variants,
++		SPINAND_PROG_LOAD_X4(true, 0, NULL, 0),
++		SPINAND_PROG_LOAD(true, 0, NULL, 0));
++
++static SPINAND_OP_VARIANTS(update_cache_variants,
++		SPINAND_PROG_LOAD_X4(false, 0, NULL, 0),
++		SPINAND_PROG_LOAD(false, 0, NULL, 0));
++
++static int fm25s01b_ooblayout_ecc(struct mtd_info *mtd, int section,
++				      struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 64;
++	region->length = 64;
++
++	return 0;
++}
++
++static int fm25s01b_ooblayout_free(struct mtd_info *mtd, int section,
++				       struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = (16 * section) + 4;
++	region->length = 12;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops fm25s01b_ooblayout = {
++	.ecc = fm25s01b_ooblayout_ecc,
++	.rfree = fm25s01b_ooblayout_free,
++};
++
++static int fm25s01b_ecc_get_status(struct spinand_device *spinand,
++				       u8 status)
++{
++	switch (status & FM25S01B_STATUS_ECC_MASK) {
++	case STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	case STATUS_ECC_1_3_BITFLIPS:
++		return 3;
++
++	case STATUS_ECC_4_6_BITFLIPS:
++		return 6;
++
++	case STATUS_ECC_7_8_BITFLIPS:
++		return 8;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
++static const struct spinand_info fudan_spinand_table[] = {
++	SPINAND_INFO("FM25s01B",
++			 SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xD4),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25s01b_ooblayout,
++				     fm25s01b_ecc_get_status)),
++};
++
++static const struct spinand_manufacturer_ops fudan_spinand_manuf_ops = {
++};
++
++const struct spinand_manufacturer fudan_spinand_manufacturer = {
++	.id = SPINAND_MFR_FUDAN,
++	.name = "FUDAN Micron",
++	.chips = fudan_spinand_table,
++	.nchips = ARRAY_SIZE(fudan_spinand_table),
++	.ops = &fudan_spinand_manuf_ops,
++};
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -245,6 +245,7 @@ struct spinand_manufacturer {
+ 
+ /* SPI NAND manufacturers */
+ extern const struct spinand_manufacturer etron_spinand_manufacturer;
++extern const struct spinand_manufacturer fudan_spinand_manufacturer;
+ extern const struct spinand_manufacturer gigadevice_spinand_manufacturer;
+ extern const struct spinand_manufacturer macronix_spinand_manufacturer;
+ extern const struct spinand_manufacturer micron_spinand_manufacturer;

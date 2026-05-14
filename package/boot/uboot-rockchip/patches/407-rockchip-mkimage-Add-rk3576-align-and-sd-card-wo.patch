@@ -1,0 +1,112 @@
+From d43031c4045ef8aaf29c467b910207e721dabce0 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Tue, 28 Jan 2025 01:30:12 +0000
+Subject: [PATCH 7/7] WIP: rockchip: mkimage: Add rk3576 align and sd-card
+ workaround
+
+The BootROM on RK3576 has an issue loading boot images from an SD-card.
+This issue can be worked around by injecting an initial boot image
+before TPL that:
+
+  writel(0x3ffff800, 0x3ff803b0)
+
+Prepend an image containing binary code that does this and return to
+BootROM to load next image, TPL.
+
+TODO: embed the binary code into rkcommon.c
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+---
+ rk3576-boost.bin | Bin 0 -> 24 bytes
+ rk3576-boost.c   |  49 +++++++++++++++++++++++++++++++++++++++++++++++
+ tools/rkcommon.c |  18 ++++++++++++++++-
+ 3 files changed, 66 insertions(+), 1 deletion(-)
+ create mode 100644 rk3576-boost.bin
+ create mode 100644 rk3576-boost.c
+
+--- /dev/null
++++ b/rk3576-boost.c
+@@ -0,0 +1,49 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++// Copyright Contributors to the U-Boot project.
++
++/*
++ * Generate assembly code for the c code in this file:
++ *  aarch64-linux-gnu-gcc -nostdlib -ffreestanding -Os -S -o rk3576-boost.S rk3576-boost.c
++ *
++ * Compile assembly code and extract the AArch64 binary code:
++ *  aarch64-linux-gnu-as -o rk3576-boost.o rk3576-boost.S
++ *  aarch64-linux-gnu-objcopy -O binary -j .text rk3576-boost.o rk3576-boost.bin
++ */
++
++#include <stdint.h>
++
++#define SYS_SRAM_BASE	0x3ff80000
++#define OFFSET		0x03b0
++
++int _start(void)
++{
++	uint32_t *sram = (void*)(SYS_SRAM_BASE + OFFSET);
++
++	/* set unknown value in sram to fix boot from sdmmc */
++	*(sram) = 0x3ffff800;
++
++	return 0;
++}
++
++/*
++	.arch armv8-a
++	.file	"rk3576-boost.c"
++	.text
++	.align	2
++	.global	_start
++	.type	_start, %function
++_start:
++.LFB0:
++	.cfi_startproc
++	mov	x0, 944
++	mov	w1, 1073739776
++	movk	x0, 0x3ff8, lsl 16
++	str	w1, [x0]
++	mov	w0, 0
++	ret
++	.cfi_endproc
++.LFE0:
++	.size	_start, .-_start
++	.ident	"GCC: (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"
++	.section	.note.GNU-stack,"",@progbits
++*/
+--- a/tools/rkcommon.c
++++ b/tools/rkcommon.c
+@@ -159,7 +159,7 @@ static struct spl_info spl_infos[] = {
+ 	{ "rv1126", "110B", 0x10000 - 0x1000, false, RK_HEADER_V1 },
+ 	{ "rk3528", "RK35", 0x10000 - 0x1000, false, RK_HEADER_V2 },
+ 	{ "rk3568", "RK35", 0x10000 - 0x1000, false, RK_HEADER_V2 },
+-	{ "rk3576", "RK35", 0x80000 - 0x1000, false, RK_HEADER_V2 },
++	{ "rk3576", "RK35", 0x80000 - 0x1000, false, RK_HEADER_V2, 8 },
+ 	{ "rk3588", "RK35", 0x100000 - 0x1000, false, RK_HEADER_V2 },
+ };
+ 
+@@ -287,6 +287,22 @@ int rkcommon_check_params(struct image_t
+ 		return EXIT_FAILURE;
+ 	}
+ 
++	if (!strcmp(params->imagename, "rk3576")) {
++		size = rkcommon_get_aligned_filesize(params, "rk3576-boost.bin");
++		if (size < 0)
++			return EXIT_SUCCESS;
++
++		for (i = ARRAY_SIZE(spl_params.images) - 1; i > 0; i--) {
++			spl_params.images[i] = spl_params.images[i - 1];
++		}
++
++		spl_params.images[0].file = "rk3576-boost.bin";
++		spl_params.images[0].size = size;
++
++		spl_params.images[0].address = 0x3ffc0000;
++		spl_params.images[1].address = 0x3ff81000;
++	}
++
+ 	return EXIT_SUCCESS;
+ 
+ err_spl_info:

@@ -1,0 +1,101 @@
+From 27033d06917758d47162581da7e9de8004049dee Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Tue, 18 Nov 2025 01:40:29 +0200
+Subject: [PATCH] net: phy: realtek: eliminate priv->phycr2 variable
+
+The RTL8211F(D)(I)-VD-CG PHY also has support for disabling the CLKOUT,
+and we'd like to introduce the "realtek,clkout-disable" property for
+that.
+
+But it isn't done through the PHYCR2 register, and it becomes awkward to
+have the driver pretend that it is. So just replace the machine-level
+"u16 phycr2" variable with a logical "bool disable_clk_out", which
+scales better to the other PHY as well.
+
+The change is a complete functional equivalent. Before, if the device
+tree property was absent, priv->phycr2 would contain the RTL8211F_CLKOUT_EN
+bit as read from hardware. Now, we don't save priv->phycr2, but we just
+don't call phy_modify_paged() on it. Also, we can simply call
+phy_modify_paged() with the "set" argument to 0.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Link: https://patch.msgid.link/20251117234033.345679-3-vladimir.oltean@nxp.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 38 ++++++++++++++++----------
+ 1 file changed, 23 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -194,8 +194,8 @@ MODULE_LICENSE("GPL");
+ 
+ struct rtl821x_priv {
+ 	u16 phycr1;
+-	u16 phycr2;
+ 	bool has_phycr2;
++	bool disable_clk_out;
+ 	struct clk *clk;
+ 	/* rtl8211f */
+ 	u16 iner;
+@@ -266,15 +266,8 @@ static int rtl821x_probe(struct phy_devi
+ 		priv->phycr1 |= RTL8211F_ALDPS_PLL_OFF | RTL8211F_ALDPS_ENABLE | RTL8211F_ALDPS_XTAL_OFF;
+ 
+ 	priv->has_phycr2 = !(phy_id == RTL_8211FVD_PHYID);
+-	if (priv->has_phycr2) {
+-		ret = phy_read_paged(phydev, RTL8211F_PHYCR_PAGE, RTL8211F_PHYCR2);
+-		if (ret < 0)
+-			return ret;
+-
+-		priv->phycr2 = ret & RTL8211F_CLKOUT_EN;
+-		if (of_property_read_bool(dev->of_node, "realtek,clkout-disable"))
+-			priv->phycr2 &= ~RTL8211F_CLKOUT_EN;
+-	}
++	priv->disable_clk_out = of_property_read_bool(dev->of_node,
++						      "realtek,clkout-disable");
+ 
+ 	phydev->priv = priv;
+ 
+@@ -654,6 +647,23 @@ static int rtl8211f_config_rgmii_delay(s
+ 	return 0;
+ }
+ 
++static int rtl8211f_config_clk_out(struct phy_device *phydev)
++{
++	struct rtl821x_priv *priv = phydev->priv;
++	int ret;
++
++	/* The value is preserved if the device tree property is absent */
++	if (!priv->disable_clk_out)
++		return 0;
++
++	ret = phy_modify_paged(phydev, RTL8211F_PHYCR_PAGE,
++			       RTL8211F_PHYCR2, RTL8211F_CLKOUT_EN, 0);
++	if (ret)
++		return ret;
++
++	return genphy_soft_reset(phydev);
++}
++
+ static int rtl8211f_config_init(struct phy_device *phydev)
+ {
+ 	struct rtl821x_priv *priv = phydev->priv;
+@@ -682,16 +692,14 @@ static int rtl8211f_config_init(struct p
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = phy_modify_paged(phydev, RTL8211F_PHYCR_PAGE,
+-			       RTL8211F_PHYCR2, RTL8211F_CLKOUT_EN,
+-			       priv->phycr2);
+-	if (ret < 0) {
++	ret = rtl8211f_config_clk_out(phydev);
++	if (ret) {
+ 		dev_err(dev, "clkout configuration failed: %pe\n",
+ 			ERR_PTR(ret));
+ 		return ret;
+ 	}
+ 
+-	return genphy_soft_reset(phydev);
++	return 0;
+ }
+ 
+ static int rtl821x_suspend(struct phy_device *phydev)

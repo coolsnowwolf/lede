@@ -1,0 +1,70 @@
+From: Zhi-Jun You <hujy652@gmail.com>
+Date: Wed,  6 Aug 2025 15:00:05 +0800
+Subject: [RFC PATCH] wifi: ath10k: support flush_sta method
+
+
+When a STA is marked as no longer authorized, if the driver doesn't
+implement flush_sta(), mac80211 calls ieee80211_flush_queues() to
+flush hardware queues to avoid sending unencrypted frames.
+
+This has became a problem for ath10k because ieee80211_flush_queues()
+will stop all traffic and call ath10k_flush, which waits until the
+whole HW queue is empty. In a busy environment this will trigger a
+timeout warning and stalls other STAs.
+
+Fix this by implementing flush_sta method using WMI command to flush
+frames of a specific STA.
+Flushed frames will be marked as discard in tx complete indication.
+
+ops->flush_sta will be set to NULL if htt.disable_tx_comp is set to
+true.
+
+Tested-on: QCA9984 hw1.0 PCI 10.4-3.9.0.2-00157
+
+Signed-off-by: Zhi-Jun You <hujy652@gmail.com>
+Tested-by: Florian Maurer <maurer@fh-aachen.de>
+---
+ drivers/net/wireless/ath/ath10k/mac.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath10k/mac.c
++++ b/drivers/net/wireless/ath/ath10k/mac.c
+@@ -8180,6 +8180,20 @@ static void ath10k_flush(struct ieee8021
+ 	mutex_unlock(&ar->conf_mutex);
+ }
+ 
++static void ath10k_mac_op_flush_sta(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
++			     struct ieee80211_sta *sta)
++{
++	struct ath10k_vif *arvif = (void *)vif->drv_priv;
++	struct ath10k *ar = hw->priv;
++	u32 bitmap = 0xFFFFFFFF;
++	int ret = 0;
++
++	ret = ath10k_wmi_peer_flush(ar, arvif->vdev_id, sta->addr, bitmap);
++	if (ret)
++		ath10k_warn(ar, "failed to flush sta (sta %pM)\n",
++			    sta->addr);
++}
++
+ /* TODO: Implement this function properly
+  * For now it is needed to reply to Probe Requests in IBSS mode.
+  * Probably we need this information from FW.
+@@ -9532,6 +9546,7 @@ static const struct ieee80211_ops ath10k
+ 	.set_rts_threshold		= ath10k_set_rts_threshold,
+ 	.set_frag_threshold		= ath10k_mac_op_set_frag_threshold,
+ 	.flush				= ath10k_flush,
++	.flush_sta			= ath10k_mac_op_flush_sta,
+ 	.tx_last_beacon			= ath10k_tx_last_beacon,
+ 	.set_antenna			= ath10k_set_antenna,
+ 	.get_antenna			= ath10k_get_antenna,
+@@ -10353,6 +10368,9 @@ int ath10k_mac_register(struct ath10k *a
+ 	if (!ar->hw_params.hw_ops->set_coverage_class)
+ 		ar->ops->set_coverage_class = NULL;
+ 
++	if (ar->htt.disable_tx_comp)
++		ar->ops->flush_sta = NULL;
++
+ 	ret = ath_regd_init(&ar->ath_common.regulatory, ar->hw->wiphy,
+ 			    ath10k_reg_notifier);
+ 	if (ret) {

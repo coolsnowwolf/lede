@@ -1,0 +1,210 @@
+From: Michal Cieslakiewicz <michal.cieslakiewicz@wp.pl>
+Date: Sun, 31 Jan 2016 21:01:31 +0100
+Subject: [PATCH v4 4/8] mac80211: ath9k: enable access to GPIO
+
+Enable access to GPIO chip and its pins for Atheros AR92xx
+wireless devices. For now AR9285 and AR9287 are supported.
+
+Signed-off-by: Michal Cieslakiewicz <michal.cieslakiewicz@wp.pl>
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+--- a/drivers/net/wireless/ath/ath9k/ath9k.h
++++ b/drivers/net/wireless/ath/ath9k/ath9k.h
+@@ -25,6 +25,8 @@
+ #include <linux/completion.h>
+ #include <linux/time.h>
+ #include <linux/hw_random.h>
++#include <linux/gpio/driver.h>
++#include <linux/gpio/consumer.h>
+ 
+ #include "common.h"
+ #include "debug.h"
+@@ -1047,6 +1049,10 @@ struct ath_softc {
+ #ifdef CPTCFG_MAC80211_LEDS
+ 	const char *led_default_trigger;
+ 	struct list_head leds;
++#ifdef CONFIG_GPIOLIB
++	struct gpio_chip *gpiochip;
++	struct gpio_desc *gpiodesc;
++#endif
+ #endif
+ 
+ #ifdef CPTCFG_ATH9K_DEBUGFS
+--- a/drivers/net/wireless/ath/ath9k/gpio.c
++++ b/drivers/net/wireless/ath/ath9k/gpio.c
+@@ -16,12 +16,120 @@
+ 
+ #include "ath9k.h"
+ 
++#ifdef CPTCFG_MAC80211_LEDS
++
++#ifdef CONFIG_GPIOLIB
++
++/***************/
++/*  GPIO Chip  */
++/***************/
++
++/* gpio_chip handler : set GPIO to input */
++static int ath9k_gpio_pin_cfg_input(struct gpio_chip *chip, unsigned offset)
++{
++	struct ath_softc *sc = gpiochip_get_data(chip);
++
++	ath9k_hw_gpio_request_in(sc->sc_ah, offset, "ath9k-gpio");
++
++	return 0;
++}
++
++/* gpio_chip handler : set GPIO to output */
++static int ath9k_gpio_pin_cfg_output(struct gpio_chip *chip, unsigned offset,
++				     int value)
++{
++	struct ath_softc *sc = gpiochip_get_data(chip);
++
++	ath9k_hw_gpio_request_out(sc->sc_ah, offset, "ath9k-gpio",
++				  AR_GPIO_OUTPUT_MUX_AS_OUTPUT);
++	ath9k_hw_set_gpio(sc->sc_ah, offset, value);
++
++	return 0;
++}
++
++/* gpio_chip handler : query GPIO direction (0=out, 1=in) */
++static int ath9k_gpio_pin_get_dir(struct gpio_chip *chip, unsigned offset)
++{
++	struct ath_softc *sc = gpiochip_get_data(chip);
++	struct ath_hw *ah = sc->sc_ah;
++
++	return !((REG_READ(ah, AR_GPIO_OE_OUT(ah)) >> (offset * 2)) & 3);
++}
++
++/* gpio_chip handler : get GPIO pin value */
++static int ath9k_gpio_pin_get(struct gpio_chip *chip, unsigned offset)
++{
++	struct ath_softc *sc = gpiochip_get_data(chip);
++
++	return ath9k_hw_gpio_get(sc->sc_ah, offset);
++}
++
++/* gpio_chip handler : set GPIO pin to value */
++static void ath9k_gpio_pin_set(struct gpio_chip *chip, unsigned offset,
++			       int value)
++{
++	struct ath_softc *sc = gpiochip_get_data(chip);
++
++	ath9k_hw_set_gpio(sc->sc_ah, offset, value);
++}
++
++/* register GPIO chip */
++static void ath9k_register_gpio_chip(struct ath_softc *sc)
++{
++	struct gpio_chip *gc = sc->gpiochip;
++	struct ath_hw *ah = sc->sc_ah;
++
++	gc = kzalloc(sizeof(struct gpio_chip), GFP_KERNEL);
++	if (!gc)
++		return;
++
++	gc->label = kasprintf(GFP_KERNEL, "ath9k-%s",
++			wiphy_name(sc->hw->wiphy));
++	gc->parent = sc->dev;
++	gc->base = -1;	/* determine base automatically */
++	gc->ngpio = ah->caps.num_gpio_pins;
++	gc->direction_input = ath9k_gpio_pin_cfg_input;
++	gc->direction_output = ath9k_gpio_pin_cfg_output;
++	gc->get_direction = ath9k_gpio_pin_get_dir;
++	gc->get = ath9k_gpio_pin_get;
++	gc->set = ath9k_gpio_pin_set;
++
++	if (gpiochip_add_data(gc, sc)) {
++		kfree(gc->label);
++		kfree(gc);
++		return;
++	}
++}
++
++/* remove GPIO chip */
++static void ath9k_unregister_gpio_chip(struct ath_softc *sc)
++{
++	struct gpio_chip *gc = sc->gpiochip;
++
++	if (!gc)
++		return;
++
++	gpiochip_remove(gc);
++	kfree(gc->label);
++	kfree(gc);
++}
++
++#else /* CONFIG_GPIOLIB */
++
++static inline void ath9k_register_gpio_chip(struct ath_softc *sc)
++{
++}
++
++static inline void ath9k_unregister_gpio_chip(struct ath_softc *sc)
++{
++}
++
++#endif /* CONFIG_GPIOLIB */
++
+ /********************************/
+ /*	 LED functions		*/
+ /********************************/
+ 
+-#ifdef CPTCFG_MAC80211_LEDS
+-
+ static void ath_fill_led_pin(struct ath_softc *sc)
+ {
+ 	struct ath_hw *ah = sc->sc_ah;
+@@ -79,6 +187,12 @@ static int ath_add_led(struct ath_softc
+ 	else
+ 		ath9k_hw_set_gpio(sc->sc_ah, gpio->gpio, gpio->active_low);
+ 
++#ifdef CONFIG_GPIOLIB
++	/* If there is GPIO chip configured, reserve LED pin */
++	if (sc->gpiochip)
++		sc->gpiodesc = gpiod_get(sc->dev, gpio->name, GPIOD_ASIS);
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -117,16 +231,23 @@ void ath_deinit_leds(struct ath_softc *s
+ 
+ 	while (!list_empty(&sc->leds)) {
+ 		led = list_first_entry(&sc->leds, struct ath_led, list);
++#ifdef CONFIG_GPIOLIB
++		/* If there is GPIO chip configured, free LED pin */
++		if (sc->gpiochip)
++			gpiod_put(sc->gpiodesc);
++#endif
+ 		list_del(&led->list);
+ 		ath_led_brightness(&led->cdev, LED_OFF);
+ 		led_classdev_unregister(&led->cdev);
+ 		ath9k_hw_gpio_free(sc->sc_ah, led->gpio->gpio);
+ 		kfree(led);
+ 	}
++	ath9k_unregister_gpio_chip(sc);
+ }
+ 
+ void ath_init_leds(struct ath_softc *sc)
+ {
++	struct device_node *np = sc->dev->of_node;
+ 	char led_name[32];
+ 	const char *trigger;
+ 
+@@ -135,6 +256,15 @@ void ath_init_leds(struct ath_softc *sc)
+ 	if (AR_SREV_9100(sc->sc_ah))
+ 		return;
+ 
++	if (!np)
++		ath9k_register_gpio_chip(sc);
++
++	/* setup gpio controller only if requested and skip the led_pin setup */
++	if (of_property_read_bool(np, "gpio-controller")) {
++		ath9k_register_gpio_chip(sc);
++		return;
++	}
++
+ 	ath_fill_led_pin(sc);
+ 
+ 	snprintf(led_name, sizeof(led_name), "ath9k-%s",

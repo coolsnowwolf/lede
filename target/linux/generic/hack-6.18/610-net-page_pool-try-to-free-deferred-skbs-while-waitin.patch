@@ -1,0 +1,51 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 3 Jan 2025 19:29:00 +0100
+Subject: [PATCH] net: page_pool: try to free deferred skbs while waiting for
+ pool release
+
+The NAPI defer list can accumulate no longer used skbs, which can be reused
+during alloc. If this happens on a CPU that otherwise does not do any
+rx softirq processing, skbs can be held indefinitely, causing warnings
+on releasing page pools.
+Deal with this by scheduling rx softirq on all CPUs.
+
+Patch by Lorenzo Bianconi
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/core/page_pool.c
++++ b/net/core/page_pool.c
+@@ -1199,8 +1199,9 @@ static void page_pool_release_retry(stru
+ {
+ 	struct delayed_work *dwq = to_delayed_work(wq);
+ 	struct page_pool *pool = container_of(dwq, typeof(*pool), release_dw);
++	unsigned long flags;
+ 	void *netdev;
+-	int inflight;
++	int cpu, inflight;
+ 
+ 	inflight = page_pool_release(pool);
+ 	/* In rare cases, a driver bug may cause inflight to go negative.
+@@ -1212,6 +1213,21 @@ static void page_pool_release_retry(stru
+ 	if (inflight <= 0)
+ 		return;
+ 
++	/* Run NET_RX_SOFTIRQ in order to free pending skbs in softnet_data
++	 * defer_list that can stay in the list until we have enough queued
++	 * traffic.
++	 */
++	local_irq_save(flags);
++	for_each_online_cpu(cpu) {
++		struct softnet_data *sd = &per_cpu(softnet_data, cpu);
++
++		if (cpu == raw_smp_processor_id())
++			raise_softirq_irqoff(NET_RX_SOFTIRQ);
++		else if (!cmpxchg(&sd->defer_ipi_scheduled, 0, 1))
++			smp_call_function_single_async(cpu, &sd->defer_csd);
++	}
++	local_irq_restore(flags);
++
+ 	/* Periodic warning for page pools the user can't see */
+ 	netdev = READ_ONCE(pool->slow.netdev);
+ 	if (time_after_eq(jiffies, pool->defer_warn) &&
