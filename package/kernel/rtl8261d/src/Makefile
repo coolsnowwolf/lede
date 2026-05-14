@@ -1,0 +1,1 @@
+obj-$(CONFIG_REALTEK_PHY_RTL8261D) += rtl8261d.o
