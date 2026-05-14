@@ -20,14 +20,31 @@
 #define SWCONFIG_LED_TIMER_INTERVAL	(HZ / 10)
 #define SWCONFIG_LED_NUM_PORTS		32
 
+#ifndef SWITCH_PORT_SPEED_2500
+#define SWITCH_PORT_SPEED_2500 2500
+#endif
+
+#ifndef SWITCH_PORT_SPEED_5000
+#define SWITCH_PORT_SPEED_5000 5000
+#endif
+
+#ifndef SWITCH_PORT_SPEED_10000
+#define SWITCH_PORT_SPEED_10000 10000
+#endif
+
 #define SWCONFIG_LED_PORT_SPEED_NA	0x01	/* unknown speed */
 #define SWCONFIG_LED_PORT_SPEED_10	0x02	/* 10 Mbps */
 #define SWCONFIG_LED_PORT_SPEED_100	0x04	/* 100 Mbps */
 #define SWCONFIG_LED_PORT_SPEED_1000	0x08	/* 1000 Mbps */
+#define SWCONFIG_LED_PORT_SPEED_2500	0x10	/* 2500 Mbps */
+#define SWCONFIG_LED_PORT_SPEED_5000	0x20	/* 5000 Mbps */
+#define SWCONFIG_LED_PORT_SPEED_10000	0x40	/* 10000 Mbps */
 #define SWCONFIG_LED_PORT_SPEED_ALL	(SWCONFIG_LED_PORT_SPEED_NA | \
 					 SWCONFIG_LED_PORT_SPEED_10 | \
 					 SWCONFIG_LED_PORT_SPEED_100 | \
-					 SWCONFIG_LED_PORT_SPEED_1000)
+					 SWCONFIG_LED_PORT_SPEED_1000 | \
+					 SWCONFIG_LED_PORT_SPEED_5000 | \
+					 SWCONFIG_LED_PORT_SPEED_10000)
 
 #define SWCONFIG_LED_MODE_LINK		0x01
 #define SWCONFIG_LED_MODE_TX		0x02
@@ -493,6 +510,18 @@ swconfig_led_work_func(struct work_struct *work)
 				case SWITCH_PORT_SPEED_1000:
 					sw_trig->link_speed[i] =
 						SWCONFIG_LED_PORT_SPEED_1000;
+					break;
+				case SWITCH_PORT_SPEED_2500:
+					sw_trig->link_speed[i] =
+						SWCONFIG_LED_PORT_SPEED_2500;
+					break;
+				case SWITCH_PORT_SPEED_5000:
+					sw_trig->link_speed[i] =
+						SWCONFIG_LED_PORT_SPEED_5000;
+					break;
+				case SWITCH_PORT_SPEED_10000:
+					sw_trig->link_speed[i] =
+						SWCONFIG_LED_PORT_SPEED_10000;
 					break;
 				}
 			}

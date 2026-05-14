@@ -1,0 +1,369 @@
+/*
+ * Copyright (C) 2013 Realtek Semiconductor Corp.
+ * All Rights Reserved.
+ *
+ * This program is the proprietary software of Realtek Semiconductor
+ * Corporation and/or its licensors, and only be used, duplicated,
+ * modified or distributed under the authorized license from Realtek.
+ *
+ * ANY USE OF THE SOFTWARE OTHER THAN AS AUTHORIZED UNDER
+ * THIS LICENSE OR COPYRIGHT LAW IS PROHIBITED.
+ *
+ * Purpose : RTL8367/RTL8367D switch high-level API
+ *
+ * Feature : The file includes rate module high-layer API defination
+ *
+ */
+
+#ifndef __DAL_RTL8373_SHAREDMETER_H__
+#define __DAL_RTL8373_SHAREDMETER_H__
+
+/*
+ * Include Files
+ */
+#include <sharemeter.h>
+
+/*
+ * Data Type Declaration
+ */
+//#define RTL8373_METERBUCKETSIZEMAX         0xFFFFFFF
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeter_set
+ * Description:
+ *      Set meter configuration
+ * Input:
+ *      index       - shared meter index(0 - 63)
+ *      type        - shared meter type
+ *      rate        - rate of share meter
+ *      ifg_include - include IFG or not, ENABLE:include DISABLE:exclude
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK               - OK
+ *      RT_ERR_FAILED           - Failed
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ *      RT_ERR_RATE             - Invalid rate
+ *      RT_ERR_INPUT            - Invalid input parameters
+ * Note:
+ *      The API can set shared meter rate and ifg include for each meter.
+ *      The rate unit is 16 kbps and the range is from 0 to 0x98968 if type is METER_TYPE_KBPS and
+ *      the granularity of rate is 16 kbps.
+ *      The rate unit is packets per second and the range is 0 ~ 0xFFFFF if type is METER_TYPE_PPS.
+ *      The ifg_include parameter is used
+ *      for rate calculation with/without inter-frame-gap and preamble.
+ */
+extern rtk_api_ret_t dal_rtl8373_rate_shareMeter_set(rtk_meter_id_t index, rtk_meter_type_t type, rtk_rate_t rate, rtk_enable_t ifg_include);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeter_get
+ * Description:
+ *      Get meter configuration
+ * Input:
+ *      index        - shared meter index(0 - 63)
+ * Output:
+ *      pType        - Meter Type
+ *      pRate        - pointer of rate of share meter
+ *      pIfg_include - include IFG or not, ENABLE:include DISABLE:exclude
+ * Return:
+ *      RT_ERR_OK               - OK
+ *      RT_ERR_FAILED           - Failed
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *
+ */
+extern rtk_api_ret_t dal_rtl8373_rate_shareMeter_get(rtk_meter_id_t index, rtk_meter_type_t *pType, rtk_rate_t *pRate, rtk_enable_t *pIfg_include);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterBucket_set
+ * Description:
+ *      Set meter Bucket Size
+ * Input:
+ *      index        - shared meter index(0 - 63)
+ *      bucket_size  - Bucket Size
+ * Output:
+ *      None.
+ * Return:
+ *      RT_ERR_OK               - OK
+ *      RT_ERR_FAILED           - Failed
+ *      RT_ERR_INPUT            - Error Input
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      The API can set shared meter bucket size.
+ */
+extern rtk_api_ret_t dal_rtl8373_rate_shareMeterBucket_set(rtk_meter_id_t index, rtk_uint32 bucket_size);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterBucket_get
+ * Description:
+ *      Get meter Bucket Size
+ * Input:
+ *      index        - shared meter index(0 - 63)
+ * Output:
+ *      pBucket_size - Bucket Size
+ * Return:
+ *      RT_ERR_OK               - OK
+ *      RT_ERR_FAILED           - Failed
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      The API can get shared meter bucket size.
+ */
+extern rtk_api_ret_t dal_rtl8373_rate_shareMeterBucket_get(rtk_meter_id_t index, rtk_uint32 *pBucket_size);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterExceedStatus_set
+ * Description:
+ *      Clear shared meter status
+ * Input:
+ *      index       - share meter index (0 - 63)
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK               - Success
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      None
+ */
+extern ret_t dal_rtl8373_rate_shareMeterExceedStatus_set(rtk_uint32 index);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterExceedStatus_get
+ * Description:
+ *      Get shared meter status
+ * Input:
+ *      index   - share meter index (0-63)
+ *      pStatus     - 0: rate doesn't exceed    1: rate exceeds
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK               - Success
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      If rate is over rate*16Kbps of a meter, the state bit of this meter is set to 1.
+ */
+extern ret_t dal_rtl8373_rate_shareMeterExceedStatus_get(rtk_uint32 index, rtk_uint32* pStatus);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterICPUExceedStatus_set
+ * Description:
+ *      Clear shared meter ICPU status
+ * Input:
+ *      index       - share meter index (0 - 63)
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK               - Success
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      None
+ */
+extern ret_t dal_rtl8373_rate_shareMeterICPUExceedStatus_set(rtk_uint32 index);
+
+/* Function Name:
+ *      dal_rtl8373_rate_shareMeterICPUExceedStatus_get
+ * Description:
+ *      Get shared meter ICPU exceed status
+ * Input:
+ *      index   -  share meter index (0 - 63)
+ *      pStatus     - 0: rate doesn't exceed    1: rate exceeds
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK               - Success
+ *      RT_ERR_SMI              - SMI access error
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter
+ * Note:
+ *      If rate is over rate*16Kbps of a meter, the state bit of this meter is set to 1.
+ */
+extern ret_t dal_rtl8373_rate_shareMeterICPUExceedStatus_get(rtk_uint32 index, rtk_uint32* pStatus);
+
+#if 0
+/* Function Name:
+ *      dal_rtl8367d_rate_igrBandwidthCtrlRate_set
+ * Description:
+ *      Set port ingress bandwidth control
+ * Input:
+ *      port        - Port id
+ *      rate        - Rate of share meter
+ *      ifg_include - include IFG or not, ENABLE:include DISABLE:exclude
+ *      fc_enable   - enable flow control or not, ENABLE:use flow control DISABLE:drop
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK           - OK
+ *      RT_ERR_FAILED       - Failed
+ *      RT_ERR_SMI          - SMI access error
+ *      RT_ERR_PORT_ID      - Invalid port number.
+ *      RT_ERR_ENABLE       - Invalid IFG parameter.
+ *      RT_ERR_INBW_RATE    - Invalid ingress rate parameter.
+ * Note:
+ *      The rate unit is 1 kbps and the range is from 8k to 1048568k. The granularity of rate is 8 kbps.
+ *      The ifg_include parameter is used for rate calculation with/without inter-frame-gap and preamble.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_igrBandwidthCtrlRate_set( rtk_port_t port, rtk_rate_t rate,  rtk_enable_t ifg_include, rtk_enable_t fc_enable);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_igrBandwidthCtrlRate_get
+ * Description:
+ *      Get port ingress bandwidth control
+ * Input:
+ *      port - Port id
+ * Output:
+ *      pRate           - Rate of share meter
+ *      pIfg_include    - Rate's calculation including IFG, ENABLE:include DISABLE:exclude
+ *      pFc_enable      - enable flow control or not, ENABLE:use flow control DISABLE:drop
+ * Return:
+ *      RT_ERR_OK           - OK
+ *      RT_ERR_FAILED       - Failed
+ *      RT_ERR_SMI          - SMI access error
+ *      RT_ERR_PORT_ID      - Invalid port number.
+ *      RT_ERR_INPUT        - Invalid input parameters.
+ * Note:
+ *     The rate unit is 1 kbps and the range is from 8k to 1048568k. The granularity of rate is 8 kbps.
+ *     The ifg_include parameter is used for rate calculation with/without inter-frame-gap and preamble.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_igrBandwidthCtrlRate_get(rtk_port_t port, rtk_rate_t *pRate, rtk_enable_t *pIfg_include, rtk_enable_t *pFc_enable);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrBandwidthCtrlRate_set
+ * Description:
+ *      Set port egress bandwidth control
+ * Input:
+ *      port        - Port id
+ *      rate        - Rate of egress bandwidth
+ *      ifg_include - include IFG or not, ENABLE:include DISABLE:exclude
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK           - OK
+ *      RT_ERR_FAILED       - Failed
+ *      RT_ERR_SMI          - SMI access error
+ *      RT_ERR_PORT_ID      - Invalid port number.
+ *      RT_ERR_INPUT        - Invalid input parameters.
+ *      RT_ERR_QOS_EBW_RATE - Invalid egress bandwidth/rate
+ * Note:
+ *     The rate unit is 1 kbps and the range is from 8k to 1048568k. The granularity of rate is 8 kbps.
+ *     The ifg_include parameter is used for rate calculation with/without inter-frame-gap and preamble.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrBandwidthCtrlRate_set(rtk_port_t port, rtk_rate_t rate,  rtk_enable_t ifg_includ);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrBandwidthCtrlRate_get
+ * Description:
+ *      Get port egress bandwidth control
+ * Input:
+ *      port - Port id
+ * Output:
+ *      pRate           - Rate of egress bandwidth
+ *      pIfg_include    - Rate's calculation including IFG, ENABLE:include DISABLE:exclude
+ * Return:
+ *      RT_ERR_OK           - OK
+ *      RT_ERR_FAILED       - Failed
+ *      RT_ERR_SMI          - SMI access error
+ *      RT_ERR_PORT_ID      - Invalid port number.
+ *      RT_ERR_INPUT        - Invalid input parameters.
+ * Note:
+ *     The rate unit is 1 kbps and the range is from 8k to 1048568k. The granularity of rate is 8 kbps.
+ *     The ifg_include parameter is used for rate calculation with/without inter-frame-gap and preamble.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrBandwidthCtrlRate_get(rtk_port_t port, rtk_rate_t *pRate, rtk_enable_t *pIfg_include);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrQueueBwCtrlEnable_set
+ * Description:
+ *      Set enable status of egress bandwidth control on specified queue.
+ * Input:
+ *      port   - port id
+ *      queue  - queue id
+ *      enable - enable status of egress queue bandwidth control
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK
+ *      RT_ERR_FAILED
+ *      RT_ERR_PORT_ID          - invalid port id
+ *      RT_ERR_QUEUE_ID         - invalid queue id
+ *      RT_ERR_INPUT            - invalid input parameter
+ * Note:
+ *      None
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrQueueBwCtrlEnable_set(rtk_port_t port, rtk_qid_t queue, rtk_enable_t enable);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrQueueBwCtrlRate_get
+ * Description:
+ *      Get rate of egress bandwidth control on specified queue.
+ * Input:
+ *      port  - port id
+ *      queue - queue id
+ *      pIndex - shared meter index
+ * Output:
+ *      pRate - pointer to rate of egress queue bandwidth control
+ * Return:
+ *      RT_ERR_OK
+ *      RT_ERR_FAILED
+ *      RT_ERR_PORT_ID          - invalid port id
+ *      RT_ERR_QUEUE_ID         - invalid queue id
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter id
+ * Note:
+ *    None.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrQueueBwCtrlEnable_get(rtk_port_t port, rtk_qid_t queue, rtk_enable_t *pEnable);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrQueueBwCtrlRate_set
+ * Description:
+ *      Set rate of egress bandwidth control on specified queue.
+ * Input:
+ *      port  - port id
+ *      queue - queue id
+ *      index - shared meter index
+ * Output:
+ *      None
+ * Return:
+ *      RT_ERR_OK
+ *      RT_ERR_FAILED
+ *      RT_ERR_PORT_ID          - invalid port id
+ *      RT_ERR_QUEUE_ID         - invalid queue id
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter id
+ * Note:
+ *    The actual rate control is set in shared meters.
+ *    The unit of granularity is 8Kbps.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrQueueBwCtrlRate_set(rtk_port_t port, rtk_qid_t queue, rtk_meter_id_t index);
+
+/* Function Name:
+ *      dal_rtl8367d_rate_egrQueueBwCtrlRate_get
+ * Description:
+ *      Get rate of egress bandwidth control on specified queue.
+ * Input:
+ *      port  - port id
+ *      queue - queue id
+ *      pIndex - shared meter index
+ * Output:
+ *      pRate - pointer to rate of egress queue bandwidth control
+ * Return:
+ *      RT_ERR_OK
+ *      RT_ERR_FAILED
+ *      RT_ERR_PORT_ID          - invalid port id
+ *      RT_ERR_QUEUE_ID         - invalid queue id
+ *      RT_ERR_FILTER_METER_ID  - Invalid meter id
+ * Note:
+ *    The actual rate control is set in shared meters.
+ *    The unit of granularity is 8Kbps.
+ */
+extern rtk_api_ret_t dal_rtl8367d_rate_egrQueueBwCtrlRate_get(rtk_port_t port, rtk_qid_t queue, rtk_meter_id_t *pIndex);
+#endif
+
+#endif /* __DAL_RTL8371B_SHAREDMETER_H__ */
+
+
+
+
