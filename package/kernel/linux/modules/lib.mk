@@ -10,9 +10,9 @@ LIB_MENU:=Libraries
 define KernelPackage/lib-crc-ccitt
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC-CCITT support
-  KCONFIG:=CONFIG_CRC_CCITT=y
+  KCONFIG:=CONFIG_CRC_CCITT
   FILES:=$(LINUX_DIR)/lib/crc-ccitt.ko@lt6.18 \
-  $(LINUX_DIR)/lib/crc/crc-ccitt.ko@ge6.18
+	$(LINUX_DIR)/lib/crc/crc-ccitt.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,crc-ccitt)
 endef
 
@@ -27,7 +27,8 @@ define KernelPackage/lib-crc-itu-t
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC ITU-T V.41 support
   KCONFIG:=CONFIG_CRC_ITU_T
-  FILES:=$(LINUX_DIR)/lib/crc-itu-t.ko
+  FILES:=$(LINUX_DIR)/lib/crc-itu-t.ko@lt6.18 \
+	$(LINUX_DIR)/lib/crc/crc-itu-t.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,crc-itu-t)
 endef
 
@@ -42,7 +43,8 @@ define KernelPackage/lib-crc7
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC7 support
   KCONFIG:=CONFIG_CRC7
-  FILES:=$(LINUX_DIR)/lib/crc7.ko
+  FILES:=$(LINUX_DIR)/lib/crc7.ko@lt6.18 \
+	$(LINUX_DIR)/lib/crc/crc7.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,crc7)
 endef
 
@@ -57,7 +59,8 @@ define KernelPackage/lib-crc8
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC8 support
   KCONFIG:=CONFIG_CRC8
-  FILES:=$(LINUX_DIR)/lib/crc8.ko
+  FILES:=$(LINUX_DIR)/lib/crc8.ko@lt6.18 \
+	$(LINUX_DIR)/lib/crc/crc8.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,crc8)
 endef
 
@@ -71,8 +74,9 @@ $(eval $(call KernelPackage,lib-crc8))
 define KernelPackage/lib-crc16
   SUBMENU:=$(LIB_MENU)
   TITLE:=CRC16 support
-  KCONFIG:=CONFIG_CRC16=y
-  FILES:=$(LINUX_DIR)/lib/crc16.ko@lt6.18
+  KCONFIG:=CONFIG_CRC16
+  FILES:=$(LINUX_DIR)/lib/crc16.ko@lt6.18 \
+	$(LINUX_DIR)/lib/crc/crc16.ko@ge6.18
   AUTOLOAD:=$(call AutoLoad,20,crc16,1)
 endef
 
@@ -88,7 +92,7 @@ define KernelPackage/lib-crc32c
   TITLE:=CRC32 support
   KCONFIG:=CONFIG_LIBCRC32C
   DEPENDS:=+kmod-crypto-crc32c
-  FILES:=$(LINUX_DIR)/lib/libcrc32c.ko
+  FILES:=$(LINUX_DIR)/lib/libcrc32c.ko@lt6.18
   AUTOLOAD:=$(call AutoProbe,libcrc32c)
 endef
 
@@ -123,22 +127,31 @@ endef
 $(eval $(call KernelPackage,lib-lzo))
 
 
+define KernelPackage/lib-xxhash
+  SUBMENU:=$(LIB_MENU)
+  TITLE:=xxhash support
+  HIDDEN:=1
+  KCONFIG:=CONFIG_XXHASH
+  FILES:=$(LINUX_DIR)/lib/xxhash.ko
+endef
+
+$(eval $(call KernelPackage,lib-xxhash))
+
+
 define KernelPackage/lib-zstd
   SUBMENU:=$(LIB_MENU)
   TITLE:=ZSTD support
-  DEPENDS:=+kmod-crypto-acompress
+  DEPENDS:=+kmod-crypto-acompress +kmod-lib-xxhash
   KCONFIG:= \
 	CONFIG_CRYPTO_ZSTD \
 	CONFIG_ZSTD_COMPRESS \
-	CONFIG_ZSTD_DECOMPRESS \
-	CONFIG_XXHASH
+	CONFIG_ZSTD_DECOMPRESS
   FILES:= \
 	$(LINUX_DIR)/crypto/zstd.ko \
-	$(LINUX_DIR)/lib/xxhash.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_common.ko@ge6.1 \
 	$(LINUX_DIR)/lib/zstd/zstd_compress.ko \
 	$(LINUX_DIR)/lib/zstd/zstd_decompress.ko
-  AUTOLOAD:=$(call AutoProbe,xxhash zstd zstd_compress zstd_decompress)
+  AUTOLOAD:=$(call AutoProbe,zstd zstd_compress zstd_decompress)
 endef
 
 define KernelPackage/lib-zstd/description
@@ -351,6 +364,7 @@ $(eval $(call KernelPackage,oid-registry))
 define KernelPackage/lib-objagg
   SUBMENU:=$(LIB_MENU)
   TITLE:=objagg support
+  HIDDEN:=1
   FILES:=$(LINUX_DIR)/lib/objagg.ko
   KCONFIG:= \
   CONFIG_OBJAGG \
@@ -364,6 +378,7 @@ $(eval $(call KernelPackage,lib-objagg))
 define KernelPackage/lib-parman
   SUBMENU:=$(LIB_MENU)
   TITLE:=parman support
+  HIDDEN:=1
   FILES:=$(LINUX_DIR)/lib/parman.ko
   KCONFIG:= \
   CONFIG_PARMAN \

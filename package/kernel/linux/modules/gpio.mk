@@ -141,7 +141,7 @@ $(eval $(call KernelPackage,gpio-pcf857x))
 
 define KernelPackage/gpio-pwm
   SUBMENU:=$(GPIO_MENU)
-  DEPENDS:=@GPIO_SUPPORT @PWM_SUPPORT @LINUX_6_12
+  DEPENDS:=@GPIO_SUPPORT @PWM_SUPPORT @(LINUX_6_12||LINUX_6_18)
   TITLE:=PWM GPIO support
   KCONFIG:=CONFIG_PWM_GPIO
   FILES:=$(LINUX_DIR)/drivers/pwm/pwm-gpio.ko

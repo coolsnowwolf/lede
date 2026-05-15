@@ -10,7 +10,7 @@ FS_MENU:=Filesystems
 define KernelPackage/fs-9p
   SUBMENU:=$(FS_MENU)
   TITLE:=Plan 9 Resource Sharing Support
-  DEPENDS:=+kmod-9pnet +(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-fs-netfs
+  DEPENDS:=+kmod-9pnet +!(LINUX_5_4||LINUX_5_10||LINUX_5_15):kmod-fs-netfs
   KCONFIG:=\
 	CONFIG_9P_FS \
 	CONFIG_9P_FS_POSIX_ACL=n \
@@ -67,7 +67,8 @@ $(eval $(call KernelPackage,fs-autofs4))
 define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
-  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate +kmod-lib-raid6 +kmod-lib-xor +kmod-lib-zstd
+  DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate \
+	+kmod-lib-raid6 +kmod-lib-xor +kmod-lib-zstd +kmod-crypto-blake2b +kmod-crypto-xxhash
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_CHECK_INTEGRITY=n
@@ -98,7 +99,7 @@ define KernelPackage/fs-smbfs-common
   FILES:= \
 	$(LINUX_DIR)/fs/smbfs_common/cifs_arc4.ko@lt6.1 \
 	$(LINUX_DIR)/fs/smbfs_common/cifs_md4.ko@lt6.1 \
-	$(LINUX_DIR)/fs/smb/common/cifs_arc4.ko@ge6.1 \
+	$(LINUX_DIR)/fs/smb/common/cifs_arc4.ko@lt6.18 \
 	$(LINUX_DIR)/fs/smb/common/cifs_md4.ko@ge6.1
 endef
 
@@ -404,6 +405,22 @@ endef
 $(eval $(call KernelPackage,fs-netfs))
 
 
+define KernelPackage/fs-nilfs2
+  SUBMENU:=$(FS_MENU)
+  TITLE:=NILFS2 filesystem support
+  KCONFIG:=CONFIG_NILFS2_FS
+  FILES:=$(LINUX_DIR)/fs/nilfs2/nilfs2.ko
+  AUTOLOAD:=$(call AutoLoad,30,nilfs2)
+  $(call AddDepends/nls)
+endef
+
+define KernelPackage/fs-nilfs2/description
+ Kernel module for NILFS2 filesystem support
+endef
+
+$(eval $(call KernelPackage,fs-nilfs2))
+
+
 define KernelPackage/fs-nfs
   SUBMENU:=$(FS_MENU)
   TITLE:=NFS filesystem client support
@@ -437,6 +454,7 @@ define KernelPackage/fs-nfs-common
 	CONFIG_NFS_V4_1_IMPLEMENTATION_ID_DOMAIN="kernel.org" \
 	CONFIG_NFS_V4_1_MIGRATION=n \
 	CONFIG_NFS_V4_2=y \
+	CONFIG_NFSD_V4_DELEG_TIMESTAMPS=n@ge6.18 \
 	CONFIG_NFS_V4_2_READ_PLUS=n
   FILES:= \
 	$(LINUX_DIR)/fs/lockd/lockd.ko \
@@ -501,7 +519,9 @@ define KernelPackage/fs-nfs-v4
   KCONFIG:= \
 	CONFIG_NFS_V4=y
   FILES:= \
-	$(LINUX_DIR)/fs/nfs/nfsv4.ko
+	$(LINUX_DIR)/fs/nfs/nfsv4.ko \
+	$(LINUX_DIR)/fs/nfs/flexfilelayout/nfs_layout_flexfiles.ko \
+	$(LINUX_DIR)/fs/nfs/filelayout/nfs_layout_nfsv41_files.ko
   AUTOLOAD:=$(call AutoLoad,41,nfsv4)
 endef
 
