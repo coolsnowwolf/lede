@@ -1,0 +1,154 @@
+From a543687227d86b1f4401f395abaf7f3f710fe964 Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Sat, 6 Jun 2026 05:29:25 -0300
+Subject: net: dsa: realtek: rtl8365mb: use ERR_PTR
+
+Convert numeric error codes into human-readable strings by using %pe
+together with ERR_PTR() in dev_err() messages.  Also use dev_err_probe()
+instead of checking for -EPROBE_DEFER.
+
+Reviewed-by: Linus Walleij <linusw@kernel.org>
+Reviewed-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Link: https://patch.msgid.link/20260606-realtek_forward-v13-1-b9e409687cbe@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/realtek/rtl8365mb.c | 51 +++++++++++++++++++++----------------
+ 1 file changed, 29 insertions(+), 22 deletions(-)
+
+--- a/drivers/net/dsa/realtek/rtl8365mb.c
++++ b/drivers/net/dsa/realtek/rtl8365mb.c
+@@ -803,8 +803,8 @@ static int rtl8365mb_phy_read(struct rea
+ 	ret = rtl8365mb_phy_ocp_read(priv, phy, ocp_addr, &val);
+ 	if (ret) {
+ 		dev_err(priv->dev,
+-			"failed to read PHY%d reg %02x @ %04x, ret %d\n", phy,
+-			regnum, ocp_addr, ret);
++			"failed to read PHY%d reg %02x @ %04x, ret %pe\n", phy,
++			regnum, ocp_addr, ERR_PTR(ret));
+ 		return ret;
+ 	}
+ 
+@@ -831,8 +831,8 @@ static int rtl8365mb_phy_write(struct re
+ 	ret = rtl8365mb_phy_ocp_write(priv, phy, ocp_addr, val);
+ 	if (ret) {
+ 		dev_err(priv->dev,
+-			"failed to write PHY%d reg %02x @ %04x, ret %d\n", phy,
+-			regnum, ocp_addr, ret);
++			"failed to write PHY%d reg %02x @ %04x, ret %pe\n", phy,
++			regnum, ocp_addr, ERR_PTR(ret));
+ 		return ret;
+ 	}
+ 
+@@ -1082,8 +1082,8 @@ static void rtl8365mb_phylink_mac_config
+ 		ret = rtl8365mb_ext_config_rgmii(priv, port, state->interface);
+ 		if (ret)
+ 			dev_err(priv->dev,
+-				"failed to configure RGMII mode on port %d: %d\n",
+-				port, ret);
++				"failed to configure RGMII mode on port %d: %pe\n",
++				port, ERR_PTR(ret));
+ 		return;
+ 	}
+ 
+@@ -1112,8 +1112,8 @@ static void rtl8365mb_phylink_mac_link_d
+ 						     false, false);
+ 		if (ret)
+ 			dev_err(priv->dev,
+-				"failed to reset forced mode on port %d: %d\n",
+-				port, ret);
++				"failed to reset forced mode on port %d: %pe\n",
++				port, ERR_PTR(ret));
+ 
+ 		return;
+ 	}
+@@ -1143,8 +1143,8 @@ static void rtl8365mb_phylink_mac_link_u
+ 						     rx_pause);
+ 		if (ret)
+ 			dev_err(priv->dev,
+-				"failed to force mode on port %d: %d\n", port,
+-				ret);
++				"failed to force mode on port %d: %pe\n", port,
++				ERR_PTR(ret));
+ 
+ 		return;
+ 	}
+@@ -1299,8 +1299,8 @@ static void rtl8365mb_get_ethtool_stats(
+ 						 mib->length, &data[i]);
+ 		if (ret) {
+ 			dev_err(priv->dev,
+-				"failed to read port %d counters: %d\n", port,
+-				ret);
++				"failed to read port %d counters: %pe\n", port,
++				ERR_PTR(ret));
+ 			break;
+ 		}
+ 	}
+@@ -1652,7 +1652,8 @@ static irqreturn_t rtl8365mb_irq(int irq
+ 	return IRQ_HANDLED;
+ 
+ out_error:
+-	dev_err(priv->dev, "failed to read interrupt status: %d\n", ret);
++	dev_err(priv->dev, "failed to read interrupt status: %pe\n",
++		ERR_PTR(ret));
+ 
+ out_none:
+ 	return IRQ_NONE;
+@@ -1725,10 +1726,13 @@ static int rtl8365mb_irq_setup(struct re
+ 	/* rtl8365mb IRQs cascade off this one */
+ 	irq = of_irq_get(intc, 0);
+ 	if (irq <= 0) {
+-		if (irq != -EPROBE_DEFER)
+-			dev_err(priv->dev, "failed to get parent irq: %d\n",
+-				irq);
+-		ret = irq ? irq : -EINVAL;
++		if (!irq) {
++			dev_err(priv->dev, "failed to map IRQ\n");
++			ret = -EINVAL;
++		} else {
++			ret = dev_err_probe(priv->dev, irq,
++					    "failed to get parent irq\n");
++		}
+ 		goto out_put_node;
+ 	}
+ 
+@@ -1790,7 +1794,8 @@ static int rtl8365mb_irq_setup(struct re
+ 	ret = request_threaded_irq(irq, NULL, rtl8365mb_irq, IRQF_ONESHOT,
+ 				   "rtl8365mb", priv);
+ 	if (ret) {
+-		dev_err(priv->dev, "failed to request irq: %d\n", ret);
++		dev_err(priv->dev, "failed to request irq: %pe\n",
++			ERR_PTR(ret));
+ 		goto out_remove_irqdomain;
+ 	}
+ 
+@@ -1966,14 +1971,16 @@ static int rtl8365mb_setup(struct dsa_sw
+ 
+ 	ret = rtl8365mb_reset_chip(priv);
+ 	if (ret) {
+-		dev_err(priv->dev, "failed to reset chip: %d\n", ret);
++		dev_err(priv->dev, "failed to reset chip: %pe\n",
++			ERR_PTR(ret));
+ 		goto out_error;
+ 	}
+ 
+ 	/* Configure switch to vendor-defined initial state */
+ 	ret = rtl8365mb_switch_init(priv);
+ 	if (ret) {
+-		dev_err(priv->dev, "failed to initialize switch: %d\n", ret);
++		dev_err(priv->dev, "failed to initialize switch: %pe\n",
++			ERR_PTR(ret));
+ 		goto out_error;
+ 	}
+ 
+@@ -2091,8 +2098,8 @@ static int rtl8365mb_detect(struct realt
+ 
+ 	ret = rtl8365mb_get_chip_id_and_ver(priv->map, &chip_id, &chip_ver);
+ 	if (ret) {
+-		dev_err(priv->dev, "failed to read chip id and version: %d\n",
+-			ret);
++		dev_err(priv->dev, "failed to read chip id and version: %pe\n",
++			ERR_PTR(ret));
+ 		return ret;
+ 	}
+ 
