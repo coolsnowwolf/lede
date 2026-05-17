@@ -275,25 +275,56 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	.mac_config = mtk_mac_config,
  	.mac_finish = mtk_mac_finish,
  	.mac_link_down = mtk_mac_link_down,
-@@ -4991,7 +5024,8 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -4985,13 +5018,38 @@ static const struct net_device_ops mtk_n
+ 	.ndo_select_queue	= mtk_select_queue,
+ };
+ 
++static int mtk_fill_available_pcs(struct phylink_config *config,
++				  struct phylink_pcs **available_pcs,
++				  unsigned int num_available_pcs)
++{
++	struct mtk_mac *mac = container_of(config, struct mtk_mac,
++					   phylink_config);
++	struct mtk_eth *eth = mac->hw;
++	unsigned int sid;
++
++	if (mtk_is_netsys_v3_or_greater(eth)) {
++		return fwnode_phylink_pcs_parse(of_fwnode_handle(mac->of_node),
++						available_pcs,
++						&num_available_pcs);
++	} else {
++		if (MTK_HAS_CAPS(eth->soc->caps, MTK_SHARED_SGMII))
++			sid = 0;
++		else
++			sid = mac->id;
++
++		available_pcs[0] = eth->sgmii_pcs[sid];
++	}
++
++	return 0;
++}
++
+ static int mtk_add_mac(struct mtk_eth *eth, struct device_node *np)
+ {
+ 	const __be32 *_id = of_get_property(np, "reg", NULL);
  	phy_interface_t phy_mode;
  	struct phylink *phylink;
  	struct mtk_mac *mac;
 -	int id, err;
 +	int id, err, count;
-+	unsigned int sid;
  	int txqs = 1;
  	u32 val;
  
-@@ -5062,6 +5096,7 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -5062,6 +5120,8 @@ static int mtk_add_mac(struct mtk_eth *e
  	mac->phylink_config.lpi_capabilities = MAC_100FD | MAC_1000FD |
  		MAC_2500FD;
  	mac->phylink_config.lpi_timer_default = 1000;
 +	mac->phylink_config.num_available_pcs = 0;
++	mac->phylink_config.fill_available_pcs = mtk_fill_available_pcs;
  
  	/* MT7623 gmac0 is now missing its speed-specific PLL configuration
  	 * in its .mac_config method (since state->speed is not valid there.
-@@ -5092,13 +5127,62 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -5092,13 +5152,53 @@ static int mtk_add_mac(struct mtk_eth *e
  
  	if (MTK_HAS_CAPS(mac->hw->soc->caps, MTK_SGMII)) {
  		__set_bit(PHY_INTERFACE_MODE_SGMII,
@@ -326,11 +357,6 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +			if (err)
 +				goto free_netdev;
 +
-+			err = fwnode_phylink_pcs_parse(of_fwnode_handle(np), mac->available_pcs, &count);
-+			if (err)
-+				goto free_netdev;
-+
-+			mac->phylink_config.available_pcs = mac->available_pcs;
 +			mac->phylink_config.num_available_pcs = count;
 +		} else {
 +			if (MTK_HAS_CAPS(eth->soc->caps, MTK_SHARED_SGMII)) {
@@ -341,12 +367,8 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 +					err = -EBUSY;
 +					goto free_netdev;
 +				}
-+				sid = 0;
 +				eth->shared_sgmii_used = true;
-+			} else {
-+				sid = id;
 +			}
-+			mac->phylink_config.available_pcs = &eth->sgmii_pcs[sid];
 +			mac->phylink_config.num_available_pcs = 1;
 +		}
 +
@@ -359,7 +381,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	if (mtk_is_netsys_v3_or_greater(mac->hw) &&
  	    MTK_HAS_CAPS(mac->hw->soc->caps, MTK_ESW) &&
  	    id == MTK_GMAC1_ID) {
-@@ -5108,18 +5192,16 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -5108,18 +5208,16 @@ static int mtk_add_mac(struct mtk_eth *e
  		phy_interface_zero(mac->phylink_config.supported_interfaces);
  		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
  			  mac->phylink_config.supported_interfaces);
@@ -386,7 +408,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	if (MTK_HAS_CAPS(mac->hw->soc->caps, MTK_2P5GPHY) &&
  	    id == MTK_GMAC2_ID)
  		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
-@@ -5142,6 +5224,16 @@ static int mtk_add_mac(struct mtk_eth *e
+@@ -5142,6 +5240,16 @@ static int mtk_add_mac(struct mtk_eth *e
  	eth->netdev[id]->irq = eth->irq[MTK_FE_IRQ_SHARED];
  	eth->netdev[id]->dev.of_node = np;
  
@@ -403,7 +425,7 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SOC_MT7628))
  		eth->netdev[id]->max_mtu = MTK_MAX_RX_LENGTH - MTK_RX_ETH_HLEN;
  	else
-@@ -5335,7 +5427,8 @@ static int mtk_probe(struct platform_dev
+@@ -5335,7 +5443,8 @@ static int mtk_probe(struct platform_dev
  			regmap_write(cci, 0, 3);
  	}
  
