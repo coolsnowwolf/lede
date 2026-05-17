@@ -1973,7 +1973,7 @@ int edma_set_mac_addr(struct net_device *netdev, void *p)
 	if (netif_running(netdev))
 		return -EBUSY;
 
-	memcpy(netdev->dev_addr, addr->sa_data, netdev->addr_len);
+	memcpy(netdev->dev_addr, addr->sa_data, ETH_ALEN);
 	return 0;
 }
 
