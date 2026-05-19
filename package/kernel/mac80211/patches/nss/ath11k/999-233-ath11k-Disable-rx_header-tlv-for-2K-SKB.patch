@@ -1,0 +1,973 @@
+From 30f54666ae15128f26fbad787a35253885a10513 Mon Sep 17 00:00:00 2001
+From: Ramya Gnanasekar <rgnanase@codeaurora.org>
+Date: Fri, 25 Dec 2020 16:11:06 +0530
+Subject: [PATCH] ath11k: Disable rx_header tlv for 2K SKB
+
+On low memory platform hdr_status in hal_rx_desc is not subscribed to
+get a savings of 128bytes in skb. This is required to reduce the skb
+size from 4K to 2K. Use HTT_H2T_MSG_TYPE_RX_RING_SELECTION_CFG message
+to unsubscribe rx_pkt_header tlv for rxdma ring.
+
+Signed-off-by: Ramya Gnanasekar <rgnanase@codeaurora.org>
+
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -549,6 +549,7 @@ static ssize_t ath11k_write_extd_rx_stat
+ 	}
+ 
+ 	ar->debug.rx_filter = tlv_filter.rx_filter;
++	tlv_filter.offset_valid = false;
+ 
+ 	for (i = 0; i < ab->hw_params.num_rxdma_per_pdev; i++) {
+ 		ring_id = ar->dp.rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
+@@ -1109,6 +1110,7 @@ static ssize_t ath11k_write_pktlog_filte
+ 	}
+ 
+ 	/* Clear rx filter set for monitor mode and rx status */
++	tlv_filter.offset_valid = false;
+ 	for (i = 0; i < ab->hw_params.num_rxdma_per_pdev; i++) {
+ 		ring_id = ar->dp.rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
+ 		ret = ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id, ar->dp.mac_id,
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -238,7 +238,8 @@ struct ath11k_pdev_dp {
+ #define DP_REO_CMD_RING_SIZE		256
+ #define DP_REO_STATUS_RING_SIZE		2048
+ #define DP_RXDMA_BUF_RING_SIZE		4096
+-#define DP_RXDMA_REFILL_RING_SIZE	2048
++#define DP_RXDMA_REFILL_RING_SIZE	ATH11K_DP_RXDMA_REFILL_RING_SIZE
++#define DP_RXDMA_NSS_REFILL_RING_SIZE	ATH11K_DP_RXDMA_NSS_REFILL_RING_SIZE
+ #define DP_RXDMA_ERR_DST_RING_SIZE	1024
+ #define DP_RXDMA_MON_STATUS_RING_SIZE	ATH11K_DP_RXDMA_MON_STATUS_RING_SIZE
+ #define DP_RXDMA_MONITOR_BUF_RING_SIZE	ATH11K_DP_RXDMA_MONITOR_BUF_RING_SIZE
+@@ -673,7 +674,7 @@ enum htt_stats_internal_ppdu_frametype {
+  *
+  *    |31       26|25|24|23            16|15             8|7             0|
+  *    |-----------------+----------------+----------------+---------------|
+- *    |   rsvd1   |PS|SS|     ring_id    |     pdev_id    |    msg_type   |
++ *    |   rsvd1|OV|PS|SS|     ring_id    |     pdev_id    |    msg_type   |
+  *    |-------------------------------------------------------------------|
+  *    |              rsvd2               |           ring_buffer_size     |
+  *    |-------------------------------------------------------------------|
+@@ -687,6 +688,14 @@ enum htt_stats_internal_ppdu_frametype {
+  *    |-------------------------------------------------------------------|
+  *    |                         tlv_filter_in_flags                       |
+  *    |-------------------------------------------------------------------|
++ *    |         rx_header_offset         |       rx_packet_offset         |
++ *    |-------------------------------------------------------------------|
++ *    |       rx_mpdu_start_offset       |      rx_mpdu_end_offset        |
++ *    |-------------------------------------------------------------------|
++ *    |       rx_msdu_start_offset       |      rx_msdu_end_offset        |
++ *    |-------------------------------------------------------------------|
++ *    |              rsvd3               |      rx_attention_offset       |
++ *    |-------------------------------------------------------------------|
+  * Where:
+  *     PS = pkt_swap
+  *     SS = status_swap
+@@ -700,7 +709,10 @@ enum htt_stats_internal_ppdu_frametype {
+  *                    More details can be got from enum htt_srng_ring_id
+  *          b'24    - status_swap: 1 is to swap status TLV
+  *          b'25    - pkt_swap:  1 is to swap packet TLV
+- *          b'26:31 - rsvd1:  reserved for future use
++ *          b'26    - rx_offset_valid (OV): flag to indicate rx offsets
++ *                    configuration fields are valid
++ *
++ *          b'27:31 - rsvd1:  reserved for future use
+  * dword1 - b'0:16  - ring_buffer_size: size of buffers referenced by rx ring,
+  *                    in byte units.
+  *                    Valid only for HW_TO_SW_RING and SW_TO_HW_RING
+@@ -729,6 +741,42 @@ enum htt_stats_internal_ppdu_frametype {
+  * dword6 - b'0:31 -  tlv_filter_in_flags:
+  *                    Filter in Attention/MPDU/PPDU/Header/User tlvs
+  *                    Refer to CFG_TLV_FILTER_IN_FLAG defs
++ * dword7 - b'0:15 -  rx_packet_offset: rx_packet_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_1 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ *	  - b'16:31 - rx_header_offset: rx_header_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_1 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ * dword8 - b'0:15 -  rx_mpdu_end_offset: rx_mpdu_end_offset in byte units
++ *	              Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_2 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ *	  - b'16:31 - rx_mpdu_start_offset: rx_mpdu_start_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_2 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ * dword9 - b'0:15 -  rx_msdu_end_offset: rx_msdu_end_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_3 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ *	  - b'16:31 - rx_msdu_start_offset: rx_msdu_start_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_3 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ * dword10- b'0:15  - rx_attention_offset: rx_attention_offset in byte units
++ *		      Valid only for HW_TO_SW_RING and SW_TO_HW_RING
++ *		      A value of 0 will be considered as ignore this config.
++ *		      Refer to BUF_RING_CFG_4 defs within HW .h files,
++ *		      e.g. wmac_top_reg_seq_hwioreg.h
++ *	  - b'16:31 - rsvd3 for future use
+  */
+ 
+ #define HTT_RX_RING_SELECTION_CFG_CMD_INFO0_MSG_TYPE	GENMASK(7, 0)
+@@ -736,8 +784,16 @@ enum htt_stats_internal_ppdu_frametype {
+ #define HTT_RX_RING_SELECTION_CFG_CMD_INFO0_RING_ID	GENMASK(23, 16)
+ #define HTT_RX_RING_SELECTION_CFG_CMD_INFO0_SS		BIT(24)
+ #define HTT_RX_RING_SELECTION_CFG_CMD_INFO0_PS		BIT(25)
++#define HTT_RX_RING_SELECTION_CFG_CMD_OFFSET_VALID      BIT(26)
+ 
+ #define HTT_RX_RING_SELECTION_CFG_CMD_INFO1_BUF_SIZE	GENMASK(15, 0)
++#define HTT_RX_RING_SELECTION_CFG_RX_PACKET_OFFSET      GENMASK(15, 0)
++#define HTT_RX_RING_SELECTION_CFG_RX_HEADER_OFFSET      GENMASK(31, 16)
++#define HTT_RX_RING_SELECTION_CFG_RX_MPDU_END_OFFSET    GENMASK(15, 0)
++#define HTT_RX_RING_SELECTION_CFG_RX_MPDU_START_OFFSET  GENMASK(31, 16)
++#define HTT_RX_RING_SELECTION_CFG_RX_MSDU_END_OFFSET    GENMASK(15, 0)
++#define HTT_RX_RING_SELECTION_CFG_RX_MSDU_START_OFFSET  GENMASK(31, 16)
++#define HTT_RX_RING_SELECTION_CFG_RX_ATTENTION_OFFSET   GENMASK(15, 0)
+ 
+ enum htt_rx_filter_tlv_flags {
+ 	HTT_RX_FILTER_TLV_FLAGS_MPDU_START		= BIT(0),
+@@ -1041,6 +1097,14 @@ enum htt_rx_data_pkt_filter_tlv_flasg3 {
+ 		HTT_RX_FILTER_TLV_FLAGS_PER_MSDU_HEADER | \
+ 		HTT_RX_FILTER_TLV_FLAGS_ATTENTION)
+ 
++#define HTT_RX_RXDMA_FILTER_TLV_FLAGS_BUF_RING \
++		(HTT_RX_FILTER_TLV_FLAGS_MPDU_START | \
++		HTT_RX_FILTER_TLV_FLAGS_MSDU_START | \
++		HTT_RX_FILTER_TLV_FLAGS_RX_PACKET | \
++		HTT_RX_FILTER_TLV_FLAGS_MSDU_END | \
++		HTT_RX_FILTER_TLV_FLAGS_MPDU_END | \
++		HTT_RX_FILTER_TLV_FLAGS_ATTENTION)
++
+ struct htt_rx_ring_selection_cfg_cmd {
+ 	u32 info0;
+ 	u32 info1;
+@@ -1049,6 +1113,10 @@ struct htt_rx_ring_selection_cfg_cmd {
+ 	u32 pkt_type_en_flags2;
+ 	u32 pkt_type_en_flags3;
+ 	u32 rx_filter_tlv;
++	u32 rx_packet_offset;
++	u32 rx_mpdu_offset;
++	u32 rx_msdu_offset;
++	u32 rx_attn_offset;
+ } __packed;
+ 
+ struct htt_rx_ring_tlv_filter {
+@@ -1057,6 +1125,14 @@ struct htt_rx_ring_tlv_filter {
+ 	u32 pkt_filter_flags1; /* MGMT */
+ 	u32 pkt_filter_flags2; /* CTRL */
+ 	u32 pkt_filter_flags3; /* DATA */
++	bool offset_valid;
++	u16 rx_packet_offset;
++	u16 rx_header_offset;
++	u16 rx_mpdu_end_offset;
++	u16 rx_mpdu_start_offset;
++	u16 rx_msdu_end_offset;
++	u16 rx_msdu_start_offset;
++	u16 rx_attn_offset;
+ };
+ 
+ #define HTT_RX_FULL_MON_MODE_CFG_CMD_INFO0_MSG_TYPE	GENMASK(7, 0)
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -74,6 +74,12 @@ static inline bool ath11k_dp_rx_h_mpdu_s
+ 	return ab->hw_params.hw_ops->rx_desc_get_mpdu_fc_valid(desc);
+ }
+ 
++static u16 ath11k_dp_rxdesc_get_mpdu_frame_ctrl(struct ath11k_base *ab,
++						struct hal_rx_desc *desc)
++{
++	return ab->hw_params.hw_ops->rx_desc_get_mpdu_frame_ctl(desc);
++}
++
+ static inline bool ath11k_dp_rx_h_mpdu_start_more_frags(struct ath11k_base *ab,
+ 							struct sk_buff *skb)
+ {
+@@ -310,6 +316,35 @@ static u8 *ath11k_dp_rxdesc_mpdu_start_a
+ 	return ab->hw_params.hw_ops->rx_desc_mpdu_start_addr2(desc);
+ }
+ 
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++static void ath11k_dp_get_rx_header_offset(struct ath11k_base *ab,
++					   struct htt_rx_ring_tlv_filter *tlv_filter)
++{
++	ab->hw_params.hw_ops->rx_desc_get_offset(tlv_filter);
++}
++#endif
++
++static bool ath11k_dp_rx_desc_dot11_hdr_fields_valid(struct ath11k_base *ab,
++						     struct hal_rx_desc *desc)
++{
++	return ab->hw_params.hw_ops->rx_desc_dot11_hdr_fields_valid(desc);
++}
++
++static void ath11k_dp_rx_desc_get_dot11_hdr(struct ath11k_base *ab,
++					    struct hal_rx_desc *desc,
++					    struct ieee80211_hdr *hdr)
++{
++	ab->hw_params.hw_ops->rx_desc_get_dot11_hdr(desc, hdr);
++}
++
++static void ath11k_dp_rx_desc_get_crypto_header(struct ath11k_base *ab,
++						struct hal_rx_desc *desc,
++						u8 *crypto_hdr,
++						enum hal_encrypt_type enctype)
++{
++	ab->hw_params.hw_ops->rx_desc_get_crypto_header(desc, crypto_hdr, enctype);
++}
++
+ static void ath11k_dp_service_mon_ring(struct timer_list *t)
+ {
+ 	struct ath11k_base *ab = timer_container_of(ab, t, mon_reap_timer);
+@@ -2379,6 +2414,49 @@ int ath11k_dp_rx_crypto_icv_len(struct a
+ 	return 0;
+ }
+ 
++static void ath11k_get_dot11_hdr_from_rx_desc(struct ath11k *ar,
++					      struct sk_buff *msdu,
++					      struct ath11k_skb_rxcb *rxcb,
++					      struct ieee80211_rx_status *status,
++					      enum hal_encrypt_type enctype)
++{
++	struct hal_rx_desc *rx_desc = rxcb->rx_desc;
++	struct ath11k_base *ab = ar->ab;
++	size_t hdr_len, crypto_len;
++	struct ieee80211_hdr *hdr;
++	u16 fc, qos_ctl = 0;
++	u8 *crypto_hdr;
++
++	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
++		crypto_len = ath11k_dp_rx_crypto_param_len(ar, enctype);
++		crypto_hdr = skb_push(msdu, crypto_len);
++		ath11k_dp_rx_desc_get_crypto_header(ab, rx_desc, crypto_hdr, enctype);
++	}
++
++	fc = ath11k_dp_rxdesc_get_mpdu_frame_ctrl(ab, rx_desc);
++	hdr_len = ieee80211_hdrlen(fc);
++	skb_push(msdu, hdr_len);
++	hdr = (struct ieee80211_hdr *)msdu->data;
++	hdr->frame_control = fc;
++
++	/* Get wifi header from rx_desc */
++	ath11k_dp_rx_desc_get_dot11_hdr(ab, rx_desc, hdr);
++
++	if (rxcb->is_mcbc)
++		status->flag &= ~RX_FLAG_PN_VALIDATED;
++
++	/* Add QOS header */
++	if (ieee80211_is_data_qos(hdr->frame_control)) {
++		qos_ctl = rxcb->tid;
++		if (ath11k_dp_rx_h_msdu_start_mesh_ctl_present(ab, rx_desc))
++			qos_ctl |= IEEE80211_QOS_CTL_MESH_CONTROL_PRESENT;
++
++		/* TODO Add other QoS ctl fields when required */
++		memcpy(msdu->data + (hdr_len - IEEE80211_QOS_CTL_LEN),
++		       &qos_ctl, IEEE80211_QOS_CTL_LEN);
++	}
++}
++
+ static void ath11k_dp_rx_h_undecap_nwifi(struct ath11k *ar,
+ 					 struct sk_buff *msdu,
+ 					 u8 *first_hdr,
+@@ -2392,7 +2470,8 @@ static void ath11k_dp_rx_h_undecap_nwifi
+ 	u8 da[ETH_ALEN];
+ 	u8 sa[ETH_ALEN];
+ 	u16 qos_ctl = 0;
+-	u8 *qos;
++	u8 *qos, *crypto_hdr;
++	bool add_qos_ctrl = false;
+ 
+ 	/* copy SA & DA and pull decapped header */
+ 	hdr = (struct ieee80211_hdr *)msdu->data;
+@@ -2401,7 +2480,7 @@ static void ath11k_dp_rx_h_undecap_nwifi
+ 	ether_addr_copy(sa, ieee80211_get_SA(hdr));
+ 	skb_pull(msdu, ieee80211_hdrlen(hdr->frame_control));
+ 
+-	if (rxcb->is_first_msdu) {
++	if (rxcb->is_first_msdu && first_hdr) {
+ 		/* original 802.11 header is valid for the first msdu
+ 		 * hence we can reuse the same header
+ 		 */
+@@ -2431,16 +2510,23 @@ static void ath11k_dp_rx_h_undecap_nwifi
+ 
+ 		/* copy decap header before overwriting for reuse below */
+ 		memcpy(decap_hdr, (uint8_t *)hdr, hdr_len);
++		add_qos_ctrl = true;
+ 	}
+ 
+ 	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
+-		memcpy(skb_push(msdu,
+-				ath11k_dp_rx_crypto_param_len(ar, enctype)),
+-		       (void *)hdr + hdr_len,
+-		       ath11k_dp_rx_crypto_param_len(ar, enctype));
++		if (first_hdr) {
++			memcpy(skb_push(msdu,
++					ath11k_dp_rx_crypto_param_len(ar, enctype)),
++					(void *)hdr + hdr_len,
++					ath11k_dp_rx_crypto_param_len(ar, enctype));
++		} else {
++			crypto_hdr = skb_push(msdu, ath11k_dp_rx_crypto_param_len(ar, enctype));
++			ath11k_dp_rx_desc_get_crypto_header(ar->ab,
++							    rxcb->rx_desc, crypto_hdr, enctype);
++		}
+ 	}
+ 
+-	if (!rxcb->is_first_msdu) {
++	if (!rxcb->is_first_msdu || add_qos_ctrl) {
+ 		memcpy(skb_push(msdu,
+ 				IEEE80211_QOS_CTL_LEN), &qos_ctl,
+ 				IEEE80211_QOS_CTL_LEN);
+@@ -2556,6 +2642,20 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 	u8 da[ETH_ALEN];
+ 	u8 sa[ETH_ALEN];
+ 	void *rfc1042;
++	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
++	struct ath11k_dp_rfc1042_hdr rfc = {0xaa, 0xaa, 0x03, {0x00, 0x00, 0x00}};
++
++	if (!first_hdr) {
++		eth = (struct ethhdr *)msdu->data;
++		ether_addr_copy(da, eth->h_dest);
++		ether_addr_copy(sa, eth->h_source);
++		rfc.snap_type = eth->h_proto;
++		skb_pull(msdu, sizeof(struct ethhdr));
++		memcpy(skb_push(msdu, sizeof(struct ath11k_dp_rfc1042_hdr)), &rfc,
++		       sizeof(struct ath11k_dp_rfc1042_hdr));
++		ath11k_get_dot11_hdr_from_rx_desc(ar, msdu, rxcb, status, enctype);
++		goto exit;
++	}
+ 
+ 	rfc1042 = ath11k_dp_rx_h_find_rfc1042(ar, msdu, enctype);
+ 	if (WARN_ON_ONCE(!rfc1042))
+@@ -2584,6 +2684,7 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 
+ 	memcpy(skb_push(msdu, hdr_len), hdr, hdr_len);
+ 
++exit:
+ 	/* original 802.11 header has a different DA and in
+ 	 * case of 4addr it may also have different SA
+ 	 */
+@@ -2602,6 +2703,7 @@ static void ath11k_dp_rx_h_undecap_snap(
+ 	size_t hdr_len;
+ 	u8 l3_pad_bytes;
+ 	struct hal_rx_desc *rx_desc;
++	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
+ 
+ 	/* Delivered decapped frame:
+ 	 * [amsdu header] <-- replaced with 802.11 hdr
+@@ -2615,6 +2717,11 @@ static void ath11k_dp_rx_h_undecap_snap(
+ 	skb_put(msdu, l3_pad_bytes);
+ 	skb_pull(msdu, sizeof(struct ath11k_dp_amsdu_subframe_hdr) + l3_pad_bytes);
+ 
++	if (!first_hdr) {
++		ath11k_get_dot11_hdr_from_rx_desc(ar, msdu, rxcb, status, enctype);
++		return;
++	}
++
+ 	hdr = (struct ieee80211_hdr *)first_hdr;
+ 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
+ 
+@@ -3088,6 +3195,20 @@ static int ath11k_dp_rx_process_msdu(str
+ 		goto free_out;
+ 	}
+ 
++	hdr_status = ath11k_dp_rx_h_80211_hdr(ab, rx_desc);
++	/* wifi hdr fields validation for 512M::
++	 * Mcast packets in ethernet frame mode
++	 * will need wifi hdr in msdu to validate PN.
++	 * Header will be added in undecap routine.
++	 * Validation on wifi hdr fields from rx_desc.
++	 */
++	if (!hdr_status && ath11k_dp_rx_h_attn_is_mcbc(ab, rx_desc) &&
++	    !ath11k_dp_rx_desc_dot11_hdr_fields_valid(ab, rx_desc)) {
++		ath11k_warn(ab, "One or more invalid dot11 header fields\n");
++		ret = -EIO;
++		goto free_out;
++	}
++
+ 	rxcb = ATH11K_SKB_RXCB(msdu);
+ 	rxcb->rx_desc = rx_desc;
+ 	msdu_len = ath11k_dp_rx_h_msdu_start_msdu_len(ab, rx_desc);
+@@ -3100,8 +3221,9 @@ static int ath11k_dp_rx_process_msdu(str
+ 			hdr_status = ath11k_dp_rx_h_80211_hdr(ab, rx_desc);
+ 			ret = -EINVAL;
+ 			ath11k_warn(ab, "invalid msdu len %u\n", msdu_len);
+-			ath11k_dbg_dump(ab, ATH11K_DBG_DATA, NULL, "", hdr_status,
+-					sizeof(struct ieee80211_hdr));
++			if (hdr_status)
++				ath11k_dbg_dump(ab, ATH11K_DBG_DATA, NULL, "", hdr_status,
++						sizeof(struct ieee80211_hdr));
+ 			ath11k_dbg_dump(ab, ATH11K_DBG_DATA, NULL, "", rx_desc,
+ 					sizeof(struct hal_rx_desc));
+ 			goto free_out;
+@@ -4053,6 +4175,7 @@ static int ath11k_dp_rx_h_verify_tkip_mi
+ 
+ 	hdr = (struct ieee80211_hdr *)(msdu->data + hal_rx_desc_sz);
+ 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
++
+ 	head_len = hdr_len + hal_rx_desc_sz + IEEE80211_TKIP_IV_LEN;
+ 	tail_len = IEEE80211_CCMP_MIC_LEN + IEEE80211_TKIP_ICV_LEN + FCS_LEN;
+ 
+@@ -4333,8 +4456,8 @@ static void ath11k_dp_rx_h_sort_frags(st
+ 
+ static u64 ath11k_dp_rx_h_get_pn(struct ath11k *ar, struct sk_buff *skb)
+ {
+-	struct ieee80211_hdr *hdr;
+ 	u64 pn = 0;
++	struct ieee80211_hdr *hdr;
+ 	u8 *ehdr;
+ 	u32 hal_rx_desc_sz = ar->ab->hw_params.hal_desc_sz;
+ 
+@@ -4564,8 +4687,9 @@ ath11k_dp_process_rx_err_buf(struct ath1
+ 	if ((msdu_len + hal_rx_desc_sz) > DP_RX_BUFFER_SIZE) {
+ 		hdr_status = ath11k_dp_rx_h_80211_hdr(ar->ab, rx_desc);
+ 		ath11k_warn(ar->ab, "invalid msdu leng %u", msdu_len);
+-		ath11k_dbg_dump(ar->ab, ATH11K_DBG_DATA, NULL, "", hdr_status,
+-				sizeof(struct ieee80211_hdr));
++		if (hdr_status)
++			ath11k_dbg_dump(ar->ab, ATH11K_DBG_DATA, NULL, "", hdr_status,
++					sizeof(struct ieee80211_hdr));
+ 		ath11k_dbg_dump(ar->ab, ATH11K_DBG_DATA, NULL, "", rx_desc,
+ 				sizeof(struct hal_rx_desc));
+ 		dev_kfree_skb_any(msdu);
+@@ -5191,6 +5315,47 @@ void ath11k_dp_rx_pdev_free(struct ath11
+ 	ath11k_dp_rxdma_pdev_buf_free(ar);
+ }
+ 
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++static int ath11k_dp_rxdma_ring_sel_config(struct ath11k *ar)
++{
++	struct ath11k_pdev_dp *dp = &ar->dp;
++	struct htt_rx_ring_tlv_filter tlv_filter = {0};
++	u32 ring_id;
++	int ret;
++	u32 hal_rx_desc_sz = ar->ab->hw_params.hal_desc_sz;
++
++	ring_id = dp->rx_refill_buf_ring.refill_buf_ring.ring_id;
++
++	tlv_filter.rx_filter = HTT_RX_RXDMA_FILTER_TLV_FLAGS_BUF_RING;
++	tlv_filter.pkt_filter_flags2 = HTT_RX_FP_CTRL_PKT_FILTER_TLV_FLAGS2_BAR;
++	tlv_filter.pkt_filter_flags3 = HTT_RX_FP_DATA_PKT_FILTER_TLV_FLASG3_MCAST |
++					HTT_RX_FP_DATA_PKT_FILTER_TLV_FLASG3_UCAST;
++	tlv_filter.offset_valid = true;
++	tlv_filter.rx_packet_offset = hal_rx_desc_sz;
++	tlv_filter.rx_header_offset = 0;
++
++	ath11k_dp_get_rx_header_offset(ar->ab, &tlv_filter);
++
++	if (!ar->ab->nss.enabled)
++		ret = ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id, dp->mac_id,
++						       HAL_RXDMA_BUF,
++						       DP_RXDMA_REFILL_RING_SIZE,
++						       &tlv_filter);
++	else
++		ret = ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id, dp->mac_id,
++						       HAL_RXDMA_BUF,
++						       DP_RXDMA_NSS_REFILL_RING_SIZE,
++						       &tlv_filter);
++
++	return ret;
++}
++#else
++static int ath11k_dp_rxdma_ring_sel_config(struct ath11k *ar)
++{
++	return 0;
++}
++#endif
++
+ int ath11k_dp_rx_pdev_alloc(struct ath11k_base *ab, int mac_id)
+ {
+ 	struct ath11k *ar = ab->pdevs[mac_id].ar;
+@@ -5284,6 +5449,12 @@ config_refill_ring:
+ 		}
+ 	}
+ 
++	ret = ath11k_dp_rxdma_ring_sel_config(ar);
++	if (ret) {
++		ath11k_warn(ab, "failed to setup rxdma ring selection config\n");
++		return ret;
++	}
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -1278,6 +1278,8 @@ int ath11k_dp_tx_htt_rx_filter_setup(str
+ 				 !!(params.flags & HAL_SRNG_FLAGS_MSI_SWAP));
+ 	cmd->info0 |= FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO0_PS,
+ 				 !!(params.flags & HAL_SRNG_FLAGS_DATA_TLV_SWAP));
++	cmd->info0 |= FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_OFFSET_VALID,
++				tlv_filter->offset_valid);
+ 
+ 	cmd->info1 = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_CMD_INFO1_BUF_SIZE,
+ 				rx_buf_size);
+@@ -1287,6 +1289,26 @@ int ath11k_dp_tx_htt_rx_filter_setup(str
+ 	cmd->pkt_type_en_flags3 = tlv_filter->pkt_filter_flags3;
+ 	cmd->rx_filter_tlv = tlv_filter->rx_filter;
+ 
++	if (tlv_filter->offset_valid) {
++		cmd->rx_packet_offset = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_PACKET_OFFSET,
++						   tlv_filter->rx_packet_offset);
++		cmd->rx_packet_offset |= FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_HEADER_OFFSET,
++						    tlv_filter->rx_header_offset);
++
++		cmd->rx_mpdu_offset = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_MPDU_END_OFFSET,
++						 tlv_filter->rx_mpdu_end_offset);
++		cmd->rx_mpdu_offset |= FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_MPDU_START_OFFSET,
++						  tlv_filter->rx_mpdu_start_offset);
++
++		cmd->rx_msdu_offset = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_MSDU_END_OFFSET,
++						 tlv_filter->rx_msdu_end_offset);
++		cmd->rx_msdu_offset |= FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_MSDU_START_OFFSET,
++						  tlv_filter->rx_msdu_start_offset);
++
++		cmd->rx_attn_offset = FIELD_PREP(HTT_RX_RING_SELECTION_CFG_RX_ATTENTION_OFFSET,
++						 tlv_filter->rx_attn_offset);
++	}
++
+ 	ret = ath11k_htc_send(&ab->htc, ab->dp.eid, skb);
+ 	if (ret)
+ 		goto err_free;
+@@ -1365,6 +1387,7 @@ int ath11k_dp_tx_htt_monitor_mode_ring_c
+ 	}
+ 
+ 	ring_id = dp->rxdma_mon_buf_ring.refill_buf_ring.ring_id;
++	tlv_filter.offset_valid = false;
+ 
+ 	if (!reset) {
+ 		tlv_filter.rx_filter = HTT_RX_MON_FILTER_TLV_FLAGS_MON_BUF_RING;
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -260,7 +260,11 @@ static u8 ath11k_hw_ipq8074_rx_desc_get_
+ 
+ static u8 *ath11k_hw_ipq8074_rx_desc_get_hdr_status(struct hal_rx_desc *desc)
+ {
++#ifndef CPTCFG_ATH11K_MEM_PROFILE_512M
+ 	return desc->u.ipq8074.hdr_status;
++#else
++	return NULL;
++#endif
+ }
+ 
+ static bool ath11k_hw_ipq8074_rx_desc_encrypt_valid(struct hal_rx_desc *desc)
+@@ -405,26 +409,132 @@ static void ath11k_hw_ipq8074_rx_desc_se
+ 	desc->u.ipq8074.msdu_start.info1 = __cpu_to_le32(info);
+ }
+ 
++static
++struct rx_attention *ath11k_hw_ipq8074_rx_desc_get_attention(struct hal_rx_desc *desc)
++{
++	return &desc->u.ipq8074.attention;
++}
++
++static u8 *ath11k_hw_ipq8074_rx_desc_get_msdu_payload(struct hal_rx_desc *desc)
++{
++	return &desc->u.ipq8074.msdu_payload[0];
++}
++
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++static void ath11k_hw_ipq8074_rx_desc_get_offset(struct htt_rx_ring_tlv_filter *tlv_filter)
++{
++	tlv_filter->rx_mpdu_end_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_ipq8074, mpdu_end_tag));
++	tlv_filter->rx_mpdu_start_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_ipq8074, mpdu_start_tag));
++	tlv_filter->rx_msdu_end_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_ipq8074, msdu_end_tag));
++	tlv_filter->rx_msdu_start_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_ipq8074, msdu_start_tag));
++	tlv_filter->rx_attn_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_ipq8074, rx_attn_tag));
++}
++#endif
++
++static u16 ath11k_hw_ipq8074_rx_desc_get_mpdu_frame_ctl(struct hal_rx_desc *desc)
++{
++	return __le16_to_cpu(desc->u.ipq8074.mpdu_start.frame_ctrl);
++}
++
+ static bool ath11k_hw_ipq8074_rx_desc_mac_addr2_valid(struct hal_rx_desc *desc)
+ {
+ 	return __le32_to_cpu(desc->u.ipq8074.mpdu_start.info1) &
+ 	       RX_MPDU_START_INFO1_MAC_ADDR2_VALID;
+ }
+ 
+-static u8 *ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2(struct hal_rx_desc *desc)
++static u8* ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2(struct hal_rx_desc *desc)
+ {
+ 	return desc->u.ipq8074.mpdu_start.addr2;
+ }
+ 
+-static
+-struct rx_attention *ath11k_hw_ipq8074_rx_desc_get_attention(struct hal_rx_desc *desc)
++static bool ath11k_hw_ipq8074_rx_desc_dot11_hdr_fields_valid(struct hal_rx_desc *desc)
+ {
+-	return &desc->u.ipq8074.attention;
++	if ((ath11k_hw_ipq8074_rx_desc_get_mpdu_seq_ctl_vld(desc) &&
++	     ath11k_hw_ipq8074_rx_desc_get_mpdu_fc_valid(desc) &&
++	     __le32_to_cpu(desc->u.ipq8074.mpdu_start.info1) &
++			   RX_MPDU_START_INFO1_MAC_ADDR1_VALID &&
++	     ath11k_hw_ipq8074_rx_desc_mac_addr2_valid(desc) &&
++	     __le32_to_cpu(desc->u.ipq8074.mpdu_start.info1) &
++			   RX_MPDU_START_INFO1_MAC_ADDR3_VALID &&
++	     FIELD_GET((RX_MPDU_START_INFO1_MPDU_DUR_VALID),
++			__le32_to_cpu(desc->u.ipq8074.mpdu_start.info1)))) {
++		return true;
++	}
++	return false;
++}
++
++static void ath11k_hw_ipq8074_rx_desc_get_dot11_hdr(struct hal_rx_desc *desc,
++						    struct ieee80211_hdr *hdr)
++{
++	hdr->frame_control = __le16_to_cpu(desc->u.ipq8074.mpdu_start.frame_ctrl);
++	hdr->duration_id = __le16_to_cpu(desc->u.ipq8074.mpdu_start.duration);
++	ether_addr_copy(hdr->addr1, desc->u.ipq8074.mpdu_start.addr1);
++	ether_addr_copy(hdr->addr2, desc->u.ipq8074.mpdu_start.addr2);
++	ether_addr_copy(hdr->addr3, desc->u.ipq8074.mpdu_start.addr3);
++	if (__le32_to_cpu(desc->u.ipq8074.mpdu_start.info1) &
++			RX_MPDU_START_INFO1_MAC_ADDR4_VALID) {
++		ether_addr_copy(hdr->addr4, desc->u.ipq8074.mpdu_start.addr4);
++	}
++	hdr->seq_ctrl = __le16_to_cpu(desc->u.ipq8074.mpdu_start.seq_ctrl);
++}
++
++static void ath11k_hw_ipq8074_rx_desc_get_crypto_hdr(struct hal_rx_desc *desc,
++						     u8 *crypto_hdr,
++						     enum hal_encrypt_type enctype)
++{
++	unsigned int key_id;
++
++	switch (enctype) {
++	case HAL_ENCRYPT_TYPE_OPEN:
++		return;
++	case HAL_ENCRYPT_TYPE_TKIP_NO_MIC:
++	case HAL_ENCRYPT_TYPE_TKIP_MIC:
++		crypto_hdr[0] =
++			HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.ipq8074.mpdu_start.pn[0]);
++		crypto_hdr[1] = 0;
++		crypto_hdr[2] =
++			HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.ipq8074.mpdu_start.pn[0]);
++		break;
++	case HAL_ENCRYPT_TYPE_CCMP_128:
++	case HAL_ENCRYPT_TYPE_CCMP_256:
++	case HAL_ENCRYPT_TYPE_GCMP_128:
++	case HAL_ENCRYPT_TYPE_AES_GCMP_256:
++		crypto_hdr[0] =
++			HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.ipq8074.mpdu_start.pn[0]);
++		crypto_hdr[1] =
++			HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.ipq8074.mpdu_start.pn[0]);
++		crypto_hdr[2] = 0;
++		break;
++	case HAL_ENCRYPT_TYPE_WEP_40:
++	case HAL_ENCRYPT_TYPE_WEP_104:
++	case HAL_ENCRYPT_TYPE_WEP_128:
++	case HAL_ENCRYPT_TYPE_WAPI_GCM_SM4:
++	case HAL_ENCRYPT_TYPE_WAPI:
++		return;
++	}
++	key_id        = FIELD_GET(RX_MPDU_START_INFO5_KEY_ID,
++				  __le32_to_cpu(desc->u.ipq8074.mpdu_start.info5));
++	crypto_hdr[3] = 0x20 | (key_id << 6);
++	crypto_hdr[4] = HAL_RX_MPDU_INFO_PN_GET_BYTE3(desc->u.ipq8074.mpdu_start.pn[0]);
++	crypto_hdr[5] = HAL_RX_MPDU_INFO_PN_GET_BYTE4(desc->u.ipq8074.mpdu_start.pn[0]);
++	crypto_hdr[6] = HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.ipq8074.mpdu_start.pn[1]);
++	crypto_hdr[7] = HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.ipq8074.mpdu_start.pn[1]);
+ }
+ 
+-static u8 *ath11k_hw_ipq8074_rx_desc_get_msdu_payload(struct hal_rx_desc *desc)
++static bool ath11k_hw_qcn9074_rx_desc_mac_addr2_valid(struct hal_rx_desc *desc)
+ {
+-	return &desc->u.ipq8074.msdu_payload[0];
++	return __le32_to_cpu(desc->u.qcn9074.mpdu_start.info11) &
++	       RX_MPDU_START_INFO11_MAC_ADDR2_VALID;
++}
++
++static u8* ath11k_hw_qcn9074_rx_desc_mpdu_start_addr2(struct hal_rx_desc *desc)
++{
++	return desc->u.qcn9074.mpdu_start.addr2;
+ }
+ 
+ static bool ath11k_hw_qcn9074_rx_desc_get_first_msdu(struct hal_rx_desc *desc)
+@@ -447,7 +557,11 @@ static u8 ath11k_hw_qcn9074_rx_desc_get_
+ 
+ static u8 *ath11k_hw_qcn9074_rx_desc_get_hdr_status(struct hal_rx_desc *desc)
+ {
++#ifndef CPTCFG_ATH11K_MEM_PROFILE_512M
+ 	return desc->u.qcn9074.hdr_status;
++#else
++	return NULL;
++#endif
+ }
+ 
+ static bool ath11k_hw_qcn9074_rx_desc_encrypt_valid(struct hal_rx_desc *desc)
+@@ -634,7 +748,11 @@ static u8 ath11k_hw_wcn6855_rx_desc_get_
+ 
+ static u8 *ath11k_hw_wcn6855_rx_desc_get_hdr_status(struct hal_rx_desc *desc)
+ {
++#ifndef CPTCFG_ATH11K_MEM_PROFILE_512M
+ 	return desc->u.wcn6855.hdr_status;
++#else
++	return NULL;
++#endif
+ }
+ 
+ static bool ath11k_hw_wcn6855_rx_desc_encrypt_valid(struct hal_rx_desc *desc)
+@@ -784,6 +902,96 @@ static u8 *ath11k_hw_wcn6855_rx_desc_mpd
+ {
+ 	return desc->u.wcn6855.mpdu_start.addr2;
+ }
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++static void ath11k_hw_qcn9074_rx_desc_get_offset(struct htt_rx_ring_tlv_filter *tlv_filter)
++{
++	tlv_filter->rx_mpdu_end_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_qcn9074, mpdu_end_tag));
++	tlv_filter->rx_mpdu_start_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_qcn9074, mpdu_start_tag));
++	tlv_filter->rx_msdu_end_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_qcn9074, msdu_end_tag));
++	tlv_filter->rx_msdu_start_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_qcn9074, msdu_start_tag));
++	tlv_filter->rx_attn_offset = __le16_to_cpu(offsetof
++			(struct hal_rx_desc_qcn9074, rx_attn_tag));
++}
++#endif
++
++static u16 ath11k_hw_qcn9074_rx_desc_get_mpdu_frame_ctl(struct hal_rx_desc *desc)
++{
++	return __le16_to_cpu(desc->u.qcn9074.mpdu_start.frame_ctrl);
++}
++
++static bool ath11k_hw_qcn9074_rx_desc_dot11_hdr_fields_valid(struct hal_rx_desc *desc)
++{
++	if ((ath11k_hw_qcn9074_rx_desc_get_mpdu_seq_ctl_vld(desc) &&
++	     ath11k_hw_qcn9074_rx_desc_get_mpdu_fc_valid(desc) &&
++	     (__le32_to_cpu(desc->u.qcn9074.mpdu_start.info11) &
++			     RX_MPDU_START_INFO11_MAC_ADDR1_VALID) &&
++	     ath11k_hw_qcn9074_rx_desc_mac_addr2_valid(desc) &&
++	     (__le32_to_cpu(desc->u.qcn9074.mpdu_start.info11) &
++			    RX_MPDU_START_INFO11_MAC_ADDR3_VALID) &&
++	     FIELD_GET((RX_MPDU_START_INFO11_MPDU_DUR_VALID),
++			__le32_to_cpu(desc->u.qcn9074.mpdu_start.info11)))) {
++		return true;
++	}
++	return false;
++}
++
++static void ath11k_hw_qcn9074_rx_desc_get_dot11_hdr(struct hal_rx_desc *desc,
++						    struct ieee80211_hdr *hdr)
++{
++	hdr->frame_control = __le16_to_cpu(desc->u.qcn9074.mpdu_start.frame_ctrl);
++	hdr->duration_id = __le16_to_cpu(desc->u.qcn9074.mpdu_start.duration);
++	ether_addr_copy(hdr->addr1, desc->u.qcn9074.mpdu_start.addr1);
++	ether_addr_copy(hdr->addr2, desc->u.qcn9074.mpdu_start.addr2);
++	ether_addr_copy(hdr->addr3, desc->u.qcn9074.mpdu_start.addr3);
++	if (__le32_to_cpu(desc->u.qcn9074.mpdu_start.info11) &
++			  RX_MPDU_START_INFO11_MAC_ADDR4_VALID) {
++		ether_addr_copy(hdr->addr4, desc->u.qcn9074.mpdu_start.addr4);
++	}
++	hdr->seq_ctrl = __le16_to_cpu(desc->u.qcn9074.mpdu_start.seq_ctrl);
++}
++
++static void ath11k_hw_qcn9074_rx_desc_get_crypto_hdr(struct hal_rx_desc *desc,
++						     u8 *crypto_hdr,
++						     enum hal_encrypt_type enctype)
++{
++	unsigned int key_id;
++
++	switch (enctype) {
++	case HAL_ENCRYPT_TYPE_OPEN:
++		return;
++	case HAL_ENCRYPT_TYPE_TKIP_NO_MIC:
++	case HAL_ENCRYPT_TYPE_TKIP_MIC:
++		crypto_hdr[0] = HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.qcn9074.mpdu_start.pn[0]);
++		crypto_hdr[1] = 0;
++		crypto_hdr[2] = HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.qcn9074.mpdu_start.pn[0]);
++		break;
++	case HAL_ENCRYPT_TYPE_CCMP_128:
++	case HAL_ENCRYPT_TYPE_CCMP_256:
++	case HAL_ENCRYPT_TYPE_GCMP_128:
++	case HAL_ENCRYPT_TYPE_AES_GCMP_256:
++		crypto_hdr[0] = HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.qcn9074.mpdu_start.pn[0]);
++		crypto_hdr[1] = HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.qcn9074.mpdu_start.pn[0]);
++		crypto_hdr[2] = 0;
++		break;
++	case HAL_ENCRYPT_TYPE_WEP_40:
++	case HAL_ENCRYPT_TYPE_WEP_104:
++	case HAL_ENCRYPT_TYPE_WEP_128:
++	case HAL_ENCRYPT_TYPE_WAPI_GCM_SM4:
++	case HAL_ENCRYPT_TYPE_WAPI:
++		return;
++	}
++	key_id        = FIELD_GET(RX_MPDU_START_INFO12_KEY_ID,
++				  __le32_to_cpu(desc->u.qcn9074.mpdu_start.info12));
++	crypto_hdr[3] = 0x20 | (key_id << 6);
++	crypto_hdr[4] = HAL_RX_MPDU_INFO_PN_GET_BYTE3(desc->u.qcn9074.mpdu_start.pn[0]);
++	crypto_hdr[5] = HAL_RX_MPDU_INFO_PN_GET_BYTE4(desc->u.qcn9074.mpdu_start.pn[0]);
++	crypto_hdr[6] = HAL_RX_MPDU_INFO_PN_GET_BYTE1(desc->u.qcn9074.mpdu_start.pn[1]);
++	crypto_hdr[7] = HAL_RX_MPDU_INFO_PN_GET_BYTE2(desc->u.qcn9074.mpdu_start.pn[1]);
++}
+ 
+ static void ath11k_hw_wcn6855_reo_setup(struct ath11k_base *ab)
+ {
+@@ -989,6 +1197,13 @@ const struct ath11k_hw_ops ipq8074_ops =
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
+ 	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++	.rx_desc_get_offset = ath11k_hw_ipq8074_rx_desc_get_offset,
++#endif
++	.rx_desc_get_mpdu_frame_ctl = ath11k_hw_ipq8074_rx_desc_get_mpdu_frame_ctl,
++	.rx_desc_dot11_hdr_fields_valid = ath11k_hw_ipq8074_rx_desc_dot11_hdr_fields_valid,
++	.rx_desc_get_dot11_hdr = ath11k_hw_ipq8074_rx_desc_get_dot11_hdr,
++	.rx_desc_get_crypto_header = ath11k_hw_ipq8074_rx_desc_get_crypto_hdr,
+ };
+ 
+ const struct ath11k_hw_ops ipq6018_ops = {
+@@ -1031,6 +1246,13 @@ const struct ath11k_hw_ops ipq6018_ops =
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
+ 	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++	.rx_desc_get_offset = ath11k_hw_ipq8074_rx_desc_get_offset,
++#endif
++	.rx_desc_get_mpdu_frame_ctl = ath11k_hw_ipq8074_rx_desc_get_mpdu_frame_ctl,
++	.rx_desc_dot11_hdr_fields_valid = ath11k_hw_ipq8074_rx_desc_dot11_hdr_fields_valid,
++	.rx_desc_get_dot11_hdr = ath11k_hw_ipq8074_rx_desc_get_dot11_hdr,
++	.rx_desc_get_crypto_header = ath11k_hw_ipq8074_rx_desc_get_crypto_hdr,
+ };
+ 
+ const struct ath11k_hw_ops qca6390_ops = {
+@@ -1073,6 +1295,13 @@ const struct ath11k_hw_ops qca6390_ops =
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
+ 	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++	.rx_desc_get_offset = ath11k_hw_ipq8074_rx_desc_get_offset,
++#endif
++	.rx_desc_get_mpdu_frame_ctl = ath11k_hw_ipq8074_rx_desc_get_mpdu_frame_ctl,
++	.rx_desc_dot11_hdr_fields_valid = ath11k_hw_ipq8074_rx_desc_dot11_hdr_fields_valid,
++	.rx_desc_get_dot11_hdr = ath11k_hw_ipq8074_rx_desc_get_dot11_hdr,
++	.rx_desc_get_crypto_header = ath11k_hw_ipq8074_rx_desc_get_crypto_hdr,
+ };
+ 
+ const struct ath11k_hw_ops qcn9074_ops = {
+@@ -1111,10 +1340,17 @@ const struct ath11k_hw_ops qcn9074_ops =
+ 	.rx_desc_get_msdu_payload = ath11k_hw_qcn9074_rx_desc_get_msdu_payload,
+ 	.reo_setup = ath11k_hw_ipq8074_reo_setup,
+ 	.mpdu_info_get_peerid = ath11k_hw_qcn9074_mpdu_info_get_peerid,
+-	.rx_desc_mac_addr2_valid = ath11k_hw_ipq9074_rx_desc_mac_addr2_valid,
+-	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq9074_rx_desc_mpdu_start_addr2,
++	.rx_desc_mac_addr2_valid = ath11k_hw_qcn9074_rx_desc_mac_addr2_valid,
++	.rx_desc_mpdu_start_addr2 = ath11k_hw_qcn9074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
+ 	.rx_desc_get_hal_mpdu_len = ath11k_hw_qcn9074_rx_desc_get_hal_mpdu_len,
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++	.rx_desc_get_offset = ath11k_hw_qcn9074_rx_desc_get_offset,
++#endif
++	.rx_desc_get_mpdu_frame_ctl = ath11k_hw_qcn9074_rx_desc_get_mpdu_frame_ctl,
++	.rx_desc_dot11_hdr_fields_valid = ath11k_hw_qcn9074_rx_desc_dot11_hdr_fields_valid,
++	.rx_desc_get_dot11_hdr = ath11k_hw_qcn9074_rx_desc_get_dot11_hdr,
++	.rx_desc_get_crypto_header = ath11k_hw_qcn9074_rx_desc_get_crypto_hdr,
+ };
+ 
+ const struct ath11k_hw_ops wcn6855_ops = {
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -22,6 +22,11 @@
+ #define ATH11K_DP_RXDMA_MON_STATUS_RING_SIZE	512
+ #define ATH11K_DP_RXDMA_MONITOR_BUF_RING_SIZE	128
+ #define ATH11K_DP_RXDMA_MONITOR_DST_RING_SIZE	128
++#define ATH11K_DP_RXDMA_REFILL_RING_SIZE	2048
++/* 256b desc TLV + 4b(rounded) Pad + 30byte max nwifi header +
++ * 18byte mesh hdr + 8byte snap + 1500 eth payload
++ */
++#define ATH11K_DP_RXDMA_NSS_REFILL_RING_SIZE	1816
+ #else
+ /* Num VDEVS per radio */
+ #define TARGET_NUM_VDEVS(ab)	(ab->hw_params.num_vdevs_peers[ab->qmi.target_mem_mode].num_vdevs)
+@@ -33,6 +38,8 @@
+ #define ATH11K_DP_RXDMA_MON_STATUS_RING_SIZE	1024
+ #define ATH11K_DP_RXDMA_MONITOR_BUF_RING_SIZE	4096
+ #define ATH11K_DP_RXDMA_MONITOR_DST_RING_SIZE	2048
++#define ATH11K_DP_RXDMA_REFILL_RING_SIZE	2048
++#define ATH11K_DP_RXDMA_NSS_REFILL_RING_SIZE	2048
+ #endif
+ 
+ /* Num of peers for Single Radio mode */
+@@ -134,6 +141,9 @@ enum ath11k_bus {
+ struct hal_rx_desc;
+ struct hal_tcl_data_cmd;
+ 
++struct htt_rx_ring_tlv_filter;
++enum hal_encrypt_type;
++
+ struct ath11k_hw_ring_mask {
+ 	u8 tx[ATH11K_EXT_IRQ_GRP_NUM_MAX];
+ 	u8 rx_mon_status[ATH11K_EXT_IRQ_GRP_NUM_MAX];
+@@ -294,6 +304,16 @@ struct ath11k_hw_ops {
+ 	u8* (*rx_desc_mpdu_start_addr2)(struct hal_rx_desc *desc);
+ 	u32 (*get_ring_selector)(struct sk_buff *skb);
+ 	u32 (*rx_desc_get_hal_mpdu_len)(struct hal_rx_mpdu_info *mpdu_info);
++#ifdef CPTCFG_ATH11K_MEM_PROFILE_512M
++	void (*rx_desc_get_offset)(struct htt_rx_ring_tlv_filter *tlv_filter);
++#endif
++	u16 (*rx_desc_get_mpdu_frame_ctl)(struct hal_rx_desc *desc);
++	bool (*rx_desc_dot11_hdr_fields_valid)(struct hal_rx_desc *desc);
++	void (*rx_desc_get_dot11_hdr)(struct hal_rx_desc *desc,
++				      struct ieee80211_hdr *hdr);
++	void (*rx_desc_get_crypto_header)(struct hal_rx_desc *desc,
++					  u8 *crypto_hdr,
++					  enum hal_encrypt_type enctype);
+ };
+ 
+ extern const struct ath11k_hw_ops ipq8074_ops;
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6671,6 +6671,7 @@ static int ath11k_mac_config_mon_status_
+ 			tlv_filter.rx_filter = ath11k_debugfs_rx_filter(ar);
+ 	}
+ 
++	tlv_filter.offset_valid = false;
+ 	for (i = 0; i < ab->hw_params.num_rxdma_per_pdev; i++) {
+ 		ring_id = ar->dp.rx_mon_status_refill_ring[i].refill_buf_ring.ring_id;
+ 		ret = ath11k_dp_tx_htt_rx_filter_setup(ar->ab, ring_id,
+--- a/drivers/net/wireless/ath/ath11k/rx_desc.h
++++ b/drivers/net/wireless/ath/ath11k/rx_desc.h
+@@ -1508,4 +1508,16 @@ struct hal_rx_desc {
+ #define RU_484 18
+ #define RU_996 37
+ 
++#define HAL_RX_MPDU_INFO_PN_GET_BYTE1(__val) \
++	FIELD_GET(GENMASK(7, 0), __le32_to_cpu(__val))
++
++#define HAL_RX_MPDU_INFO_PN_GET_BYTE2(__val) \
++	FIELD_GET(GENMASK(15, 8), __le32_to_cpu(__val))
++
++#define HAL_RX_MPDU_INFO_PN_GET_BYTE3(__val) \
++	FIELD_GET(GENMASK(23, 16), __le32_to_cpu(__val))
++
++#define HAL_RX_MPDU_INFO_PN_GET_BYTE4(__val) \
++	FIELD_GET(GENMASK(31, 24), __le32_to_cpu(__val))
++
+ #endif /* ATH11K_RX_DESC_H */
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -4366,7 +4366,7 @@ static int ath11k_nss_init(struct ath11k
+ 
+ 	/* fill rx parameters to initialize rx context */
+ 	wim->wrip.tlv_size = ab->hw_params.hal_desc_sz;
+-	wim->wrip.rx_buf_len = DP_RX_BUFFER_SIZE;
++	wim->wrip.rx_buf_len = DP_RXDMA_NSS_REFILL_RING_SIZE;
+ 
+ 	/* fill hal srng message */
+ 	wim->hssm.dev_base_addr = (u32)ab->mem_pa;

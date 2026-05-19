@@ -1,0 +1,260 @@
+From ed838800bb8f4c59b320395066ac356f74528a50 Mon Sep 17 00:00:00 2001
+From: Muna Sinada <msinada@codeaurora.org>
+Date: Wed, 29 Jul 2020 00:11:30 -0700
+Subject: [PATCH] 203-mac80211-ath11k-fw-dynamic-muedca.patch
+
+mac80211/ath11k:FW Initiated Dynamic MU-EDCA
+
+Implementing the updating of firmware initiated dynamic MU-EDCA
+parameters in Beacon IE. Firmware routinely checks its clients and
+updates its MU-EDCA values every 3 seconds. Firmware is tuning
+MU-EDCA parameters to improve performance. As part of this process,
+the firmware informs host about new MU-EDCA values utilizing
+WMI_MUEDCA_PARAMS_CONFIG_EVENTID. FW expectation is that host will
+update MU-EDCA parameters in the Beacon IE.
+Implementation consists of:
+	(1) Receiving updated parameters through event in ATH11k
+	(2) Passing updated parameters ATH11k -> mac80211 -> cfg80211
+	(3) Passing updated parameters to user space.
+
+Signed-off-by: Muna Sinada <msinada@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/wmi.c | 97 +++++++++++++++++++++++++++++++----
+ drivers/net/wireless/ath/ath11k/wmi.h | 12 +++++
+ include/net/cfg80211.h                | 11 ++++
+ include/net/mac80211.h                | 13 +++++
+ include/uapi/linux/nl80211.h          | 10 ++++
+ net/mac80211/mlme.c                   | 12 +++++
+ net/mac80211/trace.h                  | 20 ++++++++
+ net/wireless/nl80211.c                | 36 +++++++++++++
+ 8 files changed, 200 insertions(+), 11 deletions(-)
+
+--- a/include/net/cfg80211.h
++++ b/include/net/cfg80211.h
+@@ -10332,4 +10332,15 @@ cfg80211_s1g_get_primary_sibling(struct
+ 	return ieee80211_get_channel_khz(wiphy, sibling_1mhz_khz);
+ }
+ 
++/**
++ * cfg80211_update_muedca_params_event - Notify the updated MU-EDCA parameters
++ *	to user space.
++ * @wiphy: the wiphy
++ * @params: Updated MU-EDCA parameters
++ * @gfp: allocation flags
++ */
++void cfg80211_update_muedca_params_event(struct wiphy *wiphy,
++					 struct ieee80211_mu_edca_param_set
++					 *params, gfp_t gfp);
++
+ #endif /* __NET_CFG80211_H */
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -7762,6 +7762,20 @@ u32 ieee80211_calc_rx_airtime(struct iee
+ 			      int len);
+ 
+ /**
++ * ieee80211_update_muedca_params - update MU-EDCA parameters.
++ *
++ * This function is used to pass dynamically updated MU-EDCA parameters from
++ * driver to user space in order for parameters to be updated in beacon.
++ *
++ * @hw: pointer as obtained from ieee80211_alloc_hw()
++ * @params: updated MU-EDCA paramters
++ * @gfp: allocation flags
++ */
++void ieee80211_update_muedca_params(struct ieee80211_hw *hw,
++				    struct ieee80211_mu_edca_param_set
++				    *params, gfp_t gfp);
++
++/**
+  * ieee80211_calc_tx_airtime - calculate estimated transmission airtime for TX.
+  *
+  * This function calculates the estimated airtime usage of a frame based on the
+--- a/include/uapi/linux/nl80211.h
++++ b/include/uapi/linux/nl80211.h
+@@ -1361,6 +1361,10 @@
+  *	user space that the NAN new cluster has been joined. The cluster ID is
+  *	indicated by %NL80211_ATTR_MAC.
+  *
++ * @NL80211_CMD_UPDATE_HE_MUEDCA_PARAMS: Updated MU-EDCA parameters from driver.
++ *	This event is used to update dynamic MU-EDCA parameters in Beacon frame,
++ *	coming from driver and now need to be reflected in Beacon frame.
++ *
+  * @NL80211_CMD_MAX: highest used command number
+  * @__NL80211_CMD_AFTER_LAST: internal use
+  */
+@@ -1624,6 +1628,7 @@ enum nl80211_commands {
+ 	NL80211_CMD_NAN_NEXT_DW_NOTIFICATION,
+ 	NL80211_CMD_NAN_CLUSTER_JOINED,
+ 
++	NL80211_CMD_UPDATE_HE_MUEDCA_PARAMS,
+ 	/* add new commands above here */
+ 
+ 	/* used to define NL80211_CMD_MAX below */
+@@ -2973,6 +2978,8 @@ enum nl80211_commands {
+  *	primary channel is 2 MHz wide, and the control channel designates
+  *	the 1 MHz primary subchannel within that 2 MHz primary.
+  *
++ * @NL80211_ATTR_HE_MUEDCA_PARAMS: MU-EDCA AC parameters for the
++ *	%NL80211_CMD_UPDATE_HE_MUEDCA_PARAMS command.
+  * @NUM_NL80211_ATTR: total number of nl80211_attrs available
+  * @NL80211_ATTR_MAX: highest attribute number currently defined
+  * @__NL80211_ATTR_AFTER_LAST: internal use
+@@ -3541,6 +3548,8 @@ enum nl80211_attrs {
+ 
+ 	NL80211_ATTR_S1G_PRIMARY_2MHZ,
+ 
++	NL80211_ATTR_HE_MUEDCA_PARAMS,
++
+ 	/* add attributes here, update the policy in nl80211.c */
+ 
+ 	__NL80211_ATTR_AFTER_LAST,
+--- a/net/mac80211/mlme.c
++++ b/net/mac80211/mlme.c
+@@ -11081,3 +11081,15 @@ void ieee80211_process_epcs_teardown(str
+ 	ieee80211_epcs_teardown(sdata);
+ 	ieee80211_epcs_changed(sdata, false);
+ }
++
++void ieee80211_update_muedca_params(struct ieee80211_hw *hw,
++				    struct ieee80211_mu_edca_param_set
++				    *params, gfp_t gfp)
++{
++	struct ieee80211_local *local = hw_to_local(hw);
++
++	trace_api_update_muedca_params(local, params);
++
++	cfg80211_update_muedca_params_event(local->hw.wiphy, params, gfp);
++}
++EXPORT_SYMBOL(ieee80211_update_muedca_params);
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -3320,6 +3320,26 @@ TRACE_EVENT(stop_queue,
+ 	)
+ );
+ 
++TRACE_EVENT(api_update_muedca_params,
++	TP_PROTO(struct ieee80211_local *local,
++		 struct ieee80211_mu_edca_param_set *params),
++
++	TP_ARGS(local, params),
++
++	TP_STRUCT__entry(
++		LOCAL_ENTRY
++	),
++
++	TP_fast_assign(
++		LOCAL_ASSIGN;
++	),
++
++	TP_printk(
++		LOCAL_PR_FMT " updated MU-EDCA parameters",
++		LOCAL_PR_ARG
++	)
++);
++
+ TRACE_EVENT(drv_can_neg_ttlm,
+ 	    TP_PROTO(struct ieee80211_local *local,
+ 		     struct ieee80211_sub_if_data *sdata,
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -915,6 +915,7 @@ static const struct nla_policy nl80211_p
+ 	[NL80211_ATTR_HW_TIMESTAMP_ENABLED] = { .type = NLA_FLAG },
+ 	[NL80211_ATTR_EMA_RNR_ELEMS] = { .type = NLA_NESTED },
+ 	[NL80211_ATTR_MLO_LINK_DISABLED] = { .type = NLA_FLAG },
++	[NL80211_ATTR_HE_MUEDCA_PARAMS] = NLA_POLICY_EXACT_LEN(sizeof(struct ieee80211_mu_edca_param_set)),
+ 	[NL80211_ATTR_BSS_DUMP_INCLUDE_USE_DATA] = { .type = NLA_FLAG },
+ 	[NL80211_ATTR_MLO_TTLM_DLINK] = NLA_POLICY_EXACT_LEN(sizeof(u16) * 8),
+ 	[NL80211_ATTR_MLO_TTLM_ULINK] = NLA_POLICY_EXACT_LEN(sizeof(u16) * 8),
+@@ -21893,6 +21894,42 @@ void cfg80211_nan_cluster_joined(struct
+ }
+ EXPORT_SYMBOL(cfg80211_nan_cluster_joined);
+ 
++void cfg80211_update_muedca_params_event(struct wiphy *wiphy,
++					 struct ieee80211_mu_edca_param_set
++					 *params, gfp_t gfp)
++{
++	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
++	struct sk_buff *msg;
++	void *hdr;
++
++	msg = nlmsg_new(NLMSG_DEFAULT_SIZE, gfp);
++	if (!msg)
++		return;
++
++	hdr = nl80211hdr_put(msg, 0, 0, 0, NL80211_CMD_UPDATE_HE_MUEDCA_PARAMS);
++	if (!hdr)
++		goto nla_put_failure;
++
++	if (nla_put_u32(msg, NL80211_ATTR_WIPHY, rdev->wiphy_idx))
++		goto nla_put_failure;
++
++	if (nla_put(msg, NL80211_ATTR_HE_MUEDCA_PARAMS,
++		    sizeof(struct ieee80211_mu_edca_param_set),
++		    (const void *)params))
++		goto nla_put_failure;
++
++	genlmsg_end(msg, hdr);
++
++	genlmsg_multicast_netns(&nl80211_fam, wiphy_net(&rdev->wiphy), msg, 0,
++				NL80211_MCGRP_MLME, gfp);
++	return;
++
++nla_put_failure:
++	genlmsg_cancel(msg, hdr);
++	nlmsg_free(msg);
++}
++EXPORT_SYMBOL(cfg80211_update_muedca_params_event);
++
+ /* initialisation/exit functions */
+ 
+ int __init nl80211_init(void)
+--- a/net/wireless/trace.h
++++ b/net/wireless/trace.h
+@@ -4001,6 +4001,46 @@ TRACE_EVENT(cfg80211_update_owe_info_eve
+ 		  __entry->assoc_link_id, __entry->peer_mld_addr)
+ );
+ 
++TRACE_EVENT(cfg80211_update_muedca_params_event,
++	TP_PROTO(struct wiphy *wiphy,
++		 const struct ieee80211_mu_edca_param_set *params),
++	TP_ARGS(wiphy, params),
++	TP_STRUCT__entry(
++		WIPHY_ENTRY
++		__field(u8, mu_qos_info)
++		__field(u8, be_aifsn)
++		__field(u8, be_ecw_min_max)
++		__field(u8, be_mu_edca_timer)
++		__field(u8, bk_aifsn)
++		__field(u8, bk_ecw_min_max)
++		__field(u8, bk_mu_edca_timer)
++		__field(u8, vi_aifsn)
++		__field(u8, vi_ecw_min_max)
++		__field(u8, vi_mu_edca_timer)
++		__field(u8, vo_aifsn)
++		__field(u8, vo_ecw_min_max)
++		__field(u8, vo_mu_edca_timer)
++	),
++	TP_fast_assign(
++		WIPHY_ASSIGN;
++		__entry->mu_qos_info = params->mu_qos_info;
++		__entry->be_aifsn = params->ac_be.aifsn;
++		__entry->be_ecw_min_max = params->ac_be.ecw_min_max;
++		__entry->be_mu_edca_timer = params->ac_be.mu_edca_timer;
++		__entry->bk_aifsn = params->ac_bk.aifsn;
++		__entry->bk_ecw_min_max = params->ac_bk.ecw_min_max;
++		__entry->bk_mu_edca_timer = params->ac_bk.mu_edca_timer;
++		__entry->vi_aifsn = params->ac_vi.aifsn;
++		__entry->vi_ecw_min_max = params->ac_vi.ecw_min_max;
++		__entry->vi_mu_edca_timer = params->ac_vi.mu_edca_timer;
++		__entry->vo_aifsn = params->ac_vo.aifsn;
++		__entry->vo_ecw_min_max = params->ac_vo.ecw_min_max;
++		__entry->vo_mu_edca_timer = params->ac_vo.mu_edca_timer;
++	),
++	TP_printk(WIPHY_PR_FMT ", MU QOS info: %u", WIPHY_PR_ARG,
++		  __entry->mu_qos_info)
++);
++
+ TRACE_EVENT(cfg80211_bss_color_notify,
+ 	TP_PROTO(struct net_device *netdev,
+ 		 enum nl80211_commands cmd,

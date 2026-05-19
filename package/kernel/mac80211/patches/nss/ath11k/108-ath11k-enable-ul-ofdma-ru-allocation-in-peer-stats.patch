@@ -1,0 +1,452 @@
+--- a/drivers/net/wireless/ath/ath11k/debugfs_sta.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs_sta.c
+@@ -526,6 +526,12 @@ static ssize_t ath11k_dbg_sta_dump_rx_st
+ 		len += scnprintf(buf + len, size - len, "%10llu%s",
+ 				rx_stats->byte_stats.rx_rate[i],
+ 				(i + 1) % (he_rates_avail ? 12 : 8) ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len,
++			 "\nDCM: %llu\nRU26:  %llu \nRU52:  %llu \nRU106: %llu \nRU242: %llu \nRU484: %llu \nRU996: %llu\n",
++			 rx_stats->dcm_count, rx_stats->ru_alloc_cnt[0],
++			 rx_stats->ru_alloc_cnt[1], rx_stats->ru_alloc_cnt[2],
++			 rx_stats->ru_alloc_cnt[3], rx_stats->ru_alloc_cnt[4],
++			 rx_stats->ru_alloc_cnt[5]);
+ 
+ 	len += scnprintf(buf + len, size - len, "\n");
+ 
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -2891,11 +2891,12 @@ exit:
+ static void
+ ath11k_dp_rx_update_peer_rate_table_stats(struct ath11k_rx_peer_stats *rx_stats,
+ 					  struct hal_rx_mon_ppdu_info *ppdu_info,
++					  struct hal_rx_user_status* user_stats,
+ 					  u32 num_msdu)
+ {
+ 	u32 rate_idx = 0;
+-	u32 mcs_idx = ppdu_info->mcs;
+-	u32 nss_idx = ppdu_info->nss - 1;
++	u32 mcs_idx = (user_stats) ? user_stats->mcs : ppdu_info->mcs;
++	u32 nss_idx = (user_stats) ? user_stats->nss - 1 : ppdu_info->nss - 1;
+ 	u32 bw_idx = ppdu_info->bw;
+ 	u32 gi_idx = ppdu_info->gi;
+ 
+@@ -2917,10 +2918,13 @@ ath11k_dp_rx_update_peer_rate_table_stat
+ 	}
+ 
+ 	rx_stats->pkt_stats.rx_rate[rate_idx] += num_msdu;
+-	rx_stats->byte_stats.rx_rate[rate_idx] += ppdu_info->mpdu_len;
++	if (user_stats)
++		rx_stats->byte_stats.rx_rate[rate_idx] += user_stats->mpdu_ok_byte_count;
++	else
++		rx_stats->byte_stats.rx_rate[rate_idx] += ppdu_info->mpdu_len;
+ }
+ 
+-static void ath11k_dp_rx_update_peer_stats(struct ath11k_sta *arsta,
++static void ath11k_dp_rx_update_peer_su_stats(struct ath11k_sta *arsta,
+ 					   struct hal_rx_mon_ppdu_info *ppdu_info)
+ {
+ 	struct ath11k_rx_peer_stats *rx_stats = arsta->rx_stats;
+@@ -2978,7 +2982,6 @@ static void ath11k_dp_rx_update_peer_sta
+ 	rx_stats->num_mpdu_fcs_ok += ppdu_info->num_mpdu_fcs_ok;
+ 	rx_stats->num_mpdu_fcs_err += ppdu_info->num_mpdu_fcs_err;
+ 	rx_stats->dcm_count += ppdu_info->dcm;
+-	rx_stats->ru_alloc_cnt[ppdu_info->ru_alloc] += num_msdu;
+ 
+ 	BUILD_BUG_ON(ARRAY_SIZE(arsta->chain_signal) >
+ 			     ARRAY_SIZE(ppdu_info->rssi_chain_pri20));
+@@ -2996,10 +2999,10 @@ static void ath11k_dp_rx_update_peer_sta
+ 
+ 	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11N &&
+ 	    ppdu_info->mcs <= HAL_RX_MAX_MCS_HT) {
+-			rx_stats->pkt_stats.ht_mcs_count[ppdu_info->mcs] += num_msdu;
+-			rx_stats->byte_stats.ht_mcs_count[ppdu_info->mcs] += ppdu_info->mpdu_len;
+-			/* To fit into rate table for HT packets */
+-			ppdu_info->mcs = ppdu_info->mcs % 8;
++		rx_stats->pkt_stats.ht_mcs_count[ppdu_info->mcs] += num_msdu;
++		rx_stats->byte_stats.ht_mcs_count[ppdu_info->mcs] += ppdu_info->mpdu_len;
++		/* To fit into rate table for HT packets */
++		ppdu_info->mcs = ppdu_info->mcs % 8;
+ 	}
+ 
+ 	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11AC &&
+@@ -3032,7 +3035,120 @@ static void ath11k_dp_rx_update_peer_sta
+ 		rx_stats->byte_stats.bw_count[ppdu_info->bw] += ppdu_info->mpdu_len;
+ 	}
+ 
+-	ath11k_dp_rx_update_peer_rate_table_stats(rx_stats, ppdu_info, num_msdu);
++	ath11k_dp_rx_update_peer_rate_table_stats(rx_stats, ppdu_info, NULL, num_msdu);
++
++}
++
++static void ath11k_dp_rx_update_user_stats(struct ath11k *ar,
++					   struct hal_rx_mon_ppdu_info *ppdu_info,
++					   u32 uid)
++{
++	struct ath11k_sta *arsta = NULL;
++	struct ath11k_rx_peer_stats *rx_stats = NULL;
++	struct hal_rx_user_status* user_stats = &ppdu_info->userstats[uid];
++	struct ath11k_peer *peer;
++	u32 num_msdu;
++
++	if (user_stats->ast_index == 0 || user_stats->ast_index == 0xFFFF)
++		return;
++
++	peer = ath11k_peer_find_by_ast(ar->ab, user_stats->ast_index);
++
++	if (peer == NULL) {
++		ath11k_warn(ar->ab, "peer ast idx %d can't be found\n",
++			    user_stats->ast_index);
++		return;
++	}
++
++	arsta = (struct ath11k_sta *)peer->sta->drv_priv;
++	rx_stats = arsta->rx_stats;
++
++	if (!rx_stats)
++		return;
++
++	arsta->rssi_comb = ppdu_info->rssi_comb;
++
++	num_msdu = user_stats->tcp_msdu_count + user_stats->tcp_ack_msdu_count +
++		   user_stats->udp_msdu_count + user_stats->other_msdu_count;
++
++	rx_stats->num_msdu += num_msdu;
++	rx_stats->tcp_msdu_count += user_stats->tcp_msdu_count +
++				    user_stats->tcp_ack_msdu_count;
++	rx_stats->udp_msdu_count += user_stats->udp_msdu_count;
++	rx_stats->other_msdu_count += user_stats->other_msdu_count;
++
++	if (ppdu_info->ldpc < HAL_RX_SU_MU_CODING_MAX)
++		rx_stats->coding_count[ppdu_info->ldpc] += num_msdu;
++
++	if (user_stats->tid <= IEEE80211_NUM_TIDS)
++		rx_stats->tid_count[user_stats->tid] += num_msdu;
++
++	if (user_stats->preamble_type < HAL_RX_PREAMBLE_MAX)
++		rx_stats->pream_cnt[user_stats->preamble_type] += num_msdu;
++
++	if (ppdu_info->reception_type < HAL_RX_RECEPTION_TYPE_MAX)
++		rx_stats->reception_type[ppdu_info->reception_type] += num_msdu;
++
++	if (ppdu_info->is_stbc)
++		rx_stats->stbc_count += num_msdu;
++
++	if (ppdu_info->beamformed)
++		rx_stats->beamformed_count += num_msdu;
++
++	if (user_stats->mpdu_cnt_fcs_ok > 1)
++		rx_stats->ampdu_msdu_count += num_msdu;
++	else
++		rx_stats->non_ampdu_msdu_count += num_msdu;
++
++	rx_stats->num_mpdu_fcs_ok += user_stats->mpdu_cnt_fcs_ok;
++	rx_stats->num_mpdu_fcs_err += user_stats->mpdu_cnt_fcs_err;
++	rx_stats->dcm_count += ppdu_info->dcm;
++	if (ppdu_info->reception_type == HAL_RX_RECEPTION_TYPE_MU_OFDMA ||
++	    ppdu_info->reception_type == HAL_RX_RECEPTION_TYPE_MU_OFDMA_MIMO)
++		rx_stats->ru_alloc_cnt[user_stats->ul_ofdma_ru_size] += num_msdu;
++
++	rx_stats->rx_duration += ppdu_info->rx_duration;
++	arsta->rx_duration = rx_stats->rx_duration;
++
++	if (user_stats->nss > 0 && user_stats->nss <= HAL_RX_MAX_NSS) {
++		rx_stats->pkt_stats.nss_count[user_stats->nss - 1] += num_msdu;
++		rx_stats->byte_stats.nss_count[user_stats->nss - 1] += user_stats->mpdu_ok_byte_count;
++	}
++
++	if (user_stats->preamble_type == HAL_RX_PREAMBLE_11AX &&
++	    user_stats->mcs <= HAL_RX_MAX_MCS_HE) {
++		rx_stats->pkt_stats.he_mcs_count[user_stats->mcs] += num_msdu;
++		rx_stats->byte_stats.he_mcs_count[user_stats->mcs] += user_stats->mpdu_ok_byte_count;
++	}
++
++	if (ppdu_info->gi < HAL_RX_GI_MAX) {
++		rx_stats->pkt_stats.gi_count[ppdu_info->gi] += num_msdu;
++		rx_stats->byte_stats.gi_count[ppdu_info->gi] += user_stats->mpdu_ok_byte_count;
++	}
++
++	if (ppdu_info->bw < HAL_RX_BW_MAX) {
++		rx_stats->pkt_stats.bw_count[ppdu_info->bw] += num_msdu;
++		rx_stats->byte_stats.bw_count[ppdu_info->bw] += user_stats->mpdu_ok_byte_count;
++	}
++
++	ath11k_dp_rx_update_peer_rate_table_stats(rx_stats, ppdu_info, user_stats, num_msdu);
++}
++
++static void ath11k_dp_rx_update_peer_mu_stats(struct ath11k *ar,
++					      struct hal_rx_mon_ppdu_info *ppdu_info)
++{
++	u32 num_users, i;
++
++	if (!ath11k_debugfs_is_extd_rx_stats_enabled(ar))
++		return;
++
++	num_users = ppdu_info->num_users;
++	if (num_users > HAL_MAX_UL_MU_USERS)
++		num_users = HAL_MAX_UL_MU_USERS;
++
++	for (i = 0; i < num_users; i++) {
++		ath11k_dp_rx_update_user_stats(ar, ppdu_info, i);
++	}
+ 
+ }
+ 
+@@ -5461,6 +5577,55 @@ static void ath11k_dp_rx_mon_dest_proces
+ 	}
+ }
+ 
++void ath11k_dp_rx_mon_process_ulofdma(struct hal_rx_mon_ppdu_info *ppdu_info)
++{
++	struct hal_rx_user_status *rx_user_status;
++	u32 num_users;
++	uint32_t i;
++	uint32_t mu_ul_user_v0_word0;
++	uint32_t mu_ul_user_v0_word1;
++	uint32_t ru_size;
++
++	if (!(ppdu_info->reception_type == HAL_RX_RECEPTION_TYPE_MU_OFDMA ||
++	      ppdu_info->reception_type == HAL_RX_RECEPTION_TYPE_MU_OFDMA_MIMO))
++		return;
++
++	num_users = ppdu_info->num_users;
++	if (num_users > HAL_MAX_UL_MU_USERS)
++		num_users = HAL_MAX_UL_MU_USERS;
++
++	for (i = 0; i < num_users; i++) {
++		rx_user_status = &ppdu_info->userstats[i];
++		mu_ul_user_v0_word0 =
++			rx_user_status->ul_ofdma_user_v0_word0;
++		mu_ul_user_v0_word1 =
++			rx_user_status->ul_ofdma_user_v0_word1;
++
++		if (FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W0_VALID,
++			mu_ul_user_v0_word0) &&
++		    !FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W0_VER,
++			mu_ul_user_v0_word0)) {
++			rx_user_status->mcs =
++				FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W1_MCS,
++					  mu_ul_user_v0_word1);
++			rx_user_status->nss =
++				FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W1_NSS,
++					  mu_ul_user_v0_word1) + 1;
++
++			rx_user_status->ofdma_info_valid = 1;
++			rx_user_status->ul_ofdma_ru_start_index =
++				FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W1_RU_START,
++				mu_ul_user_v0_word1);
++
++			ru_size = FIELD_GET(HAL_RX_UL_OFDMA_USER_INFO_V0_W1_RU_SIZE,
++				mu_ul_user_v0_word1);
++			rx_user_status->ul_ofdma_ru_width = ru_size;
++			rx_user_status->ul_ofdma_ru_size = ru_size;
++		}
++	}
++
++}
++
+ int ath11k_dp_rx_process_mon_status(struct ath11k_base *ab, int mac_id,
+ 				    struct napi_struct *napi, int budget)
+ {
+@@ -5537,8 +5702,13 @@ int ath11k_dp_rx_process_mon_status(stru
+ 
+ 		if ((ppdu_info->fc_valid) &&
+ 		    (ppdu_info->ast_index != HAL_AST_IDX_INVALID)) {
+-			arsta = (struct ath11k_sta *)peer->sta->drv_priv;
+-			ath11k_dp_rx_update_peer_stats(arsta, ppdu_info);
++			if (ppdu_info->reception_type == HAL_RX_RECEPTION_TYPE_SU) {
++				arsta = (struct ath11k_sta *)peer->sta->drv_priv;
++				ath11k_dp_rx_update_peer_su_stats(arsta, ppdu_info);
++			} else {
++				ath11k_dp_rx_mon_process_ulofdma(ppdu_info);
++				ath11k_dp_rx_update_peer_mu_stats(ar, ppdu_info);
++			}
+ 		}
+ 
+ 		if (ath11k_debugfs_is_pktlog_peer_valid(ar, peer->addr))
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.c
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.c
+@@ -806,7 +806,6 @@ void ath11k_hal_reo_init_cmd_ring(struct
+ 	}
+ }
+ 
+-#define HAL_MAX_UL_MU_USERS	37
+ static inline void
+ ath11k_hal_rx_handle_ofdma_info(void *rx_tlv,
+ 				struct hal_rx_user_status *rx_user_status)
+@@ -838,6 +837,8 @@ ath11k_hal_rx_populate_mu_user_info(void
+ {
+ 	rx_user_status->ast_index = ppdu_info->ast_index;
+ 	rx_user_status->tid = ppdu_info->tid;
++	rx_user_status->tcp_ack_msdu_count =
++		ppdu_info->tcp_ack_msdu_count;
+ 	rx_user_status->tcp_msdu_count =
+ 		ppdu_info->tcp_msdu_count;
+ 	rx_user_status->udp_msdu_count =
+@@ -861,6 +862,9 @@ ath11k_hal_rx_populate_mu_user_info(void
+ 		ppdu_info->num_mpdu_fcs_ok;
+ 	rx_user_status->mpdu_cnt_fcs_err =
+ 		ppdu_info->num_mpdu_fcs_err;
++	memcpy(&rx_user_status->mpdu_fcs_ok_bitmap[0], &ppdu_info->mpdu_fcs_ok_bitmap[0],
++	       HAL_RX_NUM_WORDS_PER_PPDU_BITMAP *
++	       sizeof(ppdu_info->mpdu_fcs_ok_bitmap[0]));
+ 
+ 	ath11k_hal_rx_populate_byte_count(rx_tlv, ppdu_info, rx_user_status);
+ }
+@@ -890,6 +894,14 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 				  __le32_to_cpu(ppdu_start->info0));
+ 		ppdu_info->chan_num = __le32_to_cpu(ppdu_start->chan_num);
+ 		ppdu_info->ppdu_ts = __le32_to_cpu(ppdu_start->ppdu_start_ts);
++
++		if (ppdu_info->ppdu_id != ppdu_info->last_ppdu_id) {
++			ppdu_info->last_ppdu_id = ppdu_info->ppdu_id;
++			ppdu_info->num_users = 0;
++			memset(&ppdu_info->mpdu_fcs_ok_bitmap, 0,
++			       HAL_RX_NUM_WORDS_PER_PPDU_BITMAP *
++			       sizeof(ppdu_info->mpdu_fcs_ok_bitmap[0]));
++		}
+ 		break;
+ 	}
+ 	case HAL_RX_PPDU_END_USER_STATS: {
+@@ -944,15 +956,16 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 
+ 		if (userid < HAL_MAX_UL_MU_USERS) {
+ 			struct hal_rx_user_status *rxuser_stats =
+-				&ppdu_info->userstats;
++				&ppdu_info->userstats[userid];
++			ppdu_info->num_users += 1;
+ 
+ 			ath11k_hal_rx_handle_ofdma_info(tlv_data, rxuser_stats);
+ 			ath11k_hal_rx_populate_mu_user_info(tlv_data, ppdu_info,
+ 							    rxuser_stats);
+ 		}
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[0] =
++		ppdu_info->mpdu_fcs_ok_bitmap[0] =
+ 					__le32_to_cpu(eu_stats->rsvd1[0]);
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[1] =
++		ppdu_info->mpdu_fcs_ok_bitmap[1] =
+ 					__le32_to_cpu(eu_stats->rsvd1[1]);
+ 
+ 		break;
+@@ -960,12 +973,12 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 	case HAL_RX_PPDU_END_USER_STATS_EXT: {
+ 		struct hal_rx_ppdu_end_user_stats_ext *eu_stats =
+ 			(struct hal_rx_ppdu_end_user_stats_ext *)tlv_data;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[2] = eu_stats->info1;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[3] = eu_stats->info2;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[4] = eu_stats->info3;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[5] = eu_stats->info4;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[6] = eu_stats->info5;
+-		ppdu_info->userstats.mpdu_fcs_ok_bitmap[7] = eu_stats->info6;
++		ppdu_info->mpdu_fcs_ok_bitmap[2] = eu_stats->info1;
++		ppdu_info->mpdu_fcs_ok_bitmap[3] = eu_stats->info2;
++		ppdu_info->mpdu_fcs_ok_bitmap[4] = eu_stats->info3;
++		ppdu_info->mpdu_fcs_ok_bitmap[5] = eu_stats->info4;
++		ppdu_info->mpdu_fcs_ok_bitmap[6] = eu_stats->info5;
++		ppdu_info->mpdu_fcs_ok_bitmap[7] = eu_stats->info6;
+ 		break;
+ 	}
+ 	case HAL_PHYRX_HT_SIG: {
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.h
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.h
+@@ -73,6 +73,10 @@ enum hal_rx_reception_type {
+ #define HAL_RX_FCS_LEN                          4
+ #define HAL_AST_IDX_INVALID                     0xFFFF
+ 
++#define HAL_MAX_UL_MU_USERS                     37
++#define HAL_RX_MAX_MPDU                         256
++#define HAL_RX_NUM_WORDS_PER_PPDU_BITMAP        (HAL_RX_MAX_MPDU >> 5)
++
+ enum hal_rx_mon_status {
+ 	HAL_RX_MON_STATUS_PPDU_NOT_DONE,
+ 	HAL_RX_MON_STATUS_PPDU_DONE,
+@@ -83,14 +87,15 @@ struct hal_rx_user_status {
+ 	u32 mcs:4,
+ 	nss:3,
+ 	ofdma_info_valid:1,
+-	dl_ofdma_ru_start_index:7,
+-	dl_ofdma_ru_width:7,
+-	dl_ofdma_ru_size:8;
++	ul_ofdma_ru_start_index:7,
++	ul_ofdma_ru_width:7,
++	ul_ofdma_ru_size:8;
+ 	u32 ul_ofdma_user_v0_word0;
+ 	u32 ul_ofdma_user_v0_word1;
+ 	u32 ast_index;
+ 	u32 tid;
+ 	u16 tcp_msdu_count;
++	u16 tcp_ack_msdu_count;
+ 	u16 udp_msdu_count;
+ 	u16 other_msdu_count;
+ 	u16 frame_control;
+@@ -104,7 +109,7 @@ struct hal_rx_user_status {
+ 	u8 rs_flags;
+ 	u32 mpdu_cnt_fcs_ok;
+ 	u32 mpdu_cnt_fcs_err;
+-	u32 mpdu_fcs_ok_bitmap[8];
++	u32 mpdu_fcs_ok_bitmap[HAL_RX_NUM_WORDS_PER_PPDU_BITMAP];
+ 	u32 mpdu_ok_byte_count;
+ 	u32 mpdu_err_byte_count;
+ };
+@@ -145,6 +150,7 @@ struct hal_sw_mon_ring_entries {
+ 
+ struct hal_rx_mon_ppdu_info {
+ 	u32 ppdu_id;
++	u32 last_ppdu_id;
+ 	u32 ppdu_ts;
+ 	u32 num_mpdu_fcs_ok;
+ 	u32 num_mpdu_fcs_err;
+@@ -213,9 +219,20 @@ struct hal_rx_mon_ppdu_info {
+ 	u8 ltf_size;
+ 	u8 rxpcu_filter_pass;
+ 	char rssi_chain[8][8];
+-	struct hal_rx_user_status userstats;
++	u32 num_users;
++	u32 mpdu_fcs_ok_bitmap[HAL_RX_NUM_WORDS_PER_PPDU_BITMAP];
++	struct hal_rx_user_status userstats[HAL_MAX_UL_MU_USERS];
+ };
+ 
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W0_VALID			BIT(30)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W0_VER			BIT(31)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_NSS			GENMASK(2, 0)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_MCS			GENMASK(6, 3)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_LDPC			BIT(7)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_DCM			BIT(8)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_RU_START		GENMASK(15, 9)
++#define HAL_RX_UL_OFDMA_USER_INFO_V0_W1_RU_SIZE			GENMASK(18, 16)
++
+ #define HAL_RX_PPDU_START_INFO0_PPDU_ID		GENMASK(15, 0)
+ 
+ struct hal_rx_ppdu_start {
+--- a/drivers/net/wireless/ath/ath11k/peer.c
++++ b/drivers/net/wireless/ath/ath11k/peer.c
+@@ -93,6 +93,20 @@ struct ath11k_peer *ath11k_peer_find_by_
+ 	return NULL;
+ }
+ 
++struct ath11k_peer *ath11k_peer_find_by_ast(struct ath11k_base *ab,
++					   int ast_hash)
++{
++	struct ath11k_peer *peer;
++
++	lockdep_assert_held(&ab->base_lock);
++
++	list_for_each_entry(peer, &ab->peers, list)
++		if (ast_hash == peer->ast_hash)
++			return peer;
++
++	return NULL;
++}
++
+ void ath11k_peer_unmap_event(struct ath11k_base *ab, u16 peer_id)
+ {
+ 	struct ath11k_peer *peer;
+--- a/drivers/net/wireless/ath/ath11k/peer.h
++++ b/drivers/net/wireless/ath/ath11k/peer.h
+@@ -59,6 +59,7 @@ struct ath11k_peer *ath11k_peer_find(str
+ struct ath11k_peer *ath11k_peer_find_by_addr(struct ath11k_base *ab,
+ 					     const u8 *addr);
+ struct ath11k_peer *ath11k_peer_find_by_id(struct ath11k_base *ab, int peer_id);
++struct ath11k_peer *ath11k_peer_find_by_ast(struct ath11k_base *ab, int ast_hash);
+ void ath11k_peer_cleanup(struct ath11k *ar, u32 vdev_id);
+ int ath11k_peer_delete(struct ath11k *ar, u32 vdev_id, u8 *addr);
+ int ath11k_peer_create(struct ath11k *ar, struct ath11k_vif *arvif,

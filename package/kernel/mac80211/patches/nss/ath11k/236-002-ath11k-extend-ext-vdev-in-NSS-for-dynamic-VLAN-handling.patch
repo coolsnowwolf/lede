@@ -1,0 +1,213 @@
+From 6f51430f2614ca2fb2a1e45cc81464c6d7a29f03 Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Fri, 8 Jan 2021 00:34:09 +0530
+Subject: [PATCH 2/3] ath11k: extend ext vdev in NSS for dynamic VLAN handling
+
+- add ext vdev NSS API callbacks required for dynamic AP_VLAN vif
+- existing ext vdev NSS API callbacks are used for both WDS and
+  dynamic VLAN di_types.
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/nss.c | 101 +++++++++++++++++++++++++++++++---
+ drivers/net/wireless/ath/ath11k/nss.h |  17 ++++++
+ 2 files changed, 109 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -1530,14 +1530,11 @@ static int ath11k_nss_ext_vdev_register(
+ 	struct ath11k *ar = arvif->ar;
+ 	struct ath11k_base *ab = ar->ab;
+ 	nss_tx_status_t status;
+-	enum nss_dynamic_interface_type di_type;
+ 	u32 features = 0;
+ 
+ 	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN || arvif->nss.ctx)
+ 		return -EINVAL;
+ 
+-	di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS;
+-
+ 	arvif->nss.ctx = nss_wifi_ext_vdev_register_if(arvif->nss.if_num,
+ 						       ath11k_nss_ext_vdev_data_receive,
+ 						       ath11k_nss_ext_vdev_special_data_receive,
+@@ -1565,7 +1562,8 @@ static void ath11k_nss_ext_vdev_free(str
+ 
+ 	status = nss_dynamic_interface_dealloc_node(
+ 					arvif->nss.if_num,
+-					NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS);
++					arvif->nss.di_type);
++
+ 	if (status != NSS_TX_SUCCESS)
+ 		ath11k_warn(ab, "failed to free nss ext vdev err:%d\n",
+ 			    status);
+@@ -1574,14 +1572,19 @@ static void ath11k_nss_ext_vdev_free(str
+ 			   "nss ext vdev interface deallocated\n");
+ }
+ 
+-static int ath11k_nss_ext_vdev_alloc(struct ath11k_vif *arvif)
++static int ath11k_nss_ext_vdev_alloc(struct ath11k_vif *arvif,
++				     struct wireless_dev *wdev)
+ {
+ 	struct ath11k_base *ab = arvif->ar->ab;
+ 	enum nss_dynamic_interface_type di_type;
+ 	int if_num;
+ 
+-	di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS;
++	if (wdev->use_4addr)
++		di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS;
++	else
++		di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_VLAN;
+ 
++	arvif->nss.di_type = di_type;
+ 	if_num = nss_dynamic_interface_alloc_node(di_type);
+ 	if (if_num < 0) {
+ 		ath11k_warn(ab, "failed to allocate nss ext vdev\n");
+@@ -1590,8 +1593,8 @@ static int ath11k_nss_ext_vdev_alloc(str
+ 
+ 	arvif->nss.if_num = if_num;
+ 	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
+-		   "nss ext vdev interface %pM allocated if_num %d\n",
+-		   arvif->vif->addr, if_num);
++		   "nss ext vdev interface %pM di_type %d allocated if_num %d\n",
++		   arvif->vif->addr, di_type, if_num);
+ 
+ 	return 0;
+ }
+@@ -1620,7 +1623,7 @@ int ath11k_nss_ext_vdev_create(struct at
+ 		return -EINVAL;
+ 	}
+ 
+-	ret = ath11k_nss_ext_vdev_alloc(arvif);
++	ret = ath11k_nss_ext_vdev_alloc(arvif, wdev);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -1736,6 +1739,86 @@ free:
+ 	return ret;
+ }
+ 
++int ath11k_nss_ext_vdev_cfg_dyn_vlan(struct ath11k_vif *arvif, u16 vlan_id)
++{
++	struct ath11k *ar = arvif->ar;
++	struct nss_wifi_ext_vdev_msg *ext_vdev_msg = NULL;
++	struct nss_wifi_ext_vdev_vlan_msg *cfg_dyn_vlan_msg = NULL;
++	nss_tx_status_t status;
++	int ret;
++
++	if (!ar->ab->nss.enabled)
++		return 0;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	ext_vdev_msg = kzalloc(sizeof(struct nss_wifi_ext_vdev_msg), GFP_ATOMIC);
++	if (!ext_vdev_msg)
++		return -ENOMEM;
++
++	cfg_dyn_vlan_msg = &ext_vdev_msg->msg.vmsg;
++	cfg_dyn_vlan_msg->vlan_id = vlan_id;
++
++	nss_wifi_ext_vdev_msg_init(ext_vdev_msg, arvif->nss.if_num,
++				   NSS_WIFI_EXT_VDEV_MSG_CONFIGURE_VLAN,
++				   sizeof(struct nss_wifi_ext_vdev_vlan_msg),
++				   NULL, arvif);
++
++	status = nss_wifi_ext_vdev_tx_msg_sync(arvif->nss.ctx, ext_vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "failed to configure dyn vlan nss_err:%d\n",
++			    status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ret = 0;
++free:
++	kfree(ext_vdev_msg);
++
++	return ret;
++}
++
++int ath11k_nss_dyn_vlan_set_group_key(struct ath11k_vif *arvif, u16 vlan_id,
++				      u16 group_key)
++{
++	struct nss_wifi_vdev_msg *vdev_msg = NULL;
++	struct nss_wifi_vdev_set_vlan_group_key *vlan_group_key;
++	struct ath11k *ar = arvif->ar;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	if (!ar->ab->nss.enabled)
++		return 0;
++
++	vdev_msg = kzalloc(sizeof(struct nss_wifi_vdev_msg), GFP_ATOMIC);
++	if (!vdev_msg)
++		return -ENOMEM;
++
++	vlan_group_key = &vdev_msg->msg.vlan_group_key;
++	vlan_group_key->vlan_id = vlan_id;
++	vlan_group_key->group_key = group_key;
++
++	nss_wifi_vdev_msg_init(vdev_msg, arvif->nss.if_num,
++			       NSS_WIFI_VDEV_SET_GROUP_KEY,
++			       sizeof(struct nss_wifi_vdev_set_vlan_group_key),
++			       NULL, NULL);
++
++	status = nss_wifi_vdev_tx_msg(ar->nss.ctx, vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "nss vdev set vlan group key error %d\n", status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_NSS_WDS, "nss vdev set vlan group key success\n");
++free:
++	kfree(vdev_msg);
++	return ret;
++
++}
++
+ /*----------------------------Peer Setup/Config -----------------------------*/
+ 
+ int ath11k_nss_set_peer_sec_type(struct ath11k *ar,
+--- a/drivers/net/wireless/ath/ath11k/nss.h
++++ b/drivers/net/wireless/ath/ath11k/nss.h
+@@ -176,6 +176,10 @@ struct arvif_nss {
+ 	bool added;
+ 	/* Flag to notify if ext vdev is up/down */
+ 	bool ext_vdev_up;
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++	/* Keep the copy of di_type for nss */
++	enum nss_dynamic_interface_type di_type;
++#endif
+ 	/* WDS cfg should be done only once for ext vdev */
+ 	bool wds_cfg_done;
+ 	bool created;
+@@ -243,6 +247,9 @@ void ath11k_nss_ext_vdev_unregister(stru
+ int ath11k_nss_ext_vdev_up(struct ath11k_vif *arvif);
+ int ath11k_nss_ext_vdev_down(struct ath11k_vif *arvif);
+ void ath11k_nss_ext_vdev_delete(struct ath11k_vif *arvif);
++int ath11k_nss_ext_vdev_cfg_dyn_vlan(struct ath11k_vif *arvif, u16 vlan_id);
++int ath11k_nss_dyn_vlan_set_group_key(struct ath11k_vif *arvif, u16 vlan_id,
++				      u16 group_key);
+ int ath11k_nss_set_peer_sec_type(struct ath11k *ar, struct ath11k_peer *peer,
+ 				 struct ieee80211_key_conf *key_conf);
+ void ath11k_nss_update_sta_stats(struct ath11k_vif *arvif,
+@@ -375,6 +382,18 @@ static inline int ath11k_nss_ext_vdev_do
+ {
+ 	return 0;
+ }
++
++static inline int ath11k_nss_ext_vdev_cfg_dyn_vlan(struct ath11k_vif *arvif,
++						   u16 vlan_id)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_dyn_vlan_set_group_key(struct ath11k_vif *arvif,
++						    u16 vlan_id, u16 group_key)
++{
++	return 0;
++}
+ 
+ static inline void ath11k_nss_peer_stats_enable(struct ath11k *ar)
+ {

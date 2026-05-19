@@ -1,0 +1,77 @@
+From eac6bea547505fc6545014755e8e529fd804df42 Mon Sep 17 00:00:00 2001
+From: Maharaja Kennadyrajan <quic_mkenna@quicinc.com>
+Date: Tue, 18 Apr 2023 14:41:05 +0530
+Subject: [PATCH 1/3] mac80211: Get valid last_rate for rx_bitrate from cpu
+ stats
+
+Get the valid last_rate from the cpu rx_stats while filling the
+rx_bitrate in the station dump. This helps to avoid the missing
+rx bitrate field in the iw station dump.
+
+Signed-off-by: Tamizh Chelvam Raja <quic_tamizhr@quicinc.com>
+Signed-off-by: Maharaja Kennadyrajan <quic_mkenna@quicinc.com>
+---
+ net/mac80211/sta_info.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -2486,7 +2486,7 @@ void ieee80211_sta_update_pending_airtim
+ }
+ 
+ static struct ieee80211_sta_rx_stats *
+-sta_get_last_rx_stats(struct sta_info *sta, int link_id)
++sta_get_last_rx_stats(struct sta_info *sta, int link_id, bool is_rx_bitrate)
+ {
+ 	struct ieee80211_sta_rx_stats *stats;
+ 	struct link_sta_info *link_sta_info;
+@@ -2508,8 +2508,13 @@ sta_get_last_rx_stats(struct sta_info *s
+ 
+ 	for_each_possible_cpu(cpu) {
+ 		struct ieee80211_sta_rx_stats *cpustats;
++		u16 rate;
+ 
+ 		cpustats = per_cpu_ptr(link_sta_info->pcpu_rx_stats, cpu);
++		rate = READ_ONCE(cpustats->last_rate);
++
++		if(!cpustats->last_rx || (is_rx_bitrate && (rate == STA_STATS_RATE_INVALID)))
++			continue;
+ 
+ 		if (time_after(cpustats->last_rx, stats->last_rx))
+ 			stats = cpustats;
+@@ -2587,7 +2592,7 @@ static void sta_stats_decode_rate(struct
+ static int sta_set_rate_info_rx(struct sta_info *sta, struct rate_info *rinfo,
+ 				int link_id)
+ {
+-	u32 rate = READ_ONCE(sta_get_last_rx_stats(sta, link_id)->last_rate);
++	u32 rate = READ_ONCE(sta_get_last_rx_stats(sta, link_id, true)->last_rate);
+ 
+ 	if (rate == STA_STATS_RATE_INVALID)
+ 		return -EINVAL;
+@@ -2756,7 +2761,7 @@ static void sta_set_link_sinfo(struct st
+ 	struct link_sta_info *link_sta_info;
+ 	u32 thr = 0;
+ 
+-	last_rxstats = sta_get_last_rx_stats(sta, link_id);
++	last_rxstats = sta_get_last_rx_stats(sta, link_id, false);
+ 
+ 	link_sta_info = wiphy_dereference(sta->local->hw.wiphy,
+ 					  sta->link[link_id]);
+@@ -3015,7 +3020,7 @@ void sta_set_sinfo(struct sta_info *sta,
+ 	int i, ac, cpu;
+ 	struct ieee80211_sta_rx_stats *last_rxstats;
+ 
+-	last_rxstats = sta_get_last_rx_stats(sta, -1);
++	last_rxstats = sta_get_last_rx_stats(sta, -1, false);
+ 
+ 	sinfo->generation = sdata->local->sta_generation;
+ 
+@@ -3307,7 +3312,7 @@ unsigned long ieee80211_sta_last_active(
+ 	struct ieee80211_sta_rx_stats *stats;
+ 	struct link_sta_info *link_sta_info;
+ 
+-	stats = sta_get_last_rx_stats(sta, link_id);
++	stats = sta_get_last_rx_stats(sta, link_id, false);
+ 
+ 	if (link_id < 0)
+ 		link_sta_info = &sta->deflink;

@@ -1,0 +1,87 @@
+From 5b4a0de1356558f58df9c6a1f46c7c0ce2fadb03 Mon Sep 17 00:00:00 2001
+From: Yuvasree Sivasankaran <quic_ysivasan@quicinc.com>
+Date: Mon, 28 Aug 2023 14:48:41 +0530
+Subject: [PATCH] ath11k: Avoiding memset of ppdu-info for next skb
+
+While parsing mon status from skb, ppdu_info got memset with zero during
+next skb fetch from queue or mon ring in case a single PPDU is more than
+RX_BUFFER_SIZE. Because of this nss value got override for respective
+ppdu and leads to warn_on in mac80211.Removed memset from next skb fetch
+and added flag to track discontinued skb in case of fetch from skb.
+
+WARN_ON Reason:
+
+Rate marked as an HE rate but data is invalid: MCS: 0, NSS: 0
+
+Below the call trace observed:
+
+    Call trace:
+    ieee80211_rx_list+0x1d4/0xcc4 [mac80211]
+    ieee80211_rx_napi+0x58/0xcc [mac80211]
+    ath11k_dp_rx_deliver_msdu+0x358/0x3e4 [ath11k]
+    ath11k_dp_rx_mon_deliver.isra.27+0x470/0x4cc [ath11k]
+    ath11k_dp_rx_mon_dest_process+0x1cc/0x2bc [ath11k]
+    ath11k_dp_rx_process_mon_status+0x5ec/0xf90 [ath11k]
+    ath11k_dp_rx_process_mon_rings+0x40c/0x44c [ath11k]
+    ath11k_dp_service_srng+0x114/0x2c0 [ath11k]
+    ath11k_ahb_ext_grp_napi_poll+0x30/0xa0 [ath11k_ahb]
+    __napi_poll+0x30/0xa4
+    net_rx_action+0x118/0x270
+    __do_softirq+0x10c/0x244
+    irq_exit+0x64/0xb4
+    __handle_domain_irq+0x88/0xac
+    gic_handle_irq+0x74/0xbc
+    el1_irq+0xf0/0x1c0
+    arch_cpu_idle+0x10/0x18
+    do_idle+0x104/0x248
+    cpu_startup_entry+0x20/0x64
+    rest_init+0xd0/0xdc
+    arch_call_rest_init+0xc/0x14
+    start_kernel+0x46c/0x4a4
+    --[ end trace e754e9088a240857 ]---
+
+Signed-off-by: Yuvasree Sivasankaran <quic_ysivasan@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c  | 6 ++++--
+ drivers/net/wireless/ath/ath11k/hal_rx.h | 1 +
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -6098,7 +6098,9 @@ int ath11k_dp_rx_process_mon_status(stru
+ 	if (!num_buffs_reaped)
+ 		goto exit;
+ 
+-	memset(ppdu_info, 0, sizeof(*ppdu_info));
++	if (!ppdu_info->ppdu_continuation)
++		memset(ppdu_info, 0, sizeof(*ppdu_info));
++
+ 	ppdu_info->peer_id = HAL_INVALID_PEERID;
+ 
+ 	while ((skb = __skb_dequeue(&skb_list))) {
+@@ -6116,7 +6118,6 @@ int ath11k_dp_rx_process_mon_status(stru
+ 		if (log_type != ATH11K_PKTLOG_TYPE_INVALID)
+ 			trace_ath11k_htt_rxdesc(ar, skb->data, log_type, rx_buf_sz);
+ 
+-		memset(ppdu_info, 0, sizeof(*ppdu_info));
+ 		ppdu_info->peer_id = HAL_INVALID_PEERID;
+ 		hal_status = ath11k_hal_rx_parse_mon_status(ab, ppdu_info, skb);
+ 
+@@ -6147,6 +6148,7 @@ int ath11k_dp_rx_process_mon_status(stru
+ 		if ((ppdu_info->peer_id == HAL_INVALID_PEERID ||
+ 		    hal_status != HAL_RX_MON_STATUS_PPDU_DONE)) {
+ 			dev_kfree_skb_any(skb);
++			ppdu_info->ppdu_continuation = true;
+ 			continue;
+ 		}
+ 
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.h
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.h
+@@ -222,6 +222,7 @@ struct hal_rx_mon_ppdu_info {
+ 	u32 num_users;
+ 	u32 mpdu_fcs_ok_bitmap[HAL_RX_NUM_WORDS_PER_PPDU_BITMAP];
+ 	struct hal_rx_user_status userstats[HAL_MAX_UL_MU_USERS];
++	bool ppdu_continuation;
+ };
+ 
+ #define HAL_RX_UL_OFDMA_USER_INFO_V0_W0_VALID			BIT(30)

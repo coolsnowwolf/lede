@@ -1,0 +1,60 @@
+From f013e1e9829ec346fa0a215552eef51953b46bf0 Mon Sep 17 00:00:00 2001
+From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Date: Fri, 7 Aug 2020 18:24:32 +0530
+Subject: [PATCH] ath11k: Add support for dynamic vlan
+
+This patch adds support for dynamic vlan. VLAN group traffics
+are encrypted in software. vlan unicast packets shall be taking
+8023 xmit path if encap offload is enabled and mcast/bcast will
+be using 80211 xmit path.
+
+Metadata info in dp_tx added to notify firmware that the
+multicast/broadcast packets are encrypted in sw.
+
+Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Signed-off-by: Gautham Kumar Senthilkumaran <quic_gauthamk@quicinc.com>
+---
+ net/mac80211/tx.c                       |  14 +++
+ 1 files changed, 14 insertions(+)
+
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -38,6 +38,9 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++static void ieee80211_8023_xmit(struct ieee80211_sub_if_data *sdata,
++				struct net_device *dev, struct sta_info *sta,
++				struct ieee80211_key *key, struct sk_buff *skb);
+ /* misc utils */
+ 
+ static __le16 ieee80211_duration(struct ieee80211_tx_data *tx,
+@@ -4319,6 +4322,8 @@ void __ieee80211_subif_start_xmit(struct
+ 	struct sta_info *sta;
+ 	struct sk_buff *next;
+ 	int len = skb->len;
++	struct ieee80211_key *key = NULL;
++	struct ieee80211_sub_if_data *ap_sdata;
+ 
+ 	if (unlikely(!ieee80211_sdata_running(sdata) || skb->len < ETH_HLEN)) {
+ 		kfree_skb(skb);
+@@ -4340,6 +4345,19 @@ void __ieee80211_subif_start_xmit(struct
+ 	if (IS_ERR(sta))
+ 		sta = NULL;
+ 
++	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
++		ap_sdata = container_of(sdata->bss,
++					struct ieee80211_sub_if_data, u.ap);
++		if (ap_sdata->vif.offload_flags & IEEE80211_OFFLOAD_ENCAP_ENABLED &&
++		    !is_multicast_ether_addr(skb->data)) {
++			if (sta)
++				key = rcu_dereference(sta->ptk[sta->ptk_idx]);
++			ieee80211_8023_xmit(sdata, dev, sta, key, skb);
++			rcu_read_unlock();
++			return;
++		}
++	}
++
+ 	skb_set_queue_mapping(skb, ieee80211_select_queue(sdata, sta, skb));
+ 	ieee80211_aggr_check(sdata, sta, skb);
+ 

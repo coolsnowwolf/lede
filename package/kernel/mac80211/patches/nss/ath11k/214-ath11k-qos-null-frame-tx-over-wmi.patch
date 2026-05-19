@@ -1,0 +1,392 @@
+From 0e29b669153f100b60107d5f6b3fe407b71ba79a Mon Sep 17 00:00:00 2001
+From: Sowmiya Sree Elavalagan <ssreeela@codeaurora.org>
+Date: Wed, 30 Sep 2020 22:33:42 +0530
+Subject: [PATCH] ath11k: QOS null frame tx over wmi
+
+Added support to send qos null frame through FW.
+NSS driver does not support QOS null frame tx.
+Hence this is brought for nss offload case to send 
+qos null frame. QOS null packet queued from mac80211
+is sent to FW through wmi interface. This happens only if FW supports
+qos null tx, this is based on service bit received in ext2 service
+event from FW. On successful transmission of QOS null frame status
+is set 0 in the event received for this wmi message. This is status
+is sent to mac80211 for further handling.
+
+Signed-off-by: Sowmiya Sree Elavalagan <ssreeela@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/mac.c |  28 ++++-
+ drivers/net/wireless/ath/ath11k/wmi.c | 200 ++++++++++++++++++++++++++--------
+ drivers/net/wireless/ath/ath11k/wmi.h |  46 +++++++-
+ 3 files changed, 220 insertions(+), 54 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6148,6 +6148,16 @@ static int ath11k_mac_mgmt_tx_wmi(struct
+ 
+ 	ATH11K_SKB_CB(skb)->paddr = paddr;
+ 
++	if (ieee80211_is_qos_nullfunc(hdr->frame_control)) {
++		ret = ath11k_wmi_qos_null_send(ar, arvif->vdev_id, buf_id, skb);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to send qos null frame over wmi: %d\n", ret);
++			goto err_unmap_buf;
++		}
++
++		return 0;
++	}
++
+ 	ret = ath11k_wmi_mgmt_send(ar, arvif->vdev_id, buf_id, skb);
+ 	if (ret) {
+ 		ath11k_warn(ar->ab, "failed to send mgmt frame: %d\n", ret);
+@@ -6215,8 +6225,8 @@ static void ath11k_mgmt_over_wmi_tx_work
+ 	}
+ }
+ 
+-static int ath11k_mac_mgmt_tx(struct ath11k *ar, struct sk_buff *skb,
+-			      bool is_prb_rsp)
++static int ath11k_mac_tx_over_wmi(struct ath11k *ar, struct sk_buff *skb,
++				  bool is_prb_rsp)
+ {
+ 	struct sk_buff_head *q = &ar->wmi_mgmt_tx_queue;
+ 
+@@ -6278,7 +6288,7 @@ static void ath11k_mac_op_tx(struct ieee
+ 	} else if (ieee80211_is_mgmt(hdr->frame_control)) {
+ 		frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
+ 		is_prb_rsp = ieee80211_is_probe_resp(hdr->frame_control);
+-		ret = ath11k_mac_mgmt_tx(ar, skb, is_prb_rsp);
++		ret = ath11k_mac_tx_over_wmi(ar, skb, is_prb_rsp);
+ 		if (ret) {
+ 			if (ret != -EBUSY)
+ 				ath11k_warn(ar->ab, "failed to queue management frame %d\n",
+@@ -6293,6 +6303,20 @@ static void ath11k_mac_op_tx(struct ieee
+ 			spin_unlock_bh(&ar->data_lock);
+ 		}
+ 		return;
++	} else if (ar->ab->nss.enabled &&
++		   ieee80211_is_qos_nullfunc(hdr->frame_control) &&
++		   test_bit(WMI_TLV_SERVICE_QOS_NULL_FRAME_TX_OVER_WMI,
++			    ar->ab->wmi_ab.svc_map)) {
++		/* NSS driver does not support tx qos null pkt hence it is offload
++		 * to fw via wmi path similar to mgmt frames
++		 */
++		ret = ath11k_mac_tx_over_wmi(ar, skb, false);
++		if (ret) {
++			ath11k_warn(ar->ab, "failed to queue qos null frame %d\n",
++				    ret);
++			ieee80211_free_txskb(ar->hw, skb);
++		}
++		return;
+ 	}
+ 
+ 	if (control->sta)
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -118,7 +118,7 @@ static const struct wmi_tlv_policy wmi_t
+ 	[WMI_TAG_MGMT_RX_HDR]
+ 		= { .min_len = sizeof(struct wmi_mgmt_rx_hdr) },
+ 	[WMI_TAG_MGMT_TX_COMPL_EVENT]
+-		= { .min_len = sizeof(struct wmi_mgmt_tx_compl_event) },
++		= { .min_len = sizeof(struct wmi_tx_compl_event) },
+ 	[WMI_TAG_SCAN_EVENT]
+ 		= { .min_len = sizeof(struct wmi_scan_event) },
+ 	[WMI_TAG_PEER_STA_KICKOUT_EVENT]
+@@ -708,6 +708,55 @@ int ath11k_wmi_mgmt_send(struct ath11k *
+ 	return ret;
+ }
+ 
++int ath11k_wmi_qos_null_send(struct ath11k *ar, u32 vdev_id, u32 buf_id,
++			     struct sk_buff *frame)
++{
++	struct ath11k_pdev_wmi *wmi = ar->wmi;
++	struct wmi_qos_null_tx_cmd *cmd;
++	struct wmi_tlv *frame_tlv;
++	struct sk_buff *skb;
++	u32 buf_len;
++	int len, ret = 0;
++
++	buf_len = frame->len < WMI_QOS_NULL_SEND_BUF_LEN ?
++		  frame->len : WMI_QOS_NULL_SEND_BUF_LEN;
++
++	len = sizeof(*cmd) + sizeof(*frame_tlv) + roundup(buf_len, 4);
++
++	skb = ath11k_wmi_alloc_skb(wmi->wmi_ab, len);
++	if (!skb)
++		return -ENOMEM;
++
++	cmd = (struct wmi_qos_null_tx_cmd *)skb->data;
++	cmd->tlv_header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_QOS_NULL_FRAME_TX_SEND) |
++			  FIELD_PREP(WMI_TLV_LEN, sizeof(*cmd) - TLV_HDR_SIZE);
++	cmd->vdev_id = vdev_id;
++	cmd->desc_id = buf_id;
++	cmd->paddr_lo = lower_32_bits(ATH11K_SKB_CB(frame)->paddr);
++	cmd->paddr_hi = upper_32_bits(ATH11K_SKB_CB(frame)->paddr);
++	cmd->frame_len = frame->len;
++	cmd->buf_len = buf_len;
++
++	frame_tlv = (struct wmi_tlv *)(skb->data + sizeof(*cmd));
++	frame_tlv->header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_ARRAY_BYTE) |
++			    FIELD_PREP(WMI_TLV_LEN, buf_len);
++
++	memcpy(frame_tlv->value, frame->data, buf_len);
++
++	ath11k_ce_byte_swap(frame_tlv->value, buf_len);
++
++	ret = ath11k_wmi_cmd_send(wmi, skb, WMI_QOS_NULL_FRAME_TX_SEND_CMDID);
++	if (ret) {
++		ath11k_warn(ar->ab,
++			    "failed to submit WMI_QOS_NULL_FRAME_TX_SEND_CMDID cmd\n");
++		dev_kfree_skb(skb);
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_WMI,
++		   "wmi QOS null tx send cmd sent successfully\n");
++	return ret;
++}
++
+ int ath11k_wmi_vdev_create(struct ath11k *ar, u8 *macaddr,
+ 			   struct vdev_create_params *param)
+ {
+@@ -6032,8 +6081,8 @@ static int ath11k_pull_mgmt_rx_params_tl
+ 	return 0;
+ }
+ 
+-static int wmi_process_mgmt_tx_comp(struct ath11k *ar,
+-				    struct wmi_mgmt_tx_compl_event *tx_compl_param)
++static int wmi_process_tx_comp(struct ath11k *ar,
++				    struct wmi_tx_compl_event *tx_compl_param)
+ {
+ 	struct sk_buff *msdu;
+ 	struct ieee80211_tx_info *info;
+@@ -6074,6 +6123,11 @@ static int wmi_process_mgmt_tx_comp(stru
+ 			info->status.ack_signal = tx_compl_param->ack_rssi;
+ 	}
+ 
++	/* dont update rates in this path, qos null data tx completions also can
++	 * take this path in case of nss offload and can update invalid rates.
++	 */
++	info->status.rates[0].idx = -1;
++
+ 	hdr = (struct ieee80211_hdr *)msdu->data;
+ 	frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
+ 
+@@ -6092,10 +6146,13 @@ static int wmi_process_mgmt_tx_comp(stru
+ 	arvif = ath11k_vif_to_arvif(vif);
+ 	mgmt_stats = &arvif->mgmt_stats;
+ 
+-	if (!tx_compl_param->status)
+-		mgmt_stats->tx_compl_succ[frm_type]++;
+-	else
+-		mgmt_stats->tx_compl_fail[frm_type]++;
++	if (ieee80211_is_mgmt(hdr->frame_control)) {
++		if (!tx_compl_param->status)
++			mgmt_stats->tx_compl_succ[frm_type]++;
++		else
++			mgmt_stats->tx_compl_fail[frm_type]++;
++	}
++
+ 	spin_unlock_bh(&ar->data_lock);
+ 
+ skip_mgmt_stats:
+@@ -6117,12 +6174,13 @@ skip_mgmt_stats:
+ 	return 0;
+ }
+ 
+-static int ath11k_pull_mgmt_tx_compl_param_tlv(struct ath11k_base *ab,
+-					       struct sk_buff *skb,
+-					       struct wmi_mgmt_tx_compl_event *param)
++static int ath11k_pull_tx_compl_param_tlv(struct ath11k_base *ab,
++					  struct sk_buff *skb,
++					  struct wmi_tx_compl_event *param,
++					  int event_id)
+ {
+ 	const void **tb;
+-	const struct wmi_mgmt_tx_compl_event *ev;
++	const struct wmi_tx_compl_event *ev;
+ 	int ret;
+ 
+ 	tb = ath11k_wmi_tlv_parse_alloc(ab, skb, GFP_ATOMIC);
+@@ -6132,7 +6190,7 @@ static int ath11k_pull_mgmt_tx_compl_par
+ 		return ret;
+ 	}
+ 
+-	ev = tb[WMI_TAG_MGMT_TX_COMPL_EVENT];
++	ev = tb[event_id];
+ 	if (!ev) {
+ 		ath11k_warn(ab, "failed to fetch mgmt tx compl ev");
+ 		kfree(tb);
+@@ -7850,10 +7908,11 @@ exit:
+ 
+ static void ath11k_mgmt_tx_compl_event(struct ath11k_base *ab, struct sk_buff *skb)
+ {
+-	struct wmi_mgmt_tx_compl_event tx_compl_param = {};
++	struct wmi_tx_compl_event tx_compl_param = {};
+ 	struct ath11k *ar;
+ 
+-	if (ath11k_pull_mgmt_tx_compl_param_tlv(ab, skb, &tx_compl_param) != 0) {
++	if (ath11k_pull_tx_compl_param_tlv(ab, skb, &tx_compl_param,
++					   WMI_TAG_MGMT_TX_COMPL_EVENT) != 0) {
+ 		ath11k_warn(ab, "failed to extract mgmt tx compl event");
+ 		return;
+ 	}
+@@ -7866,7 +7925,7 @@ static void ath11k_mgmt_tx_compl_event(s
+ 		goto exit;
+ 	}
+ 
+-	wmi_process_mgmt_tx_comp(ar, &tx_compl_param);
++	wmi_process_tx_comp(ar, &tx_compl_param);
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_MGMT,
+ 		   "event mgmt tx compl ev pdev_id %d, desc_id %d, status %d ack_rssi %d",
+@@ -7877,6 +7936,36 @@ exit:
+ 	rcu_read_unlock();
+ }
+ 
++static void ath11k_qos_null_compl_event(struct ath11k_base *ab, struct sk_buff *skb)
++{
++	struct wmi_tx_compl_event tx_compl_param = {0};
++	struct ath11k *ar;
++
++	if (ath11k_pull_tx_compl_param_tlv(ab, skb, &tx_compl_param,
++					   WMI_TAG_QOS_NULL_FRAME_TX_STATUS) != 0) {
++		ath11k_warn(ab, "failed to extract qos null tx compl event");
++		return;
++	}
++
++	rcu_read_lock();
++	ar = ath11k_mac_get_ar_by_pdev_id(ab, tx_compl_param.pdev_id);
++	if (!ar) {
++		ath11k_warn(ab, "invalid pdev id %d in qos_null_tx_compl_event\n",
++			    tx_compl_param.pdev_id);
++		goto exit;
++	}
++
++	wmi_process_tx_comp(ar, &tx_compl_param);
++
++	ath11k_dbg(ab, ATH11K_DBG_WMI,
++		   "QOS null tx compl ev pdev_id %d, desc_id %d, status %d",
++		   tx_compl_param.pdev_id, tx_compl_param.desc_id,
++		   tx_compl_param.status);
++
++exit:
++	rcu_read_unlock();
++}
++
+ static struct ath11k *ath11k_get_ar_on_scan_state(struct ath11k_base *ab,
+ 						  u32 vdev_id,
+ 						  enum ath11k_scan_state state)
+@@ -9156,6 +9245,10 @@ static void ath11k_wmi_tlv_op_rx(struct
+ 	case WMI_WDS_PEER_EVENTID:
+ 		ath11k_wmi_wds_peer_event(ab, skb);
+ 		break;
++	case WMI_QOS_NULL_FRAME_TX_COMPLETION_EVENTID:
++		ath11k_qos_null_compl_event(ab, skb);
++		break;
++
+ 	default:
+ 		ath11k_dbg(ab, ATH11K_DBG_WMI, "unsupported event id 0x%x\n", id);
+ 		break;
+--- a/drivers/net/wireless/ath/ath11k/wmi.h
++++ b/drivers/net/wireless/ath/ath11k/wmi.h
+@@ -376,6 +376,7 @@ enum wmi_tlv_cmd_id {
+ 	WMI_BSS_COLOR_CHANGE_ENABLE_CMDID,
+ 	WMI_VDEV_BCN_OFFLOAD_QUIET_CONFIG_CMDID,
+ 	WMI_FILS_DISCOVERY_TMPL_CMDID,
++	WMI_QOS_NULL_FRAME_TX_SEND_CMDID,
+ 	WMI_ADDBA_CLEAR_RESP_CMDID = WMI_TLV_CMD(WMI_GRP_BA_NEG),
+ 	WMI_ADDBA_SEND_CMDID,
+ 	WMI_ADDBA_STATUS_CMDID,
+@@ -706,6 +707,8 @@ enum wmi_tlv_event_id {
+ 	WMI_TBTTOFFSET_EXT_UPDATE_EVENTID,
+ 	WMI_OFFCHAN_DATA_TX_COMPLETION_EVENTID,
+ 	WMI_HOST_FILS_DISCOVERY_EVENTID,
++	WMI_HOST_SWBA_V2_EVENTID,
++	WMI_QOS_NULL_FRAME_TX_COMPLETION_EVENTID,
+ 	WMI_TX_DELBA_COMPLETE_EVENTID = WMI_TLV_CMD(WMI_GRP_BA_NEG),
+ 	WMI_TX_ADDBA_COMPLETE_EVENTID,
+ 	WMI_BA_RSP_SSN_EVENTID,
+@@ -1895,6 +1898,9 @@ enum wmi_tlv_tag {
+ 	WMI_TAG_PDEV_NON_SRG_OBSS_BSSID_ENABLE_BITMAP_CMD,
+ 	WMI_TAG_REGULATORY_RULE_EXT_STRUCT = 0x3A9,
+ 	WMI_TAG_REG_CHAN_LIST_CC_EXT_EVENT,
++	/* TODO add all the missing cmds */
++	WMI_TAG_QOS_NULL_FRAME_TX_SEND = 0x3A6,
++	WMI_TAG_QOS_NULL_FRAME_TX_STATUS,
+ 	WMI_TAG_VDEV_SET_TPC_POWER_CMD = 0x3B5,
+ 	WMI_TAG_VDEV_CH_POWER_INFO,
+ 	WMI_TAG_PDEV_SET_BIOS_SAR_TABLE_CMD = 0x3D8,
+@@ -2126,7 +2132,17 @@ enum wmi_tlv_service {
+ 	WMI_TLV_SERVICE_PEER_POWER_SAVE_DURATION_SUPPORT = 246,
+ 	WMI_TLV_SERVICE_SRG_SRP_SPATIAL_REUSE_SUPPORT = 249,
+ 	WMI_TLV_SERVICE_MBSS_PARAM_IN_VDEV_START_SUPPORT = 253,
++	WMI_TLV_SERVICE_CONFIGURE_ROAM_TRIGGER_PARAM_SUPPORT = 254,
++	WMI_TLV_SERVICE_CFR_TA_RA_AS_FP_SUPPORT = 255,
++	WMI_TLV_SERVICE_CFR_CAPTURE_COUNT_SUPPORT = 256,
++	WMI_TLV_SERVICE_OCV_SUPPORT = 257,
++	WMI_TLV_SERVICE_LL_STATS_PER_CHAN_RX_TX_TIME_SUPPORT = 258,
++	WMI_TLV_SERVICE_THERMAL_MULTI_CLIENT_SUPPORT = 259,
++	WMI_TLV_SERVICE_NAN_SEND_NAN_ENABLE_RESPONSE_TO_HOST = 260,
++	WMI_TLV_SERVICE_UNIFIED_LL_GET_STA_CMD_SUPPORT = 261,
++	WMI_TLV_SERVICE_FSE_CMEM_ALLOC_SUPPORT = 262,
+ 	WMI_TLV_SERVICE_PASSIVE_SCAN_START_TIME_ENHANCE = 263,
++	WMI_TLV_SERVICE_QOS_NULL_FRAME_TX_OVER_WMI = 264,
+ 
+ 	/* The second 128 bits */
+ 	WMI_MAX_EXT_SERVICE = 256,
+@@ -3884,6 +3900,7 @@ struct wmi_scan_prob_req_oui_cmd {
+ }  __packed;
+ 
+ #define WMI_MGMT_SEND_DOWNLD_LEN	64
++#define WMI_QOS_NULL_SEND_BUF_LEN	64
+ 
+ #define WMI_TX_PARAMS_DWORD0_POWER		GENMASK(7, 0)
+ #define WMI_TX_PARAMS_DWORD0_MCS_MASK		GENMASK(19, 8)
+@@ -3894,9 +3911,10 @@ struct wmi_scan_prob_req_oui_cmd {
+ #define WMI_TX_PARAMS_DWORD1_BW_MASK		GENMASK(14, 8)
+ #define WMI_TX_PARAMS_DWORD1_PREAMBLE_TYPE	GENMASK(19, 15)
+ #define WMI_TX_PARAMS_DWORD1_FRAME_TYPE		BIT(20)
+-#define WMI_TX_PARAMS_DWORD1_RSVD		GENMASK(31, 21)
++#define WMI_TX_PARAMS_DWORD1_CFR_CAPTURE	BIT(21)
++#define WMI_TX_PARAMS_DWORD1_RSVD		GENMASK(31, 22)
+ 
+-struct wmi_mgmt_send_params {
++struct wmi_tx_send_params {
+ 	u32 tlv_header;
+ 	u32 tx_params_dword0;
+ 	u32 tx_params_dword1;
+@@ -4990,7 +5008,7 @@ struct wmi_rssi_ctl_ext {
+ 	u32 rssi_ctl_ext[MAX_ANTENNA_EIGHT - ATH_MAX_ANTENNA];
+ };
+ 
+-struct wmi_mgmt_tx_compl_event {
++struct wmi_tx_compl_event {
+ 	u32 desc_id;
+ 	u32 status;
+ 	u32 pdev_id;
+@@ -5822,6 +5840,17 @@ struct wmi_debug_log_config_cmd_fixed_pa
+ 	u32 value;
+ } __packed;
+ 
++struct wmi_qos_null_tx_cmd {
++	u32 tlv_header;
++	u32 vdev_id;
++	u32 desc_id;
++	u32 paddr_lo;
++	u32 paddr_hi;
++	u32 frame_len;
++	u32 buf_len;
++	u32 tx_params_valid;
++} __packed;
++
+ #define MAX_RADIOS 3
+ 
+ #define WMI_SERVICE_READY_TIMEOUT_HZ (5 * HZ)
+@@ -6436,6 +6465,8 @@ int ath11k_wmi_mgmt_send(struct ath11k *
+ 			 struct sk_buff *frame);
+ int ath11k_wmi_p2p_go_bcn_ie(struct ath11k *ar, u32 vdev_id,
+ 			     const u8 *p2p_ie);
++int ath11k_wmi_qos_null_send(struct ath11k *ar, u32 vdev_id, u32 buf_id,
++			     struct sk_buff *frame);
+ int ath11k_wmi_bcn_tmpl(struct ath11k *ar, u32 vdev_id,
+ 			struct ieee80211_mutable_offsets *offs,
+ 			struct sk_buff *bcn, u32 ema_param);

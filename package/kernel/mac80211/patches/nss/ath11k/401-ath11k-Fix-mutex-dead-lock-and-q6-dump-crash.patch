@@ -1,0 +1,59 @@
+From 0a30d8c3d51d798b50bd792aa49e6a5b5ad14183 Mon Sep 17 00:00:00 2001
+From: Rajat Soni <quic_rajson@quicinc.com>
+Date: Wed, 12 Apr 2023 18:06:54 +0530
+Subject: [PATCH] ath11k: Fix mutex dead lock and q6 dump crash
+
+Issue 1:
+Currently for HOST_DDR_REGION_TYPE memory, we are facing crash
+because target memory virtual address (vaddr) is NULL. We are
+not assigning any value to vaddr.
+
+Issue 2:
+In ath11k_mac_op_start we are using mutex lock and waiting for
+waiting for completion of ab->reconfigure_complete.
+Before completing ab->reconfigure_complete in function
+ath11k_core_reconfigure_on_crash, we are again trying
+to get mutex lock in ath11k_spectral_deinit. This results
+in dead lock.
+
+Due to these two issue during SSR case fw recovery pdev
+is not recovered properly.
+
+To resolve these two issues:
+Issue1:
+During ath11k_qmi_assign_target_mem_chunk we should assign
+ab->qmi.target_mem[idx].vaddr.
+
+Issue 2:
+Unlock mutex lock before waiting for completion of
+ab->reconfigure_complete and acquiring lock again.
+
+Signed-off-by: Rajat Soni <quic_rajson@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/mac.c | 2 ++
+ drivers/net/wireless/ath/ath11k/qmi.c | 1 +
+ 2 files changed, 3 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6729,7 +6729,9 @@ static int ath11k_mac_op_start(struct ie
+ 		break;
+ 	case ATH11K_STATE_RESTARTING:
+ 		ar->state = ATH11K_STATE_RESTARTED;
++		mutex_unlock(&ar->conf_mutex);
+ 		ath11k_mac_wait_reconfigure(ab);
++		mutex_lock(&ar->conf_mutex);
+ 		break;
+ 	case ATH11K_STATE_RESTARTED:
+ 	case ATH11K_STATE_WEDGED:
+--- a/drivers/net/wireless/ath/ath11k/qmi.c
++++ b/drivers/net/wireless/ath/ath11k/qmi.c
+@@ -2068,6 +2068,8 @@ static int ath11k_qmi_assign_target_mem_
+ 			if (!ab->qmi.target_mem[idx].iaddr)
+ 				return -EIO;
+ 
++			ab->qmi.target_mem[idx].vaddr = ab->qmi.target_mem[idx].iaddr;
++
+ 			ab->qmi.target_mem[idx].size = ab->qmi.target_mem[i].size;
+ 			host_ddr_sz = ab->qmi.target_mem[i].size;
+ 			ab->qmi.target_mem[idx].type = ab->qmi.target_mem[i].type;

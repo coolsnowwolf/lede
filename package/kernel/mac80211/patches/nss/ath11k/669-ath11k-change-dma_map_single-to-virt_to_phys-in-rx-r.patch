@@ -1,0 +1,66 @@
+From cd0401a0fe82b5f9c31016d11dcc99d9fa4be96d Mon Sep 17 00:00:00 2001
+From: Balamurugan Selvarajan <quic_bselvara@quicinc.com>
+Date: Wed, 14 Sep 2022 17:12:20 +0530
+Subject: [PATCH] ath11k: Skip cache invalidation in rx replenish
+
+In ath11k_dp_rxbufs_replenish() the descriptors are updated with
+new skb physical address. currently physical address is obtained
+using dma_map_single() this api additionally invalidates the cache
+lines which is not required in replenish(). This consumes CPU cycles.
+In the Rx data path, the desc->skb memory is invalidated before
+reading from the memory. So, replace dmap_map_single() with
+dma_map_single_attrs(DMA_ATTR_SKIP_CPU_SYNC). This reduces CPU usage by 7%.
+
+perf top with dma_map_single()
+=============================
+    24.99%  [kernel]       [k] __pi___inval_dcache_area
+    14.56%  [ath11k]       [k] ath11k_dp_process_rx
+     8.24%  [qca_nss_dp]   [k] edma_tx_ring_xmit
+     5.22%  [kernel]       [k] dmac_clean_range_no_dsb
+     4.26%  [kernel]       [k] __dma_clean_area_no_dsb
+     4.22%  [qca_nss_sfe]  [k] sfe_recv
+     3.90%  [kernel]       [k] skb_recycler_alloc
+     3.87%  [kernel]       [k] __local_bh_enable_ip
+
+perf top with dma_map_single_attrs with DMA_ATTR_SKIP_CPU_SYNC
+=============================================================
+    17.07%  [kernel]       [k] __pi___inval_dcache_area
+    15.53%  [ath11k]       [k] ath11k_dp_process_rx
+     9.03%  [qca_nss_dp]   [k] edma_tx_ring_xmit
+     5.62%  [kernel]       [k] dmac_clean_range_no_dsb
+     5.41%  [kernel]       [k] skb_recycler_alloc
+     4.68%  [qca_nss_sfe]  [k] sfe_recv
+     4.64%  [kernel]       [k] __dma_clean_area_no_dsb
+     3.88%  [kernel]       [k] __local_bh_enable_ip
+
+Signed-off-by: Balamurugan Selvarajan <quic_bselvara@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -393,9 +393,9 @@ int ath11k_dp_rxbufs_replenish(struct at
+ 				 skb->data);
+ 		}
+ 
+-		paddr = dma_map_single(ab->dev, skb->data,
+-				       skb->len + skb_tailroom(skb),
+-				       DMA_FROM_DEVICE);
++		paddr = dma_map_single_attrs(ab->dev, skb->data,
++					     skb->len + skb_tailroom(skb),
++					     DMA_FROM_DEVICE, DMA_ATTR_SKIP_CPU_SYNC);
+ 		if (dma_mapping_error(ab->dev, paddr))
+ 			goto fail_free_skb;
+ 
+@@ -431,8 +431,8 @@ fail_idr_remove:
+ 	idr_remove(&rx_ring->bufs_idr, buf_id);
+ 	spin_unlock_bh(&rx_ring->idr_lock);
+ fail_dma_unmap:
+-	dma_unmap_single(ab->dev, paddr, skb->len + skb_tailroom(skb),
+-			 DMA_FROM_DEVICE);
++	dma_unmap_single_attrs(ab->dev, paddr, skb->len + skb_tailroom(skb),
++			       DMA_FROM_DEVICE, DMA_ATTR_SKIP_CPU_SYNC);
+ fail_free_skb:
+ 	dev_kfree_skb_any(skb);
+ 

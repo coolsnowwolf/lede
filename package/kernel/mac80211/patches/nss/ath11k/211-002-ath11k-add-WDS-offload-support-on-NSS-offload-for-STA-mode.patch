@@ -1,0 +1,973 @@
+From e6ecf9e1cc115b5821a880c6dccc5d8c9cd76fbd Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Tue, 15 Sep 2020 21:12:37 +0530
+Subject: [PATCH] ath11k: add WDS offload support on NSS offload for STA mode
+
+When 4addr is set ON for STA interface along with NSS enabled case, WDS
+offload is enabled for ethernet mode.
+
+STA mode uses MEC (Multicast Echo Check) AST (Address Search Table) entry
+to update the bridge MAC address from NSS to drop the locally generated
+multicast/broadcast frames as multicast echo frames.
+
+AST handling and callbacks to NSS WDS APIs are added.
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.h  |   8 +-
+ drivers/net/wireless/ath/ath11k/dp.h    |   6 +-
+ drivers/net/wireless/ath/ath11k/dp_rx.c |  18 +-
+ drivers/net/wireless/ath/ath11k/dp_tx.c |   2 +-
+ drivers/net/wireless/ath/ath11k/peer.c  | 389 +++++++++++++++++++++++++++++++-
+ drivers/net/wireless/ath/ath11k/peer.h  | 117 ++++++++++
+ drivers/net/wireless/ath/ath11k/wmi.c   |  99 +++++++-
+ drivers/net/wireless/ath/ath11k/wmi.h   |  33 +++
+ 8 files changed, 658 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -698,6 +698,7 @@ struct ath11k {
+ 	struct ath11k_pdev_wmi *wmi;
+ #ifdef CPTCFG_ATH11K_NSS_SUPPORT
+ 	struct ath11k_nss nss;
++	struct ath11k_peer *bss_peer;
+ #endif
+ 	struct ath11k_pdev_dp dp;
+ 	u8 mac_addr[ETH_ALEN];
+@@ -1134,6 +1135,9 @@ struct ath11k_base {
+ 	enum ath11k_pm_policy actual_pm_policy;
+ 	struct notifier_block pm_nb;
+ 
++	u32 max_ast_index;
++	u32 num_ast_entries;
++
+ 	/* must be last */
+ 	u8 drv_priv[] __aligned(sizeof(void *));
+ };
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -1106,13 +1106,16 @@ struct htt_t2h_peer_map_event {
+ #define HTT_T2H_PEER_UNMAP_INFO_PEER_ID	HTT_T2H_PEER_MAP_INFO_PEER_ID
+ #define HTT_T2H_PEER_UNMAP_INFO1_MAC_ADDR_H16 \
+ 					HTT_T2H_PEER_MAP_INFO1_MAC_ADDR_H16
+-#define HTT_T2H_PEER_MAP_INFO1_NEXT_HOP_M HTT_T2H_PEER_MAP_INFO2_NEXT_HOP_M
+-#define HTT_T2H_PEER_MAP_INFO1_NEXT_HOP_S HTT_T2H_PEER_MAP_INFO2_NEXT_HOP_S
++#define HTT_T2H_PEER_UNMAP_INFO1_NEXT_HOP_M HTT_T2H_PEER_MAP_INFO2_NEXT_HOP_M
++#define HTT_T2H_PEER_UNMAP_INFO1_NEXT_HOP_S HTT_T2H_PEER_MAP_INFO2_NEXT_HOP_S
++#define HTT_T2H_PEER_UNMAP_INFO3_WDS_FREE_COUNT	GENMASK(15, 0)
+ 
+ struct htt_t2h_peer_unmap_event {
+ 	u32 info;
+ 	u32 mac_addr_l32;
+ 	u32 info1;
++	u32 info2;
++	u32 info3;
+ } __packed;
+ 
+ struct htt_resp_msg {
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -1848,6 +1848,8 @@ void ath11k_dp_htt_htc_t2h_msg_handler(s
+ 	u16 peer_mac_h16;
+ 	u16 ast_hash;
+ 	u16 hw_peer_id;
++	u32 free_wds_count;
++	bool is_wds = false;
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_DP_HTT, "dp_htt rx msg type :0x%0x\n", type);
+ 
+@@ -1883,15 +1885,29 @@ void ath11k_dp_htt_htc_t2h_msg_handler(s
+ 				     resp->peer_map_ev.info2);
+ 		hw_peer_id = FIELD_GET(HTT_T2H_PEER_MAP_INFO1_HW_PEER_ID,
+ 				       resp->peer_map_ev.info1);
+-		ath11k_peer_map_event(ab, vdev_id, peer_id, mac_addr, ast_hash,
+-				      hw_peer_id);
++		is_wds = FIELD_GET(HTT_T2H_PEER_MAP_INFO2_NEXT_HOP_M,
++				   resp->peer_map_ev.info2);
++		ath11k_peer_map_v2_event(ab, vdev_id, peer_id, mac_addr, ast_hash,
++				         hw_peer_id, is_wds);
+ 		break;
+ 	case HTT_T2H_MSG_TYPE_PEER_UNMAP:
+-	case HTT_T2H_MSG_TYPE_PEER_UNMAP2:
+ 		peer_id = FIELD_GET(HTT_T2H_PEER_UNMAP_INFO_PEER_ID,
+ 				    resp->peer_unmap_ev.info);
+ 		ath11k_peer_unmap_event(ab, peer_id);
+ 		break;
++	case HTT_T2H_MSG_TYPE_PEER_UNMAP2:
++		peer_id = FIELD_GET(HTT_T2H_PEER_UNMAP_INFO_PEER_ID,
++				    resp->peer_unmap_ev.info);
++		peer_mac_h16 = FIELD_GET(HTT_T2H_PEER_UNMAP_INFO1_MAC_ADDR_H16,
++					 resp->peer_unmap_ev.info1);
++		ath11k_dp_get_mac_addr(resp->peer_map_ev.mac_addr_l32,
++				       peer_mac_h16, mac_addr);
++		is_wds = FIELD_GET(HTT_T2H_PEER_UNMAP_INFO1_NEXT_HOP_M,
++				   resp->peer_unmap_ev.info1);
++		free_wds_count = FIELD_GET(HTT_T2H_PEER_UNMAP_INFO3_WDS_FREE_COUNT,
++					   resp->peer_unmap_ev.info3);
++		ath11k_peer_unmap_v2_event(ab, peer_id, mac_addr, is_wds, free_wds_count);
++		break;
+ 	case HTT_T2H_MSG_TYPE_PPDU_STATS_IND:
+ 		ath11k_htt_pull_ppdu_stats(ab, skb);
+ 		break;
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -500,7 +500,7 @@ ath11k_dp_tx_process_htt_tx_complete(str
+ 		break;
+ 	case HAL_WBM_REL_HTT_TX_COMP_STATUS_MEC_NOTIFY:
+ 		/* This event is to be handled only when the driver decides to
+-		 * use WDS offload functionality.
++		 * use WDS offload functionality on NSS disabled case.
+ 		 */
+ 		break;
+ 	default:
+--- a/drivers/net/wireless/ath/ath11k/peer.c
++++ b/drivers/net/wireless/ath/ath11k/peer.c
+@@ -108,6 +108,287 @@ struct ath11k_peer *ath11k_peer_find_by_
+ 	return NULL;
+ }
+ 
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++struct ath11k_ast_entry *ath11k_peer_ast_find_by_peer(struct ath11k_base *ab,
++						      struct ath11k_peer *peer,
++						      u8* addr)
++{
++	struct ath11k_ast_entry *ast_entry;
++
++	lockdep_assert_held(&ab->base_lock);
++
++	list_for_each_entry(ast_entry, &peer->ast_entry_list, ase_list)
++		if (ether_addr_equal(ast_entry->addr, addr))
++			return ast_entry;
++
++	return NULL;
++}
++
++struct ath11k_ast_entry *ath11k_peer_ast_find_by_addr(struct ath11k_base *ab,
++						      u8* addr)
++{
++	struct ath11k_ast_entry *ast_entry;
++	struct ath11k_peer *peer;
++
++	lockdep_assert_held(&ab->base_lock);
++
++	list_for_each_entry(peer, &ab->peers, list)
++		list_for_each_entry(ast_entry, &peer->ast_entry_list, ase_list)
++			if (ether_addr_equal(ast_entry->addr, addr))
++				return ast_entry;
++
++	return NULL;
++}
++
++void ath11k_peer_ast_wds_wmi_wk(struct work_struct *wk)
++{
++	struct ath11k_ast_entry *ast_entry = container_of(wk,
++							  struct ath11k_ast_entry,
++							  wds_wmi_wk);
++	struct ath11k *ar;
++	struct ath11k_peer *peer;
++	int ret;
++
++	if (!ast_entry)
++		return;
++
++	ar = ast_entry->ar;
++	peer = ast_entry->peer;
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "ath11k_peer_ast_wds_wmi_wk action %d ast_entry %pM next_node %pM vdev %d\n",
++		   ast_entry->action, ast_entry->addr, ast_entry->next_node_mac,
++		   ast_entry->vdev_id);
++
++	if (ast_entry->action == ATH11K_WDS_WMI_ADD) {
++		ret = ath11k_wmi_send_add_update_wds_entry_cmd(ar,
++							       ast_entry->next_node_mac,
++							       ast_entry->addr,
++							       ast_entry->vdev_id,
++							       true);
++		if (ret) {
++			ath11k_warn(ar->ab, "add wds_entry_cmd failed %d for %pM next_node %pM\n",
++				    ret, ast_entry->addr,
++				    ast_entry->next_node_mac);
++			if (peer)
++				ath11k_nss_del_wds_peer(ar, peer,
++							ast_entry->addr);
++		}
++	} else if (ast_entry->action == ATH11K_WDS_WMI_UPDATE) {
++		if (!peer)
++			return;
++
++		ret = ath11k_wmi_send_add_update_wds_entry_cmd(ar, peer->addr,
++							       ast_entry->addr,
++							       ast_entry->vdev_id,
++							       false);
++		if (ret)
++			ath11k_warn(ar->ab, "update wds_entry_cmd failed %d for %pM on peer %pM\n",
++				    ret, ast_entry->addr, peer->addr);
++	}
++}
++
++int ath11k_peer_add_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			u8* mac_addr, enum ath11k_ast_entry_type type)
++{
++	struct ath11k_ast_entry *ast_entry = NULL;
++	struct ath11k_base *ab = ar->ab;
++
++	if (ab->num_ast_entries == ab->max_ast_index) {
++		ath11k_warn(ab, "failed to add ast for %pM due to insufficient ast entry resource %d in target\n",
++			    mac_addr, ab->max_ast_index);
++		return -ENOBUFS;
++	}
++
++	if (type != ATH11K_AST_TYPE_STATIC) {
++		ast_entry = ath11k_peer_ast_find_by_addr(ab, mac_addr);
++		if (ast_entry) {
++			ath11k_dbg(ab, ATH11K_DBG_MAC, "ast_entry %pM already present on peer %pM\n",
++				   mac_addr, ast_entry->peer->addr);
++			return 0;
++		}
++	}
++
++	ast_entry = kzalloc(sizeof(*ast_entry), GFP_ATOMIC);
++	if (!ast_entry) {
++		ath11k_warn(ab, "failed to alloc ast_entry for %pM\n",
++			    mac_addr);
++		return -ENOMEM;
++	}
++
++	switch (type) {
++		case ATH11K_AST_TYPE_STATIC:
++			peer->self_ast_entry = ast_entry;
++			ast_entry->type = ATH11K_AST_TYPE_STATIC;
++			break;
++		case ATH11K_AST_TYPE_SELF:
++			peer->self_ast_entry = ast_entry;
++			ast_entry->type = ATH11K_AST_TYPE_SELF;
++			break;
++		case ATH11K_AST_TYPE_WDS:
++			ast_entry->type = ATH11K_AST_TYPE_WDS;
++			ast_entry->next_hop = 1;
++			break;
++		case ATH11K_AST_TYPE_MEC:
++			ast_entry->type = ATH11K_AST_TYPE_MEC;
++			ast_entry->next_hop = 1;
++			break;
++		default:
++			ath11k_warn(ab, "unsupported ast_type %d", type);
++			kfree(ast_entry);
++			return -EINVAL;
++	}
++
++	INIT_LIST_HEAD(&ast_entry->ase_list);
++	INIT_WORK(&ast_entry->wds_wmi_wk, ath11k_peer_ast_wds_wmi_wk);
++	ast_entry->vdev_id = peer->vdev_id;
++	ast_entry->pdev_idx = peer->pdev_idx;
++	ast_entry->is_mapped = false;
++	ast_entry->is_active = true;
++	ast_entry->peer = peer;
++	ast_entry->ar = ar;
++	ether_addr_copy(ast_entry->addr, mac_addr);
++
++	list_add_tail(&ast_entry->ase_list, &peer->ast_entry_list);
++
++	ath11k_dbg(ab, ATH11K_DBG_MAC, "ath11k_peer_add_ast peer %pM ast_entry %pM, ast_type %d\n",
++		   peer->addr, mac_addr, ast_entry->type);
++
++	if (type == ATH11K_AST_TYPE_MEC)
++		ether_addr_copy(ast_entry->next_node_mac, ar->mac_addr);
++	else if (type == ATH11K_AST_TYPE_WDS)
++		ether_addr_copy(ast_entry->next_node_mac, peer->addr);
++
++	if ((ast_entry->type == ATH11K_AST_TYPE_WDS) ||
++	    (ast_entry->type == ATH11K_AST_TYPE_MEC)) {
++		ath11k_nss_add_wds_peer(ar, peer, mac_addr, ast_entry->type);
++		ast_entry->action = ATH11K_WDS_WMI_ADD;
++		ieee80211_queue_work(ar->hw, &ast_entry->wds_wmi_wk);
++	}
++
++	ab->num_ast_entries++;
++	return 0;
++}
++
++int ath11k_peer_update_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			   struct ath11k_ast_entry *ast_entry)
++{
++	struct ath11k_peer *old_peer = ast_entry->peer;
++	struct ath11k_base *ab = ar->ab;
++
++	if (!ast_entry->is_mapped) {
++		ath11k_warn(ab, "ath11k_peer_update_ast: ast_entry %pM not mapped yet\n",
++			    ast_entry->addr);
++		return -EINVAL;
++	}
++
++	if (ether_addr_equal(old_peer->addr, peer->addr) &&
++	    (ast_entry->type == ATH11K_AST_TYPE_WDS) &&
++	    (ast_entry->vdev_id == peer->vdev_id) &&
++	    (ast_entry->is_active))
++		return 0;
++
++	ast_entry->vdev_id = peer->vdev_id;
++	ast_entry->pdev_idx = peer->pdev_idx;
++	ast_entry->type = ATH11K_AST_TYPE_WDS;
++	ast_entry->is_active = true;
++	ast_entry->peer = peer;
++
++	list_move_tail(&ast_entry->ase_list, &peer->ast_entry_list);
++
++	ath11k_dbg(ab, ATH11K_DBG_MAC, "ath11k_peer_update_ast old peer %pM new peer %pM ast_entry %pM\n",
++		   old_peer->addr, peer->addr, ast_entry->addr);
++
++	flush_work(&ast_entry->wds_wmi_wk);
++	ast_entry->action = ATH11K_WDS_WMI_UPDATE;
++	ieee80211_queue_work(ar->hw, &ast_entry->wds_wmi_wk);
++
++	return 0;
++}
++
++void ath11k_peer_map_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			 u8* mac_addr, u16 hw_peer_id, u16 ast_hash)
++{
++	struct ath11k_ast_entry *ast_entry = NULL;
++	struct ath11k_base *ab = ar->ab;
++
++	if (!peer)
++		return;
++
++	ast_entry = ath11k_peer_ast_find_by_peer(ab, peer, mac_addr);
++
++	if (ast_entry) {
++		ast_entry->ast_idx = hw_peer_id;
++		ast_entry->is_active = true;
++		ast_entry->is_mapped = true;
++		ast_entry->ast_hash_value = ast_hash;
++
++		if ((ast_entry->type == ATH11K_AST_TYPE_WDS) ||
++		    (ast_entry->type == ATH11K_AST_TYPE_MEC))
++			ath11k_nss_map_wds_peer(ar, peer, mac_addr,
++						ast_entry->type);
++
++		ath11k_dbg(ab, ATH11K_DBG_MAC, "ath11k_peer_map_ast peer %pM ast_entry %pM\n",
++			   peer->addr, ast_entry->addr);
++	}
++
++}
++
++void ath11k_peer_del_ast(struct ath11k *ar, struct ath11k_ast_entry *ast_entry)
++{
++	struct ath11k_peer *peer;
++	struct ath11k_base *ab = ar->ab;
++
++	if (!ast_entry || !ast_entry->peer)
++		return;
++
++	peer = ast_entry->peer;
++
++	ath11k_dbg(ab, ATH11K_DBG_MAC, "ath11k_peer_del_ast peer %pM ast_entry %pM\n",
++		   peer->addr, ast_entry->addr);
++
++	if (ast_entry->is_mapped)
++		list_del(&ast_entry->ase_list);
++
++	/* WDS, MEC type AST entries need to be deleted on NSS */
++	if (ast_entry->next_hop)
++		ath11k_nss_del_wds_peer(ar, peer, ast_entry->addr);
++
++	cancel_work_sync(&ast_entry->wds_wmi_wk);
++	kfree(ast_entry);
++
++	ab->num_ast_entries--;
++}
++
++void ath11k_peer_ast_cleanup(struct ath11k *ar, struct ath11k_peer *peer,
++			     bool is_wds, u32 free_wds_count)
++{
++	struct ath11k_ast_entry *ast_entry, *tmp;
++	u32 ast_deleted_count = 0;
++
++	if (peer->self_ast_entry) {
++		ath11k_peer_del_ast(ar, peer->self_ast_entry);
++		peer->self_ast_entry = NULL;
++	}
++
++	list_for_each_entry_safe(ast_entry, tmp, &peer->ast_entry_list,
++				 ase_list) {
++		if ((ast_entry->type == ATH11K_AST_TYPE_WDS) ||
++		    (ast_entry->type == ATH11K_AST_TYPE_MEC))
++			ast_deleted_count++;
++		ath11k_peer_del_ast(ar, ast_entry);
++	}
++
++	if (!is_wds) {
++		if (ast_deleted_count != free_wds_count)
++			ath11k_warn(ar->ab, "ast_deleted_count (%d) mismatch on peer %pM free_wds_count (%d)!\n",
++				    ast_deleted_count, peer->addr, free_wds_count);
++		else
++			ath11k_dbg(ar->ab, ATH11K_DBG_MAC, "ast_deleted_count (%d) on peer %pM free_wds_count (%d)\n",
++				   ast_deleted_count, peer->addr, free_wds_count);
++	}
++}
++#endif
++
+ void ath11k_peer_unmap_event(struct ath11k_base *ab, u16 peer_id)
+ {
+ 	struct ath11k_peer *peer;
+@@ -132,11 +413,67 @@ exit:
+ 	spin_unlock_bh(&ab->base_lock);
+ }
+ 
++void ath11k_peer_unmap_v2_event(struct ath11k_base *ab, u16 peer_id, u8 *mac_addr,
++				bool is_wds, u32 free_wds_count)
++{
++	struct ath11k_peer *peer;
++	struct ath11k *ar;
++
++	spin_lock_bh(&ab->base_lock);
++
++	peer = ath11k_peer_find_list_by_id(ab, peer_id);
++	if (!peer) {
++		ath11k_warn(ab, "peer-unmap-event: unknown peer id %d\n",
++			    peer_id);
++		goto exit;
++	}
++
++	rcu_read_lock();
++	ar = ath11k_mac_get_ar_by_vdev_id(ab, peer->vdev_id);
++	if (!ar) {
++		ath11k_warn(ab, "peer-unmap-event: unknown peer vdev id %d\n",
++			    peer->vdev_id);
++		goto free_peer;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_DP_HTT, "htt peer unmap vdev %d peer %pM id %d is_wds %d free_wds_count %d\n",
++		   peer->vdev_id, peer->addr, peer_id, is_wds, free_wds_count);
++
++	if (ab->nss.enabled) {
++		if (is_wds) {
++			struct ath11k_ast_entry *ast_entry =
++				ath11k_peer_ast_find_by_peer(ab, peer, mac_addr);
++
++			if (ast_entry)
++				ath11k_peer_del_ast(ar, ast_entry);
++			rcu_read_unlock();
++			goto exit;
++		} else
++			ath11k_peer_ast_cleanup(ar, peer, is_wds, free_wds_count);
++	}
++
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++	if (ar->bss_peer && ether_addr_equal(ar->bss_peer->addr, peer->addr))
++		ar->bss_peer = NULL;
++#endif
++free_peer:
++	rcu_read_unlock();
++	list_del(&peer->list);
++	kfree(peer);
++	wake_up(&ab->peer_mapping_wq);
++
++exit:
++	spin_unlock_bh(&ab->base_lock);
++}
++
+ void ath11k_peer_map_event(struct ath11k_base *ab, u8 vdev_id, u16 peer_id,
+ 			   u8 *mac_addr, u16 ast_hash, u16 hw_peer_id)
+ {
+ 	struct ath11k_peer *peer;
++	struct ath11k *ar = NULL;
+ 
++	rcu_read_lock();
++	ar = ath11k_mac_get_ar_by_vdev_id(ab, vdev_id);
+ 	spin_lock_bh(&ab->base_lock);
+ 	peer = ath11k_peer_find(ab, vdev_id, mac_addr);
+ 	if (!peer) {
+@@ -151,8 +488,8 @@ void ath11k_peer_map_event(struct ath11k
+ 		ether_addr_copy(peer->addr, mac_addr);
+ 		list_add(&peer->list, &ab->peers);
+ 		wake_up(&ab->peer_mapping_wq);
+-		if (ab->nss.enabled)
+-			ath11k_nss_peer_create(ab, peer);
++		if (ab->nss.enabled && ar)
++			ath11k_nss_peer_create(ar, peer);
+ 	}
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_DP_HTT, "peer map vdev %d peer %pM id %d\n",
+@@ -160,6 +497,69 @@ void ath11k_peer_map_event(struct ath11k
+ 
+ exit:
+ 	spin_unlock_bh(&ab->base_lock);
++	rcu_read_unlock();
++}
++
++void ath11k_peer_map_v2_event(struct ath11k_base *ab, u8 vdev_id, u16 peer_id,
++			      u8 *mac_addr, u16 ast_hash, u16 hw_peer_id,
++			      bool is_wds)
++{
++	struct ath11k_peer *peer;
++	struct ath11k *ar = NULL;
++	int ret;
++
++	rcu_read_lock();
++	ar = ath11k_mac_get_ar_by_vdev_id(ab, vdev_id);
++	spin_lock_bh(&ab->base_lock);
++	peer = ath11k_peer_find(ab, vdev_id, mac_addr);
++	if (!peer && !is_wds) {
++		peer = kzalloc(sizeof(*peer), GFP_ATOMIC);
++		if (!peer) {
++			ath11k_warn(ab, "failed to allocated peer for %pM vdev_id %d\n",
++				    mac_addr, vdev_id);
++			spin_unlock_bh(&ab->base_lock);
++			goto exit;
++		}
++
++		peer->vdev_id = vdev_id;
++		peer->peer_id = peer_id;
++		peer->ast_hash = ast_hash;
++		peer->hw_peer_id = hw_peer_id;
++		ether_addr_copy(peer->addr, mac_addr);
++		list_add(&peer->list, &ab->peers);
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++		INIT_LIST_HEAD(&peer->ast_entry_list);
++#endif
++		if (ab->nss.enabled && ar) {
++			ret = ath11k_nss_peer_create(ar, peer);
++			if (ret) {
++				ath11k_warn(ab, "failed to do nss peer create: %d\n",
++					    ret);
++				goto peer_free;
++			}
++		}
++		wake_up(&ab->peer_mapping_wq);
++	}
++
++	if (is_wds)
++		peer = ath11k_peer_find_by_id(ab, peer_id);
++
++	if (ab->nss.enabled && ar)
++		ath11k_peer_map_ast(ar, peer, mac_addr, hw_peer_id, ast_hash);
++
++	ath11k_dbg(ab, ATH11K_DBG_DP_HTT, "htt peer map vdev %d peer %pM id %d is_wds %d\n",
++		   vdev_id, mac_addr, peer_id, is_wds);
++
++	spin_unlock_bh(&ab->base_lock);
++	goto exit;
++
++peer_free:
++	spin_unlock_bh(&ab->base_lock);
++	mutex_lock(&ar->conf_mutex);
++	ath11k_peer_delete(ar, vdev_id, mac_addr);
++	mutex_unlock(&ar->conf_mutex);
++exit:
++	rcu_read_unlock();
+ }
+ 
+ static int ath11k_wait_for_peer_common(struct ath11k_base *ab, int vdev_id,
+@@ -256,20 +656,34 @@ err_clean:
+ 
+ void ath11k_peer_cleanup(struct ath11k *ar, u32 vdev_id)
+ {
+-	struct ath11k_peer *peer, *tmp;
++	struct ath11k_peer *peer, *tmp_peer;
+ 	struct ath11k_base *ab = ar->ab;
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++	struct ath11k_ast_entry *ast_entry, *tmp_ast;
++#endif
+ 
+ 	lockdep_assert_held(&ar->conf_mutex);
+ 
+ 	mutex_lock(&ab->tbl_mtx_lock);
+ 	spin_lock_bh(&ab->base_lock);
+-	list_for_each_entry_safe(peer, tmp, &ab->peers, list) {
++	list_for_each_entry_safe(peer, tmp_peer, &ab->peers, list) {
+ 		if (peer->vdev_id != vdev_id)
+ 			continue;
+ 
+ 		ath11k_warn(ab, "removing stale peer %pM from vdev_id %d\n",
+ 			    peer->addr, vdev_id);
+ 
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++		if (peer->self_ast_entry) {
++			ath11k_peer_del_ast(ar, peer->self_ast_entry);
++			peer->self_ast_entry = NULL;
++		}
++
++		list_for_each_entry_safe(ast_entry, tmp_ast,
++					 &peer->ast_entry_list, ase_list)
++			ath11k_peer_del_ast(ar, ast_entry);
++#endif
++
+ 		ath11k_peer_rhash_delete(ab, peer);
+ 		list_del(&peer->list);
+ 		kfree(peer);
+@@ -316,7 +730,7 @@ static int __ath11k_peer_delete(struct a
+ 	lockdep_assert_held(&ar->conf_mutex);
+ 
+ 	reinit_completion(&ar->peer_delete_done);
+-	ath11k_nss_peer_delete(ar->ab, addr);
++	ath11k_nss_peer_delete(ar->ab, vdev_id, addr);
+ 
+ 	mutex_lock(&ab->tbl_mtx_lock);
+ 	spin_lock_bh(&ab->base_lock);
+@@ -391,6 +805,7 @@ int ath11k_peer_create(struct ath11k *ar
+ 		       struct ieee80211_sta *sta, struct peer_create_params *param)
+ {
+ 	struct ath11k_peer *peer;
++	struct ieee80211_vif *vif = arvif->vif;
+ 	struct ath11k_sta *arsta;
+ 	int ret, fbret;
+ 
+@@ -466,6 +881,13 @@ int ath11k_peer_create(struct ath11k *ar
+ 	peer->sec_type_grp = HAL_ENCRYPT_TYPE_OPEN;
+ 	peer->vif = arvif->vif;
+ 
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++	if (vif->type == NL80211_IFTYPE_STATION && ar->ab->nss.enabled)
++		ar->bss_peer = peer;
++	else
++		ar->bss_peer = NULL;
++#endif
++
+ 	if (sta) {
+ 		arsta = ath11k_sta_to_arsta(sta);
+ 		arsta->tcl_metadata |= FIELD_PREP(HTT_TCL_META_DATA_TYPE, 0) |
+--- a/drivers/net/wireless/ath/ath11k/peer.h
++++ b/drivers/net/wireless/ath/ath11k/peer.h
+@@ -18,6 +18,47 @@ struct ppdu_user_delayba {
+ 	u32 resp_rate_flags;
+ };
+ 
++enum ath11k_ast_entry_type {
++	ATH11K_AST_TYPE_NONE, /* static ast entry for connected peer */
++	ATH11K_AST_TYPE_STATIC, /* static ast entry for connected peer */
++	ATH11K_AST_TYPE_SELF, /* static ast entry for self peer (STA mode) */
++	ATH11K_AST_TYPE_WDS,  /* WDS peer ast entry type*/
++	ATH11K_AST_TYPE_MEC,  /* Multicast echo ast entry type */
++	ATH11K_AST_TYPE_WDS_HM, /* HM WDS entry */
++	ATH11K_AST_TYPE_STA_BSS,       /* BSS entry(STA mode) */
++	ATH11K_AST_TYPE_DA,   /* AST entry based on Destination address */
++	ATH11K_AST_TYPE_WDS_HM_SEC, /* HM WDS entry for secondary radio */
++	ATH11K_AST_TYPE_MAX
++};
++
++enum ath11k_wds_wmi_action {
++	ATH11K_WDS_WMI_ADD = 1,
++	ATH11K_WDS_WMI_UPDATE,
++
++	ATH11K_WDS_WMI_MAX
++};
++
++struct ath11k_ast_entry {
++	u16 ast_idx;
++	u8 addr[ETH_ALEN];
++	u8 next_node_mac[ETH_ALEN];
++	enum ath11k_wds_wmi_action action;
++	struct work_struct wds_wmi_wk;
++	struct ath11k_peer *peer;
++	struct ath11k *ar;
++	bool next_hop;
++	bool is_active;
++	bool is_mapped;
++	u8 pdev_idx;
++	u8 vdev_id;
++	u16 ast_hash_value;
++	int ref_cnt;
++	enum ath11k_ast_entry_type type;
++	bool delete_in_progress;
++	void *cookie;
++	struct list_head ase_list;
++};
++
+ struct ath11k_peer {
+ 	struct list_head list;
+ 	struct ieee80211_sta *sta;
+@@ -29,6 +70,10 @@ struct ath11k_peer {
+ 	u8 pdev_idx;
+ 	u16 hw_peer_id;
+ 	struct ath11k_nss_peer nss;
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++	struct ath11k_ast_entry *self_ast_entry;
++	struct list_head ast_entry_list;
++#endif
+ 
+ 	/* protected by ab->data_lock */
+ 	struct ieee80211_key_conf *keys[WMI_MAX_KEY_INDEX + 1];
+@@ -54,8 +99,13 @@ struct ath11k_peer {
+ };
+ 
+ void ath11k_peer_unmap_event(struct ath11k_base *ab, u16 peer_id);
++void ath11k_peer_unmap_v2_event(struct ath11k_base *ab, u16 peer_id, u8 *mac_addr,
++			        bool is_wds, u32 free_wds_count);
+ void ath11k_peer_map_event(struct ath11k_base *ab, u8 vdev_id, u16 peer_id,
+ 			   u8 *mac_addr, u16 ast_hash, u16 hw_peer_id);
++void ath11k_peer_map_v2_event(struct ath11k_base *ab, u8 vdev_id, u16 peer_id,
++			      u8 *mac_addr, u16 ast_hash, u16 hw_peer_id,
++			      bool is_wds);
+ struct ath11k_peer *ath11k_peer_find(struct ath11k_base *ab, int vdev_id,
+ 				     const u8 *addr);
+ struct ath11k_peer *ath11k_peer_find_by_addr(struct ath11k_base *ab,
+@@ -73,4 +123,71 @@ struct ath11k_peer *ath11k_peer_find_by_
+ int ath11k_peer_rhash_tbl_init(struct ath11k_base *ab);
+ void ath11k_peer_rhash_tbl_destroy(struct ath11k_base *ab);
+ int ath11k_peer_rhash_delete(struct ath11k_base *ab, struct ath11k_peer *peer);
++
++#ifdef CPTCFG_ATH11K_NSS_SUPPORT
++struct ath11k_ast_entry *ath11k_peer_ast_find_by_addr(struct ath11k_base *ab,
++						      u8* addr);
++int ath11k_peer_add_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			u8* mac_addr, enum ath11k_ast_entry_type type);
++int ath11k_peer_update_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			   struct ath11k_ast_entry *ast_entry);
++void ath11k_peer_map_ast(struct ath11k *ar, struct ath11k_peer *peer,
++			 u8* mac_addr, u16 hw_peer_id, u16 ast_hash);
++void ath11k_peer_del_ast(struct ath11k *ar, struct ath11k_ast_entry *ast_entry);
++void ath11k_peer_ast_cleanup(struct ath11k *ar, struct ath11k_peer *peer,
++			     bool is_wds, u32 free_wds_count);
++void ath11k_peer_ast_wds_wmi_wk(struct work_struct *wk);
++struct ath11k_ast_entry *ath11k_peer_ast_find_by_peer(struct ath11k_base *ab,
++						      struct ath11k_peer *peer,
++						      u8* addr);
++#else
++static inline struct ath11k_ast_entry *ath11k_peer_ast_find_by_addr(struct ath11k_base *ab,
++								    u8* addr)
++{
++	return NULL;
++}
++
++static inline int ath11k_peer_add_ast(struct ath11k *ar, struct ath11k_peer *peer,
++				      u8* mac_addr, enum ath11k_ast_entry_type type)
++{
++	return 0;
++}
++
++static inline int ath11k_peer_update_ast(struct ath11k *ar, struct ath11k_peer *peer,
++					 struct ath11k_ast_entry *ast_entry)
++{
++	return 0;
++}
++
++static inline void ath11k_peer_map_ast(struct ath11k *ar, struct ath11k_peer *peer,
++				       u8* mac_addr, u16 hw_peer_id, u16 ast_hash)
++{
++	return;
++}
++
++static inline void ath11k_peer_del_ast(struct ath11k *ar,
++				       struct ath11k_ast_entry *ast_entry)
++{
++	return;
++}
++
++static inline void ath11k_peer_ast_cleanup(struct ath11k *ar,
++					   struct ath11k_peer *peer,
++					   bool is_wds, u32 free_wds_count)
++{
++	return;
++}
++
++static inline void ath11k_peer_ast_wds_wmi_wk(struct work_struct *wk)
++{
++	return;
++}
++
++static inline struct ath11k_ast_entry *ath11k_peer_ast_find_by_peer(struct ath11k_base *ab,
++								    struct ath11k_peer *peer,
++								    u8* addr)
++{
++	return NULL;
++}
++#endif /* CPTCFG_ATH11K_NSS_SUPPORT */
+ #endif /* _PEER_H_ */
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -161,6 +161,8 @@ static const struct wmi_tlv_policy wmi_t
+ 		.min_len = sizeof(struct ath11k_wmi_p2p_noa_info) },
+ 	[WMI_TAG_P2P_NOA_EVENT] = {
+ 		.min_len = sizeof(struct wmi_p2p_noa_event) },
++	[WMI_TAG_WDS_ADDR_EVENT] = {
++		.min_len = sizeof(struct wmi_wds_addr_event) },
+ };
+ 
+ #define PRIMAP(_hw_mode_) \
+@@ -1133,6 +1135,51 @@ int ath11k_wmi_send_peer_delete_cmd(stru
+ 	return ret;
+ }
+ 
++int ath11k_wmi_send_add_update_wds_entry_cmd(struct ath11k *ar,
++					     const u8 *peer_addr,
++					     const u8 *wds_addr, u8 vdev_id,
++					     bool add_wds)
++{
++	struct ath11k_pdev_wmi *wmi = ar->wmi;
++	struct wmi_add_wds_entry_cmd *cmd;
++	struct sk_buff *skb;
++	int ret;
++
++	skb = ath11k_wmi_alloc_skb(wmi->wmi_ab, sizeof(*cmd));
++	if (!skb)
++		return -ENOMEM;
++
++	cmd = (struct wmi_add_wds_entry_cmd *)skb->data;
++	if (add_wds)
++		cmd->tlv_header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_PEER_ADD_WDS_ENTRY_CMD) |
++				  FIELD_PREP(WMI_TLV_LEN, sizeof(*cmd) - TLV_HDR_SIZE);
++	else
++		cmd->tlv_header = FIELD_PREP(WMI_TLV_TAG, WMI_TAG_PEER_UPDATE_WDS_ENTRY_CMD) |
++				  FIELD_PREP(WMI_TLV_LEN, sizeof(*cmd) - TLV_HDR_SIZE);
++
++	ether_addr_copy(cmd->peer_macaddr.addr, peer_addr);
++	ether_addr_copy(cmd->wds_macaddr.addr, wds_addr);
++	cmd->vdev_id = vdev_id;
++	cmd->flags = WMI_WDS_FLAG_STATIC;
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_WMI,
++		   "WMI add WDS entry vdev_id %d peer_addr %pM, wds_addr %pM flags %x\n",
++		   vdev_id, peer_addr, wds_addr, cmd->flags);
++
++	if (add_wds)
++		ret = ath11k_wmi_cmd_send(wmi, skb, WMI_PEER_ADD_WDS_ENTRY_CMDID);
++	else
++		ret = ath11k_wmi_cmd_send(wmi, skb, WMI_PEER_UPDATE_WDS_ENTRY_CMDID);
++
++	if (ret) {
++		ath11k_warn(ar->ab, "failed to send WMI_PEER_%s_WDS_ENTRY cmd\n",
++			    add_wds ? "ADD" : "UPDATE");
++		dev_kfree_skb(skb);
++	}
++
++	return ret;
++}
++
+ int ath11k_wmi_send_pdev_set_regdomain(struct ath11k *ar,
+ 				       struct pdev_set_regdomain_params *param)
+ {
+@@ -6493,6 +6540,36 @@ static int ath11k_pull_peer_assoc_conf_e
+ 	return 0;
+ }
+ 
++static int ath11k_pull_wds_addr_ev(struct ath11k_base *ab, struct sk_buff *skb,
++				   struct wmi_wds_addr_arg *wds_addr_arg)
++{
++	const void **tb;
++	const struct wmi_wds_addr_event *ev;
++	int ret;
++
++	tb = ath11k_wmi_tlv_parse_alloc(ab, skb, GFP_ATOMIC);
++	if (IS_ERR(tb)) {
++		ret = PTR_ERR(tb);
++		ath11k_warn(ab, "failed to parse tlv: %d\n", ret);
++		return ret;
++	}
++
++	ev = tb[WMI_TAG_WDS_ADDR_EVENT];
++	if (!ev) {
++		ath11k_warn(ab, "failed to fetch wds peer ev");
++		kfree(tb);
++		return -EPROTO;
++	}
++
++	memcpy(wds_addr_arg->event_type, ev->event_type, WMI_NUM_WDS_EVENTS);
++	wds_addr_arg->vdev_id = ev->vdev_id;
++	wds_addr_arg->peer_macaddr = ev->peer_macaddr.addr;
++	wds_addr_arg->dst_macaddr = ev->dst_macaddr.addr;
++
++	kfree(tb);
++	return 0;
++}
++
+ static void ath11k_wmi_pull_pdev_stats_base(const struct wmi_pdev_stats_base *src,
+ 					    struct ath11k_fw_stats_pdev *dst)
+ {
+@@ -7317,6 +7394,7 @@ static int ath11k_wmi_tlv_rdy_parse(stru
+ 
+ 		ether_addr_copy(ab->mac_addr,
+ 				fixed_param.ready_event_min.mac_addr.addr);
++		ab->max_ast_index = fixed_param.max_ast_index + 1;
+ 		ab->pktlog_defs_checksum = fixed_param.pktlog_defs_checksum;
+ 		break;
+ 	case WMI_TAG_ARRAY_FIXED_STRUCT:
+@@ -8926,6 +9004,22 @@ exit:
+ 	kfree(tb);
+ }
+ 
++static void ath11k_wmi_wds_peer_event(struct ath11k_base *ab,
++				      struct sk_buff *skb)
++{
++	struct wmi_wds_addr_arg wds_addr_arg = {0};
++
++	if (ath11k_pull_wds_addr_ev(ab, skb, &wds_addr_arg) != 0) {
++		ath11k_warn(ab, "failed to extract wds addr event");
++		return;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_WMI,
++		   "wds addr event vdev id %d peer macaddr %pM dst macaddr %pM\n",
++		   wds_addr_arg.vdev_id, wds_addr_arg.peer_macaddr,
++		   wds_addr_arg.dst_macaddr);
++}
++
+ static void ath11k_wmi_tlv_op_rx(struct ath11k_base *ab, struct sk_buff *skb)
+ {
+ 	struct wmi_cmd_hdr *cmd_hdr;
+@@ -9059,6 +9153,9 @@ static void ath11k_wmi_tlv_op_rx(struct
+ 	case WMI_P2P_NOA_EVENTID:
+ 		ath11k_wmi_p2p_noa_event(ab, skb);
+ 		break;
++	case WMI_WDS_PEER_EVENTID:
++		ath11k_wmi_wds_peer_event(ab, skb);
++		break;
+ 	default:
+ 		ath11k_dbg(ab, ATH11K_DBG_WMI, "unsupported event id 0x%x\n", id);
+ 		break;
+--- a/drivers/net/wireless/ath/ath11k/wmi.h
++++ b/drivers/net/wireless/ath/ath11k/wmi.h
+@@ -3028,6 +3028,21 @@ struct wmi_peer_delete_cmd {
+ 	struct wmi_mac_addr peer_macaddr;
+ } __packed;
+ 
++#define WMI_WDS_FLAG_STATIC    0x1    /* Disable aging & learning */
++struct wmi_add_wds_entry_cmd {
++	u32 tlv_header;
++	struct wmi_mac_addr peer_macaddr;
++	struct wmi_mac_addr wds_macaddr;
++	u32 flags;
++	u32 vdev_id;
++} __packed;
++
++struct wmi_remove_wds_entry_cmd {
++	u32 tlv_header;
++	struct wmi_mac_addr wds_macaddr;
++	u32 vdev_id;
++} __packed;
++
+ struct wmi_peer_reorder_queue_setup_cmd {
+ 	u32 tlv_header;
+ 	u32 vdev_id;
+@@ -4644,6 +4659,21 @@ struct wmi_probe_resp_tx_status_event {
+ 	u32 tx_status;
+ } __packed;
+ 
++#define WMI_NUM_WDS_EVENTS 4
++struct wmi_wds_addr_arg {
++	u32 event_type[WMI_NUM_WDS_EVENTS];
++	const u8 *peer_macaddr;
++	const u8 *dst_macaddr;
++	u32 vdev_id;
++};
++
++struct wmi_wds_addr_event {
++	u32 event_type[WMI_NUM_WDS_EVENTS];
++	struct wmi_mac_addr peer_macaddr;
++	struct wmi_mac_addr dst_macaddr;
++	u32 vdev_id;
++} __packed;
++
+ /*
+  * PDEV statistics
+  */
+@@ -6448,6 +6478,9 @@ int ath11k_wmi_set_sta_ps_param(struct a
+ int ath11k_wmi_force_fw_hang_cmd(struct ath11k *ar, u32 type, u32 delay_time_ms);
+ int ath11k_wmi_send_peer_delete_cmd(struct ath11k *ar,
+ 				    const u8 *peer_addr, u8 vdev_id);
++int ath11k_wmi_send_add_update_wds_entry_cmd(struct ath11k *ar,
++				      const u8 *peer_addr, const u8 *wds_addr,
++				      u8 vdev_id, bool add_wds);
+ int ath11k_wmi_vdev_delete(struct ath11k *ar, u8 vdev_id);
+ void ath11k_wmi_start_scan_init(struct ath11k *ar, struct scan_req_params *arg);
+ int ath11k_wmi_send_scan_start_cmd(struct ath11k *ar,

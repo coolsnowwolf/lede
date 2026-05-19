@@ -1,0 +1,121 @@
+From 246e530a47d9adab9106fb6f2b92197cace17e53 Mon Sep 17 00:00:00 2001
+From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Date: Fri, 21 May 2021 14:16:22 +0530
+Subject: [PATCH] ath11k: configure nss radio priority during pdev_init
+
+pdev's priority value is read from dts. Get scheme_id
+using pdev priority. Configure scheme_id during pdev_init.
+
+Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/nss.c | 20 +++++++++++++++++++-
+ drivers/net/wireless/ath/ath11k/nss.h |  3 +++
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -2,6 +2,7 @@
+ /*
+  * Copyright (c) 2020 The Linux Foundation. All rights reserved.
+  */
++#include <linux/of.h>
+ 
+ #include "debug.h"
+ #include "mac.h"
+@@ -4348,6 +4349,7 @@ static int ath11k_nss_init(struct ath11k
+ 	nss_tx_status_t status;
+ 	struct ath11k_dp *dp;
+ 	int i, ret;
++	struct device *dev = ab->dev;
+ 
+ 	dp = &ab->dp;
+ 
+@@ -4367,6 +4369,8 @@ static int ath11k_nss_init(struct ath11k
+ 	/* fill rx parameters to initialize rx context */
+ 	wim->wrip.tlv_size = ab->hw_params.hal_desc_sz;
+ 	wim->wrip.rx_buf_len = DP_RXDMA_NSS_REFILL_RING_SIZE;
++	if (of_property_read_bool(dev->of_node, "nss-radio-priority"))
++		wim->flags |= WIFILI_MULTISOC_THREAD_MAP_ENABLE;
+ 
+ 	/* fill hal srng message */
+ 	wim->hssm.dev_base_addr = (u32)ab->mem_pa;
+@@ -4555,11 +4559,13 @@ int ath11k_nss_pdev_init(struct ath11k_b
+ 	struct nss_wifili_msg *wlmsg = NULL;
+ 	nss_wifili_msg_callback_t msg_cb;
+ 	nss_tx_status_t status;
++	struct device *dev = ab->dev;
+ 	int radio_if_num = -1;
+ 	int refill_ring_id;
+ 	int features = 0;
+ 	int dyn_if_type;
+-	int ret, i;
++	int ret, i, scheme_id = 0;
++	u32 nss_radio_priority;
+ 
+ 	dyn_if_type = ath11k_nss_get_dynamic_interface_type(ab);
+ 
+@@ -4588,6 +4594,17 @@ int ath11k_nss_pdev_init(struct ath11k_b
+ 	ath11k_dbg(ab, ATH11K_DBG_NSS, "nss pdev init - id:%d init ctxt:%p ifnum:%d\n",
+ 		   ar->pdev->pdev_id, ar->nss.ctx, ar->nss.if_num);
+ 
++	if (!of_property_read_u32(dev->of_node, "nss-radio-priority", &nss_radio_priority)) {
++		scheme_id = nss_wifili_thread_scheme_alloc(ab->nss.ctx, ar->nss.if_num, nss_radio_priority);
++		if (scheme_id == WIFILI_SCHEME_ID_INVALID) {
++			ath11k_warn(ab, "received invalid scheme_id, configuring default value\n");
++			scheme_id = 0;
++		} else {
++			ab->nss.thread_scheme_allocated = true;
++		}
++	}
++	ath11k_dbg(ab, ATH11K_DBG_NSS, "ifnum: %d scheme_id: %d nss_radio_priority: %d\n", ar->nss.if_num, scheme_id, nss_radio_priority);
++
+ 	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
+ 	if (!wlmsg) {
+ 		ret = -ENOMEM;
+@@ -4600,6 +4617,7 @@ int ath11k_nss_pdev_init(struct ath11k_b
+ 	pdevmsg->lmac_id = ar->lmac_id;
+ 	pdevmsg->target_pdev_id = ar->pdev->pdev_id;
+ 	pdevmsg->num_rx_swdesc = WIFILI_RX_DESC_POOL_WEIGHT * DP_RXDMA_BUF_RING_SIZE;
++	pdevmsg->scheme_id = scheme_id;
+ 
+ 	/* Store rxdma ring info to the message */
+ 	refill_ring_id = ar->dp.rx_refill_buf_ring.refill_buf_ring.ring_id;
+@@ -4893,6 +4911,10 @@ int ath11k_nss_pdev_deinit(struct ath11k
+ 	/* pdev deinit msg success, dealloc, deregister and return */
+ 	ret = 0;
+ 
++	/* reset thread scheme*/
++	if (ab->nss.thread_scheme_allocated)
++		nss_wifili_thread_scheme_dealloc(ab->nss.ctx, ar->nss.if_num);
++
+ 	nss_dynamic_interface_dealloc_node(ar->nss.if_num, dyn_if_type);
+ 	nss_unregister_wifili_radio_if(ar->nss.if_num);
+ free:
+--- a/drivers/net/wireless/ath/ath11k/nss.h
++++ b/drivers/net/wireless/ath/ath11k/nss.h
+@@ -70,6 +70,7 @@ struct hal_rx_user_status;
+ /* Init Flags */
+ #define WIFILI_NSS_CCE_DISABLED 0x1
+ #define WIFILI_ADDTL_MEM_SEG_SET 0x000000002
++#define WIFILI_MULTISOC_THREAD_MAP_ENABLE 0x10
+ 
+ /* ATH11K NSS PEER Info */
+ /* Host memory allocated for peer info storage in nss */
+@@ -122,6 +123,8 @@ enum ath11k_nss_vdev_cmd {
+ /* Enables the MCBC exception in NSS fw, 1 = enable */
+ #define ATH11K_NSS_ENABLE_MCBC_EXC	1
+ 
++#define WIFILI_SCHEME_ID_INVALID	-1
++
+ enum ath11k_nss_opmode {
+ 	ATH11K_NSS_OPMODE_UNKNOWN,
+ 	ATH11K_NSS_OPMODE_AP,
+@@ -266,6 +269,8 @@ struct ath11k_soc_nss {
+ 	/* Response to nss messages are stored here on msg callback
+ 	* used only in contention free messages during init */
+ 	int response;
++	/* if nss_wifili_thread_scheme_alloc successfully allocated thread scheme */
++	bool thread_scheme_allocated;
+ 	/* Below is used for identifying allocated tx descriptors */
+ 	dma_addr_t tx_desc_paddr[ATH11K_NSS_MAX_NUMBER_OF_PAGE];
+ 	uint32_t * tx_desc_vaddr[ATH11K_NSS_MAX_NUMBER_OF_PAGE];

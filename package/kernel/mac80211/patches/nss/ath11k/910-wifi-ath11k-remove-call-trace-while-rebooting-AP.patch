@@ -1,0 +1,43 @@
+From 214fcc7e98445c0af0ef75df3174227484da13e2 Mon Sep 17 00:00:00 2001
+From: Sarika Sharma <quic_sarishar@quicinc.com>
+Date: Wed, 21 Feb 2024 10:23:35 +0530
+Subject: [PATCH] wifi: ath11k: remove call trace while rebooting AP
+
+When a station idles for a long time, hostapd will try to send
+a QoS Null frame to the station as "poll". NL80211_CMD_PROBE_CLIENT
+is used for this purpose.
+And the skb will be added to ack_status_frame - waiting for a
+completion via ieee80211_report_ack_skb().
+
+But when the peer was already removed before the tx_complete arrives,
+the peer will be missing. And when using dev_kfree_skb_any (instead
+of going through mac80211), the entry will stay inside
+ack_status_frames thus not clean up related information in its
+internal data structures. This IDR will therefore run full after
+8K request were generated for such clients.
+At this point, the access point will then just stall and not allow
+any new clients because idr_alloc() for ack_status_frame will fail.
+
+ieee80211_free_txskb() on the other hand will (when required) call
+ieee80211_report_ack_skb() and make sure that (when required) remove
+the entry from the ack_status_frame and clean up related
+information in its internal data structures.
+
+Signed-off-by: Sven Eckelmann <sven@narfation.org>
+
+Signed-off-by: Sarika Sharma <quic_sarishar@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_tx.c | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -450,7 +450,7 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 		return;
+ 	}
+ 	if (unlikely(!skb_cb->vif)) {
+-		dev_kfree_skb_any(msdu);
++		ieee80211_free_txskb(ar->hw, msdu);
+ 		return;
+ 	}
+ 

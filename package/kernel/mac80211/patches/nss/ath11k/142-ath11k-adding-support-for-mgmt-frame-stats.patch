@@ -1,0 +1,308 @@
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -19,6 +19,7 @@
+ #include <linux/suspend.h>
+ #include <linux/of.h>
+ 
++#include "fw.h"
+ #include "qmi.h"
+ #include "htc.h"
+ #include "wmi.h"
+@@ -34,7 +35,6 @@
+ #include "spectral.h"
+ #include "wow.h"
+ #include "rx_desc.h"
+-#include "fw.h"
+ #include "coredump.h"
+ 
+ #define SM(_v, _f) (((_v) << _f##_LSB) & _f##_MASK)
+@@ -364,6 +364,16 @@ struct ath11k_reg_tpc_power_info {
+ 	struct ath11k_chan_power_info chan_power_info[ATH11K_NUM_PWR_LEVELS];
+ };
+ 
++#define ATH11K_STATS_MGMT_FRM_TYPE_MAX 16
++
++struct ath11k_mgmt_frame_stats {
++	u32 tx_succ_cnt[ATH11K_STATS_MGMT_FRM_TYPE_MAX];
++	u32 tx_fail_cnt[ATH11K_STATS_MGMT_FRM_TYPE_MAX];
++	u32 rx_cnt[ATH11K_STATS_MGMT_FRM_TYPE_MAX];
++	u32 tx_compl_succ[ATH11K_STATS_MGMT_FRM_TYPE_MAX];
++	u32 tx_compl_fail[ATH11K_STATS_MGMT_FRM_TYPE_MAX];
++};
++
+ struct ath11k_vif {
+ 	u32 vdev_id;
+ 	enum wmi_vdev_type vdev_type;
+@@ -422,7 +432,7 @@ struct ath11k_vif {
+ 	bool reinstall_group_keys;
+ 
+ 	struct ath11k_reg_tpc_power_info reg_tpc_info;
+-
++	struct ath11k_mgmt_frame_stats mgmt_stats;
+ 	/* Must be last - ends in a flexible-array member.
+ 	 *
+ 	 * FIXME: Driver should not copy struct ieee80211_chanctx_conf,
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -1469,6 +1469,87 @@ static const struct file_operations fops
+ 	.llseek = default_llseek,
+ };
+ 
++static ssize_t ath11k_dump_mgmt_stats(struct file *file, char __user *ubuf,
++				      size_t count, loff_t *ppos)
++{
++	struct ath11k *ar = file->private_data;
++	struct ath11k_vif *arvif = NULL;
++	struct ath11k_mgmt_frame_stats *mgmt_stats;
++	int len = 0, ret, i;
++	int size = (TARGET_NUM_VDEVS(ar->ab) - 1) * 1500;
++	char *buf;
++	const char *mgmt_frm_type[ATH11K_STATS_MGMT_FRM_TYPE_MAX-1] = {"assoc_req", "assoc_resp",
++								       "reassoc_req", "reassoc_resp",
++								       "probe_req", "probe_resp",
++								       "timing_advertisement", "reserved",
++								       "beacon", "atim", "disassoc",
++								       "auth", "deauth", "action", "action_no_ack"};
++
++	if (ar->state != ATH11K_STATE_ON)
++		return -ENETDOWN;
++
++	buf = kzalloc(size, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++
++	mutex_lock(&ar->conf_mutex);
++	spin_lock_bh(&ar->data_lock);
++
++	list_for_each_entry (arvif, &ar->arvifs, list) {
++		if (!arvif)
++			break;
++
++		if (arvif->vdev_type == WMI_VDEV_TYPE_MONITOR)
++			continue;
++
++		mgmt_stats = &arvif->mgmt_stats;
++		len += scnprintf(buf + len, size - len, "MGMT frame stats for vdev %u :\n",
++				 arvif->vdev_id);
++		len += scnprintf(buf + len, size - len, "  TX stats :\n ");
++		len += scnprintf(buf + len, size - len, "  Success frames:\n");
++		for (i = 0; i < ATH11K_STATS_MGMT_FRM_TYPE_MAX-1; i++)
++			len += scnprintf(buf + len, size - len, "	%s: %d\n", mgmt_frm_type[i],
++					 mgmt_stats->tx_succ_cnt[i]);
++
++		len += scnprintf(buf + len, size - len, "  Failed frames:\n");
++
++		for (i = 0; i < ATH11K_STATS_MGMT_FRM_TYPE_MAX-1; i++)
++			len += scnprintf(buf + len, size - len, "	%s: %d\n", mgmt_frm_type[i],
++					 mgmt_stats->tx_fail_cnt[i]);
++
++		len += scnprintf(buf + len, size - len, "  RX stats :\n");
++		len += scnprintf(buf + len, size - len, "  Success frames:\n");
++		for (i = 0; i < ATH11K_STATS_MGMT_FRM_TYPE_MAX-1; i++)
++			len += scnprintf(buf + len, size - len, "	%s: %d\n", mgmt_frm_type[i],
++					 mgmt_stats->rx_cnt[i]);
++
++		len += scnprintf(buf + len, size - len, " Tx completion stats :\n");
++		len += scnprintf(buf + len, size - len, " success completions:\n");
++		for (i = 0; i < ATH11K_STATS_MGMT_FRM_TYPE_MAX-1; i++)
++			len += scnprintf(buf + len, size - len, "       %s: %d\n", mgmt_frm_type[i],
++					 mgmt_stats->tx_compl_succ[i]);
++		len += scnprintf(buf + len, size - len, " failure completions:\n");
++		for (i = 0; i < ATH11K_STATS_MGMT_FRM_TYPE_MAX-1; i++)
++			len += scnprintf(buf + len, size - len, "       %s: %d\n", mgmt_frm_type[i],
++					 mgmt_stats->tx_compl_fail[i]);
++	}
++
++	spin_unlock_bh(&ar->data_lock);
++
++	if (len > size)
++		len = size;
++
++	ret = simple_read_from_buffer(ubuf, count, ppos, buf, len);
++	mutex_unlock(&ar->conf_mutex);
++	kfree(buf);
++	return ret;
++}
++
++static const struct file_operations fops_dump_mgmt_stats = {
++	.read = ath11k_dump_mgmt_stats,
++	.open = simple_open
++};
++
+ int ath11k_debugfs_register(struct ath11k *ar)
+ {
+ 	struct ath11k_base *ab = ar->ab;
+@@ -1501,6 +1582,9 @@ int ath11k_debugfs_register(struct ath11
+ 	debugfs_create_file("fw_dbglog_config", 0600,
+ 			    ar->debug.debugfs_pdev, ar,
+ 			    &fops_fw_dbglog);
++	debugfs_create_file("dump_mgmt_stats", 0644,
++			    ar->debug.debugfs_pdev, ar,
++			    &fops_dump_mgmt_stats);
+ 
+ 	if (ar->hw->wiphy->bands[NL80211_BAND_5GHZ]) {
+ 		debugfs_create_file("dfs_simulate_radar", 0200,
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -6167,9 +6167,9 @@ static int ath11k_mac_mgmt_tx(struct ath
+ 	 */
+ 	if (is_prb_rsp &&
+ 	    atomic_read(&ar->num_pending_mgmt_tx) > ATH11K_PRB_RSP_DROP_THRESHOLD) {
+-		ath11k_warn(ar->ab,
++		ath11k_dbg(ar->ab, ATH11K_DBG_MAC,
+ 			    "dropping probe response as pending queue is almost full\n");
+-		return -ENOSPC;
++		return -EBUSY;
+ 	}
+ 
+ 	if (skb_queue_len_lockless(q) >= ATH11K_TX_MGMT_NUM_PENDING_MAX) {
+@@ -6195,9 +6195,11 @@ static void ath11k_mac_op_tx(struct ieee
+ 	struct ath11k_vif *arvif = ath11k_vif_to_arvif(vif);
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+ 	struct ieee80211_key_conf *key = info->control.hw_key;
++	struct ath11k_mgmt_frame_stats *mgmt_stats = &arvif->mgmt_stats;
+ 	struct ath11k_sta *arsta = NULL;
+ 	u32 info_flags = info->flags;
+ 	bool is_prb_rsp;
++	u16 frm_type = 0;
+ 	int ret;
+ 
+ 	memset(skb_cb, 0, sizeof(*skb_cb));
+@@ -6211,12 +6213,21 @@ static void ath11k_mac_op_tx(struct ieee
+ 	if (info_flags & IEEE80211_TX_CTL_HW_80211_ENCAP) {
+ 		skb_cb->flags |= ATH11K_SKB_HW_80211_ENCAP;
+ 	} else if (ieee80211_is_mgmt(hdr->frame_control)) {
++		frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
+ 		is_prb_rsp = ieee80211_is_probe_resp(hdr->frame_control);
+ 		ret = ath11k_mac_mgmt_tx(ar, skb, is_prb_rsp);
+ 		if (ret) {
+-			ath11k_warn(ar->ab, "failed to queue management frame %d\n",
+-				    ret);
++			if (ret != -EBUSY)
++				ath11k_warn(ar->ab, "failed to queue management frame %d\n",
++					    ret);
+ 			ieee80211_free_txskb(ar->hw, skb);
++			spin_lock_bh(&ar->data_lock);
++			mgmt_stats->tx_fail_cnt[frm_type]++;
++			spin_unlock_bh(&ar->data_lock);
++		} else {
++			spin_lock_bh(&ar->data_lock);
++			mgmt_stats->tx_succ_cnt[frm_type]++;
++			spin_unlock_bh(&ar->data_lock);
+ 		}
+ 		return;
+ 	}
+--- a/drivers/net/wireless/ath/ath11k/peer.c
++++ b/drivers/net/wireless/ath/ath11k/peer.c
+@@ -458,6 +458,7 @@ int ath11k_peer_create(struct ath11k *ar
+ 
+ 	peer->sec_type = HAL_ENCRYPT_TYPE_OPEN;
+ 	peer->sec_type_grp = HAL_ENCRYPT_TYPE_OPEN;
++	peer->vif = arvif->vif;
+ 
+ 	if (sta) {
+ 		arsta = ath11k_sta_to_arsta(sta);
+--- a/drivers/net/wireless/ath/ath11k/peer.h
++++ b/drivers/net/wireless/ath/ath11k/peer.h
+@@ -21,6 +21,7 @@ struct ppdu_user_delayba {
+ struct ath11k_peer {
+ 	struct list_head list;
+ 	struct ieee80211_sta *sta;
++	struct ieee80211_vif *vif;
+ 	int vdev_id;
+ 	u8 addr[ETH_ALEN];
+ 	int peer_id;
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -5950,6 +5950,12 @@ static int wmi_process_mgmt_tx_comp(stru
+ 	struct sk_buff *msdu;
+ 	struct ieee80211_tx_info *info;
+ 	struct ath11k_skb_cb *skb_cb;
++	struct ieee80211_hdr *hdr;
++	struct ath11k_peer *peer;
++	struct ieee80211_vif *vif;
++	struct ath11k_vif *arvif;
++	struct ath11k_mgmt_frame_stats *mgmt_stats;
++	u16 frm_type;
+ 	int num_mgmt;
+ 
+ 	spin_lock_bh(&ar->txmgmt_idr_lock);
+@@ -5980,6 +5986,31 @@ static int wmi_process_mgmt_tx_comp(stru
+ 			info->status.ack_signal = tx_compl_param->ack_rssi;
+ 	}
+ 
++	hdr = (struct ieee80211_hdr *)msdu->data;
++	frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
++
++	spin_lock_bh(&ar->ab->base_lock);
++	peer = ath11k_peer_find_by_addr(ar->ab, hdr->addr2);
++	if (!peer) {
++		spin_unlock_bh(&ar->ab->base_lock);
++		ath11k_warn(ar->ab, "failed to find peer to update txcompl mgmt stats\n");
++		goto skip_mgmt_stats;
++	}
++
++	vif = peer->vif;
++	spin_unlock_bh(&ar->ab->base_lock);
++
++	spin_lock_bh(&ar->data_lock);
++	arvif = ath11k_vif_to_arvif(vif);
++	mgmt_stats = &arvif->mgmt_stats;
++
++	if (!tx_compl_param->status)
++		mgmt_stats->tx_compl_succ[frm_type]++;
++	else
++		mgmt_stats->tx_compl_fail[frm_type]++;
++	spin_unlock_bh(&ar->data_lock);
++
++skip_mgmt_stats:
+ 	ieee80211_tx_status_irqsafe(ar->hw, msdu);
+ 
+ 	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
+@@ -7559,6 +7590,11 @@ static void ath11k_mgmt_rx_event(struct
+ 	struct ieee80211_hdr *hdr;
+ 	u16 fc;
+ 	struct ieee80211_supported_band *sband;
++	struct ath11k_peer *peer;
++	struct ieee80211_vif *vif;
++	struct ath11k_vif *arvif;
++	struct ath11k_mgmt_frame_stats *mgmt_stats;
++	u16 frm_type = 0;
+ 
+ 	if (ath11k_pull_mgmt_rx_params_tlv(ab, skb, &rx_ev) != 0) {
+ 		ath11k_warn(ab, "failed to extract mgmt rx event");
+@@ -7624,7 +7660,34 @@ static void ath11k_mgmt_rx_event(struct
+ 
+ 	hdr = (struct ieee80211_hdr *)skb->data;
+ 	fc = le16_to_cpu(hdr->frame_control);
++	frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, fc);
++
++	spin_lock_bh(&ab->base_lock);
++
++	peer = ath11k_peer_find_by_addr(ab, hdr->addr1);
++	if(!peer)
++		peer = ath11k_peer_find_by_addr(ab, hdr->addr3);
++	if (!peer) {
++		spin_unlock_bh(&ab->base_lock);
++		goto skip_mgmt_stats;
++	}
++
++	vif = peer->vif;
++
++	spin_unlock_bh(&ab->base_lock);
++
++	if (!vif)
++		goto skip_mgmt_stats;
++
++	spin_lock_bh(&ar->data_lock);
++
++	arvif = ath11k_vif_to_arvif(vif);
++	mgmt_stats = &arvif->mgmt_stats;
++	mgmt_stats->rx_cnt[frm_type]++;
++
++	spin_unlock_bh(&ar->data_lock);
+ 
++skip_mgmt_stats:
+ 	/* Firmware is guaranteed to report all essential management frames via
+ 	 * WMI while it can deliver some extra via HTT. Since there can be
+ 	 * duplicates split the reporting wrt monitor/sniffing.

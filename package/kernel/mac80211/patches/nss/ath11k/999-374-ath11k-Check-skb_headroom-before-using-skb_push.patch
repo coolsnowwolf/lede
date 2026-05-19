@@ -1,0 +1,253 @@
+From efecc6e8355d02aeac7bf1a43397551440a8d0d8 Mon Sep 17 00:00:00 2001
+From: Tamizh Chelvam Raja <quic_tamizhr@quicinc.com>
+Date: Thu, 30 Mar 2023 22:12:56 +0530
+Subject: [PATCH] ath11k: Check skb_headroom before using skb_push
+
+Below kernel panic may occur if there is no
+skb_headroom available for performing skb_push.
+
+<4>[67506.565072] CPU: 1 PID: 1741 Comm: ap-wireless-opt Not tainted 5.4.89+ #0
+<4>[67506.578860] Hardware name: Generic DT based system
+<4>[67506.585728] PC is at fortify_panic+0x10/0x18
+<4>[67506.590406] LR is at fortify_panic+0x10/0x18
+
+(fortify_panic) from [<7f2cd3cc>] (ath11k_dp_rx_crypto_icv_len+0x1e0/0x161c [ath11k])
+(ath11k_dp_rx_crypto_icv_len [ath11k]) from [<7f2cdbac>] (ath11k_dp_rx_crypto_icv_len+0x9c0/0x161c [ath11k])
+(ath11k_dp_rx_crypto_icv_len [ath11k]) from [<7f2ce0e8>] (ath11k_dp_rx_crypto_icv_len+0xefc/0x161c [ath11k])
+(ath11k_dp_rx_crypto_icv_len [ath11k]) from [<7f2cedb0>] (ath11k_dp_process_rx+0x4ec/0x544 [ath11k])
+(ath11k_dp_process_rx [ath11k]) from [<7f2c417c>] (ath11k_dp_service_srng+0xdc/0x2a0 [ath11k])
+(ath11k_dp_service_srng [ath11k]) from [<7f0d78c8>] (ath11k_pci_ext_grp_napi_poll+0x20/0x50 [ath11k_pci])
+(ath11k_pci_ext_grp_napi_poll [ath11k_pci]) from [<806a6a74>] (__napi_poll+0x28/0xb8)
+(__napi_poll) from [<806a6c9c>] (net_rx_action+0xec/0x280)
+(net_rx_action) from [<8010226c>] (__do_softirq+0xc4/0x248)
+(__do_softirq) from [<8011f230>] (irq_exit+0x6c/0xcc)
+(irq_exit) from [<80162a08>] (__handle_domain_irq+0x8c/0xb0)
+(__handle_domain_irq) from [<803f0188>] (gic_handle_irq+0x54/0x8c)
+(gic_handle_irq) from [<80101a8c>] (__irq_svc+0x6c/0xa8)
+
+Fix this by checking skb_headroom and expand the
+headroom if required size is not available.
+
+Signed-off-by: Tamizh Chelvam Raja <quic_tamizhr@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 70 +++++++++++++++++++++++++
+ 1 file changed, 70 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -2444,16 +2444,27 @@ static void ath11k_get_dot11_hdr_from_rx
+ 	size_t hdr_len, crypto_len;
+ 	struct ieee80211_hdr *hdr;
+ 	u16 fc, qos_ctl = 0;
++	int expand_by;
+ 	u8 *crypto_hdr;
+ 
+ 	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
+ 		crypto_len = ath11k_dp_rx_crypto_param_len(ar, enctype);
++		if (skb_headroom(msdu) < crypto_len) {
++			expand_by = crypto_len - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
+ 		crypto_hdr = skb_push(msdu, crypto_len);
+ 		ath11k_dp_rx_desc_get_crypto_header(ab, rx_desc, crypto_hdr, enctype);
+ 	}
+ 
+ 	fc = ath11k_dp_rxdesc_get_mpdu_frame_ctrl(ab, rx_desc);
+ 	hdr_len = ieee80211_hdrlen(fc);
++	if (skb_headroom(msdu) < hdr_len) {
++		expand_by = hdr_len - skb_headroom(msdu);
++		if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++			return;
++	}
+ 	skb_push(msdu, hdr_len);
+ 	hdr = (struct ieee80211_hdr *)msdu->data;
+ 	hdr->frame_control = fc;
+@@ -2489,6 +2500,7 @@ static void ath11k_dp_rx_h_undecap_nwifi
+ 	u8 da[ETH_ALEN];
+ 	u8 sa[ETH_ALEN];
+ 	u16 qos_ctl = 0;
++	int expand_by = 0;
+ 	u8 *qos, *crypto_hdr;
+ 	bool add_qos_ctrl = false;
+ 
+@@ -2533,26 +2545,46 @@ static void ath11k_dp_rx_h_undecap_nwifi
+ 	}
+ 
+ 	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
++		int crypto_param_len = ath11k_dp_rx_crypto_param_len(ar, enctype);
++
++		if (skb_headroom(msdu) < crypto_param_len) {
++			expand_by = crypto_param_len - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
+ 		if (first_hdr) {
+-			memcpy(skb_push(msdu,
+-					ath11k_dp_rx_crypto_param_len(ar, enctype)),
+-					(void *)hdr + hdr_len,
+-					ath11k_dp_rx_crypto_param_len(ar, enctype));
++			memcpy(skb_push(msdu, crypto_param_len),
++			       (void *)hdr + hdr_len, crypto_param_len);
+ 		} else {
+-			crypto_hdr = skb_push(msdu, ath11k_dp_rx_crypto_param_len(ar, enctype));
++			crypto_hdr = skb_push(msdu, crypto_param_len);
+ 			ath11k_dp_rx_desc_get_crypto_header(ar->ab,
+ 							    rxcb->rx_desc, crypto_hdr, enctype);
+ 		}
+ 	}
+ 
+ 	if (!rxcb->is_first_msdu || add_qos_ctrl) {
++		if (skb_headroom(msdu) < IEEE80211_QOS_CTL_LEN) {
++			expand_by = IEEE80211_QOS_CTL_LEN - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
+ 		memcpy(skb_push(msdu,
+ 				IEEE80211_QOS_CTL_LEN), &qos_ctl,
+ 				IEEE80211_QOS_CTL_LEN);
++		if (skb_headroom(msdu) < hdr_len) {
++			expand_by = hdr_len - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
+ 		memcpy(skb_push(msdu, hdr_len), decap_hdr, hdr_len);
+ 		return;
+ 	}
+ 
++	if (skb_headroom(msdu) < hdr_len) {
++		expand_by = hdr_len - skb_headroom(msdu);
++		if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++			return;
++	}
+ 	memcpy(skb_push(msdu, hdr_len), hdr, hdr_len);
+ 
+ 	/* original 802.11 header has a different DA and in
+@@ -2661,6 +2693,7 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 	u8 da[ETH_ALEN];
+ 	u8 sa[ETH_ALEN];
+ 	void *rfc1042;
++	int expand_by;
+ 	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
+ 	struct ath11k_dp_rfc1042_hdr rfc = {0xaa, 0xaa, 0x03, {0x00, 0x00, 0x00}};
+ 
+@@ -2670,6 +2703,11 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 		ether_addr_copy(sa, eth->h_source);
+ 		rfc.snap_type = eth->h_proto;
+ 		skb_pull(msdu, sizeof(struct ethhdr));
++		if (skb_headroom(msdu) < sizeof(struct ath11k_dp_rfc1042_hdr)) {
++			expand_by = sizeof(struct ath11k_dp_rfc1042_hdr) - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
+ 		memcpy(skb_push(msdu, sizeof(struct ath11k_dp_rfc1042_hdr)), &rfc,
+ 		       sizeof(struct ath11k_dp_rfc1042_hdr));
+ 		ath11k_get_dot11_hdr_from_rx_desc(ar, msdu, rxcb, status, enctype);
+@@ -2687,6 +2725,11 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 	skb_pull(msdu, sizeof(struct ethhdr));
+ 
+ 	/* push rfc1042/llc/snap */
++	if (skb_headroom(msdu) < sizeof(struct ath11k_dp_rfc1042_hdr)) {
++		expand_by = sizeof(struct ath11k_dp_rfc1042_hdr) - skb_headroom(msdu);
++		if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++			return;
++	}
+ 	memcpy(skb_push(msdu, sizeof(struct ath11k_dp_rfc1042_hdr)), rfc1042,
+ 	       sizeof(struct ath11k_dp_rfc1042_hdr));
+ 
+@@ -2695,12 +2738,22 @@ static void ath11k_dp_rx_h_undecap_eth(s
+ 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
+ 
+ 	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
+-		memcpy(skb_push(msdu,
+-				ath11k_dp_rx_crypto_param_len(ar, enctype)),
+-		       (void *)hdr + hdr_len,
+-		       ath11k_dp_rx_crypto_param_len(ar, enctype));
++		int crypto_param_len = ath11k_dp_rx_crypto_param_len(ar, enctype);
++
++		if (skb_headroom(msdu) < crypto_param_len) {
++			expand_by = crypto_param_len - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
++		memcpy(skb_push(msdu, crypto_param_len),
++		       (void *)hdr + hdr_len, crypto_param_len);
+ 	}
+ 
++	if (skb_headroom(msdu) < hdr_len) {
++		expand_by = hdr_len - skb_headroom(msdu);
++		if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++			return;
++	}
+ 	memcpy(skb_push(msdu, hdr_len), hdr, hdr_len);
+ 
+ exit:
+@@ -2721,6 +2774,7 @@ static void ath11k_dp_rx_h_undecap_snap(
+ 	struct ieee80211_hdr *hdr;
+ 	size_t hdr_len;
+ 	u8 l3_pad_bytes;
++	int expand_by;
+ 	struct hal_rx_desc *rx_desc;
+ 	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
+ 
+@@ -2745,12 +2799,22 @@ static void ath11k_dp_rx_h_undecap_snap(
+ 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
+ 
+ 	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
+-		memcpy(skb_push(msdu,
+-				ath11k_dp_rx_crypto_param_len(ar, enctype)),
+-		       (void *)hdr + hdr_len,
+-			ath11k_dp_rx_crypto_param_len(ar, enctype));
++		int crypto_param_len = ath11k_dp_rx_crypto_param_len(ar, enctype);
++
++		if (skb_headroom(msdu) < crypto_param_len) {
++			expand_by = crypto_param_len - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				return;
++		}
++		memcpy(skb_push(msdu, crypto_param_len),
++		       (void *)hdr + hdr_len, crypto_param_len);
+ 	}
+ 
++	if (skb_headroom(msdu) < hdr_len) {
++		expand_by = hdr_len - skb_headroom(msdu);
++		if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++			return;
++	}
+ 	memcpy(skb_push(msdu, hdr_len), hdr, hdr_len);
+ }
+ 
+@@ -2879,7 +2943,7 @@ static void ath11k_dp_rx_h_mpdu(struct a
+ 				struct ieee80211_rx_status *rx_status,
+ 				bool *fast_rx)
+ {
+-	bool  fill_crypto_hdr;
++	bool fill_crypto_hdr = 0;
+ 	enum hal_encrypt_type enctype;
+ 	bool is_decrypted = false;
+ 	struct ath11k_skb_rxcb *rxcb;
+@@ -3112,10 +3176,16 @@ static void ath11k_dp_rx_deliver_msdu(st
+ 	u8 decap = DP_RX_DECAP_TYPE_RAW;
+ 	bool is_mcbc = rxcb->is_mcbc;
+ 	bool is_eapol = rxcb->is_eapol;
++	int expand_by;
+ 
+ 	if (status->encoding == RX_ENC_HE &&
+ 	    !(status->flag & RX_FLAG_RADIOTAP_HE) &&
+ 	    !(status->flag & RX_FLAG_SKIP_MONITOR)) {
++		if (skb_headroom(msdu) < sizeof(known)) {
++			expand_by = sizeof(known) - skb_headroom(msdu);
++			if (WARN_ON_ONCE(pskb_expand_head(msdu, expand_by, 0, GFP_ATOMIC)))
++				goto exit;
++		}
+ 		he = skb_push(msdu, sizeof(known));
+ 		memcpy(he, &known, sizeof(known));
+ 		status->flag |= RX_FLAG_RADIOTAP_HE;
+@@ -3171,6 +3241,7 @@ static void ath11k_dp_rx_deliver_msdu(st
+ 	    !(is_mcbc && rx_status->flag & RX_FLAG_DECRYPTED))
+ 		rx_status->flag |= RX_FLAG_8023;
+ 
++exit:
+ 	ieee80211_rx_napi(ar->hw, pubsta, msdu, napi);
+ }
+ 

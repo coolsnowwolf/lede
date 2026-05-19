@@ -1,0 +1,1252 @@
+From fbe5a76d8c9ff1cf3f906a3c863928fc1adcbc95 Mon Sep 17 00:00:00 2001
+From: Karthikeyan Kathirvel <kathirve@codeaurora.org>
+Date: Tue, 16 Feb 2021 13:44:39 +0530
+Subject: [PATCH] ath11k: Add mesh nss offload support
+
+- New capability advertising nss offload support for mesh type
+- Mesh obj vap and link vap registration/clean up
+- Command/event handling
+- New .ch files in ath11k for nss mesh offload related debugs
+- Tx/Rx data path on mesh link vap uses native wifi format
+- Mesh obj vap handls packets in ether format. No Tx on Mesh
+  obj vap is expected as packets transmitted in slow path is
+  supposed to be encapsulated in 802.11 format.
+- New mac80211-driver callbacks for mesh vap, mpath and mpp
+  configurations.
+
+Signed-off-by: Vasanthakumar Thiagarajan <vthiagar@codeaurora.org>
+
+Change-Id: Ib6950344286ba18fab43586262c62dcd09557614
+Co-developed-by: Karthikeyan Kathirvel <kathirve@codeaurora.org>
+Signed-off-by: Karthikeyan Kathirvel <kathirve@codeaurora.org>
+Signed-off-by: Vasanthakumar Thiagarajan <vthiagar@codeaurora.org>
+Signed-off-by: Gautham Kumar Senthilkumaran <quic_gauthamk@quicinc.com>
+---
+ include/net/mac80211.h                      |  106 ++
+ net/mac80211/cfg.c                          |   19 +-
+ net/mac80211/debug.h                        |   10 +
+ net/mac80211/debugfs.c                      |    1 +
+ net/mac80211/driver-ops.c                   |   20 +
+ net/mac80211/driver-ops.h                   |    7 +
+ net/mac80211/mesh.h                         |    5 +
+ net/mac80211/mesh_hwmp.c                    |  273 +++++
+ net/mac80211/mesh_pathtbl.c                 |  167 ++-
+ net/mac80211/rx.c                           |    8 +-
+ 10 files changed, 2548 insertions(+), 206 deletions(-)
+ create mode 100644 drivers/net/wireless/ath/ath11k/debug_nss.c
+ create mode 100644 drivers/net/wireless/ath/ath11k/debug_nss.h
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -145,6 +145,9 @@
+  */
+ struct device;
+ 
++struct ieee80211_mesh_path_offld;
++enum ieee80211_mesh_path_offld_cmd;
++
+ /**
+  * enum ieee80211_max_queues - maximum number of queues
+  *
+@@ -413,11 +416,17 @@ enum ieee80211_bss_change {
+  * to indicate which NSS BSS parameter changed.
+  *
+  * @BSS_CHANGED_NSS_AP_ISOLATE: AP Isolate feature in NSS mode
++ * @BSS_CHANGED_NSS_MESH_TTL: TTL update in NSS mesh mode
++ * @BSS_CHANGED_NSS_MESH_REFRESH_TIME: Mesh refresh time in NSS mesh mode
++ * @BSS_CHANGED_NSS_MESH_FWD_ENABLED: NSS offload mesh forward enabled
+  *
+  */
+ 
+ enum ieee80211_nss_bss_change {
+ 	BSS_CHANGED_NSS_AP_ISOLATE  = BIT(0),
++	BSS_CHANGED_NSS_MESH_TTL  = BIT(1),
++	BSS_CHANGED_NSS_MESH_REFRESH_TIME  = BIT(2),
++	BSS_CHANGED_NSS_MESH_FWD_ENABLED  = BIT(3),
+ };
+ 
+ /*
+@@ -868,6 +877,11 @@ struct ieee80211_bss_conf {
+ 	bool he_full_ul_mumimo;
+ 	bool eht_su_beamformer;
+ 	bool eht_su_beamformee;
++
++	/* Mesh configuration for nss offload */
++	u8 nss_offld_ttl;
++	bool nss_offld_mesh_forward_enabled;
++	u32 nss_offld_mpath_refresh_time;
+ 	bool eht_mu_beamformer;
+ 	bool eht_80mhz_full_bw_ul_mumimo;
+ 	bool eht_disable_mcs15;
+@@ -1369,6 +1383,8 @@ struct ieee80211_rate_status {
+  * @ack_hwtstamp: Hardware timestamp of the received ack in nanoseconds
+  *	Only needed for Timing measurement and Fine timing measurement action
+  *	frames. Only reported by devices that have timestamping enabled.
++ * @mpdu_succ: Number of mpdus successfully transmitted
++ * @mpdu_fail: Number of mpdus failed
+  */
+ struct ieee80211_tx_status {
+ 	struct ieee80211_sta *sta;
+@@ -1379,6 +1395,8 @@ struct ieee80211_tx_status {
+ 	u8 n_rates;
+ 
+ 	struct list_head *free_list;
++	u32 mpdu_succ;
++	u32 mpdu_fail;
+ };
+ 
+ /**
+@@ -1883,6 +1901,7 @@ struct ieee80211_channel_switch {
+  *	operation on this interface and request a channel context without
+  *	the AP definition. Use this e.g. because the device is able to
+  *	handle OFDMA (downlink and trigger for uplink) on a per-AP basis.
++ * @IEEE80211_HW_NSS_OFFLOAD_DEBUG_MODE: It enables the debug mode of nss offload.
+  * @IEEE80211_VIF_REMOVE_AP_AFTER_DISASSOC: indicates that the AP sta should
+  *	be removed only after setting the vif as unassociated, and not the
+  *	opposite. Only relevant for STA vifs.
+@@ -1895,6 +1914,7 @@ enum ieee80211_vif_flags {
+ 	IEEE80211_VIF_EML_ACTIVE	        = BIT(4),
+ 	IEEE80211_VIF_IGNORE_OFDMA_WIDER_BW	= BIT(5),
+ 	IEEE80211_VIF_REMOVE_AP_AFTER_DISASSOC	= BIT(6),
++	IEEE80211_VIF_NSS_OFFLOAD_DEBUG_MODE	= BIT(7),
+ };
+ 
+ 
+@@ -2984,6 +3004,7 @@ enum ieee80211_hw_flags {
+ 	IEEE80211_HW_HANDLES_QUIET_CSA,
+ 	IEEE80211_HW_STRICT,
+ 	IEEE80211_HW_SUPPORTS_NSS_OFFLOAD,
++	IEEE80211_HW_SUPPORTS_MESH_NSS_OFFLOAD,
+ 
+ 	/* keep last, obviously */
+ 	NUM_IEEE80211_HW_FLAGS
+@@ -4520,6 +4541,8 @@ struct ieee80211_prep_tx_info {
+  * @set_sar_specs: Update the SAR (TX power) settings.
+  * @sta_set_decap_offload: Called to notify the driver when a station is allowed
+  *	to use rx decapsulation offload
++ * @config_mesh_offload_path: Configure mesh path table when driver supports mesh offload.
++ *	This calback must be atomic.
+  * @add_twt_setup: Update hw with TWT agreement parameters received from the peer.
+  *	This callback allows the hw to check if requested parameters
+  *	are supported and if there is enough room for a new agreement.
+@@ -4935,6 +4958,12 @@ struct ieee80211_ops {
+ 	void (*sta_set_decap_offload)(struct ieee80211_hw *hw,
+ 				      struct ieee80211_vif *vif,
+ 				      struct ieee80211_sta *sta, bool enabled);
++#ifdef CPTCFG_MAC80211_MESH
++	void (*config_mesh_offload_path)(struct ieee80211_hw *hw,
++					 struct ieee80211_vif *vif,
++					 enum ieee80211_mesh_path_offld_cmd cmd,
++					 struct ieee80211_mesh_path_offld *path);
++#endif
+ 	void (*add_twt_setup)(struct ieee80211_hw *hw,
+ 			      struct ieee80211_sta *sta,
+ 			      struct ieee80211_twt_setup *twt);
+@@ -8004,4 +8033,101 @@ int ieee80211_emulate_switch_vif_chanctx
+  * Return: %true iff the vif is a NAN interface and NAN is started
+  */
+ bool ieee80211_vif_nan_started(struct ieee80211_vif *vif);
++
++/* Defines for Mesh NSS offload */
++
++enum ieee80211_mesh_path_offld_cmd {
++	IEEE80211_MESH_PATH_OFFLD_CMD_ADD_MPATH,
++	IEEE80211_MESH_PATH_OFFLD_CMD_UPDATE_MPATH,
++	IEEE80211_MESH_PATH_OFFLD_CMD_DELETE_MPATH,
++	IEEE80211_MESH_PATH_OFFLD_CMD_ADD_MPP,
++	IEEE80211_MESH_PATH_OFFLD_CMD_UPDATE_MPP,
++	IEEE80211_MESH_PATH_OFFLD_CMD_DELETE_MPP,
++};
++
++enum ieee80211_mesh_path_offld_action {
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_REFRESH	= BIT(0),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_DEL	= BIT(1),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_EXP	= BIT(2),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_LEARN	= BIT(3),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_ADD	= BIT(4),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_UPDATE	= BIT(5),
++	IEEE80211_MESH_PATH_OFFLD_ACTION_PATH_NOT_FOUND	= BIT(6),
++};
++
++/* Duplicate defines to make it available to driver */
++enum ieee80211_mesh_path_flags {
++	IEEE80211_MESH_PATH_ACTIVE =		BIT(0),
++	IEEE80211_MESH_PATH_RESOLVING =		BIT(1),
++	IEEE80211_MESH_PATH_SN_VALID =		BIT(2),
++	IEEE80211_MESH_PATH_FIXED =		BIT(3),
++	IEEE80211_MESH_PATH_RESOLVED =		BIT(4),
++	IEEE80211_MESH_PATH_REQ_QUEUED =	BIT(5),
++	IEEE80211_MESH_PATH_DELETED =		BIT(6),
++};
++
++struct ieee80211_mesh_path_offld {
++	u8 mesh_da[ETH_ALEN];
++	u8 da[ETH_ALEN];
++	u8 next_hop[ETH_ALEN];
++	u8 old_next_hop[ETH_ALEN];
++	u8 ta[ETH_ALEN];
++	u32 metric;
++	unsigned long exp_time;
++	u8 hop_count;
++	u8 flags; /* See &enum ieee80211_mesh_path_flags */
++	u8 mesh_gate;
++	u8 block_mesh_fwd;
++	u8 metadata_type;
++};
++
++#ifdef CPTCFG_MAC80211_MESH
++/** ieee80211_mesh_path_offld_change_notify - Notify mesh path change event.
++ * @vif: Mesh interface on which the event is being reported.
++ * @path: Mesh path which got changed. Please note not all the entries in the
++ *	  path will have valid information. Based on the action code, it will be
++ *	  processed.
++ * @action: Type of the event.
++ */
++int ieee80211_mesh_path_offld_change_notify(struct ieee80211_vif *vif,
++					    struct ieee80211_mesh_path_offld *path,
++					    enum ieee80211_mesh_path_offld_action action);
++
++/** ieee80211s_update_metric_ppdu - Upate tx PPDU stats for 11s metric computation
++ *
++ * @hw: the hardware the frame was transmitted by
++ * @st: tx status information
++*/
++void ieee80211s_update_metric_ppdu(struct ieee80211_hw *hw,
++				   struct ieee80211_tx_status *st);
++
++/** mesh_nss_offld_proxy_path_exp_update - update the expiry time from nss
++ * @vif Mesh interface on which the event is being reported.
++ * @mac: dest_mac_addr of the mesh proxy path
++ * @time_diff: This is the time diff since the mesh peer is active
++ */
++void mesh_nss_offld_proxy_path_exp_update(struct ieee80211_vif *vif, u8* da,
++					   u8* mesh_da, u32 time_diff);
++#else
++static inline int
++ieee80211_mesh_path_offld_change_notify(struct ieee80211_vif *vif,
++					struct ieee80211_mesh_path_offld *path,
++					enum ieee80211_mesh_path_offld_action action)
++{
++	return 0;
++}
++
++static inline void
++ieee80211s_update_metric_ppdu(struct ieee80211_hw *hw,
++			      struct ieee80211_tx_status *st)
++{
++}
++
++static inline void
++mesh_nss_offld_proxy_path_exp_update(struct ieee80211_vif *vif, u8* da,
++				      u8* mesh_da, u32 time_diff)
++{
++}
++#endif
++
+ #endif /* MAC80211_H */
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -2793,6 +2793,7 @@ static int ieee80211_update_mesh_config(
+ 	struct mesh_config *conf;
+ 	struct ieee80211_sub_if_data *sdata;
+ 	struct ieee80211_if_mesh *ifmsh;
++	u32 nss_changed = 0;
+ 
+ 	sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 	ifmsh = &sdata->u.mesh;
+@@ -2809,8 +2810,11 @@ static int ieee80211_update_mesh_config(
+ 		conf->dot11MeshMaxPeerLinks = nconf->dot11MeshMaxPeerLinks;
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_MAX_RETRIES, mask))
+ 		conf->dot11MeshMaxRetries = nconf->dot11MeshMaxRetries;
+-	if (_chg_mesh_attr(NL80211_MESHCONF_TTL, mask))
++	if (_chg_mesh_attr(NL80211_MESHCONF_TTL, mask)) {
+ 		conf->dot11MeshTTL = nconf->dot11MeshTTL;
++		sdata->vif.bss_conf.nss_offld_ttl = nconf->dot11MeshTTL;
++		nss_changed |= BSS_CHANGED_NSS_MESH_TTL;
++	}
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_ELEMENT_TTL, mask))
+ 		conf->element_ttl = nconf->element_ttl;
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_AUTO_OPEN_PLINKS, mask)) {
+@@ -2824,8 +2828,12 @@ static int ieee80211_update_mesh_config(
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_HWMP_MAX_PREQ_RETRIES, mask))
+ 		conf->dot11MeshHWMPmaxPREQretries =
+ 			nconf->dot11MeshHWMPmaxPREQretries;
+-	if (_chg_mesh_attr(NL80211_MESHCONF_PATH_REFRESH_TIME, mask))
++	if (_chg_mesh_attr(NL80211_MESHCONF_PATH_REFRESH_TIME, mask)) {
+ 		conf->path_refresh_time = nconf->path_refresh_time;
++		sdata->vif.bss_conf.nss_offld_mpath_refresh_time =
++			nconf->path_refresh_time;
++		nss_changed |= BSS_CHANGED_NSS_MESH_REFRESH_TIME;
++	}
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_MIN_DISCOVERY_TIMEOUT, mask))
+ 		conf->min_discovery_timeout = nconf->min_discovery_timeout;
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_HWMP_ACTIVE_PATH_TIMEOUT, mask))
+@@ -2860,8 +2868,12 @@ static int ieee80211_update_mesh_config(
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_HWMP_RANN_INTERVAL, mask))
+ 		conf->dot11MeshHWMPRannInterval =
+ 			nconf->dot11MeshHWMPRannInterval;
+-	if (_chg_mesh_attr(NL80211_MESHCONF_FORWARDING, mask))
++	if (_chg_mesh_attr(NL80211_MESHCONF_FORWARDING, mask)) {
+ 		conf->dot11MeshForwarding = nconf->dot11MeshForwarding;
++		sdata->vif.bss_conf.nss_offld_mesh_forward_enabled =
++			nconf->dot11MeshForwarding;
++		nss_changed |= BSS_CHANGED_NSS_MESH_FWD_ENABLED;
++	}
+ 	if (_chg_mesh_attr(NL80211_MESHCONF_RSSI_THRESHOLD, mask)) {
+ 		/* our RSSI threshold implementation is supported only for
+ 		 * devices that report signal in dBm.
+@@ -2903,6 +2915,7 @@ static int ieee80211_update_mesh_config(
+ 		conf->dot11MeshConnectedToAuthServer =
+ 			nconf->dot11MeshConnectedToAuthServer;
+ 	ieee80211_mbss_info_change_notify(sdata, BSS_CHANGED_BEACON);
++	ieee80211_nss_bss_info_change_notify(sdata, nss_changed);
+ 	return 0;
+ }
+ 
+--- a/net/mac80211/debug.h
++++ b/net/mac80211/debug.h
+@@ -68,6 +68,12 @@
+ #define MAC80211_MESH_PS_DEBUG 0
+ #endif
+ 
++#ifdef CPTCFG_MAC80211_MESH_OFFLOAD_DEBUG
++#define MAC80211_MESH_OFFLOAD_DEBUG 1
++#else
++#define MAC80211_MESH_OFFLOAD_DEBUG 0
++#endif
++
+ #ifdef CPTCFG_MAC80211_TDLS_DEBUG
+ #define MAC80211_TDLS_DEBUG 1
+ #else
+@@ -227,6 +233,10 @@ do {									\
+ 	_sdata_dbg(MAC80211_MESH_PS_DEBUG,				\
+ 		   sdata, fmt, ##__VA_ARGS__)
+ 
++#define moffld_dbg(sdata, fmt, ...)					\
++	_sdata_dbg(MAC80211_MESH_OFFLOAD_DEBUG,				\
++		   sdata, fmt, ##__VA_ARGS__)
++
+ #define tdls_dbg(sdata, fmt, ...)					\
+ 	_sdata_dbg(MAC80211_TDLS_DEBUG,					\
+ 		   sdata, fmt, ##__VA_ARGS__)
+--- a/net/mac80211/debugfs.c
++++ b/net/mac80211/debugfs.c
+@@ -504,6 +504,7 @@ static const char *hw_flag_names[] = {
+ 	FLAG(HANDLES_QUIET_CSA),
+ 	FLAG(STRICT),
+ 	FLAG(SUPPORTS_NSS_OFFLOAD),
++	FLAG(SUPPORTS_MESH_NSS_OFFLOAD),
+ #undef FLAG
+ };
+ 
+--- a/net/mac80211/driver-ops.c
++++ b/net/mac80211/driver-ops.c
+@@ -635,3 +635,23 @@ int drv_change_sta_links(struct ieee8021
+ 
+ 	return 0;
+ }
++
++#ifdef CPTCFG_MAC80211_MESH
++void drv_config_mesh_offload_path(struct ieee80211_local *local,
++				  struct ieee80211_sub_if_data *sdata,
++				  enum ieee80211_mesh_path_offld_cmd cmd,
++				  struct ieee80211_mesh_path_offld *path)
++{
++	if (!check_sdata_in_driver(sdata))
++		return;
++
++	if (!ieee80211_hw_check(&local->hw, SUPPORTS_MESH_NSS_OFFLOAD))
++		return;
++
++	if (local->ops->config_mesh_offload_path)
++		local->ops->config_mesh_offload_path(&local->hw,
++						     &sdata->vif, cmd, path);
++
++	/* TODO: trace event */
++}
++#endif
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -1817,4 +1817,11 @@ static inline int drv_set_eml_op_mode(st
+ 	return ret;
+ }
+ 
++#ifdef CPTCFG_MAC80211_MESH
++void drv_config_mesh_offload_path(struct ieee80211_local *local,
++				  struct ieee80211_sub_if_data *sdata,
++				  enum ieee80211_mesh_path_offld_cmd cmd,
++				  struct ieee80211_mesh_path_offld *path);
++#endif /* CPTCFG_MAC80211_MESH */
++
+ #endif /* __MAC80211_DRIVER_OPS */
+--- a/net/mac80211/mesh.h
++++ b/net/mac80211/mesh.h
+@@ -321,6 +321,10 @@ void mesh_rx_path_sel_frame(struct ieee8
+ 			    struct ieee80211_mgmt *mgmt, size_t len);
+ struct mesh_path *
+ mesh_path_add(struct ieee80211_sub_if_data *sdata, const u8 *dst);
++struct mesh_path *__mesh_path_add(struct ieee80211_sub_if_data *sdata,
++				  const u8 *dst);
++int __mpp_path_add(struct ieee80211_sub_if_data *sdata,
++		   const u8 *dst, const u8 *mpp);
+ 
+ int mesh_path_add_gate(struct mesh_path *mpath);
+ int mesh_path_send_to_gates(struct mesh_path *mpath);
+@@ -362,6 +366,7 @@ void mesh_path_discard_frame(struct ieee
+ void mesh_path_tx_root_frame(struct ieee80211_sub_if_data *sdata);
+ 
+ bool mesh_action_is_path_sel(struct ieee80211_mgmt *mgmt);
++void mesh_nss_offld_path_update(struct mesh_path *mpath, bool is_mpath, u8 *old_next_hop_addr);
+ struct ieee80211_mesh_fast_tx *
+ mesh_fast_tx_get(struct ieee80211_sub_if_data *sdata,
+ 		 struct ieee80211_mesh_fast_tx_key *key);
+--- a/net/mac80211/mesh_hwmp.c
++++ b/net/mac80211/mesh_hwmp.c
+@@ -373,6 +373,13 @@ static bool is_metric_better(u32 x, u32
+ 	return (x < y) && (x < (y - x / 10));
+ }
+ 
++static inline struct sta_info *
++next_hop_deref_protected(struct mesh_path *mpath)
++{
++	return rcu_dereference_protected(mpath->next_hop,
++					 lockdep_is_held(&mpath->state_lock));
++}
++
+ /**
+  * hwmp_route_info_get - Update routing info to originator and transmitter
+  *
+@@ -396,9 +403,10 @@ static u32 hwmp_route_info_get(struct ie
+ {
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct mesh_path *mpath;
+-	struct sta_info *sta;
++	struct sta_info *sta, *next_hop;
+ 	bool fresh_info;
+ 	const u8 *orig_addr, *ta;
++	u8 old_next_hop_addr[ETH_ALEN] = {0};
+ 	u32 orig_sn, orig_metric;
+ 	unsigned long orig_lifetime, exp_time;
+ 	u32 last_hop_metric, new_metric;
+@@ -500,7 +508,10 @@ static u32 hwmp_route_info_get(struct ie
+ 		}
+ 
+ 		if (fresh_info) {
+-			if (rcu_access_pointer(mpath->next_hop) != sta) {
++			next_hop = rcu_dereference(mpath->next_hop);
++			if (next_hop)
++				ether_addr_copy(old_next_hop_addr, next_hop->sta.addr);
++			if (next_hop != sta) {
+ 				mpath->path_change_count++;
+ 				flush_mpath = true;
+ 			}
+@@ -522,6 +533,8 @@ static u32 hwmp_route_info_get(struct ie
+ 			/* draft says preq_id should be saved to, but there does
+ 			 * not seem to be any use for it, skipping by now
+ 			 */
++
++			mesh_nss_offld_path_update(mpath, true, old_next_hop_addr);
+ 		} else
+ 			spin_unlock_bh(&mpath->state_lock);
+ 	}
+@@ -552,7 +565,14 @@ static u32 hwmp_route_info_get(struct ie
+ 		}
+ 
+ 		if (fresh_info) {
+-			if (rcu_access_pointer(mpath->next_hop) != sta) {
++			/* Reset the old_next_hop_addr since this may have filled
++			 * if orig_addr and ta are different
++			 */
++			memset(old_next_hop_addr, 0, ETH_ALEN);
++			next_hop = rcu_dereference(mpath->next_hop);
++			if (next_hop)
++				ether_addr_copy(old_next_hop_addr, next_hop->sta.addr);
++			if (next_hop != sta) {
+ 				mpath->path_change_count++;
+ 				flush_mpath = true;
+ 			}
+@@ -569,6 +589,8 @@ static u32 hwmp_route_info_get(struct ie
+ 			/* init it at a low value - 0 start is tricky */
+ 			ewma_mesh_fail_avg_add(&sta->mesh->fail_avg, 1);
+ 			mesh_path_tx_pending(mpath);
++
++			mesh_nss_offld_path_update(mpath, true, old_next_hop_addr);
+ 		} else
+ 			spin_unlock_bh(&mpath->state_lock);
+ 	}
+@@ -707,15 +729,6 @@ static void hwmp_preq_frame_process(stru
+ 	}
+ }
+ 
+-
+-static inline struct sta_info *
+-next_hop_deref_protected(struct mesh_path *mpath)
+-{
+-	return rcu_dereference_protected(mpath->next_hop,
+-					 lockdep_is_held(&mpath->state_lock));
+-}
+-
+-
+ static void hwmp_prep_frame_process(struct ieee80211_sub_if_data *sdata,
+ 				    struct ieee80211_mgmt *mgmt,
+ 				    const u8 *prep_elem, u32 metric)
+@@ -1359,3 +1372,274 @@ void mesh_path_tx_root_frame(struct ieee
+ 		return;
+ 	}
+ }
++
++static int mesh_path_offld_mpath_refresh(struct ieee80211_sub_if_data *sdata,
++					 u8 *mda)
++{
++	struct mesh_path *mpath;
++
++	rcu_read_lock();
++
++	mpath = mesh_path_lookup(sdata, mda);
++	if (!mpath || !(mpath->flags & MESH_PATH_ACTIVE)) {
++		moffld_dbg(sdata,
++			   "mpath lookup failed during path refresh for %pM, is_mpath %d\n",
++			   mda, mpath != NULL);
++		rcu_read_unlock();
++		return -ENOENT;
++	}
++
++	if (!(mpath->flags & MESH_PATH_RESOLVING) && !(mpath->flags & MESH_PATH_FIXED))
++		mesh_queue_preq(mpath, PREQ_Q_F_START | PREQ_Q_F_REFRESH);
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int mesh_path_offld_mpath_del(struct ieee80211_sub_if_data *sdata, u8 *da)
++{
++	struct mesh_path *mpath, *mppath;
++
++	rcu_read_lock();
++
++	mpath = mesh_path_lookup(sdata, da);
++	if (!mpath) {
++		moffld_dbg(sdata, "mpath lookup failed for %pM during duplicate mpath removal\n",
++			   da);
++		rcu_read_unlock();
++		return -ENOENT;
++	}
++
++	mppath = mpp_path_lookup(sdata, da);
++	if (!mppath) {
++		moffld_dbg(sdata, "proxy path lookup failed for %pM during duplicate mpath removal\n",
++			   da);
++		rcu_read_unlock();
++		return -EINVAL;
++	}
++
++	mesh_path_del(sdata, mpath->dst);
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int mesh_path_offld_mpath_exp(struct ieee80211_sub_if_data *sdata, u8 *mda)
++{
++	struct mesh_path *mpath;
++
++	rcu_read_lock();
++
++	mpath = mesh_path_lookup(sdata, mda);
++	if (!mpath) {
++		mpath = mesh_path_add(sdata, mda);
++		if (IS_ERR(mpath)) {
++			rcu_read_unlock();
++			moffld_dbg(sdata,
++				   "failed to add mpath for %pM during mpath exp\n", mda);
++			return PTR_ERR(mpath);
++		}
++	}
++
++	spin_lock_bh(&mpath->state_lock);
++	mpath->flags &= ~MESH_PATH_ACTIVE;
++	spin_unlock_bh(&mpath->state_lock);
++
++	if (!(mpath->flags & MESH_PATH_RESOLVING) &&
++	    mesh_path_sel_is_hwmp(sdata))
++		mesh_queue_preq(mpath, PREQ_Q_F_START);
++
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int mesh_path_offld_mpp_learn(struct ieee80211_sub_if_data *sdata,
++				     u8 *da, u8 *mda)
++{
++	struct mesh_path *mppath;
++	int ret;
++
++	rcu_read_lock();
++	mppath = mpp_path_lookup(sdata, da);
++	if (mppath) {
++		moffld_dbg(sdata, "proxy path for da %pM mesh_da %pM already exists\n",
++			   da, mda);
++		rcu_read_unlock();
++		return -EEXIST;
++	}
++
++	ret = mpp_path_add(sdata, da, mda);
++	if (ret)
++		moffld_dbg(sdata, "failed to add proxy path entry (%d): da %pM mesh_da %pM\n",
++			   ret, da, mda);
++
++	rcu_read_unlock();
++
++	return ret;
++}
++
++static int mesh_path_offld_mpp_add(struct ieee80211_sub_if_data *sdata,
++				     u8 *da, u8 *mda)
++{
++	struct mesh_path *mppath;
++	int ret;
++
++	rcu_read_lock();
++	mppath = mpp_path_lookup(sdata, da);
++	if (mppath) {
++		moffld_dbg(sdata, "proxy path for da %pM mesh_da %pM already exists\n",
++			   da, mda);
++		rcu_read_unlock();
++		return -EEXIST;
++	}
++
++	ret = __mpp_path_add(sdata, da, mda);
++	if (ret)
++		moffld_dbg(sdata, "failed to add proxy path entry (%d): da %pM mesh_da %pM\n",
++			   ret, da, mda);
++
++	rcu_read_unlock();
++
++	return ret;
++}
++
++static int mesh_path_offld_mpp_update(struct ieee80211_sub_if_data *sdata,
++				      u8 *da, u8 *mda)
++{
++	struct mesh_path *mppath;
++
++	rcu_read_lock();
++	mppath = mpp_path_lookup(sdata, da);
++	if (!mppath) {
++		moffld_dbg(sdata,
++			   "proxy path lookup for da %pM failed during MPP update with mesh_da %pM\n",
++			   da, mda);
++		rcu_read_unlock();
++		return -ENOENT;
++	} else {
++		spin_lock_bh(&mppath->state_lock);
++		if (!ether_addr_equal(mppath->mpp, mda))
++			memcpy(mppath->mpp, mda, ETH_ALEN);
++		mppath->exp_time = jiffies;
++		spin_unlock_bh(&mppath->state_lock);
++	}
++	rcu_read_unlock();
++
++	return 0;
++}
++
++static int mesh_path_offld_mpath_not_found(struct ieee80211_sub_if_data *sdata,
++					   u8 *mda, u8 *ta)
++{
++	struct mesh_path *mpath;
++	struct ieee80211_if_mesh *ifmsh = &sdata->u.mesh;
++
++	rcu_read_lock();
++
++	mpath = mesh_path_lookup(sdata, mda);
++	if (!mpath) {
++		mpath = mesh_path_add(sdata, mda);
++		if (IS_ERR(mpath)) {
++			moffld_dbg(sdata, "mpath add failed for mesh_da %pM (%lu)\n",
++				   mda, PTR_ERR(mpath));
++			rcu_read_unlock();
++			return PTR_ERR(mpath);
++		}
++	}
++
++	if (!(mpath->flags & MESH_PATH_RESOLVING) &&
++	    mesh_path_sel_is_hwmp(sdata))
++		mesh_queue_preq(mpath, PREQ_Q_F_START);
++
++	rcu_read_unlock();
++
++	if (!is_zero_ether_addr(ta))
++		mesh_path_error_tx(sdata, ifmsh->mshcfg.element_ttl,
++				   mda, 0, WLAN_REASON_MESH_PATH_NOFORWARD, ta);
++
++	return 0;
++}
++
++void ieee80211s_update_metric_ppdu(struct ieee80211_hw *hw,
++				   struct ieee80211_tx_status *st)
++{
++	struct sta_info *sta;
++	int i, num_mpdu;
++	bool failed;
++	struct rate_info rinfo;
++
++	if (!st->sta)
++		return;
++
++	if (st->mpdu_succ) {
++		num_mpdu = st->mpdu_succ;
++		failed = false;
++	} else if (st->mpdu_fail) {
++		num_mpdu = st->mpdu_fail;
++		failed = true;
++	} else
++		return;
++
++	sta = container_of(st->sta, struct sta_info, sta);
++	if (!ieee80211_vif_is_mesh(&sta->sdata->vif))
++		return;
++
++	for (i = 0; i < num_mpdu; i++) {
++		ewma_mesh_fail_avg_add(&sta->mesh->fail_avg, failed * 100);
++		if (ewma_mesh_fail_avg_read(&sta->mesh->fail_avg) >
++					    LINK_FAIL_THRESH)
++			mesh_plink_broken(sta);
++
++		if (!st->rates)
++			continue;
++
++		rinfo = st->rates->rate_idx;
++		ewma_mesh_tx_rate_avg_add(&sta->mesh->tx_rate_avg,
++					  cfg80211_calculate_bitrate(&rinfo));
++	}
++}
++EXPORT_SYMBOL(ieee80211s_update_metric_ppdu);
++
++int ieee80211_mesh_path_offld_change_notify(struct ieee80211_vif *vif,
++				struct ieee80211_mesh_path_offld *path,
++				enum ieee80211_mesh_path_offld_action action)
++{
++	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
++	int ret = -ENOTSUPP;
++
++	moffld_dbg(sdata, "received mesh offload event %d\n", action);
++
++	switch (action) {
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_REFRESH:
++		ret = mesh_path_offld_mpath_refresh(sdata, path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_DEL:
++		ret = mesh_path_offld_mpath_del(sdata, path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPATH_EXP:
++		ret = mesh_path_offld_mpath_exp(sdata, path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_LEARN:
++		ret = mesh_path_offld_mpp_learn(sdata, path->da, path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_ADD:
++		ret = mesh_path_offld_mpp_add(sdata, path->da, path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_MPP_UPDATE:
++		ret = mesh_path_offld_mpp_update(sdata, path->da,
++						 path->mesh_da);
++		break;
++	case IEEE80211_MESH_PATH_OFFLD_ACTION_PATH_NOT_FOUND:
++		ret = mesh_path_offld_mpath_not_found(sdata, path->da,
++						      path->ta);
++		break;
++	default:
++		break;
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL(ieee80211_mesh_path_offld_change_notify);
+--- a/net/mac80211/mesh_pathtbl.c
++++ b/net/mac80211/mesh_pathtbl.c
+@@ -16,6 +16,7 @@
+ #include "ieee80211_i.h"
+ #include "mesh.h"
+ #include <linux/rhashtable.h>
++#include "driver-ops.h"
+ 
+ static void mesh_path_free_rcu(struct mesh_table *tbl, struct mesh_path *mpath);
+ 
+@@ -104,6 +105,63 @@ static void mesh_table_free(struct mesh_
+ 				    mesh_path_rht_free, tbl);
+ }
+ 
++void mesh_nss_offld_proxy_path_exp_update(struct ieee80211_vif *vif, u8* da, u8* mesh_da, u32 inactive_time)
++{
++	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
++	struct mesh_table *tbl = &sdata->u.mesh.mpp_paths;
++	struct mesh_path *mppath;
++	struct hlist_node *n;
++	unsigned long expiry;
++
++	spin_lock_bh(&tbl->walk_lock);
++	hlist_for_each_entry_safe(mppath, n, &tbl->walk_head, walk_list) {
++		if(!ether_addr_equal(da, mppath->dst) || !ether_addr_equal(mesh_da, mppath->mpp))
++			continue;
++		if ((!(mppath->flags & MESH_PATH_RESOLVING)) &&
++		    (!(mppath->flags & MESH_PATH_FIXED))) {
++			expiry = jiffies - msecs_to_jiffies(inactive_time);
++			mppath->exp_time = time_after(mppath->exp_time, expiry) ?
++								mppath->exp_time : expiry;
++		}
++	}
++	spin_unlock_bh(&tbl->walk_lock);
++}
++EXPORT_SYMBOL(mesh_nss_offld_proxy_path_exp_update);
++
++void mesh_nss_offld_path_update(struct mesh_path *mpath, bool is_mpath, u8 *old_next_hop_addr)
++{
++	struct ieee80211_mesh_path_offld path = {0};
++	struct sta_info *next_hop;
++	struct ieee80211_sub_if_data *sdata = mpath->sdata;
++
++
++	path.metric = mpath->metric;
++	if (time_before(jiffies, mpath->exp_time))
++		path.exp_time = jiffies_to_msecs(mpath->exp_time - jiffies);
++
++	path.hop_count = mpath->hop_count;
++	path.flags = mpath->flags;
++	path.mesh_gate = mpath->is_gate;
++	if (is_mpath) {
++		ether_addr_copy(path.mesh_da, mpath->dst);
++	} else {
++		ether_addr_copy(path.mesh_da, mpath->mpp);
++		ether_addr_copy(path.da, mpath->dst);
++	}
++
++	next_hop = rcu_dereference(mpath->next_hop);
++	if (next_hop)
++		ether_addr_copy(path.next_hop, next_hop->addr);
++
++	if (old_next_hop_addr)
++		ether_addr_copy(path.old_next_hop, old_next_hop_addr);
++
++	drv_config_mesh_offload_path(sdata->local, sdata,
++				     is_mpath ? IEEE80211_MESH_PATH_OFFLD_CMD_UPDATE_MPATH :
++						IEEE80211_MESH_PATH_OFFLD_CMD_UPDATE_MPP,
++				     &path);
++}
++
+ /**
+  * mesh_path_assign_nexthop - update mesh path next hop
+  *
+@@ -241,16 +299,23 @@ static void mesh_path_move_to_queue(stru
+ 
+ 
+ static struct mesh_path *mpath_lookup(struct mesh_table *tbl, const u8 *dst,
+-				      struct ieee80211_sub_if_data *sdata)
++				      struct ieee80211_sub_if_data *sdata,
++				      bool is_mpath)
+ {
+ 	struct mesh_path *mpath;
++	bool update;
++	struct sta_info *next_hop;
+ 
+ 	mpath = rhashtable_lookup(&tbl->rhead, dst, mesh_rht_params);
+ 
+ 	if (mpath && mpath_expired(mpath)) {
+ 		spin_lock_bh(&mpath->state_lock);
++		next_hop = rcu_dereference(mpath->next_hop);
++		update = !!(mpath->flags & MESH_PATH_ACTIVE);
+ 		mpath->flags &= ~MESH_PATH_ACTIVE;
+ 		spin_unlock_bh(&mpath->state_lock);
++		if (update && is_mpath)
++			mesh_nss_offld_path_update(mpath, true, next_hop ? next_hop->addr : NULL);
+ 	}
+ 	return mpath;
+ }
+@@ -267,13 +332,13 @@ static struct mesh_path *mpath_lookup(st
+ struct mesh_path *
+ mesh_path_lookup(struct ieee80211_sub_if_data *sdata, const u8 *dst)
+ {
+-	return mpath_lookup(&sdata->u.mesh.mesh_paths, dst, sdata);
++	return mpath_lookup(&sdata->u.mesh.mesh_paths, dst, sdata, true);
+ }
+ 
+ struct mesh_path *
+ mpp_path_lookup(struct ieee80211_sub_if_data *sdata, const u8 *dst)
+ {
+-	return mpath_lookup(&sdata->u.mesh.mpp_paths, dst, sdata);
++	return mpath_lookup(&sdata->u.mesh.mpp_paths, dst, sdata, false);
+ }
+ 
+ static struct mesh_path *
+@@ -337,6 +402,7 @@ mpp_path_lookup_by_idx(struct ieee80211_
+ int mesh_path_add_gate(struct mesh_path *mpath)
+ {
+ 	struct mesh_table *tbl;
++	struct sta_info *next_hop;
+ 	int err;
+ 
+ 	rcu_read_lock();
+@@ -349,6 +415,7 @@ int mesh_path_add_gate(struct mesh_path
+ 		goto err_rcu;
+ 	}
+ 	mpath->is_gate = true;
++	next_hop = rcu_dereference(mpath->next_hop);
+ 	mpath->sdata->u.mesh.num_gates++;
+ 
+ 	spin_lock(&tbl->gates_lock);
+@@ -357,6 +424,8 @@ int mesh_path_add_gate(struct mesh_path
+ 
+ 	spin_unlock_bh(&mpath->state_lock);
+ 
++	mesh_nss_offld_path_update(mpath, true, next_hop ? next_hop->addr : NULL);
++
+ 	mpath_dbg(mpath->sdata,
+ 		  "Mesh path: Recorded new gate: %pM. %d known gates\n",
+ 		  mpath->dst, mpath->sdata->u.mesh.num_gates);
+@@ -373,16 +442,21 @@ err_rcu:
+  */
+ static void mesh_gate_del(struct mesh_table *tbl, struct mesh_path *mpath)
+ {
++	struct sta_info *next_hop;
++
+ 	lockdep_assert_held(&mpath->state_lock);
+ 	if (!mpath->is_gate)
+ 		return;
+ 
++	next_hop = rcu_dereference(mpath->next_hop);
+ 	mpath->is_gate = false;
+ 	spin_lock_bh(&tbl->gates_lock);
+ 	hlist_del_rcu(&mpath->gate_list);
+ 	mpath->sdata->u.mesh.num_gates--;
+ 	spin_unlock_bh(&tbl->gates_lock);
+ 
++	mesh_nss_offld_path_update(mpath, true, next_hop ? next_hop->addr : NULL);
++
+ 	mpath_dbg(mpath->sdata,
+ 		  "Mesh path: Deleted gate: %pM. %d known gates\n",
+ 		  mpath->dst, mpath->sdata->u.mesh.num_gates);
+@@ -668,17 +742,8 @@ void mesh_fast_tx_flush_addr(struct ieee
+ 	spin_unlock_bh(&cache->walk_lock);
+ }
+ 
+-/**
+- * mesh_path_add - allocate and add a new path to the mesh path table
+- * @sdata: local subif
+- * @dst: destination address of the path (ETH_ALEN length)
+- *
+- * Returns: 0 on success
+- *
+- * State: the initial state of the new path is set to 0
+- */
+-struct mesh_path *mesh_path_add(struct ieee80211_sub_if_data *sdata,
+-				const u8 *dst)
++struct mesh_path *__mesh_path_add(struct ieee80211_sub_if_data *sdata,
++				  const u8 *dst)
+ {
+ 	struct mesh_table *tbl;
+ 	struct mesh_path *mpath, *new_mpath;
+@@ -719,8 +784,36 @@ struct mesh_path *mesh_path_add(struct i
+ 	return new_mpath;
+ }
+ 
+-int mpp_path_add(struct ieee80211_sub_if_data *sdata,
+-		 const u8 *dst, const u8 *mpp)
++/**
++ * mesh_path_add - allocate and add a new path to the mesh path table
++ * @sdata: local subif
++ * @dst: destination address of the path (ETH_ALEN length)
++ *
++ * Returns: 0 on success
++ *
++ * State: the initial state of the new path is set to 0
++ */
++struct mesh_path *mesh_path_add(struct ieee80211_sub_if_data *sdata,
++				const u8 *dst)
++{
++	struct mesh_path *new_path;
++	struct ieee80211_mesh_path_offld path = {0};
++
++	new_path = __mesh_path_add(sdata, dst);
++	if (IS_ERR(new_path))
++		return new_path;
++
++	ether_addr_copy(path.mesh_da, dst);
++
++	drv_config_mesh_offload_path(sdata->local, sdata,
++				     IEEE80211_MESH_PATH_OFFLD_CMD_ADD_MPATH,
++				     &path);
++
++	return new_path;
++}
++
++int __mpp_path_add(struct ieee80211_sub_if_data *sdata,
++		   const u8 *dst, const u8 *mpp)
+ {
+ 	struct mesh_table *tbl;
+ 	struct mesh_path *new_mpath;
+@@ -758,6 +851,25 @@ int mpp_path_add(struct ieee80211_sub_if
+ 	return ret;
+ }
+ 
++int mpp_path_add(struct ieee80211_sub_if_data *sdata,
++		 const u8 *dst, const u8 *mpp)
++{
++	struct ieee80211_mesh_path_offld path = {0};
++	int ret;
++
++	ret = __mpp_path_add(sdata, dst, mpp);
++	if (ret)
++		return ret;
++
++	ether_addr_copy(path.mesh_da, mpp);
++	ether_addr_copy(path.da, dst);
++
++	drv_config_mesh_offload_path(sdata->local, sdata,
++				     IEEE80211_MESH_PATH_OFFLD_CMD_ADD_MPP,
++				     &path);
++
++	return 0;
++}
+ 
+ /**
+  * mesh_plink_broken - deactivates paths and sends perr when a link breaks
+@@ -808,8 +920,29 @@ static void mesh_path_free_rcu(struct me
+ 	kfree_rcu(mpath, rcu);
+ }
+ 
+-static void __mesh_path_del(struct mesh_table *tbl, struct mesh_path *mpath)
++static void __mesh_path_del(struct mesh_table *tbl, struct mesh_path *mpath,
++			   bool is_mpath_tbl)
+ {
++	struct ieee80211_mesh_path_offld path = {0};
++	struct sta_info *next_hop;
++	struct ieee80211_sub_if_data *sdata = mpath->sdata;
++
++
++	path.metric = mpath->metric;
++	path.exp_time = mpath->exp_time;
++	path.hop_count = mpath->hop_count;
++	path.flags = mpath->flags;
++	if (is_mpath_tbl) {
++		ether_addr_copy(path.mesh_da, mpath->dst);
++	} else {
++		ether_addr_copy(path.mesh_da, mpath->mpp);
++		ether_addr_copy(path.da, mpath->dst);
++	}
++
++	next_hop = rcu_dereference(mpath->next_hop);
++	if (next_hop)
++		ether_addr_copy(path.next_hop, next_hop->addr);
++
+ 	hlist_del_rcu(&mpath->walk_list);
+ 	rhashtable_remove_fast(&tbl->rhead, &mpath->rhash, mesh_rht_params);
+ 	if (tbl == &mpath->sdata->u.mesh.mpp_paths)
+@@ -817,6 +950,11 @@ static void __mesh_path_del(struct mesh_
+ 	else
+ 		mesh_fast_tx_flush_mpath(mpath);
+ 	mesh_path_free_rcu(tbl, mpath);
++
++	drv_config_mesh_offload_path(sdata->local, sdata,
++				     is_mpath_tbl ? IEEE80211_MESH_PATH_OFFLD_CMD_DELETE_MPATH :
++						    IEEE80211_MESH_PATH_OFFLD_CMD_DELETE_MPP,
++				     &path);
+ }
+ 
+ /**
+@@ -840,7 +978,7 @@ void mesh_path_flush_by_nexthop(struct s
+ 	spin_lock_bh(&tbl->walk_lock);
+ 	hlist_for_each_entry_safe(mpath, n, &tbl->walk_head, walk_list) {
+ 		if (rcu_access_pointer(mpath->next_hop) == sta)
+-			__mesh_path_del(tbl, mpath);
++			__mesh_path_del(tbl, mpath, true);
+ 	}
+ 	spin_unlock_bh(&tbl->walk_lock);
+ }
+@@ -855,19 +993,19 @@ static void mpp_flush_by_proxy(struct ie
+ 	spin_lock_bh(&tbl->walk_lock);
+ 	hlist_for_each_entry_safe(mpath, n, &tbl->walk_head, walk_list) {
+ 		if (ether_addr_equal(mpath->mpp, proxy))
+-			__mesh_path_del(tbl, mpath);
++			__mesh_path_del(tbl, mpath, false);
+ 	}
+ 	spin_unlock_bh(&tbl->walk_lock);
+ }
+ 
+-static void table_flush_by_iface(struct mesh_table *tbl)
++static void table_flush_by_iface(struct mesh_table *tbl, bool is_mpath_tbl)
+ {
+ 	struct mesh_path *mpath;
+ 	struct hlist_node *n;
+ 
+ 	spin_lock_bh(&tbl->walk_lock);
+ 	hlist_for_each_entry_safe(mpath, n, &tbl->walk_head, walk_list) {
+-		__mesh_path_del(tbl, mpath);
++		__mesh_path_del(tbl, mpath, is_mpath_tbl);
+ 	}
+ 	spin_unlock_bh(&tbl->walk_lock);
+ }
+@@ -881,8 +1019,8 @@ static void table_flush_by_iface(struct
+  */
+ void mesh_path_flush_by_iface(struct ieee80211_sub_if_data *sdata)
+ {
+-	table_flush_by_iface(&sdata->u.mesh.mesh_paths);
+-	table_flush_by_iface(&sdata->u.mesh.mpp_paths);
++	table_flush_by_iface(&sdata->u.mesh.mesh_paths, true);
++	table_flush_by_iface(&sdata->u.mesh.mpp_paths, false);
+ }
+ 
+ /**
+@@ -896,7 +1034,7 @@ void mesh_path_flush_by_iface(struct iee
+  */
+ static int table_path_del(struct mesh_table *tbl,
+ 			  struct ieee80211_sub_if_data *sdata,
+-			  const u8 *addr)
++			  const u8 *addr, bool is_mpath_tbl)
+ {
+ 	struct mesh_path *mpath;
+ 
+@@ -907,7 +1045,7 @@ static int table_path_del(struct mesh_ta
+ 		return -ENXIO;
+ 	}
+ 
+-	__mesh_path_del(tbl, mpath);
++	__mesh_path_del(tbl, mpath, is_mpath_tbl);
+ 	spin_unlock_bh(&tbl->walk_lock);
+ 	return 0;
+ }
+@@ -928,7 +1066,7 @@ int mesh_path_del(struct ieee80211_sub_i
+ 	/* flush relevant mpp entries first */
+ 	mpp_flush_by_proxy(sdata, addr);
+ 
+-	err = table_path_del(&sdata->u.mesh.mesh_paths, sdata, addr);
++	err = table_path_del(&sdata->u.mesh.mesh_paths, sdata, addr, true);
+ 	sdata->u.mesh.mesh_paths_generation++;
+ 	return err;
+ }
+@@ -1046,7 +1184,10 @@ void mesh_path_flush_pending(struct mesh
+  */
+ void mesh_path_fix_nexthop(struct mesh_path *mpath, struct sta_info *next_hop)
+ {
++	struct sta_info *old_next_hop;
++
+ 	spin_lock_bh(&mpath->state_lock);
++	old_next_hop = rcu_dereference(mpath->next_hop);
+ 	mesh_path_assign_nexthop(mpath, next_hop);
+ 	mpath->sn = 0xffff;
+ 	mpath->metric = 0;
+@@ -1060,6 +1201,8 @@ void mesh_path_fix_nexthop(struct mesh_p
+ 	/* init it at a low value - 0 start is tricky */
+ 	ewma_mesh_fail_avg_add(&next_hop->mesh->fail_avg, 1);
+ 	mesh_path_tx_pending(mpath);
++
++	mesh_nss_offld_path_update(mpath, true, old_next_hop ? old_next_hop->addr : NULL);
+ }
+ 
+ void mesh_pathtbl_init(struct ieee80211_sub_if_data *sdata)
+@@ -1071,7 +1214,7 @@ void mesh_pathtbl_init(struct ieee80211_
+ 
+ static
+ void mesh_path_tbl_expire(struct ieee80211_sub_if_data *sdata,
+-			  struct mesh_table *tbl)
++			  struct mesh_table *tbl, bool is_mpath_tbl)
+ {
+ 	struct mesh_path *mpath;
+ 	struct hlist_node *n;
+@@ -1081,15 +1224,15 @@ void mesh_path_tbl_expire(struct ieee802
+ 		if ((!(mpath->flags & MESH_PATH_RESOLVING)) &&
+ 		    (!(mpath->flags & MESH_PATH_FIXED)) &&
+ 		     time_after(jiffies, mpath->exp_time + MESH_PATH_EXPIRE))
+-			__mesh_path_del(tbl, mpath);
++			__mesh_path_del(tbl, mpath, is_mpath_tbl);
+ 	}
+ 	spin_unlock_bh(&tbl->walk_lock);
+ }
+ 
+ void mesh_path_expire(struct ieee80211_sub_if_data *sdata)
+ {
+-	mesh_path_tbl_expire(sdata, &sdata->u.mesh.mesh_paths);
+-	mesh_path_tbl_expire(sdata, &sdata->u.mesh.mpp_paths);
++	mesh_path_tbl_expire(sdata, &sdata->u.mesh.mesh_paths, true);
++	mesh_path_tbl_expire(sdata, &sdata->u.mesh.mpp_paths, false);
+ }
+ 
+ void mesh_pathtbl_unregister(struct ieee80211_sub_if_data *sdata)
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -2632,7 +2632,7 @@ static struct sk_buff *ieee80211_build_h
+ 	bool multicast;
+ 	u16 info_id = 0;
+ 	struct ieee80211_chanctx_conf *chanctx_conf = NULL;
+-	enum nl80211_band band;
++	enum nl80211_band band = 0;
+ 	int ret;
+ 	u8 link_id = u32_get_bits(ctrl_flags, IEEE80211_TX_CTRL_MLO_LINK);
+ 
+@@ -2644,6 +2644,9 @@ static struct sk_buff *ieee80211_build_h
+ 		info_flags |= IEEE80211_TX_CTL_REQ_TX_STATUS;
+ #endif
+ 
++	info = IEEE80211_SKB_CB(skb);
++	memset(info, 0, sizeof(*info));
++
+ 	/* convert Ethernet header to proper 802.11 header (based on
+ 	 * operation mode) */
+ 	ethertype = (skb->data[12] << 8) | skb->data[13];
+@@ -2714,6 +2717,13 @@ static struct sk_buff *ieee80211_build_h
+ 		break;
+ #ifdef CPTCFG_MAC80211_MESH
+ 	case NL80211_IFTYPE_MESH_POINT:
++		if (ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD) &&
++		    (sdata->vif.driver_flags & IEEE80211_VIF_NSS_OFFLOAD_DEBUG_MODE) &&
++		    !(is_multicast_ether_addr(skb->data))) {
++			info->flags = IEEE80211_TX_CTL_HW_80211_ENCAP;
++			goto nss_mesh;
++		}
++
+ 		if (!is_multicast_ether_addr(skb->data)) {
+ 			struct sta_info *next_hop;
+ 			bool mpp_lookup = true;
+@@ -2976,10 +2986,10 @@ static struct sk_buff *ieee80211_build_h
+ 
+ 	skb_reset_mac_header(skb);
+ 
+-	info = IEEE80211_SKB_CB(skb);
+-	memset(info, 0, sizeof(*info));
+-
+-	info->flags = info_flags;
++#ifdef CPTCFG_MAC80211_MESH
++nss_mesh:
++#endif
++	info->flags |= info_flags;
+ 	if (info_id) {
+ 		info->status_data = info_id;
+ 		info->status_data_idr = 1;
+@@ -4323,6 +4333,7 @@ void __ieee80211_subif_start_xmit(struct
+ 	struct sk_buff *next;
+ 	int len = skb->len;
+ 	struct ieee80211_key *key = NULL;
++	struct ieee80211_tx_info *info;
+ 	struct ieee80211_sub_if_data *ap_sdata;
+ 
+ 	if (unlikely(!ieee80211_sdata_running(sdata) || skb->len < ETH_HLEN)) {
+@@ -4397,9 +4408,15 @@ void __ieee80211_subif_start_xmit(struct
+ 			goto out;
+ 		}
+ 
+-		dev_sw_netstats_tx_add(dev, 1, skb->len);
+-
+-		ieee80211_xmit(sdata, sta, skb);
++		info = IEEE80211_SKB_CB(skb);
++		if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) {
++			if (sta)
++				key = rcu_dereference(sta->ptk[sta->ptk_idx]);
++			ieee80211_8023_xmit(sdata, dev, sta, key, skb);
++		} else {
++			dev_sw_netstats_tx_add(dev, 1, skb->len);
++			ieee80211_xmit(sdata, sta, skb);
++		}
+ 	}
+ 	goto out;
+  out_free:

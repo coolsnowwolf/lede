@@ -1,0 +1,170 @@
+From 36ee9d37b53c933f4dd8f934f8e0273b5e901549 Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Fri, 8 Jan 2021 00:02:54 +0530
+Subject: [PATCH 1/3] mac80211: add dynamic VLAN support on NSS offload
+
+NSS requires dynamic AP_VLAN vif ifnum and its corresponding VLAN ID
+and group key index to configure dynamic VLAN ext VDEV in NSS.
+
+Hence mac80211 set_key and sta_state callbacks are modified to advertise
+AP_VLAN vif when NSS offload is enabled and VLAN ID provided by hostapd
+in key params is stored to ieee80211_key_conf for the driver.
+
+Co-Developed-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ include/net/mac80211.h    | 3 +++
+ net/mac80211/cfg.c        | 1 +
+ net/mac80211/driver-ops.c | 4 +++-
+ net/mac80211/driver-ops.h | 4 +++-
+ net/mac80211/key.c        | 5 ++++-
+ net/mac80211/tx.c         | 4 ++++
+ 6 files changed, 18 insertions(+), 3 deletions(-)
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -2280,6 +2280,8 @@ enum ieee80211_key_flags {
+  * @tx_pn: PN used for TX keys, may be used by the driver as well if it
+  *	needs to do software PN assignment by itself (e.g. due to TSO)
+  * @flags: key flags, see &enum ieee80211_key_flags.
++ * @vlan_id: VLAN ID corresponding to the group key.
++ *	For VLAN interfaces 1-4096, 0 for non-vlan interfaces
+  * @keyidx: the key index (0-7)
+  * @keylen: key material length
+  * @key: key material. For ALG_TKIP the key is encoded as a 256-bit (32 byte)
+@@ -2299,6 +2301,7 @@ struct ieee80211_key_conf {
+ 	u8 hw_key_idx;
+ 	s8 keyidx;
+ 	u16 flags;
++	u16 vlan_id;
+ 	s8 link_id;
+ 	u8 keylen;
+ 	u8 key[];
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -679,6 +679,7 @@ static int ieee80211_add_key(struct wiph
+ 		break;
+ 	case NL80211_IFTYPE_AP:
+ 	case NL80211_IFTYPE_AP_VLAN:
++		key->conf.vlan_id = params->vlan_id;
+ 		/* Keys without a station are used for TX only */
+ 		if (sta && test_sta_flag(sta, WLAN_STA_MFP))
+ 			key->conf.flags |= IEEE80211_KEY_FLAG_RX_MGMT;
+--- a/net/mac80211/driver-ops.c
++++ b/net/mac80211/driver-ops.c
+@@ -141,7 +141,11 @@ int drv_sta_state(struct ieee80211_local
+ 	might_sleep();
+ 	lockdep_assert_wiphy(local->hw.wiphy);
+ 
+-	sdata = get_bss_sdata(sdata);
++	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD) ||
++	    !(old_state == IEEE80211_STA_ASSOC &&
++	      new_state == IEEE80211_STA_AUTHORIZED))
++		sdata = get_bss_sdata(sdata);
++
+ 	if (!check_sdata_in_driver(sdata))
+ 		return -EIO;
+ 
+@@ -506,7 +510,10 @@ int drv_set_key(struct ieee80211_local *
+ 	might_sleep();
+ 	lockdep_assert_wiphy(local->hw.wiphy);
+ 
+-	sdata = get_bss_sdata(sdata);
++	if (!(sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
++	      ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD)))
++		sdata = get_bss_sdata(sdata);
++
+ 	if (!check_sdata_in_driver(sdata))
+ 		return -EIO;
+ 
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -478,7 +478,9 @@ static inline int drv_sta_add(struct iee
+ 	might_sleep();
+ 	lockdep_assert_wiphy(local->hw.wiphy);
+ 
+-	sdata = get_bss_sdata(sdata);
++	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD))
++		sdata = get_bss_sdata(sdata);
++
+ 	if (!check_sdata_in_driver(sdata))
+ 		return -EIO;
+ 
+@@ -519,7 +521,10 @@ static inline void drv_vif_add_debugfs(s
+ 	    WARN_ON(!sdata->vif.debugfs_dir))
+ 		return;
+ 
+-	sdata = get_bss_sdata(sdata);
++	if (!(sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
++	      ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD)))
++		sdata = get_bss_sdata(sdata);
++
+ 	if (!check_sdata_in_driver(sdata))
+ 		return;
+ 
+--- a/net/mac80211/key.c
++++ b/net/mac80211/key.c
+@@ -160,7 +160,8 @@ static int ieee80211_key_enable_hw_accel
+ 	if (sta && !sta->uploaded)
+ 		goto out_unsupported;
+ 
+-	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN) {
++	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
++	    !ieee80211_hw_check(&key->local->hw, SUPPORTS_NSS_OFFLOAD)) {
+ 		/*
+ 		 * The driver doesn't know anything about VLAN interfaces.
+ 		 * Hence, don't send GTKs for VLAN interfaces to the driver.
+@@ -612,6 +613,8 @@ ieee80211_key_alloc(u32 cipher, int idx,
+ 	 */
+ 	key->conf.flags = 0;
+ 	key->flags = 0;
++	/* VLAN ID initialised to zero for non-vlan interfaces */
++	key->conf.vlan_id = 0;
+ 
+ 	key->conf.link_id = -1;
+ 	key->conf.cipher = cipher;
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -4700,16 +4700,25 @@ static void ieee80211_8023_xmit(struct i
+ 				struct ieee80211_key *key, struct sk_buff *skb)
+ {
+ 	struct ieee80211_tx_info *info;
++	struct ethhdr *ehdr = (struct ethhdr *)skb->data;
+ 	struct ieee80211_local *local = sdata->local;
+ 	struct tid_ampdu_tx *tid_tx;
+ 	struct sk_buff *seg, *next;
+ 	unsigned int skbs = 0, len = 0;
+ 	u16 queue;
++	unsigned char *ra = ehdr->h_dest;
++	bool multicast;
+ 	u8 tid;
+ 
+ 	queue = ieee80211_select_queue(sdata, sta, skb);
+ 	skb_set_queue_mapping(skb, queue);
+ 
++	multicast = is_multicast_ether_addr(ra);
++
++	if (multicast && sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
++	    !atomic_read(&sdata->u.vlan.num_mcast_sta))
++		goto out_free;
++
+ 	if (unlikely(test_bit(SCAN_SW_SCANNING, &local->scanning)) &&
+ 	    test_bit(SDATA_STATE_OFFCHANNEL, &sdata->state))
+ 		goto out_free;
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -1446,6 +1446,13 @@ int ieee80211_do_open(struct wireless_de
+ 			ieee80211_set_vif_encap_ops(sdata);
+ 		} else {
+ 			netif_carrier_off(dev);
++
++			if (ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD)) {
++				ieee80211_set_sdata_offload_flags(sdata);
++				res = drv_add_interface(local, sdata);
++				if (res)
++					goto err_stop;
++			}
+ 		}
+ 		break;
+ 	case NL80211_IFTYPE_MONITOR:

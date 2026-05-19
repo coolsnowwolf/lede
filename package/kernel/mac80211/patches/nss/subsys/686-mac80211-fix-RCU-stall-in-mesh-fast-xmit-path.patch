@@ -1,0 +1,114 @@
+From 331198f889cef552e4644abf1f2ebfcaa2cc41e9 Mon Sep 17 00:00:00 2001
+From: P Praneesh <quic_ppranees@quicinc.com>
+Date: Wed, 23 Nov 2022 18:50:47 +0530
+Subject: [PATCH] mac80211: fix RCU stall in mesh fast xmit path
+
+In mesh fast xmit, mesh_fill_cached_hdr tries to acquire spinlock
+which is already acquired by the same core for updating mesh path
+table. Fix it by using atomic variable instead of using spinlock.
+
+[100466.097939] rcu: INFO: rcu_preempt self-detected stall on CPU
+[100466.097962] rcu:    0-....: (8381 ticks this GP) idle=e86/0/0x3 softirq=2648463/2648463 fqs=4184
+[100466.102651]         (t=8403 jiffies g=5521597 q=620)
+[100466.111586] Task dump for CPU 0:
+[100466.115839] swapper/0       R  running task        0     0      0 0x0000000a
+[100466.119228] Call trace:
+[100466.126348]  dump_backtrace+0x0/0x15c
+[100466.128949]  show_stack+0x14/0x1c
+[100466.132508]  sched_show_task+0x104/0x134
+[100466.135893]  dump_cpu_task+0x40/0x274
+[100466.139974]  rcu_dump_cpu_stacks+0x7c/0xd4
+[100466.143620]  rcu_sched_clock_irq+0x350/0x824
+[100466.147699]  update_process_times+0x2c/0x50
+[100466.152213]  tick_sched_handle.isra.4+0x3c/0x44
+[100466.156553]  tick_sched_timer+0x48/0x88
+[100466.161153]  __hrtimer_run_queues+0xa0/0x140
+[100466.165059]  hrtimer_interrupt+0xe4/0x214
+[100466.169315]  arch_timer_handler_virt+0x28/0x3c
+[100466.173308]  handle_percpu_devid_irq+0x84/0x12c
+[100466.177733]  generic_handle_irq+0x18/0x2c
+[100466.182593]  __handle_domain_irq+0x84/0xac
+[100466.186500]  gic_handle_irq+0x74/0xbc
+[100466.190579]  el1_irq+0xf0/0x1c0
+[100466.194398]  queued_spin_lock_slowpath+0x98/0x2c0
+[100466.197800]  mesh_fill_cached_hdr+0x15c/0x2d0 [mac80211]
+[100466.202397]  __ieee80211_subif_start_xmit+0xf4/0xf3c [mac80211]
+[100466.207865]  ieee80211_subif_start_xmit+0x274/0x2ac [mac80211]
+[100466.213933]  dev_hard_start_xmit+0x1b0/0x230
+[100466.219574]  sch_direct_xmit+0xbc/0x300
+[100466.224086]  __dev_queue_xmit+0x5b0/0x8cc
+[100466.228079]  dev_queue_xmit+0x10/0x18
+[100466.231990]  sfe_ipv4_recv_udp+0x1014/0x1050 [qca_nss_sfe]
+[100466.235722]  sfe_ipv4_recv+0x394/0x5a4 [qca_nss_sfe]
+[100466.241190]  sfe_recv+0xf0/0x47c [qca_nss_sfe]
+[100466.246397]  __netif_receive_skb_core+0x1ac/0xa3c
+[100466.250736]  __netif_receive_skb_list_core+0x84/0x1ec
+[100466.255598]  netif_receive_skb_list_internal+0x250/0x29c
+[100466.260720]  gro_normal_list+0x24/0x40
+[100466.266186]  gro_normal_one+0x3c/0x48
+[100466.269832]  napi_gro_receive+0xc0/0x104
+[100466.273655]  edma_rx_napi_poll+0x820/0xdb4 [qca_nss_dp]
+[100466.277734]  __napi_poll+0x30/0xa4
+[100466.283113]  net_rx_action+0x118/0x270
+[100466.286325]  __do_softirq+0x10c/0x244
+[100466.290145]  irq_exit+0x64/0xb4
+[100466.293965]  __handle_domain_irq+0x88/0xac
+[100466.297350]  gic_handle_irq+0x74/0xbc
+[100466.301256]  el1_irq+0xf0/0x1c0
+[100466.305076]  arch_cpu_idle+0x10/0x18
+[100466.308461]  do_idle+0x104/0x248
+[100466.312019]  cpu_startup_entry+0x20/0x64
+[100466.315320]  rest_init+0xd0/0xdc
+[100466.319311]  arch_call_rest_init+0xc/0x14
+[100466.322610]  start_kernel+0x480/0x4b8
+
+Signed-off-by: P Praneesh <quic_ppranees@quicinc.com>
+---
+ net/mac80211/cfg.c          | 2 +-
+ net/mac80211/mesh.h         | 4 ++--
+ net/mac80211/mesh_hwmp.c    | 4 ++--
+ net/mac80211/mesh_pathtbl.c | 9 ++++-----
+ 4 files changed, 9 insertions(+), 10 deletions(-)
+
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -2620,7 +2620,7 @@ static void mpath_set_pinfo(struct mesh_
+ 	if (mpath->flags & MESH_PATH_RESOLVED)
+ 		pinfo->flags |= NL80211_MPATH_FLAG_RESOLVED;
+ 	pinfo->hop_count = mpath->hop_count;
+-	pinfo->path_change_count = mpath->path_change_count;
++	pinfo->path_change_count = atomic_read(&mpath->path_change_count);
+ }
+ 
+ static int ieee80211_get_mpath(struct wiphy *wiphy, struct net_device *dev,
+--- a/net/mac80211/mesh.h
++++ b/net/mac80211/mesh.h
+@@ -127,7 +127,7 @@ struct mesh_path {
+ 	unsigned long fast_tx_check;
+ 	bool is_root;
+ 	bool is_gate;
+-	u32 path_change_count;
++	atomic_t path_change_count;
+ };
+ 
+ #define MESH_FAST_TX_CACHE_MAX_SIZE		512
+--- a/net/mac80211/mesh_hwmp.c
++++ b/net/mac80211/mesh_hwmp.c
+@@ -512,7 +512,7 @@ static u32 hwmp_route_info_get(struct ie
+ 			if (next_hop)
+ 				ether_addr_copy(old_next_hop_addr, next_hop->sta.addr);
+ 			if (next_hop != sta) {
+-				mpath->path_change_count++;
++				atomic_inc(&mpath->path_change_count);
+ 				flush_mpath = true;
+ 			}
+ 			mesh_path_assign_nexthop(mpath, sta);
+@@ -573,7 +573,7 @@ static u32 hwmp_route_info_get(struct ie
+ 			if (next_hop)
+ 				ether_addr_copy(old_next_hop_addr, next_hop->sta.addr);
+ 			if (next_hop != sta) {
+-				mpath->path_change_count++;
++				atomic_inc(&mpath->path_change_count);
+ 				flush_mpath = true;
+ 			}
+ 			mesh_path_assign_nexthop(mpath, sta);

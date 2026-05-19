@@ -1,0 +1,96 @@
+From 190652ce1b56a41ed3a99d9f9c9160deba34810b Mon Sep 17 00:00:00 2001
+From: Venkateswara Naralasetty <quic_vnaralas@quicinc.com>
+Date: Thu, 18 Nov 2021 12:28:31 +0530
+Subject: [PATCH] mac80211: simple tx for AP mode
+
+Introduced new API ieee80211_8023_xmit_ap to make tx simple and
+to avoid unnecessary checks for AP mode.
+
+Signed-off-by: Venkateswara Naralasetty <quic_vnaralas@quicinc.com>
+Signed-off-by: Aloka Dixit <quic_alokad@quicinc.com>
+---
+ net/mac80211/tx.c | 40 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 40 insertions(+)
+
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -4814,6 +4814,67 @@ out_free:
+ 	kfree_skb(skb);
+ }
+ 
++void ieee80211_8023_xmit_ap(struct ieee80211_sub_if_data *sdata,
++			    struct net_device *dev, struct sta_info *sta,
++			    struct ieee80211_key *key, struct sk_buff *skb)
++{
++	struct ieee80211_tx_info *info;
++	struct ieee80211_local *local = sdata->local;
++	struct ieee80211_sta *pubsta = NULL;
++	struct ieee80211_tx_control control = {};
++	unsigned long flags;
++	int q;
++	u16 q_map;
++
++	/*
++	 * If the skb is shared we need to obtain our own copy.
++	 */
++	skb = skb_share_check(skb, GFP_ATOMIC);
++
++	if (unlikely(!skb))
++		return;
++
++	info = IEEE80211_SKB_CB(skb);
++	memset(info, 0, sizeof(*info));
++
++	if (unlikely(skb->sk &&
++		     skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS))
++		info->status_data = ieee80211_store_ack_skb(local, skb,
++							     &info->flags, NULL);
++
++	info->flags |= IEEE80211_TX_CTL_HW_80211_ENCAP;
++	info->control.vif = &sdata->vif;
++
++	if (key)
++		info->control.hw_key = &key->conf;
++
++	q_map = skb_get_queue_mapping(skb);
++	q = sdata->vif.hw_queue[q_map];
++
++	if (sta) {
++		sta->deflink.tx_stats.bytes[q_map] += skb->len;
++		sta->deflink.tx_stats.packets[q_map]++;
++	}
++
++	spin_lock_irqsave(&local->queue_stop_reason_lock, flags);
++
++	if (local->queue_stop_reasons[q] || !skb_queue_empty(&local->pending[q])) {
++		skb_queue_tail(&local->pending[q], skb);
++		spin_unlock_irqrestore(&local->queue_stop_reason_lock, flags);
++		return;
++	}
++
++	spin_unlock_irqrestore(&local->queue_stop_reason_lock, flags);
++
++	if (sta && sta->uploaded)
++		pubsta = &sta->sta;
++
++	control.sta = pubsta;
++
++	drv_tx(local, &control, skb);
++
++}
++
+ netdev_tx_t ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
+ 					    struct net_device *dev)
+ {
+@@ -4853,6 +4914,11 @@ netdev_tx_t ieee80211_subif_start_xmit_8
+ 	if (key && (!(key->flags & KEY_FLAG_UPLOADED_TO_HARDWARE)))
+ 		goto skip_offload;
+ 
++	if (sdata->vif.type == NL80211_IFTYPE_AP) {
++		ieee80211_8023_xmit_ap(sdata, dev, sta, key, skb);
++		goto out;
++	}
++
+ 	sk_pacing_shift_update(skb->sk, sdata->local->hw.tx_sk_pacing_shift);
+ tx_offload:
+ 	ieee80211_8023_xmit(sdata, dev, sta, key, skb);

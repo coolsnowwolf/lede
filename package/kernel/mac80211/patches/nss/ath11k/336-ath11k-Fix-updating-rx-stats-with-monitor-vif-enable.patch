@@ -1,0 +1,83 @@
+From 00d07d474f2ee3aa8aa2945fc26e473183e9201a Mon Sep 17 00:00:00 2001
+From: Anilkumar Kolli <quic_akolli@quicinc.com>
+Date: Fri, 17 Dec 2021 17:16:11 +0530
+Subject: [PATCH] ath11k: Fix updating rx stats with monitor vif enabled
+
+Rx stats update fails when monitor vif is enabled.
+Current code does not update rx stats from monitor
+status ring if monitor vif is enabled.
+Add logic to update rx stats even if monitor vif enabled.
+
+Fixes: 1f49c59c7222 ("mac80211: Package upgrade")
+
+Signed-off-by: Anilkumar Kolli <quic_akolli@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_rx.c            | 96 ++++++----------------
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -6038,8 +6038,20 @@ int ath11k_dp_rx_process_mon_status(stru
+ 			}
+ 		}
+ 
+-		if (ppdu_info->peer_id == HAL_INVALID_PEERID ||
+-		    hal_status != HAL_RX_MON_STATUS_PPDU_DONE) {
++		if (test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags) &&
++		    hal_status == HAL_RX_MON_STATUS_PPDU_DONE &&
++		    pmon->mon_ppdu_status == DP_PPDU_STATUS_START) {
++			rx_mon_stats->status_ppdu_done++;
++			pmon->mon_ppdu_status = DP_PPDU_STATUS_DONE;
++
++			if (!ab->hw_params.full_monitor_mode) {
++				ath11k_dp_rx_mon_dest_process(ar, mac_id, budget, napi);
++				pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
++			}
++		}
++
++		if ((ppdu_info->peer_id == HAL_INVALID_PEERID ||
++		    hal_status != HAL_RX_MON_STATUS_PPDU_DONE)) {
+ 			dev_kfree_skb_any(skb);
+ 			continue;
+ 		}
+@@ -6367,6 +6379,13 @@ static int ath11k_dp_full_mon_process_rx
+ 
+ 	spin_lock_bh(&pmon->mon_lock);
+ 
++	pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
++	if (!test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags)) {
++		quota = ath11k_dp_rx_process_mon_status(ab, mac_id, napi, budget);
++		spin_unlock_bh(&pmon->mon_lock);
++		return quota;
++	}
++
+ 	sw_mon_entries = &pmon->sw_mon_entries;
+ 	rx_mon_stats = &pmon->rx_mon_stats;
+ 
+@@ -6409,7 +6428,6 @@ static int ath11k_dp_full_mon_process_rx
+ 		}
+ 
+ 		rx_mon_stats->dest_ppdu_done++;
+-		pmon->mon_ppdu_status = DP_PPDU_STATUS_START;
+ 		pmon->buf_state = DP_MON_STATUS_LAG;
+ 		pmon->mon_status_paddr = sw_mon_entries->mon_status_paddr;
+ 		pmon->hold_mon_dst_ring = true;
+@@ -6441,16 +6459,10 @@ reap_status_ring:
+ int ath11k_dp_rx_process_mon_rings(struct ath11k_base *ab, int mac_id,
+ 				   struct napi_struct *napi, int budget)
+ {
+-	struct ath11k *ar = ath11k_ab_to_ar(ab, mac_id);
+-	int ret = 0;
+-
+-	if (test_bit(ATH11K_FLAG_MONITOR_STARTED, &ar->monitor_flags) &&
+-	    ab->hw_params.full_monitor_mode)
+-		ret = ath11k_dp_full_mon_process_rx(ab, mac_id, napi, budget);
++	if (ab->hw_params.full_monitor_mode)
++		return ath11k_dp_full_mon_process_rx(ab, mac_id, napi, budget);
+ 	else
+-		ret = ath11k_dp_rx_process_mon_status(ab, mac_id, napi, budget);
+-
+-	return ret;
++		return ath11k_dp_rx_process_mon_status(ab, mac_id, napi, budget);
+ }
+ 
+ static int ath11k_dp_rx_pdev_mon_status_attach(struct ath11k *ar)

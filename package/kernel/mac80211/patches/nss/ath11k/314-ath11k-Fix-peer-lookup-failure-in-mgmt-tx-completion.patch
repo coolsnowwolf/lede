@@ -1,0 +1,125 @@
+From e58249f0a5826926c0e96acea4dfbc8683cfaaab Mon Sep 17 00:00:00 2001
+From: Rameshkumar Sundaram <ramess@codeaurora.org>
+Date: Wed, 9 Jun 2021 17:32:30 +0530
+Subject: [PATCH] ath11k: Fix peer lookup failure in mgmt tx completion
+
+In mgmt tx completion handler, peer lookup is done using address 2
+of transmitted frame to find arvif and update mgmt tx completion stats.
+For STA interface, self peer will not be created and hence
+peer lookup with address 2 keeps failing.
+Fix this by obtaining vif directly from SKB_CB for updating stats.
+
+Possible vif removal races:
+1. If vif removed before tx completion all idrs associated to the vif
+would've been flushed and finding msdu with idr will fail,
+hence tx completion wont be processed therafter.
+2. Added data lock to protect vif removal during tx completion processing.
+
+Signed-off-by: Rameshkumar Sundaram <ramess@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/mac.c |  2 ++
+ drivers/net/wireless/ath/ath11k/wmi.c | 53 ++++++++++++++++-------------------
+ 2 files changed, 26 insertions(+), 29 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -7617,8 +7617,10 @@ err_vdev_del:
+ 	kfree(arvif->vlan_keyid_map);
+ 	ath11k_peer_cleanup(ar, arvif->vdev_id);
+ 
++	spin_lock_bh(&ar->data_lock);
+ 	idr_for_each(&ar->txmgmt_idr,
+ 		     ath11k_mac_vif_txmgmt_idr_remove, vif);
++	spin_unlock_bh(&ar->data_lock);
+ 
+ 	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++) {
+ 		spin_lock_bh(&ab->dp.tx_ring[i].tx_idr_lock);
+--- a/drivers/net/wireless/ath/ath11k/wmi.c
++++ b/drivers/net/wireless/ath/ath11k/wmi.c
+@@ -6093,13 +6093,13 @@ static int wmi_process_tx_comp(struct at
+ 	struct ieee80211_tx_info *info;
+ 	struct ath11k_skb_cb *skb_cb;
+ 	struct ieee80211_hdr *hdr;
+-	struct ath11k_peer *peer;
+ 	struct ieee80211_vif *vif;
+ 	struct ath11k_vif *arvif;
+ 	struct ath11k_mgmt_frame_stats *mgmt_stats;
+ 	u16 frm_type;
+ 	int num_mgmt;
+ 
++	spin_lock_bh(&ar->data_lock);
+ 	spin_lock_bh(&ar->txmgmt_idr_lock);
+ 	msdu = idr_find(&ar->txmgmt_idr, tx_compl_param->desc_id);
+ 
+@@ -6107,6 +6107,7 @@ static int wmi_process_tx_comp(struct at
+ 		ath11k_warn(ar->ab, "received mgmt tx compl for invalid msdu_id: %d\n",
+ 			    tx_compl_param->desc_id);
+ 		spin_unlock_bh(&ar->txmgmt_idr_lock);
++		spin_unlock_bh(&ar->data_lock);
+ 		return -ENOENT;
+ 	}
+ 
+@@ -6115,6 +6116,28 @@ static int wmi_process_tx_comp(struct at
+ 
+ 	skb_cb = ATH11K_SKB_CB(msdu);
+ 	dma_unmap_single(ar->ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
++	hdr = (struct ieee80211_hdr *)msdu->data;
++
++	if (ieee80211_is_mgmt(hdr->frame_control)) {
++		frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
++		vif = skb_cb->vif;
++
++		if (!vif) {
++			ath11k_warn(ar->ab, "failed to find vif to update txcompl mgmt stats\n");
++			goto skip_mgmt_stats;
++		}
++
++		arvif = ath11k_vif_to_arvif(vif);
++		mgmt_stats = &arvif->mgmt_stats;
++
++		if (!tx_compl_param->status)
++			mgmt_stats->tx_compl_succ[frm_type]++;
++		else
++			mgmt_stats->tx_compl_fail[frm_type]++;
++	}
++
++skip_mgmt_stats:
++	spin_unlock_bh(&ar->data_lock);
+ 
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
+@@ -6133,34 +6156,6 @@ static int wmi_process_tx_comp(struct at
+ 	 */
+ 	info->status.rates[0].idx = -1;
+ 
+-	hdr = (struct ieee80211_hdr *)msdu->data;
+-	frm_type = FIELD_GET(IEEE80211_FCTL_STYPE, hdr->frame_control);
+-
+-	spin_lock_bh(&ar->ab->base_lock);
+-	peer = ath11k_peer_find_by_addr(ar->ab, hdr->addr2);
+-	if (!peer) {
+-		spin_unlock_bh(&ar->ab->base_lock);
+-		ath11k_warn(ar->ab, "failed to find peer to update txcompl mgmt stats\n");
+-		goto skip_mgmt_stats;
+-	}
+-
+-	vif = peer->vif;
+-	spin_unlock_bh(&ar->ab->base_lock);
+-
+-	spin_lock_bh(&ar->data_lock);
+-	arvif = ath11k_vif_to_arvif(vif);
+-	mgmt_stats = &arvif->mgmt_stats;
+-
+-	if (ieee80211_is_mgmt(hdr->frame_control)) {
+-		if (!tx_compl_param->status)
+-			mgmt_stats->tx_compl_succ[frm_type]++;
+-		else
+-			mgmt_stats->tx_compl_fail[frm_type]++;
+-	}
+-
+-	spin_unlock_bh(&ar->data_lock);
+-
+-skip_mgmt_stats:
+ 	ieee80211_tx_status_irqsafe(ar->hw, msdu);
+ 
+ 	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
