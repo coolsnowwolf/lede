@@ -356,7 +356,6 @@ mac80211_emit_detect() {
 
 	case "$band" in
 		6g)
-			[ -n "$default_country" ] || country="00"
 			[ -n "$encryption" ] || encryption="owe"
 		;;
 		*)
