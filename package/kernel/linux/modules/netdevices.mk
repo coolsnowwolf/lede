@@ -209,7 +209,9 @@ define KernelPackage/mdio-devres
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Supports MDIO device registration
   DEPENDS:=+kmod-libphy +(TARGET_armsr||TARGET_bcm27xx_bcm2708||TARGET_loongarch64||TARGET_malta||TARGET_tegra):kmod-of-mdio
+ifneq ($(KERNEL_PATCHVER),6.18)
   KCONFIG:=CONFIG_MDIO_DEVRES
+endif
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/drivers/net/phy/mdio_devres.ko
   AUTOLOAD:=$(call AutoProbe,mdio-devres)

@@ -139,8 +139,9 @@ define KernelPackage/fb/description
 endef
 
 define KernelPackage/fb/x86
-  FILES+=$(LINUX_DIR)/arch/x86/video/video-common.ko
-  AUTOLOAD:=$(call AutoLoad,06,video-common fb font)
+  FILES+=$(LINUX_DIR)/arch/x86/video/fbdev.ko@lt6.12 \
+	$(LINUX_DIR)/arch/x86/video/video-common.ko@ge6.12
+  AUTOLOAD:=$(call AutoLoad,06,fbdev@lt6.12 video-common@ge6.12 fb font)
 endef
 
 $(eval $(call KernelPackage,fb))
