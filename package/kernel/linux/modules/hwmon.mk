@@ -94,6 +94,21 @@ endef
 $(eval $(call KernelPackage,hwmon-coretemp))
 
 
+define KernelPackage/hwmon-corsair-cpro
+  TITLE:=Corsair Commander Pro controller
+  KCONFIG:=CONFIG_SENSORS_CORSAIR_CPRO
+  FILES:=$(LINUX_DIR)/drivers/hwmon/corsair-cpro.ko
+  AUTOLOAD:=$(call AutoProbe,corsair-cpro)
+  $(call AddDepends/hwmon,+kmod-usb-hid)
+endef
+
+define KernelPackage/hwmon-corsair-cpro/description
+ Kernel module for the Corsair Commander Pro controller and Corsair 1000D
+endef
+
+$(eval $(call KernelPackage,hwmon-corsair-cpro))
+
+
 define KernelPackage/hwmon-dme1737
   TITLE:=SMSC DME1737 and compatible monitoring support
   KCONFIG:=CONFIG_SENSORS_DME1737
