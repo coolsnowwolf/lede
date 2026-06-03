@@ -1,0 +1,103 @@
+From 4b3f986d1f76d4234b27850b44e26492bf974b23 Mon Sep 17 00:00:00 2001
+From: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Date: Mon, 27 Jul 2026 04:20:42 +0300
+Subject: [PATCH v11 16/37] pinctrl: airoha: add set_direction() helper for
+ gpio_chip
+
+The patch creates set_direction() helper for gpio_chip abstraction.
+It also implements/reimplements some function using newly defined
+helper.
+
+This is cosmetic patch used to place gpio_chip specific code together.
+No functional changes.
+
+Signed-off-by: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+---
+ drivers/pinctrl/airoha/pinctrl-airoha.c | 52 ++++++++++++++++---------
+ 1 file changed, 34 insertions(+), 18 deletions(-)
+
+--- a/drivers/pinctrl/airoha/pinctrl-airoha.c
++++ b/drivers/pinctrl/airoha/pinctrl-airoha.c
+@@ -2539,12 +2539,42 @@ static int airoha_gpio_get_direction(str
+ 	return val & mask ? GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
+ }
+ 
++static int airoha_gpio_set_direction(struct gpio_chip *chip, unsigned int gpio,
++				     bool input)
++{
++	struct airoha_pinctrl *pinctrl = gpiochip_get_data(chip);
++	u32 mask, index;
++	int err;
++
++	/* set output enable */
++	mask = BIT(gpio % AIROHA_PIN_BANK_SIZE);
++	index = gpio / AIROHA_PIN_BANK_SIZE;
++	err = regmap_update_bits(pinctrl->regmap, pinctrl->gpiochip.out[index],
++				 mask, !input ? mask : 0);
++	if (err)
++		return err;
++
++	/* set direction */
++	mask = BIT(2 * (gpio % AIROHA_REG_GPIOCTRL_NUM_PIN));
++	index = gpio / AIROHA_REG_GPIOCTRL_NUM_PIN;
++
++	return regmap_update_bits(pinctrl->regmap,
++				  pinctrl->gpiochip.dir[index], mask,
++				  !input ? mask : 0);
++}
++
++static int airoha_gpio_direction_input(struct gpio_chip *chip,
++				       unsigned int gpio)
++{
++	return airoha_gpio_set_direction(chip, gpio, true);
++}
++
+ static int airoha_gpio_direction_output(struct gpio_chip *chip,
+ 					unsigned int gpio, int value)
+ {
+ 	int err;
+ 
+-	err = pinctrl_gpio_direction_output(chip, gpio);
++	err = airoha_gpio_set_direction(chip, gpio, false);
+ 	if (err)
+ 		return err;
+ 
+@@ -2676,7 +2706,7 @@ static int airoha_pinctrl_add_gpiochip(s
+ 	gc->label = dev_name(dev);
+ 	gc->request = gpiochip_generic_request;
+ 	gc->free = gpiochip_generic_free;
+-	gc->direction_input = pinctrl_gpio_direction_input;
++	gc->direction_input = airoha_gpio_direction_input;
+ 	gc->direction_output = airoha_gpio_direction_output;
+ 	gc->get_direction = airoha_gpio_get_direction;
+ 	gc->set = airoha_gpio_set;
+@@ -2761,27 +2791,13 @@ static int airoha_pinmux_set_direction(s
+ 					unsigned int p, bool input)
+ {
+ 	struct airoha_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctrl_dev);
+-	u32 mask, index;
+-	int err, pin;
++	int pin;
+ 
+ 	pin = airoha_convert_pin_to_reg_offset(pctrl_dev, range, p);
+ 	if (pin < 0)
+ 		return pin;
+ 
+-	/* set output enable */
+-	mask = BIT(pin % AIROHA_PIN_BANK_SIZE);
+-	index = pin / AIROHA_PIN_BANK_SIZE;
+-	err = regmap_update_bits(pinctrl->regmap, pinctrl->gpiochip.out[index],
+-				 mask, !input ? mask : 0);
+-	if (err)
+-		return err;
+-
+-	/* set direction */
+-	mask = BIT(2 * (pin % AIROHA_REG_GPIOCTRL_NUM_PIN));
+-	index = pin / AIROHA_REG_GPIOCTRL_NUM_PIN;
+-	return regmap_update_bits(pinctrl->regmap,
+-				  pinctrl->gpiochip.dir[index], mask,
+-				  !input ? mask : 0);
++	return airoha_gpio_set_direction(&pinctrl->gpiochip.chip, pin, input);
+ }
+ 
+ static const struct pinmux_ops airoha_pmxops = {

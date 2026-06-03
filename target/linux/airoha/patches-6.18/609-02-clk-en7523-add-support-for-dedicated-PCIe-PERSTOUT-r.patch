@@ -1,0 +1,101 @@
+From 335db8dda524add9d8ec3bdd88eddc339d5d3439 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 25 Jun 2026 13:49:39 +0200
+Subject: [PATCH 2/4] clk: en7523: add support for dedicated PCIe PERSTOUT
+ reset
+
+Add support for resetting the PCIe lines with the PERSTOUT reset. These
+special reset are controlled by the PCIC register and are specific to each
+of the 3 PCIe lines.
+
+Notice that reset logic is inverted for these bit where 0 is assert and 1
+deassert. This is intenrally handled in the reset function.
+
+PCI enable/disable are updated to drop PERSTOUT bits in favor dedicated
+reset handling.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/clk/clk-en7523.c | 39 ++++++++++++++++++++++++++++-----------
+ 1 file changed, 28 insertions(+), 11 deletions(-)
+
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -451,6 +451,7 @@ static const struct en_clk_desc an7583_b
+ static const u16 en7581_rst_ofs[] = {
+ 	REG_RST_CTRL2,
+ 	REG_RST_CTRL1,
++	REG_NP_SCU_PCIC,
+ };
+ 
+ static const u16 en7523_rst_map[] = {
+@@ -556,6 +557,11 @@ static const u16 en7581_rst_map[] = {
+ 	[EN7581_CPU_TIMER_RST]		= RST_NR_PER_BANK + 28,
+ 	[EN7581_PCIE_HB_RST]		= RST_NR_PER_BANK + 29,
+ 	[EN7581_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
++
++	/* RST_PCIC */
++	[EN7581_PCIC_PERSTOUT0_RST]	= 2 * RST_NR_PER_BANK + 29,
++	[EN7581_PCIC_PERSTOUT1_RST]	= 2 * RST_NR_PER_BANK + 26,
++	[EN7581_PCIC_PERSTOUT2_RST]	= 2 * RST_NR_PER_BANK + 16,
+ };
+ 
+ static const u16 an7583_rst_map[] = {
+@@ -960,9 +966,7 @@ static int en7581_pci_enable(struct clk_
+ 	struct regmap *map = cg->map;
+ 	u32 mask;
+ 
+-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
+-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
+-	       REG_PCI_CONTROL_PERSTOUT;
++	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
+ 	regmap_set_bits(map, REG_PCI_CONTROL, mask);
+ 
+ 	return 0;
+@@ -974,9 +978,7 @@ static void en7581_pci_disable(struct cl
+ 	struct regmap *map = cg->map;
+ 	u32 mask;
+ 
+-	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1 |
+-	       REG_PCI_CONTROL_PERSTOUT1 | REG_PCI_CONTROL_PERSTOUT2 |
+-	       REG_PCI_CONTROL_PERSTOUT;
++	mask = REG_PCI_CONTROL_REFCLK_EN0 | REG_PCI_CONTROL_REFCLK_EN1;
+ 	regmap_clear_bits(map, REG_PCI_CONTROL, mask);
+ 	usleep_range(1000, 2000);
+ }
+@@ -1027,9 +1029,16 @@ static int en7523_reset_update(struct re
+ {
+ 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
+ 	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
++	u32 val;
++
++	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
++	if (addr == REG_NP_SCU_PCIC)
++		val |= assert ? 0 : BIT(id % RST_NR_PER_BANK);
++	else
++		val |= assert ? BIT(id % RST_NR_PER_BANK) : 0;
+ 
+ 	regmap_update_bits(rst_data->map, addr, BIT(id % RST_NR_PER_BANK),
+-			   assert ? BIT(id % RST_NR_PER_BANK) : 0);
++			   val);
+ 
+ 	return 0;
+ }
+@@ -1051,10 +1060,16 @@ static int en7523_reset_status(struct re
+ {
+ 	struct en_rst_data *rst_data = container_of(rcdev, struct en_rst_data, rcdev);
+ 	u32 addr = rst_data->bank_ofs[id / RST_NR_PER_BANK];
++	bool inverted = false;
+ 	u32 val;
+ 
++	/* For PCIC reset logic is inverted, 0:assert 1:deassert*/
++	if (addr == REG_NP_SCU_PCIC)
++		inverted = true;
++
+ 	regmap_read(rst_data->map, addr, &val);
+-	return !!(val & BIT(id % RST_NR_PER_BANK));
++	val &= BIT(id % RST_NR_PER_BANK);
++	return inverted ? !val : !!val;
+ }
+ 
+ static int en7523_reset_xlate(struct reset_controller_dev *rcdev,
