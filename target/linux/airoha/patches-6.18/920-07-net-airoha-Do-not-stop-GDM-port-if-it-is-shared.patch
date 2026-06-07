@@ -1,0 +1,132 @@
+From de856a5b802cf030c8e242e98df3bc88446a4ea1 Mon Sep 17 00:00:00 2001
+Message-ID: <de856a5b802cf030c8e242e98df3bc88446a4ea1.1779348625.git.lorenzo@kernel.org>
+In-Reply-To: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
+References: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 20 Mar 2026 11:09:40 +0100
+Subject: [PATCH 07/13] net: airoha: Do not stop GDM port if it is shared
+
+Theoretically, in the current codebase, two independent net_devices can
+be connected to the same GDM port so we need to check the GDM port is not
+used by any other running net_device before setting the forward
+configuration to FE_PSE_PORT_DROP.
+Moreover, always set in GDM_LONG_LEN_MASK field of REG_GDM_LEN_CFG
+register the maximum MTU of all running net_devices connected to the same
+GDM port.
+
+Tested-by: Xuegang Lu <xuegang.lu@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 59 +++++++++++++++++++-----
+ drivers/net/ethernet/airoha/airoha_eth.h |  1 +
+ 2 files changed, 48 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1859,8 +1859,8 @@ static int airoha_dev_open(struct net_de
+ 	int err, len = ETH_HLEN + netdev->mtu + ETH_FCS_LEN;
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 	struct airoha_gdm_port *port = dev->port;
++	u32 cur_len, pse_port = FE_PSE_PORT_PPE1;
+ 	struct airoha_qdma *qdma = dev->qdma;
+-	u32 pse_port = FE_PSE_PORT_PPE1;
+ 
+ #if defined(CONFIG_PCS_AIROHA)
+ 	if (airhoa_is_phy_external(port)) {
+@@ -1888,10 +1888,20 @@ static int airoha_dev_open(struct net_de
+ 		airoha_fe_clear(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
+ 				GDM_STAG_EN_MASK);
+ 
+-	airoha_fe_rmw(qdma->eth, REG_GDM_LEN_CFG(port->id),
+-		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+-		      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
+-		      FIELD_PREP(GDM_LONG_LEN_MASK, len));
++	cur_len = airoha_fe_get(qdma->eth, REG_GDM_LEN_CFG(port->id),
++				GDM_LONG_LEN_MASK);
++	if (!port->users || len > cur_len) {
++		/* Opening a sibling net_device with a larger MTU updates the
++		 * MTU of already running devices. This is required to allow
++		 * multiple net_devices with different MTUs to share the same
++		 * GDM port.
++		 */
++		airoha_fe_rmw(qdma->eth, REG_GDM_LEN_CFG(port->id),
++			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
++			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
++			      FIELD_PREP(GDM_LONG_LEN_MASK, len));
++	}
++	port->users++;
+ 
+ 	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
+ 			GLOBAL_CFG_TX_DMA_EN_MASK |
+@@ -1907,6 +1917,30 @@ static int airoha_dev_open(struct net_de
+ 	return 0;
+ }
+ 
++static void airoha_set_port_mtu(struct airoha_eth *eth,
++				struct airoha_gdm_port *port)
++{
++	u32 len = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
++		struct airoha_gdm_dev *dev = port->devs[i];
++		struct net_device *netdev;
++
++		if (!dev)
++			continue;
++
++		netdev = dev->dev;
++		if (netif_running(netdev))
++			len = max_t(u32, len, netdev->mtu);
++	}
++	len += ETH_HLEN + ETH_FCS_LEN;
++
++	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
++		      GDM_LONG_LEN_MASK,
++		      FIELD_PREP(GDM_LONG_LEN_MASK, len));
++}
++
+ static int airoha_dev_stop(struct net_device *netdev)
+ {
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+@@ -1919,8 +1953,12 @@ static int airoha_dev_stop(struct net_de
+ 	for (i = 0; i < netdev->num_tx_queues; i++)
+ 		netdev_tx_reset_subqueue(netdev, i);
+ 
+-	airoha_set_gdm_port_fwd_cfg(qdma->eth, REG_GDM_FWD_CFG(port->id),
+-				    FE_PSE_PORT_DROP);
++	if (--port->users)
++		airoha_set_port_mtu(dev->eth, port);
++	else
++		airoha_set_gdm_port_fwd_cfg(qdma->eth,
++					    REG_GDM_FWD_CFG(port->id),
++					    FE_PSE_PORT_DROP);
+ 
+ 	if (atomic_dec_and_test(&qdma->users)) {
+ 		airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
+@@ -2082,13 +2120,10 @@ static int airoha_dev_change_mtu(struct
+ {
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 	struct airoha_gdm_port *port = dev->port;
+-	u32 len = ETH_HLEN + mtu + ETH_FCS_LEN;
+-	struct airoha_eth *eth = dev->eth;
+ 
+-	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
+-		      GDM_LONG_LEN_MASK,
+-		      FIELD_PREP(GDM_LONG_LEN_MASK, len));
+ 	WRITE_ONCE(netdev->mtu, mtu);
++	if (port->users)
++		airoha_set_port_mtu(dev->eth, port);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -572,6 +572,7 @@ struct airoha_gdm_dev {
+ struct airoha_gdm_port {
+ 	struct airoha_gdm_dev *devs[AIROHA_MAX_NUM_GDM_DEVS];
+ 	int id;
++	int users;
+ 
+ 	struct airoha_hw_stats stats;
+ 

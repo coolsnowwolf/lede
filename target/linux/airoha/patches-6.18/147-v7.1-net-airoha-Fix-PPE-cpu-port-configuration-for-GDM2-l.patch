@@ -1,0 +1,91 @@
+From d647f2545219754603b2064de948425cdfd93fba Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 17 Apr 2026 17:24:41 +0200
+Subject: [PATCH] net: airoha: Fix PPE cpu port configuration for GDM2 loopback
+ path
+
+When QoS loopback is enabled for GDM3 or GDM4, incoming packets are
+forwarded to GDM2. However, the PPE cpu port for GDM2 is not configured
+in this path, causing traffic originating from GDM3/GDM4, which may
+be set up as WAN ports backed by QDMA1, to be incorrectly directed
+to QDMA0 instead.
+Configure the PPE cpu port for GDM2 when QoS loopback is active on
+GDM3 or GDM4 to ensure traffic is routed to the correct QDMA instance.
+
+Fixes: 9cd451d414f6 ("net: airoha: Add loopback support for GDM2")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260417-airoha-ppe-cpu-port-for-gdm2-loopback-v1-1-c7a9de0f6f57@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 8 ++++++--
+ drivers/net/ethernet/airoha/airoha_eth.h | 3 ++-
+ drivers/net/ethernet/airoha/airoha_ppe.c | 6 +++---
+ 3 files changed, 11 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1791,7 +1791,7 @@ static int airoha_set_gdm2_loopback(stru
+ {
+ 	struct airoha_eth *eth = port->qdma->eth;
+ 	u32 val, pse_port, chan;
+-	int src_port;
++	int i, src_port;
+ 
+ 	airoha_set_gdm_port_fwd_cfg(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX),
+ 				    FE_PSE_PORT_DROP);
+@@ -1835,6 +1835,9 @@ static int airoha_set_gdm2_loopback(stru
+ 		      SP_CPORT_MASK(val),
+ 		      __field_prep(SP_CPORT_MASK(val), FE_PSE_PORT_CDM2));
+ 
++	for (i = 0; i < eth->soc->num_ppe; i++)
++		airoha_ppe_set_cpu_port(port, i, AIROHA_GDM2_IDX);
++
+ 	if (port->id == AIROHA_GDM4_IDX && airoha_is_7581(eth)) {
+ 		u32 mask = FC_ID_OF_SRC_PORT_MASK(nbq);
+ 
+@@ -1873,7 +1876,8 @@ static int airoha_dev_init(struct net_de
+ 	}
+ 
+ 	for (i = 0; i < eth->soc->num_ppe; i++)
+-		airoha_ppe_set_cpu_port(port, i);
++		airoha_ppe_set_cpu_port(port, i,
++					airoha_get_fe_port(port));
+ 
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -659,7 +659,8 @@ int airoha_get_fe_port(struct airoha_gdm
+ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
+ 			      struct airoha_gdm_port *port);
+ 
+-void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id);
++void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id,
++			     u8 fport);
+ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
+ void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
+ 			  u16 hash, bool rx_wlan);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -85,10 +85,9 @@ static u32 airoha_ppe_get_timestamp(stru
+ 	return FIELD_GET(AIROHA_FOE_IB1_BIND_TIMESTAMP, timestamp);
+ }
+ 
+-void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id)
++void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id, u8 fport)
+ {
+ 	struct airoha_qdma *qdma = port->qdma;
+-	u8 fport = airoha_get_fe_port(port);
+ 	struct airoha_eth *eth = qdma->eth;
+ 	u8 qdma_id = qdma - &eth->qdma[0];
+ 	u32 fe_cpu_port;
+@@ -182,7 +181,8 @@ static void airoha_ppe_hw_init(struct ai
+ 			if (!port)
+ 				continue;
+ 
+-			airoha_ppe_set_cpu_port(port, i);
++			airoha_ppe_set_cpu_port(port, i,
++						airoha_get_fe_port(port));
+ 		}
+ 	}
+ }

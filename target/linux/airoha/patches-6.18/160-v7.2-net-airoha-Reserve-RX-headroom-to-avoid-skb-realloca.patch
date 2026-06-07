@@ -1,0 +1,73 @@
+From bbfb1983944f2eaa8ee192e0f7b59ecc0fda9981 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 13 May 2026 17:03:59 +0200
+Subject: [PATCH] net: airoha: Reserve RX headroom to avoid skb reallocation
+
+Reserve NET_SKB_PAD + NET_IP_ALIGN bytes of headroom for received packets
+to avoid skb head reallocation when pushing protocol headers into the skb.
+
+Tested-by: Xuegang Lu <xuegang.lu@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260513-airoha-rx-headroom-v1-1-bd87798e422d@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 14 ++++++++------
+ drivers/net/ethernet/airoha/airoha_eth.h |  2 ++
+ 2 files changed, 10 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -543,9 +543,10 @@ static int airoha_qdma_fill_rx_queue(str
+ 		q->queued++;
+ 		nframes++;
+ 
++		offset += AIROHA_RX_HEADROOM;
+ 		e->buf = page_address(page) + offset;
+ 		e->dma_addr = page_pool_get_dma_addr(page) + offset;
+-		e->dma_len = SKB_WITH_OVERHEAD(q->buf_size);
++		e->dma_len = SKB_WITH_OVERHEAD(AIROHA_RX_LEN(q->buf_size));
+ 
+ 		val = FIELD_PREP(QDMA_DESC_LEN_MASK, e->dma_len);
+ 		WRITE_ONCE(desc->ctrl, cpu_to_le32(val));
+@@ -611,13 +612,12 @@ static int airoha_qdma_rx_process(struct
+ 		q->tail = (q->tail + 1) % q->ndesc;
+ 		q->queued--;
+ 
+-		dma_sync_single_for_cpu(eth->dev, e->dma_addr,
+-					SKB_WITH_OVERHEAD(q->buf_size), dir);
++		dma_sync_single_for_cpu(eth->dev, e->dma_addr, e->dma_len,
++					dir);
+ 
+ 		page = virt_to_head_page(e->buf);
+ 		len = FIELD_GET(QDMA_DESC_LEN_MASK, desc_ctrl);
+-		data_len = q->skb ? q->buf_size
+-				  : SKB_WITH_OVERHEAD(q->buf_size);
++		data_len = q->skb ? AIROHA_RX_LEN(q->buf_size) : e->dma_len;
+ 		if (!len || data_len < len)
+ 			goto free_frag;
+ 
+@@ -627,10 +627,12 @@ static int airoha_qdma_rx_process(struct
+ 
+ 		port = eth->ports[p];
+ 		if (!q->skb) { /* first buffer */
+-			q->skb = napi_build_skb(e->buf, q->buf_size);
++			q->skb = napi_build_skb(e->buf - AIROHA_RX_HEADROOM,
++						q->buf_size);
+ 			if (!q->skb)
+ 				goto free_frag;
+ 
++			skb_reserve(q->skb, AIROHA_RX_HEADROOM);
+ 			__skb_put(q->skb, len);
+ 			skb_mark_for_recycle(q->skb);
+ 			q->skb->dev = port->dev;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -32,6 +32,8 @@
+ #define AIROHA_FE_MC_MAX_VLAN_TABLE	64
+ #define AIROHA_FE_MC_MAX_VLAN_PORT	16
+ #define AIROHA_NUM_TX_IRQ		2
++#define AIROHA_RX_HEADROOM		(NET_SKB_PAD + NET_IP_ALIGN)
++#define AIROHA_RX_LEN(_n)		((_n) - AIROHA_RX_HEADROOM)
+ #define HW_DSCP_NUM			2048
+ #define IRQ_QUEUE_LEN(_n)		((_n) ? 1024 : 2048)
+ #define TX_DSCP_NUM			1024

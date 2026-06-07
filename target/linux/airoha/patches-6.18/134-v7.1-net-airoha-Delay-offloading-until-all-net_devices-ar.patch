@@ -1,0 +1,63 @@
+From cedc1bf327de62ec30af9743bd1f601c2de30553 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Sun, 29 Mar 2026 12:32:27 +0200
+Subject: [PATCH] net: airoha: Delay offloading until all net_devices are fully
+ registered
+
+Netfilter flowtable can theoretically try to offload flower rules as soon
+as a net_device is registered while all the other ones are not
+registered or initialized, triggering a possible NULL pointer dereferencing
+of qdma pointer in airoha_ppe_set_cpu_port routine. Moreover, if
+register_netdev() fails for a particular net_device, there is a small
+race if Netfilter tries to offload flowtable rules before all the
+net_devices are properly unregistered in airoha_probe() error patch,
+triggering a NULL pointer dereferencing in airoha_ppe_set_cpu_port
+routine. In order to avoid any possible race, delay offloading until
+all net_devices are registered in the networking subsystem.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260329-airoha-regiser-race-fix-v2-1-f4ebb139277b@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 2 ++
+ drivers/net/ethernet/airoha/airoha_eth.h | 1 +
+ drivers/net/ethernet/airoha/airoha_ppe.c | 7 +++++++
+ 3 files changed, 10 insertions(+)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -3040,6 +3040,8 @@ static int airoha_register_gdm_devices(s
+ 			return err;
+ 	}
+ 
++	set_bit(DEV_STATE_REGISTERED, &eth->state);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -88,6 +88,7 @@ enum {
+ 
+ enum {
+ 	DEV_STATE_INITIALIZED,
++	DEV_STATE_REGISTERED,
+ };
+ 
+ enum {
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -1425,6 +1425,13 @@ int airoha_ppe_setup_tc_block_cb(struct
+ 	struct airoha_eth *eth = ppe->eth;
+ 	int err = 0;
+ 
++	/* Netfilter flowtable can try to offload flower rules while not all
++	 * the net_devices are registered or initialized. Delay offloading
++	 * until all net_devices are registered in the system.
++	 */
++	if (!test_bit(DEV_STATE_REGISTERED, &eth->state))
++		return -EBUSY;
++
+ 	mutex_lock(&flow_offload_mutex);
+ 
+ 	if (!eth->npu)
