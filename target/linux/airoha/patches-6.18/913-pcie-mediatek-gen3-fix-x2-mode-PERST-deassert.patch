@@ -1,0 +1,207 @@
+From fde8e40b0bf72436ce75d21e8778049368ea200f Mon Sep 17 00:00:00 2001
+From: Kenneth Kasilag <kenneth@kasilag.me>
+Date: Mon, 6 Apr 2026 23:04:38 +0000
+Subject: [PATCH] airoha: fix PERST deassert in PCIe driver
+
+Due to hardware bugs, the PCIE Gen3 IP in Airoha AN7581 requires a
+special reset procedure:
+> MAC reset asserted thru the SCU block
+> PERST asserted thru the SCU for the desired PCIE lane
+> PHY initialization runs, clocks enabled
+> MAC reset deasserted
+> EQ config (if needed) written
+> PERST deasserted
+
+The existing code currently toggles PERST for all three PCIE
+ports every time mtk_pcie_en7581_power_up is called, resulting
+in PCIE link down issues.
+
+This issue was discovered during porting of the 6.18 kernel to
+AN7581. It is not entirely clear how the hardware seemed to
+function under kernel 6.12 with similar driver code, it is
+presumed that differences in assert/deassert times for PERST in
+6.18 changed which exposed the bug.
+
+Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
+---
+ drivers/pci/controller/pcie-mediatek-gen3.c | 124 ++++++++-------
+ 1 file changed, 86 insertions(+), 38 deletions(-)
+
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -72,8 +72,21 @@
+ 
+ /* EN7581 NP_SCU register offsets for x2 link init */
+ #define NP_SCU_LANE_CFG0		0x830
++#define NP_SCU_XSI_MAC_RST		BIT(7)
++#define NP_SCU_XSI_PHY_RST		BIT(8)
++#define NP_SCU_PCIE2_RST		BIT(27)
+ #define NP_SCU_LANE_CFG1		0x834
++#define NP_SCU_PCIE0_RST		BIT(26)
++#define NP_SCU_PCIE1_RST		BIT(27)
+ #define NP_SCU_CTRL_REG			0x88
++#define NP_SCU_PERSTOUT			BIT(29)
++#define NP_SCU_PERSTOUT1		BIT(26)
++#define NP_SCU_PERSTOUT2		BIT(16)
++#define NP_SCU_PERST_ALL		(NP_SCU_PERSTOUT | \
++					 NP_SCU_PERSTOUT1 | \
++					 NP_SCU_PERSTOUT2)
++#define NP_SCU_SERDES_MUX_MASK		GENMASK(1, 0)
++#define NP_SCU_SERDES_MUX_X2		2
+ 
+ #define PCIE_LINK_STATUS_REG		0x154
+ #define PCIE_PORT_LINKUP		BIT(8)
+@@ -1004,6 +1017,23 @@ static int mtk_pcie_en7581_power_up(stru
+ 			dev_info(dev, "x2 mode: sister MAC mapped\n");
+ 	}
+ 
++	/* Select the correct reset for each PCIe port */
++	u32 perst_mask = NP_SCU_PERST_ALL;
++	if (pcie->x2_mode)
++		perst_mask = NP_SCU_PERSTOUT | NP_SCU_PERSTOUT1;
++	else if (pcie->reg_base == 0x1fc00000)
++		perst_mask = NP_SCU_PERSTOUT;
++	else if (pcie->reg_base == 0x1fc20000)
++		perst_mask = NP_SCU_PERSTOUT1;
++	else if (pcie->reg_base == 0x1fc40000)
++		perst_mask = NP_SCU_PERSTOUT2;
++
++	/* Assert selected PERST prior to PHY init */
++	if (pcie->np_scu) {
++		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG, perst_mask, 0);
++		msleep(1);
++	}
++
+ 	err = phy_set_mode(pcie->phy, PHY_MODE_PCIE);
+ 	if (err) {
+ 		dev_err(dev, "failed to set PHY mode\n");
+@@ -1043,26 +1073,22 @@ static int mtk_pcie_en7581_power_up(stru
+ 	pm_runtime_get_sync(dev);
+ 
+ 	/*
+-	 * EN7581 x2: Assert PERST and serdes reset before enabling clocks
+-	 * so that MAC registers can be configured while devices are held
+-	 * in reset, ensuring link trains with the correct x2 settings.
++	 * EN7581 x2: Do serdes reset before enabling clocks so that MAC
++	 * registers can be configured while devices are held in reset,
++	 * ensuring link trains with the correct x2 settings.
+ 	 */
+ 	if (pcie->x2_mode && pcie->np_scu) {
+-		/* Assert serdes reset on all lanes */
++		/* Assert serdes reset on lanes 0 and 1 */
+ 		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
+-				   BIT(26) | BIT(27), BIT(26) | BIT(27));
+-		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
+-				   BIT(27), BIT(27));
++				   NP_SCU_PCIE0_RST | NP_SCU_PCIE1_RST,
++				   NP_SCU_PCIE0_RST | NP_SCU_PCIE1_RST);
+ 		msleep(100);
+ 
+-		/* Assert PERST on all ports */
+-		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
+-				   BIT(16) | BIT(26) | BIT(29), 0);
+-
+ 		/* Set serdes mux for 2-lane mode (bits[1:0] = 2) */
+ 		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
+-				   BIT(0) | BIT(1), BIT(1));
+-		mdelay(1);
++				   NP_SCU_SERDES_MUX_MASK,
++				   NP_SCU_SERDES_MUX_X2);
++		msleep(1);
+ 	}
+ 
+ 	err = clk_bulk_prepare_enable(pcie->num_clks, pcie->clks);
+@@ -1085,11 +1111,9 @@ static int mtk_pcie_en7581_power_up(stru
+ 		 */
+ 		msleep(30);
+ 
+-		/* Deassert serdes reset on all lanes */
++		/* Deassert serdes reset on lanes 0 and 1 */
+ 		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
+-				   BIT(26) | BIT(27), 0);
+-		regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
+-				   BIT(27), 0);
++				   NP_SCU_PCIE0_RST | NP_SCU_PCIE1_RST, 0);
+ 
+ 		/* Clear SETTING_REG bit 13 for x2 mode on both MACs */
+ 		val = readl_relaxed(pcie->base + PCIE_SETTING_REG);
+@@ -1109,59 +1133,16 @@ static int mtk_pcie_en7581_power_up(stru
+ 		if (pcie->sister_base)
+ 			writel_relaxed(0x1018020f, pcie->sister_base + 0x338);
+ 
+-		/* Deassert PERST for all ports - link training starts */
++		/* Deassert PERST on selected port - link training starts */
+ 		msleep(10);
+ 		regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
+-				   BIT(16) | BIT(26) | BIT(29),
+-				   BIT(16) | BIT(26) | BIT(29));
++				   perst_mask,
++				   perst_mask);
+ 
+ 		/* Wait for link training to complete */
+-		msleep(800);
+-
+-		/*
+-		 * Check if link trained at Gen3. If not, toggle serdes
+-		 * reset to force MAC to re-discover PHY Gen3 capability.
+-		 * Without this, MAC only advertises Gen1-Gen2 in LnkCap2.
+-		 */
+-		val = readl_relaxed(pcie->base + PCIE_LINK_STATUS_REG);
+-		if (val & PCIE_PORT_LINKUP) {
+-			void __iomem *cfg = pcie->base + PCIE_CFG_OFFSET_ADDR;
+-			u8 cap_ptr;
+-			int speed = 0;
+-
+-			/* Walk PCI cap list to find PCIe cap (ID=0x10) */
+-			cap_ptr = readl_relaxed(cfg + PCI_CAPABILITY_LIST) & 0xFF;
+-			while (cap_ptr >= 0x40) {
+-				u32 hdr = readl_relaxed(cfg + cap_ptr);
+-				if ((hdr & 0xFF) == PCI_CAP_ID_EXP) {
+-					u32 lnk = readl_relaxed(cfg + cap_ptr + PCI_EXP_LNKCTL);
+-					speed = (lnk >> 16) & PCI_EXP_LNKSTA_CLS;
+-					break;
+-				}
+-				cap_ptr = (hdr >> 8) & 0xFF;
+-			}
+-
+-			if (speed > 0 && speed < 3) {
+-				dev_info(dev, "x2: link at Gen%d, toggling serdes for Gen3\n", speed);
+-				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
+-						   BIT(7) | BIT(8), BIT(7) | BIT(8));
+-				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
+-						   BIT(26) | BIT(27), BIT(26) | BIT(27));
+-				msleep(1000);
+-				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG0,
+-						   BIT(7) | BIT(8), 0);
+-				regmap_update_bits(pcie->np_scu, NP_SCU_LANE_CFG1,
+-						   BIT(26) | BIT(27), 0);
+-				msleep(2000);
+-				dev_info(dev, "x2: serdes toggle done, link retraining\n");
+-			} else {
+-				dev_info(dev, "x2: link at Gen%d, no toggle needed\n", speed);
+-			}
+-		} else {
+-			dev_info(dev, "x2: link not up after init, skipping speed check\n");
+-		}
++		msleep(1000);
+ 
+-		dev_info(dev, "x2: init complete, PERST deasserted\n");
++		dev_info(dev, "x2: init complete\n");
+ 	} else {
+ 		/*
+ 		 * Non-x2 mode: standard EQ config then deassert PERST.
+@@ -1178,11 +1159,11 @@ static int mtk_pcie_en7581_power_up(stru
+ 		      FIELD_PREP(PCIE_K_FINETUNE_MAX, 0xf);
+ 		writel_relaxed(val, pcie->base + PCIE_PIPE4_PIE8_REG);
+ 
+-		/* Deassert PERST for all ports */
++		/* Deassert PERST on selected port */
+ 		if (pcie->np_scu) {
+ 			regmap_update_bits(pcie->np_scu, NP_SCU_CTRL_REG,
+-					   BIT(16) | BIT(26) | BIT(29),
+-					   BIT(16) | BIT(26) | BIT(29));
++					   perst_mask,
++					   perst_mask);
+ 			msleep(100);
+ 		}
+ 	}

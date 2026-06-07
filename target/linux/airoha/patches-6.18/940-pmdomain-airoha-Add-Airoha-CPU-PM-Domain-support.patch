@@ -1,0 +1,358 @@
+From 82e703dd438b71432cc0ccbb90925d1e32dd014a Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 9 Jan 2025 14:12:57 +0100
+Subject: [PATCH] pmdomain: airoha: Add Airoha CPU PM Domain support
+
+Add Airoha CPU PM Domain support to control frequency and power of CPU
+present on Airoha EN7581 SoC.
+
+Frequency and power can be controlled with the use of the SMC command by
+passing the performance state. The driver also expose a read-only clock
+that expose the current CPU frequency with SMC command.
+
+On SoCs where the ATF firmware does not implement the AVS SMC handler
+(e.g. some AN7581 boards), the driver falls back to direct PLL register
+programming using register addresses from devicetree.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Link: https://lore.kernel.org/r/20250109131313.32317-1-ansuelsmth@gmail.com
+Signed-off-by: Ulf Hansson <ulf.hansson@linaro.org>
+---
+ drivers/pmdomain/mediatek/Kconfig             |  12 ++
+ .../pmdomain/mediatek/airoha-cpu-pmdomain.c   | 342 ++++++++++++++++++
+ 3 files changed, 355 insertions(+)
+ create mode 100644 drivers/pmdomain/mediatek/airoha-cpu-pmdomain.c
+
+--- a/drivers/soc/mediatek/Kconfig
++++ b/drivers/soc/mediatek/Kconfig
+@@ -2,6 +2,18 @@
+ #
+ # MediaTek SoC drivers
+ #
++config AIROHA_CPU_PM_DOMAIN
++	tristate "Airoha CPU power domain"
++	default ARCH_AIROHA
++	depends on PM
++	depends on HAVE_ARM_SMCCC
++	select PM_GENERIC_DOMAINS
++	help
++	  Say y here to enable CPU power domain support for Airoha SoC.
++
++	  CPU frequency and power is controlled by ATF with SMC command to
++	  set performance states, with fallback to direct PLL programming.
++
+ menu "MediaTek SoC drivers"
+ 	depends on ARCH_MEDIATEK || COMPILE_TEST
+ 
+--- a/drivers/pmdomain/mediatek/airoha-cpu-pmdomain.c
++++ b/drivers/pmdomain/mediatek/airoha-cpu-pmdomain.c
+@@ -3,22 +3,52 @@
+ #include <linux/arm-smccc.h>
+ #include <linux/bitfield.h>
+ #include <linux/clk-provider.h>
++#include <linux/delay.h>
++#include <linux/io.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_domain.h>
+ #include <linux/slab.h>
+ 
+-#define AIROHA_SIP_AVS_HANDLE			0x82000301
+-#define AIROHA_AVS_OP_BASE			0xddddddd0
+-#define AIROHA_AVS_OP_MASK			GENMASK(1, 0)
+-#define AIROHA_AVS_OP_FREQ_DYN_ADJ		(AIROHA_AVS_OP_BASE | \
+-						 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x1))
+-#define AIROHA_AVS_OP_GET_FREQ			(AIROHA_AVS_OP_BASE | \
+-						 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x2))
++/* ATF SMC interface for CPU frequency control */
++#define AIROHA_SIP_AVS_HANDLE		0x82000301
++#define AIROHA_AVS_OP_BASE		0xddddddd0
++#define AIROHA_AVS_OP_MASK		GENMASK(1, 0)
++#define AIROHA_AVS_OP_FREQ_DYN_ADJ	(AIROHA_AVS_OP_BASE | \
++					 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x1))
++#define AIROHA_AVS_OP_GET_FREQ		(AIROHA_AVS_OP_BASE | \
++					 FIELD_PREP(AIROHA_AVS_OP_MASK, 0x2))
++
++/* CPU PLL register offsets (chip-SCU region) */
++#define CPUPLL_CLK_MUX			0x1e0
++#define PLLRG_PROTECT			0x268
++#define CPUPLL_SDM_PCW			0x2b4
++#define CPUPLL_SDM_PCW_CHG		0x2b8
++
++#define CPUPLL_PCW_INT_MASK		GENMASK(30, 24)
++#define CPUPLL_XTAL_MHZ		50
++#define CPUPLL_CHG_BIT			BIT(0)
++#define CPUPLL_CHG_POSDIV_MASK		GENMASK(6, 4)
++#define PLLRG_PROTECT_MASK		GENMASK(7, 0)
++#define PLLRG_PROTECT_KEY		0x12
++
++/* MCUCFG clock switch register offsets */
++#define MCUCFG_CK_SWITCH_UNLOCK	0x640
++#define MCUCFG_CK_SOURCE_SEL		0x7c0
++
++#define MCUCFG_CK_UNLOCK_KEY		0x12
++#define MCUCFG_CK_SEL_MASK		GENMASK(10, 9)
++#define MCUCFG_CK_SEL_ARMPLL		1
++#define MCUCFG_CK_SEL_PLL2		3
+ 
+ struct airoha_cpu_pmdomain_priv {
+ 	struct clk_hw hw;
+ 	struct generic_pm_domain pd;
++	bool use_smc;
++	/* Direct PLL registers (used when use_smc = false) */
++	void __iomem *pll_base;
++	void __iomem *mcucfg;
+ };
+ 
+ static int airoha_cpu_pmdomain_clk_determine_rate(struct clk_hw *hw,
+@@ -27,19 +57,44 @@ static int airoha_cpu_pmdomain_clk_deter
+ 	return 0;
+ }
+ 
+-static unsigned long airoha_cpu_pmdomain_clk_get(struct clk_hw *hw,
+-						 unsigned long parent_rate)
++/* Read current CPU frequency via SMC */
++static unsigned long airoha_cpu_smc_clk_get(void)
+ {
+ 	struct arm_smccc_res res;
+ 
+ 	arm_smccc_1_1_invoke(AIROHA_SIP_AVS_HANDLE, AIROHA_AVS_OP_GET_FREQ,
+ 			     0, 0, 0, 0, 0, 0, &res);
+ 
+-	/* SMCCC returns freq in MHz */
+-	return (int)(res.a0 * 1000 * 1000);
++	return (unsigned long)(res.a0 * 1000 * 1000);
++}
++
++/* Read current CPU frequency from PLL registers */
++static unsigned long airoha_cpu_pll_clk_get(struct airoha_cpu_pmdomain_priv *priv)
++{
++	u32 pcw, chg;
++	unsigned int pcw_int, posdiv;
++
++	pcw = readl(priv->pll_base + CPUPLL_SDM_PCW);
++	pcw_int = FIELD_GET(CPUPLL_PCW_INT_MASK, pcw);
++
++	chg = readl(priv->pll_base + CPUPLL_SDM_PCW_CHG);
++	posdiv = FIELD_GET(CPUPLL_CHG_POSDIV_MASK, chg);
++
++	return (unsigned long)pcw_int * CPUPLL_XTAL_MHZ * 1000000UL >> posdiv;
++}
++
++static unsigned long airoha_cpu_pmdomain_clk_get(struct clk_hw *hw,
++						 unsigned long parent_rate)
++{
++	struct airoha_cpu_pmdomain_priv *priv =
++		container_of(hw, struct airoha_cpu_pmdomain_priv, hw);
++
++	if (priv->use_smc)
++		return airoha_cpu_smc_clk_get();
++
++	return airoha_cpu_pll_clk_get(priv);
+ }
+ 
+-/* Airoha CPU clk SMCC is always enabled */
+ static int airoha_cpu_pmdomain_clk_is_enabled(struct clk_hw *hw)
+ {
+ 	return true;
+@@ -51,18 +106,135 @@ static const struct clk_ops airoha_cpu_p
+ 	.determine_rate = airoha_cpu_pmdomain_clk_determine_rate,
+ };
+ 
+-static int airoha_cpu_pmdomain_set_performance_state(struct generic_pm_domain *domain,
+-						     unsigned int state)
++/* Set CPU frequency via SMC */
++static int airoha_cpu_smc_set_freq(unsigned int state)
+ {
+ 	struct arm_smccc_res res;
+ 
+ 	arm_smccc_1_1_invoke(AIROHA_SIP_AVS_HANDLE, AIROHA_AVS_OP_FREQ_DYN_ADJ,
+ 			     0, state, 0, 0, 0, 0, &res);
+ 
+-	/* SMC signal correct apply by unsetting BIT 0 */
+ 	return res.a0 & BIT(0) ? -EINVAL : 0;
+ }
+ 
++/*
++ * Switch CPU clock source via CLK_MUX and MCUCFG registers.
++ * Matches ATF BL31 clock_switch() sequence.
++ */
++static void airoha_cpu_clock_switch(void __iomem *pll_base,
++				    void __iomem *mcucfg, unsigned int sel)
++{
++	u32 val;
++
++	if (sel != 0) {
++		val = readl(pll_base + CPUPLL_CLK_MUX);
++		writel(val | BIT(sel - 1), pll_base + CPUPLL_CLK_MUX);
++	}
++
++	val = readl(mcucfg + MCUCFG_CK_SWITCH_UNLOCK);
++	writel((val & ~0x1f) | MCUCFG_CK_UNLOCK_KEY,
++	       mcucfg + MCUCFG_CK_SWITCH_UNLOCK);
++
++	val = readl(mcucfg + MCUCFG_CK_SOURCE_SEL);
++	val &= ~MCUCFG_CK_SEL_MASK;
++	val |= FIELD_PREP(MCUCFG_CK_SEL_MASK, sel);
++	writel(val, mcucfg + MCUCFG_CK_SOURCE_SEL);
++}
++
++/*
++ * Set CPU PLL frequency directly via register programming.
++ * Used as fallback when ATF SMC is not available.
++ *
++ * OPP table: state 0 = 500 MHz, state N = (500 + N*50) MHz.
++ * PLL VCO must stay >= 1000 MHz:
++ *   < 1000 MHz: posdiv=1 (VCO/2), pcw = freq/25
++ *   >= 1000 MHz: posdiv=0 (VCO/1), pcw = freq/50
++ */
++static int airoha_cpu_pll_set_freq(struct airoha_cpu_pmdomain_priv *priv,
++				   unsigned int state)
++{
++	void __iomem *base = priv->pll_base;
++	unsigned int freq_mhz = 500 + state * 50;
++	unsigned int posdiv, pcw_int;
++	unsigned long flags;
++	u32 val, old_chg, cleared;
++
++	if (freq_mhz < 1000) {
++		posdiv = 1;
++		pcw_int = freq_mhz / 25;
++	} else {
++		posdiv = 0;
++		pcw_int = freq_mhz / 50;
++	}
++
++	local_irq_save(flags);
++
++	/* Switch CPU to PLL2 (400 MHz backup) */
++	airoha_cpu_clock_switch(base, priv->mcucfg, MCUCFG_CK_SEL_PLL2);
++
++	/* Unlock PLL registers */
++	val = readl(base + PLLRG_PROTECT);
++	writel((val & ~PLLRG_PROTECT_MASK) | PLLRG_PROTECT_KEY,
++	       base + PLLRG_PROTECT);
++
++	/* Write new PCW integer value */
++	val = readl(base + CPUPLL_SDM_PCW);
++	val &= ~CPUPLL_PCW_INT_MASK;
++	val |= FIELD_PREP(CPUPLL_PCW_INT_MASK, pcw_int);
++	writel(val, base + CPUPLL_SDM_PCW);
++
++	/* Write posdiv and toggle CHG bit */
++	old_chg = readl(base + CPUPLL_SDM_PCW_CHG);
++	cleared = old_chg & ~(CPUPLL_CHG_POSDIV_MASK | CPUPLL_CHG_BIT);
++	if (old_chg & CPUPLL_CHG_BIT)
++		writel(cleared | FIELD_PREP(CPUPLL_CHG_POSDIV_MASK, posdiv),
++		       base + CPUPLL_SDM_PCW_CHG);
++	else
++		writel(cleared | FIELD_PREP(CPUPLL_CHG_POSDIV_MASK, posdiv) |
++		       CPUPLL_CHG_BIT, base + CPUPLL_SDM_PCW_CHG);
++
++	/* Wait for PLL to lock */
++	udelay(20);
++
++	/* Switch CPU back to ARM PLL */
++	airoha_cpu_clock_switch(base, priv->mcucfg, MCUCFG_CK_SEL_ARMPLL);
++
++	/* Clear PLL2 path bit in CLK_MUX */
++	val = readl(base + CPUPLL_CLK_MUX);
++	writel(val & ~BIT(2), base + CPUPLL_CLK_MUX);
++
++	/* Re-lock PLL registers */
++	val = readl(base + PLLRG_PROTECT);
++	writel(val & ~PLLRG_PROTECT_MASK, base + PLLRG_PROTECT);
++
++	local_irq_restore(flags);
++
++	return 0;
++}
++
++static int airoha_cpu_pmdomain_set_performance_state(
++		struct generic_pm_domain *domain, unsigned int state)
++{
++	struct airoha_cpu_pmdomain_priv *priv =
++		container_of(domain, struct airoha_cpu_pmdomain_priv, pd);
++
++	if (priv->use_smc)
++		return airoha_cpu_smc_set_freq(state);
++
++	return airoha_cpu_pll_set_freq(priv, state);
++}
++
++static bool airoha_cpu_smc_available(void)
++{
++	struct arm_smccc_res res;
++
++	arm_smccc_1_1_invoke(AIROHA_SIP_AVS_HANDLE, AIROHA_AVS_OP_GET_FREQ,
++			     0, 0, 0, 0, 0, 0, &res);
++
++	/* SMC returns frequency in MHz; 0 or very large = not supported */
++	return res.a0 > 0 && res.a0 < 2000;
++}
++
+ static int airoha_cpu_pmdomain_probe(struct platform_device *pdev)
+ {
+ 	struct airoha_cpu_pmdomain_priv *priv;
+@@ -70,18 +242,45 @@ static int airoha_cpu_pmdomain_probe(str
+ 	const struct clk_init_data init = {
+ 		.name = "cpu",
+ 		.ops = &airoha_cpu_pmdomain_clk_ops,
+-		/* Clock with no set_rate, can't cache */
+ 		.flags = CLK_GET_RATE_NOCACHE,
+ 	};
+ 	struct generic_pm_domain *pd;
++	unsigned long freq_hz;
+ 	int ret;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+ 		return -ENOMEM;
+ 
+-	/* Init and register a get-only clk for Cpufreq */
++	/* Try ATF SMC first */
++	if (airoha_cpu_smc_available()) {
++		priv->use_smc = true;
++		dev_info(dev, "using ATF SMC for CPU frequency control\n");
++	} else {
++		priv->use_smc = false;
++
++		/* Fall back to direct PLL: get registers from DT */
++		priv->pll_base = devm_platform_ioremap_resource(pdev, 0);
++		if (IS_ERR(priv->pll_base))
++			return dev_err_probe(dev, PTR_ERR(priv->pll_base),
++					     "ATF SMC not available and no chip-scu reg in DT\n");
++
++		priv->mcucfg = devm_platform_ioremap_resource(pdev, 1);
++		if (IS_ERR(priv->mcucfg))
++			return dev_err_probe(dev, PTR_ERR(priv->mcucfg),
++					     "ATF SMC not available and no mcucfg reg in DT\n");
++
++		dev_info(dev, "ATF SMC not available, using direct PLL programming\n");
++	}
++
++	/* Read and verify current frequency */
+ 	priv->hw.init = &init;
++	freq_hz = airoha_cpu_pmdomain_clk_get(&priv->hw, 0);
++	if (!freq_hz || freq_hz > 2000000000UL)
++		return dev_err_probe(dev, -ENODEV,
++				     "invalid CPU frequency: %lu Hz\n", freq_hz);
++
++	dev_info(dev, "CPU frequency: %lu MHz\n", freq_hz / 1000000);
+ 	ret = devm_clk_hw_register(dev, &priv->hw);
+ 	if (ret)
+ 		return ret;
+@@ -106,12 +305,10 @@ static int airoha_cpu_pmdomain_probe(str
+ 		goto err_add_provider;
+ 
+ 	platform_set_drvdata(pdev, priv);
+-
+ 	return 0;
+ 
+ err_add_provider:
+ 	pm_genpd_remove(pd);
+-
+ 	return ret;
+ }
+ 

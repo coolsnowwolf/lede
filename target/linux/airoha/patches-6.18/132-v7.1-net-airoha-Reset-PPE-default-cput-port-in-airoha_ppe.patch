@@ -1,0 +1,162 @@
+From df8e1e4a2eb5f8ecdef36c502601e8afbc6ad891 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 24 Dec 2025 17:29:33 +0100
+Subject: [PATCH] net: airoha: Reset PPE default cput port in
+ airoha_ppe_hw_init()
+
+Before this patch the default PPE cpu port used for a specific GDM
+device was set running ndo_init() callback during device initialization.
+The selected PPE cpu port configured for the specific GDM device depends
+on the QDMA block assigned to the GDM device. The selected QDMA block
+depends on LAN/WAN configuration as specified in commmit XXXX.
+However, the user selected PPE cpu port can be different with respect to
+the one hardcoded in the NPU firmware binary. The hardcoded PPE cput port
+value is loaded initializing the PPE engine running npu ops ppe_init()
+callback in airoha_ppe_offload_setup routine.
+Reset the default value for PPE cpu ports in airoha_ppe_hw_init routine
+in order to apply the user requested configuration according to the device
+DTS setup.
+Please note this patch is fixing an issue not visible to the user (so we
+do not need to backport it) since airoha_eth driver currently supports just
+the internal phy available via the MT7530 DSA switch and there are no WAN
+interfaces officially supporte since PCS/external phy is not merged mainline
+yet (it will be posted with following patches).
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 28 +++++------------------
+ drivers/net/ethernet/airoha/airoha_eth.h  |  2 ++
+ drivers/net/ethernet/airoha/airoha_ppe.c  | 23 ++++++++++++++++++-
+ drivers/net/ethernet/airoha/airoha_regs.h |  7 +++---
+ 4 files changed, 33 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1849,8 +1849,7 @@ static int airoha_dev_init(struct net_de
+ {
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+ 	struct airoha_eth *eth = port->eth;
+-	u32 fe_cpu_port;
+-	u8 ppe_id;
++	int i;
+ 
+ 	/* QDMA0 is used for lan ports while QDMA1 is used for WAN ports */
+ 	port->qdma = &eth->qdma[!airoha_is_lan_gdm_port(port)];
+@@ -1868,28 +1867,13 @@ static int airoha_dev_init(struct net_de
+ 			if (err)
+ 				return err;
+ 		}
+-		fallthrough;
+-	case AIROHA_GDM2_IDX:
+-		if (airoha_ppe_is_enabled(eth, 1)) {
+-			/* For PPE2 always use secondary cpu port. */
+-			fe_cpu_port = FE_PSE_PORT_CDM2;
+-			ppe_id = 1;
+-			break;
+-		}
+-		fallthrough;
+-	default: {
+-		u8 qdma_id = port->qdma - &eth->qdma[0];
+-
+-		/* For PPE1 select cpu port according to the running QDMA. */
+-		fe_cpu_port = qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1;
+-		ppe_id = 0;
+ 		break;
+-	}
++	default:
++		break;
+ 	}
+ 
+-	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT0(ppe_id),
+-		      DFT_CPORT_MASK(port->id),
+-		      __field_prep(DFT_CPORT_MASK(port->id), fe_cpu_port));
++	for (i = 0; i < eth->soc->num_ppe; i++)
++		airoha_ppe_set_cpu_port(port, i);
+ 
+ 	return 0;
+ }
+@@ -1992,7 +1976,7 @@ static u32 airoha_get_dsa_tag(struct sk_
+ #endif
+ }
+ 
+-static int airoha_get_fe_port(struct airoha_gdm_port *port)
++int airoha_get_fe_port(struct airoha_gdm_port *port)
+ {
+ 	struct airoha_qdma *qdma = port->qdma;
+ 	struct airoha_eth *eth = qdma->eth;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -654,9 +654,11 @@ static inline bool airoha_is_7583(struct
+ 	return eth->soc->version == 0x7583;
+ }
+ 
++int airoha_get_fe_port(struct airoha_gdm_port *port);
+ bool airoha_is_valid_gdm_port(struct airoha_eth *eth,
+ 			      struct airoha_gdm_port *port);
+ 
++void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id);
+ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
+ void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
+ 			  u16 hash, bool rx_wlan);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -85,6 +85,20 @@ static u32 airoha_ppe_get_timestamp(stru
+ 	return FIELD_GET(AIROHA_FOE_IB1_BIND_TIMESTAMP, timestamp);
+ }
+ 
++void airoha_ppe_set_cpu_port(struct airoha_gdm_port *port, u8 ppe_id)
++{
++	struct airoha_qdma *qdma = port->qdma;
++	u8 fport = airoha_get_fe_port(port);
++	struct airoha_eth *eth = qdma->eth;
++	u8 qdma_id = qdma - &eth->qdma[0];
++	u32 fe_cpu_port;
++
++	fe_cpu_port = qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1;
++	airoha_fe_rmw(eth, REG_PPE_DFT_CPORT(ppe_id, fport),
++		      DFT_CPORT_MASK(fport),
++		      __field_prep(DFT_CPORT_MASK(fport), fe_cpu_port));
++}
++
+ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
+ {
+ 	u32 sram_ppe_num_data_entries = PPE_SRAM_NUM_ENTRIES, sram_num_entries;
+@@ -155,7 +169,9 @@ static void airoha_ppe_hw_init(struct ai
+ 		airoha_fe_clear(eth, REG_PPE_PPE_FLOW_CFG(i),
+ 				PPE_FLOW_CFG_IP6_6RD_MASK);
+ 
+-		for (p = 0; p < ARRAY_SIZE(eth->ports); p++)
++		for (p = 0; p < ARRAY_SIZE(eth->ports); p++) {
++			struct airoha_gdm_port *port = eth->ports[p];
++
+ 			airoha_fe_rmw(eth, REG_PPE_MTU(i, p),
+ 				      FP0_EGRESS_MTU_MASK |
+ 				      FP1_EGRESS_MTU_MASK,
+@@ -163,6 +179,11 @@ static void airoha_ppe_hw_init(struct ai
+ 						 AIROHA_MAX_MTU) |
+ 				      FIELD_PREP(FP1_EGRESS_MTU_MASK,
+ 						 AIROHA_MAX_MTU));
++			if (!port)
++				continue;
++
++			airoha_ppe_set_cpu_port(port, i);
++		}
+ 	}
+ }
+ 
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -312,10 +312,9 @@
+ #define REG_PPE_HASH_SEED(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x244)
+ #define PPE_HASH_SEED				0x12345678
+ 
+-#define REG_PPE_DFT_CPORT0(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x248)
+-#define DFT_CPORT_MASK(_n)			GENMASK(3 + ((_n) << 2), ((_n) << 2))
+-
+-#define REG_PPE_DFT_CPORT1(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x24c)
++#define REG_PPE_DFT_CPORT_BASE(_n)		(((_n) ? PPE2_BASE : PPE1_BASE) + 0x248)
++#define REG_PPE_DFT_CPORT(_m, _n)		(REG_PPE_DFT_CPORT_BASE(_m) + (((_n) / 8) << 2))
++#define DFT_CPORT_MASK(_n)			GENMASK(3 + (((_n) % 8) << 2), (((_n) % 8) << 2))
+ 
+ #define REG_PPE_TB_HASH_CFG(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x250)
+ #define PPE_DRAM_HASH1_MODE_MASK		GENMASK(31, 28)

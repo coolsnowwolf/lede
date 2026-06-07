@@ -1,0 +1,131 @@
+From 8737d7194d6d5947c3d7d8813895b44a25b84477 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 13 Mar 2026 17:28:36 +0100
+Subject: [PATCH] net: airoha: select QDMA block according LAN/WAN
+ configuration
+
+Before this patch even GDM ports were assigned to QDMA0 while odd GDM
+ports were using QDMA1, so, based on the DTS configuration, both QDMA0
+and QDMA1 can theoretically receive traffic destinated to the host cpu
+from LAN or WAN GDM ports.
+Airoha folks reported the hw design assumes the LAN traffic destinated
+to the host cpu is be forwarded to QDMA0 while traffic received on WAN
+GDM port is managed by QDMA1. For this reason, select QDMA block according
+to the GDM port LAN or WAN configuration:
+- QDMA0 is used for GDM LAN devices
+- QDMA1 is used for GDM WAN device
+
+Assuming a device with three GDM ports, a typical configuration could be:
+- MT7530 DSA switch -> GDM1 (eth0) -> QDMA0 (LAN traffic)
+- External PHY      -> GDM2 (eth1) -> QDMA1 (WAN traffic)
+- External PHY      -> GDM3 (eth2) -> QDMA0 (LAN traffic)
+
+We can then bridge eth0 DSA port (lanX) with eth2 since they all tx/rx
+LAN traffic.
+
+Please note this patch introduces a change not visible to the user since
+airoha_eth driver currently supports just the internal phy available via
+the MT7530 DSA switch and there are no WAN interfaces officially supported
+since PCS/external phy is not merged mainline yet (it will be posted with
+following patches).
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260313-airoha-qdma-lan-wan-mode-v2-1-7d577db6e40c@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 18 ++++++++----------
+ drivers/net/ethernet/airoha/airoha_eth.h |  1 +
+ 2 files changed, 9 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -1848,11 +1848,13 @@ static int airhoha_set_gdm2_loopback(str
+ static int airoha_dev_init(struct net_device *dev)
+ {
+ 	struct airoha_gdm_port *port = netdev_priv(dev);
+-	struct airoha_qdma *qdma = port->qdma;
+-	struct airoha_eth *eth = qdma->eth;
++	struct airoha_eth *eth = port->eth;
+ 	u32 fe_cpu_port;
+ 	u8 ppe_id;
+ 
++	/* QDMA0 is used for lan ports while QDMA1 is used for WAN ports */
++	port->qdma = &eth->qdma[!airoha_is_lan_gdm_port(port)];
++	port->dev->irq = port->qdma->irq_banks[0].irq;
+ 	airoha_set_macaddr(port, dev->dev_addr);
+ 
+ 	switch (port->id) {
+@@ -1876,7 +1878,7 @@ static int airoha_dev_init(struct net_de
+ 		}
+ 		fallthrough;
+ 	default: {
+-		u8 qdma_id = qdma - &eth->qdma[0];
++		u8 qdma_id = port->qdma - &eth->qdma[0];
+ 
+ 		/* For PPE1 select cpu port according to the running QDMA. */
+ 		fe_cpu_port = qdma_id ? FE_PSE_PORT_CDM2 : FE_PSE_PORT_CDM1;
+@@ -2963,11 +2965,10 @@ bool airoha_is_valid_gdm_port(struct air
+ }
+ 
+ static int airoha_alloc_gdm_port(struct airoha_eth *eth,
+-				 struct device_node *np, int index)
++				 struct device_node *np)
+ {
+ 	const __be32 *id_ptr = of_get_property(np, "reg", NULL);
+ 	struct airoha_gdm_port *port;
+-	struct airoha_qdma *qdma;
+ 	struct net_device *dev;
+ 	int err, p;
+ 	u32 id;
+@@ -2998,7 +2999,6 @@ static int airoha_alloc_gdm_port(struct
+ 		return -ENOMEM;
+ 	}
+ 
+-	qdma = &eth->qdma[index % AIROHA_MAX_NUM_QDMA];
+ 	dev->netdev_ops = &airoha_netdev_ops;
+ 	dev->ethtool_ops = &airoha_ethtool_ops;
+ 	dev->max_mtu = AIROHA_MAX_MTU;
+@@ -3010,7 +3010,6 @@ static int airoha_alloc_gdm_port(struct
+ 	dev->features |= dev->hw_features;
+ 	dev->vlan_features = dev->hw_features;
+ 	dev->dev.of_node = np;
+-	dev->irq = qdma->irq_banks[0].irq;
+ 	SET_NETDEV_DEV(dev, eth->dev);
+ 
+ 	/* reserve hw queues for HTB offloading */
+@@ -3031,7 +3030,7 @@ static int airoha_alloc_gdm_port(struct
+ 	port = netdev_priv(dev);
+ 	u64_stats_init(&port->stats.syncp);
+ 	spin_lock_init(&port->stats.lock);
+-	port->qdma = qdma;
++	port->eth = eth;
+ 	port->dev = dev;
+ 	port->id = id;
+ 	/* XXX: Read nbq from DTS */
+@@ -3133,7 +3132,6 @@ static int airoha_probe(struct platform_
+ 	for (i = 0; i < ARRAY_SIZE(eth->qdma); i++)
+ 		airoha_qdma_start_napi(&eth->qdma[i]);
+ 
+-	i = 0;
+ 	for_each_child_of_node(pdev->dev.of_node, np) {
+ 		if (!of_device_is_compatible(np, "airoha,eth-mac"))
+ 			continue;
+@@ -3141,7 +3139,7 @@ static int airoha_probe(struct platform_
+ 		if (!of_device_is_available(np))
+ 			continue;
+ 
+-		err = airoha_alloc_gdm_port(eth, np, i++);
++		err = airoha_alloc_gdm_port(eth, np);
+ 		if (err) {
+ 			of_node_put(np);
+ 			goto error_napi_stop;
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -534,6 +534,7 @@ struct airoha_qdma {
+ 
+ struct airoha_gdm_port {
+ 	struct airoha_qdma *qdma;
++	struct airoha_eth *eth;
+ 	struct net_device *dev;
+ 	int id;
+ 	int nbq;

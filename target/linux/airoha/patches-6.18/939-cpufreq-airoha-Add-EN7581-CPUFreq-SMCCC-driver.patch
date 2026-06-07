@@ -1,0 +1,215 @@
+From 84cf9e541cccb8cb698518a9897942e8c78f1d83 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 9 Jan 2025 14:12:58 +0100
+Subject: [PATCH] cpufreq: airoha: Add EN7581 CPUFreq SMCCC driver
+
+Add simple CPU Freq driver for Airoha EN7581 SoC that control CPU
+frequency scaling with SMC APIs and register a generic "cpufreq-dt"
+device.
+
+All CPU share the same frequency and can't be controlled independently.
+CPU frequency is controlled by the attached PM domain.
+
+Add SoC compatible to cpufreq-dt-plat block list as a dedicated cpufreq
+driver is needed with OPP v2 nodes declared in DTS.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: Viresh Kumar <viresh.kumar@linaro.org>
+---
+ drivers/cpufreq/Kconfig.arm          |   8 ++
+ drivers/cpufreq/airoha-cpufreq.c     | 152 +++++++++++++++++++++++++++
+ drivers/cpufreq/cpufreq-dt-platdev.c |   2 +
+ 3 files changed, 163 insertions(+)
+ create mode 100644 drivers/cpufreq/airoha-cpufreq.c
+
+--- a/drivers/cpufreq/Kconfig.arm
++++ b/drivers/cpufreq/Kconfig.arm
+@@ -24,6 +24,14 @@ config ARM_AIROHA_SOC_CPUFREQ
+ 	help
+ 	  This adds the CPUFreq driver for Airoha EN7581 SoCs.
+ 
++config ARM_AIROHA_SOC_CPUFREQ
++	tristate "Airoha EN7581 SoC CPUFreq support"
++	depends on ARCH_AIROHA || COMPILE_TEST
++	select PM_OPP
++	default ARCH_AIROHA
++	help
++	  This adds the CPUFreq driver for Airoha EN7581 SoCs.
++
+ config ARM_APPLE_SOC_CPUFREQ
+ 	tristate "Apple Silicon SoC CPUFreq support"
+ 	depends on ARCH_APPLE || (COMPILE_TEST && 64BIT)
+--- a/drivers/cpufreq/airoha-cpufreq.c
++++ b/drivers/cpufreq/airoha-cpufreq.c
+@@ -12,7 +12,8 @@
+ 
+ struct airoha_cpufreq_priv {
+ 	int opp_token;
+-	struct dev_pm_domain_list *pd_list;
++	struct device **virt_devs;
++	int num_virt_devs;
+ 	struct platform_device *cpufreq_dt;
+ };
+ 
+@@ -29,24 +30,19 @@ static int airoha_cpufreq_config_clks_no
+ }
+ 
+ static const char * const airoha_cpufreq_clk_names[] = { "cpu", NULL };
+-static const char * const airoha_cpufreq_pd_names[] = { "perf" };
++static const char * const airoha_cpufreq_pd_names[] = { "perf", NULL };
+ 
+ static int airoha_cpufreq_probe(struct platform_device *pdev)
+ {
+-	const struct dev_pm_domain_attach_data attach_data = {
+-		.pd_names = airoha_cpufreq_pd_names,
+-		.num_pd_names = ARRAY_SIZE(airoha_cpufreq_pd_names),
+-		.pd_flags = PD_FLAG_DEV_LINK_ON | PD_FLAG_REQUIRED_OPP,
+-	};
+-	struct dev_pm_opp_config config = {
+-		.clk_names = airoha_cpufreq_clk_names,
+-		.config_clks = airoha_cpufreq_config_clks_nop,
+-	};
+ 	struct platform_device *cpufreq_dt;
+ 	struct airoha_cpufreq_priv *priv;
+ 	struct device *dev = &pdev->dev;
+ 	struct device *cpu_dev;
+-	int ret;
++	struct dev_pm_opp_config config = {
++		.clk_names = airoha_cpufreq_clk_names,
++		.config_clks = airoha_cpufreq_config_clks_nop,
++	};
++	int ret, i, num_devs;
+ 
+ 	/* CPUs refer to the same OPP table */
+ 	cpu_dev = get_cpu_device(0);
+@@ -62,17 +58,66 @@ static int airoha_cpufreq_probe(struct p
+ 	if (priv->opp_token < 0)
+ 		return dev_err_probe(dev, priv->opp_token, "Failed to set OPP config\n");
+ 
+-	/* Attach PM for OPP */
+-	ret = dev_pm_domain_attach_list(cpu_dev, &attach_data,
+-					&priv->pd_list);
+-	if (ret)
+-		goto clear_opp_config;
++	/* Count power domains */
++	num_devs = 0;
++	while (airoha_cpufreq_pd_names[num_devs])
++		num_devs++;
++
++	/* Manually attach genpd devices */
++	if (num_devs > 0) {
++		struct device **virt_devs;
++
++		virt_devs = devm_kcalloc(dev, num_devs, sizeof(*virt_devs), GFP_KERNEL);
++		if (!virt_devs) {
++			ret = -ENOMEM;
++			goto err_clear_opp_config;
++		}
++
++		/* Attach each genpd domain */
++		for (i = 0; i < num_devs; i++) {
++			virt_devs[i] = dev_pm_domain_attach_by_name(cpu_dev, 
++								     airoha_cpufreq_pd_names[i]);
++			if (IS_ERR_OR_NULL(virt_devs[i])) {
++				ret = PTR_ERR(virt_devs[i]) ? : -ENODEV;
++				dev_err(dev, "failed to attach %s: %d\n",
++					airoha_cpufreq_pd_names[i], ret);
++
++				/* Detach previously attached domains */
++				while (--i >= 0)
++					dev_pm_domain_detach(virt_devs[i], false);
++
++				goto err_clear_opp_config;
++			}
++		}
++
++		/* Resume all virtual devices for OPP ACTIVE */
++		for (i = 0; i < num_devs; i++) {
++			ret = pm_runtime_resume_and_get(virt_devs[i]);
++			if (ret) {
++				dev_err(dev, "failed to resume %s: %d\n",
++					airoha_cpufreq_pd_names[i], ret);
++
++				/* Rollback previous PM runtime calls and detach domains */
++				while (--i >= 0)
++					pm_runtime_put(virt_devs[i]);
++
++				/* Detach all domains */
++				for (i = 0; i < num_devs; i++)
++					dev_pm_domain_detach(virt_devs[i], false);
++
++				goto err_clear_opp_config;
++			}
++		}
++
++		priv->virt_devs = virt_devs;
++		priv->num_virt_devs = num_devs;
++	}
+ 
+ 	cpufreq_dt = platform_device_register_simple("cpufreq-dt", -1, NULL, 0);
+ 	ret = PTR_ERR_OR_ZERO(cpufreq_dt);
+ 	if (ret) {
+ 		dev_err(dev, "failed to create cpufreq-dt device: %d\n", ret);
+-		goto detach_pm;
++		goto err_register_cpufreq;
+ 	}
+ 
+ 	priv->cpufreq_dt = cpufreq_dt;
+@@ -80,9 +125,15 @@ static int airoha_cpufreq_probe(struct p
+ 
+ 	return 0;
+ 
+-detach_pm:
+-	dev_pm_domain_detach_list(priv->pd_list);
+-clear_opp_config:
++err_register_cpufreq:
++	if (priv->virt_devs) {
++		for (i = 0; i < priv->num_virt_devs; i++) {
++			pm_runtime_put(priv->virt_devs[i]);
++			dev_pm_domain_detach(priv->virt_devs[i], false);
++		}
++	}
++
++err_clear_opp_config:
+ 	dev_pm_opp_clear_config(priv->opp_token);
+ 
+ 	return ret;
+@@ -91,12 +142,18 @@ clear_opp_config:
+ static void airoha_cpufreq_remove(struct platform_device *pdev)
+ {
+ 	struct airoha_cpufreq_priv *priv = platform_get_drvdata(pdev);
++	int i;
+ 
+ 	platform_device_unregister(priv->cpufreq_dt);
+ 
+-	dev_pm_domain_detach_list(priv->pd_list);
+-
+ 	dev_pm_opp_clear_config(priv->opp_token);
++
++	if (priv->virt_devs) {
++		for (i = 0; i < priv->num_virt_devs; i++) {
++			pm_runtime_put(priv->virt_devs[i]);
++			dev_pm_domain_detach(priv->virt_devs[i], false);
++		}
++	}
+ }
+ 
+ static struct platform_driver airoha_cpufreq_driver = {
+@@ -110,6 +167,7 @@ static struct platform_driver airoha_cpu
+ static const struct of_device_id airoha_cpufreq_match_list[] __initconst = {
+ 	{ .compatible = "airoha,an7583" },
+ 	{ .compatible = "airoha,en7581" },
++	{ .compatible = "airoha,an7581" },
+ 	{},
+ };
+ MODULE_DEVICE_TABLE(of, airoha_cpufreq_match_list);
+--- a/drivers/cpufreq/cpufreq-dt-platdev.c
++++ b/drivers/cpufreq/cpufreq-dt-platdev.c
+@@ -106,6 +106,7 @@ static const struct of_device_id allowli
+ static const struct of_device_id blocklist[] __initconst = {
+ 	{ .compatible = "airoha,an7583", },
+ 	{ .compatible = "airoha,en7581", },
++	{ .compatible = "airoha,an7581", },
+ 
+ 	{ .compatible = "allwinner,sun50i-a100" },
+ 	{ .compatible = "allwinner,sun50i-h6", },
