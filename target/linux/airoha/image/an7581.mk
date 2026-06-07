@@ -33,8 +33,7 @@ define Device/bell_xg-040g-md
   DEVICE_MODEL := XG-040G-MD
   DEVICE_DTS := an7581-xg-040g-md
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES := kmod-phy-airoha-en8811h kmod-usb3 kmod-usb-xhci-mtk kmod-i2c-an7581 kmod-input-gpio-keys-polled \
-						airoha-en7581-npu-firmware
+  DEVICE_PACKAGES := airoha-en7581-npu-firmware kmod-phy-airoha-en8811h kmod-usb3 kmod-usb-xhci-mtk kmod-i2c-an7581 kmod-input-gpio-keys-polled 
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_LOADADDR := 0x80088000
@@ -55,8 +54,7 @@ define Device/bell_xg-140g-md
   DEVICE_MODEL := XG-140G-MD
   DEVICE_DTS := an7581-xg-140g-md
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES := kmod-phy-airoha-en8811h kmod-usb3 kmod-usb-xhci-mtk kmod-i2c-an7581 kmod-input-gpio-keys-polled \
-						airoha-en7581-npu-firmware
+  DEVICE_PACKAGES := airoha-en7581-npu-firmware kmod-phy-airoha-en8811h kmod-usb3 kmod-usb-xhci-mtk kmod-i2c-an7581 kmod-input-gpio-keys-polled 
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_LOADADDR := 0x80088000
@@ -77,8 +75,7 @@ define Device/bell_xg-040g-tf
   DEVICE_MODEL := XG-040G-TF
   DEVICE_DTS := an7581-xg-040g-tf
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES := kmod-phy-airoha-en8811h kmod-i2c-an7581 kmod-input-gpio-keys-polled \
-						airoha-en7581-npu-firmware
+  DEVICE_PACKAGES := airoha-en7581-npu-firmware kmod-phy-airoha-en8811h kmod-i2c-an7581 kmod-input-gpio-keys-polled 
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_LOADADDR := 0x80088000
@@ -100,8 +97,7 @@ define Device/bell_xg-140g-tf
   DEVICE_MODEL := XG-140G-TF
   DEVICE_DTS := an7581-xg-140g-tf
   DEVICE_DTS_CONFIG := config@1
-  DEVICE_PACKAGES := kmod-phy-airoha-en8811h kmod-i2c-an7581 kmod-input-gpio-keys-polled \
-						airoha-en7581-npu-firmware
+  DEVICE_PACKAGES := airoha-en7581-npu-firmware kmod-phy-airoha-en8811h kmod-i2c-an7581 kmod-input-gpio-keys-polled 
   BLOCKSIZE := 128k
   PAGESIZE := 2048
   KERNEL_LOADADDR := 0x80088000
