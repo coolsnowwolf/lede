@@ -1,0 +1,234 @@
+From 205a24e34751220c3ba04f0ac6ecc734e56ed225 Mon Sep 17 00:00:00 2001
+From: Jon Lin <jon.lin@rock-chips.com>
+Date: Sun, 17 Oct 2021 09:59:10 +0800
+Subject: [PATCH] mtd: spinand: Support fmsh
+
+FM25S01A, FM25S02A, FM25S01, FM25G02B
+
+Change-Id: I7e0ceec39c57dc591d77a4ebde599ad326cf25b7
+Signed-off-by: Jon Lin <jon.lin@rock-chips.com>
+---
+ drivers/mtd/nand/spi/Makefile |   2 +-
+ drivers/mtd/nand/spi/core.c   |   1 +
+ drivers/mtd/nand/spi/fmsh.c   | 213 ++++++++++++++++++++++++++++++++++
+ include/linux/mtd/spinand.h   |   1 +
+ 4 files changed, 216 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/mtd/nand/spi/fmsh.c
+
+--- a/drivers/mtd/nand/spi/fmsh.c
++++ b/drivers/mtd/nand/spi/fmsh.c
+@@ -50,6 +50,144 @@ static const struct mtd_ooblayout_ops fm
+ 	.free = fm25s01a_ooblayout_free,
+ };
+ 
++static int fm25s01_ooblayout_ecc(struct mtd_info *mtd, int section,
++				 struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 64;
++	region->length = 64;
++
++	return 0;
++}
++
++static int fm25s01_ooblayout_free(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 2;
++	region->length = 62;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops fm25s01_ooblayout = {
++	.ecc = fm25s01_ooblayout_ecc,
++	.free = fm25s01_ooblayout_free,
++};
++
++/*
++ * ecc bits: 0xC0[4,6]
++ * [0b000], No bit errors were detected;
++ * [0b001] and [0b011], 1~6 Bit errors were detected and corrected. Not
++ *	reach Flipping Bits;
++ * [0b101], Bit error count equals the bit flip
++ *	detection threshold
++ * [0b010], Multiple bit errors were detected and
++ *	not corrected.
++ * others, Reserved.
++ */
++static int fm25s01bi3_ecc_ecc_get_status(struct spinand_device *spinand,
++					u8 status)
++{
++	struct nand_device *nand = spinand_to_nand(spinand);
++	u8 eccsr = (status & GENMASK(6, 4)) >> 4;
++
++	if (eccsr <= 1 || eccsr == 3)
++		return eccsr;
++	else if (eccsr == 5)
++		return nanddev_get_ecc_requirements(nand)->strength;
++	else
++		return -EBADMSG;
++}
++
++static int fm25g0xd_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 64;
++	region->length = 64;
++
++	return 0;
++}
++
++static int fm25g0xd_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	/* Reserve 2 bytes for the BBM. */
++	region->offset = 2;
++	region->length = 62;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops fm25g0xd_ooblayout = {
++	.ecc = fm25g0xd_ooblayout_ecc,
++	.free = fm25g0xd_ooblayout_free,
++};
++
++/*
++ * ecc bits: 0xC0[4,6]
++ * [0x0], No bit errors were detected;
++ * [0x001, 0x011], Bit errors were detected and corrected. Not
++ *	reach Flipping Bits;
++ * [0x100], Bit error count equals the bit flip
++ *	detectionthreshold
++ * [0x101, 0x110], Reserved;
++ * [0x111], Multiple bit errors were detected and
++ *	not corrected.
++ */
++static int fm25g0xd_ecc_get_status(struct spinand_device *spinand,
++				   u8 status)
++{
++	struct nand_device *nand = spinand_to_nand(spinand);
++	u8 eccsr = (status & GENMASK(6, 4)) >> 4;
++
++	if (eccsr <= 3)
++		return 0;
++	else if (eccsr == 4)
++		return nanddev_get_ecc_requirements(nand)->strength;
++	else
++		return -EBADMSG;
++}
++
++static int fm25g02b_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section >= 8)
++		return -ERANGE;
++
++	region->offset = 64 + section * 8;
++	region->length = 8;
++
++	return 0;
++}
++
++static int fm25g02b_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 2;
++	region->length = 62;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops fm25g02b_ooblayout = {
++	.ecc = fm25g02b_ooblayout_ecc,
++	.free = fm25g02b_ooblayout_free,
++};
++
+ static const struct spinand_info fmsh_spinand_table[] = {
+ 	SPINAND_INFO("FM25S01A",
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xE4),
+@@ -60,6 +198,69 @@ static const struct spinand_info fmsh_sp
+ 					      &update_cache_variants),
+ 		     0,
+ 		     SPINAND_ECCINFO(&fm25s01a_ooblayout, NULL)),
++	SPINAND_INFO("FM25S02A",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xE5),
++		     NAND_MEMORG(1, 2048, 64, 64, 2048, 40, 2, 1, 1),
++		     NAND_ECCREQ(1, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25s01a_ooblayout, NULL)),
++	SPINAND_INFO("FM25S01",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xA1),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(1, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&fm25s01_ooblayout, NULL)),
++	SPINAND_INFO("FM25LS01",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xA5),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(1, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&fm25s01_ooblayout, NULL)),
++	SPINAND_INFO("FM25S01BI3",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xD4),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25s01_ooblayout, fm25s01bi3_ecc_ecc_get_status)),
++	SPINAND_INFO("FM25S02BI3-DND-A-G3",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xD6),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 20, 1, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25s01_ooblayout, fm25s01bi3_ecc_ecc_get_status)),
++	SPINAND_INFO("FM25G02B",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xD2),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(8, 528),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25g02b_ooblayout, fm25s01bi3_ecc_ecc_get_status)),
++	SPINAND_INFO("FM25G02D",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xF2),
++		     NAND_MEMORG(1, 2048, 64, 64, 2048, 40, 1, 1, 1),
++		     NAND_ECCREQ(4, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25g0xd_ooblayout, fm25g0xd_ecc_get_status)),
+ };
+ 
+ static const struct spinand_manufacturer_ops fmsh_spinand_manuf_ops = {
