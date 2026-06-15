@@ -1,8 +1,93 @@
 #!/bin/sh
-uci -q get dhcp.odhcpd && exit 0
-touch /etc/config/dhcp
 
 . /usr/share/libubox/jshn.sh
+
+pio_file_check() {
+	local file valid
+
+	file=$1
+	valid=0
+
+	json_init
+	json_load_file $file 2> /dev/null
+
+	if json_is_a slaac array; then
+		local keys len
+
+		json_select slaac
+		json_get_keys keys
+
+		len=$(echo $keys | wc -w)
+		if [ $len -gt 0 ]; then
+			valid=1
+		fi
+	fi
+
+	echo $valid
+}
+
+pio_folder_migrate() {
+	local piodir piofolder
+
+	piofolder=$1
+	piodir=$2
+
+	[ -d $piofolder ] || return
+	[ -d $piodir ] || mkdir -p $piodir
+
+	for file in $piofolder/*; do
+		[ -e "$file" ] || continue
+		if [ $(pio_file_check $file) -eq 1 ]; then
+			mv $file $piodir/odhcpd.pio.$(basename $file)
+		fi
+	done
+}
+
+if [ -n "$(uci -q get dhcp.odhcpd)" ]; then
+	local commit hostsfile piodir piofolder
+
+	commit=0
+
+	piodir=$(uci -q get dhcp.odhcpd.piodir)
+	if [ -z "$piodir" ]; then
+		piodir=/tmp/odhcpd-piodir
+		uci set dhcp.odhcpd.piodir=$piodir
+		commit=1
+	fi
+
+	piofolder=$(uci -q get dhcp.odhcpd.piofolder)
+	if [ -n "$piofolder" ]; then
+		pio_folder_migrate $piofolder $piodir
+		uci delete dhcp.odhcpd.piofolder
+		commit=1
+	fi
+
+	if [ -n "$(uci -q get dhcp.odhcpd.legacy)" ]; then
+		uci delete dhcp.odhcpd.legacy
+		commit=1
+	fi
+
+	hostsfile=$(uci -q get dhcp.odhcpd.hostsfile)
+	if [ -n "$hostsfile" ]; then
+		uci delete dhcp.odhcpd.hostsfile
+		uci set dhcp.odhcpd.hostsdir="$(dirname $hostsfile)"
+		commit=1
+	elif [ -z "$(uci -q get dhcp.odhcpd.hostsdir)" ]; then
+		uci set dhcp.odhcpd.hostsdir=/tmp/hosts
+		commit=1
+	fi
+
+	if [ "$(uci -q get dhcp.odhcpd.leasefile)" == "/tmp/hosts/odhcpd" ]; then
+		uci set dhcp.odhcpd.leasefile=/tmp/odhcpd.leases
+		commit=1
+	fi
+
+	[ "$commit" -eq 1 ] && uci commit dhcp
+
+	exit 0
+fi
+
+touch /etc/config/dhcp
 
 json_load "$(cat /etc/board.json)"
 json_select network
@@ -25,7 +110,7 @@ case "$protocol" in
 	;;
 esac
 
-uci get dhcp.lan 1>/dev/null 2>/dev/null || {
+uci -q get dhcp.lan || {
 uci batch <<EOF
 set dhcp.lan=dhcp
 set dhcp.lan.interface='lan'
@@ -39,9 +124,11 @@ EOF
 uci batch <<EOF
 set dhcp.odhcpd=odhcpd
 set dhcp.odhcpd.maindhcp=$ODHCPDONLY
-set dhcp.odhcpd.leasefile=/tmp/hosts/odhcpd
+set dhcp.odhcpd.leasefile=/tmp/odhcpd.leases
 set dhcp.odhcpd.leasetrigger=/usr/sbin/odhcpd-update
 set dhcp.odhcpd.loglevel=4
+set dhcp.odhcpd.piodir=/tmp/odhcpd-piodir
+set dhcp.odhcpd.hostsdir=/tmp/hosts
 set dhcp.lan.dhcpv4=$V4MODE
 set dhcp.lan.dhcpv6=$V6MODE
 set dhcp.lan.ra=$V6MODE
