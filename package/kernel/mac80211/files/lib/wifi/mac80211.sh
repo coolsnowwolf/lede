@@ -419,6 +419,12 @@ detect_mac80211() {
 		path="$(iwinfo nl80211 path "$dev")"
 		check_macaddr="$(cat /sys/class/ieee80211/${dev}/macaddress)"
 
+		unset \
+			band_2g_channel band_2g_htmode \
+			band_5g_channel band_5g_htmode \
+			band_6g_channel band_6g_htmode \
+			band_60g_channel band_60g_htmode
+
 		band_list=""
 		band_caps="$(__get_band_capabilities "$dev")"
 		band_channels="$(__get_band_channels "$dev")"
