@@ -1,0 +1,2021 @@
+From f797260adaf52bee0ec0e16190bbefbe1bfc3692 Mon Sep 17 00:00:00 2001
+From: Patrick O'Neill <patrick@rivosinc.com>
+Date: Tue, 18 Apr 2023 14:33:13 -0700
+Subject: [PATCH] RISCV: Inline subword atomic ops
+
+RISC-V has no support for subword atomic operations; code currently
+generates libatomic library calls.
+
+This patch changes the default behavior to inline subword atomic calls
+(using the same logic as the existing library call).
+Behavior can be specified using the -minline-atomics and
+-mno-inline-atomics command line flags.
+
+gcc/libgcc/config/riscv/atomic.c has the same logic implemented in asm.
+This will need to stay for backwards compatibility and the
+-mno-inline-atomics flag.
+
+2023-04-18 Patrick O'Neill <patrick@rivosinc.com>
+
+gcc/ChangeLog:
+	PR target/104338
+	* config/riscv/riscv-protos.h: Add helper function stubs.
+	* config/riscv/riscv.cc: Add helper functions for subword masking.
+	* config/riscv/riscv.opt: Add command-line flag.
+	* config/riscv/sync.md: Add masking logic and inline asm for fetch_and_op,
+	fetch_and_nand, CAS, and exchange ops.
+	* doc/invoke.texi: Add blurb regarding command-line flag.
+
+libgcc/ChangeLog:
+	PR target/104338
+	* config/riscv/atomic.c: Add reference to duplicate logic.
+
+gcc/testsuite/ChangeLog:
+	PR target/104338
+	* gcc.target/riscv/inline-atomics-1.c: New test.
+	* gcc.target/riscv/inline-atomics-2.c: New test.
+	* gcc.target/riscv/inline-atomics-3.c: New test.
+	* gcc.target/riscv/inline-atomics-4.c: New test.
+	* gcc.target/riscv/inline-atomics-5.c: New test.
+	* gcc.target/riscv/inline-atomics-6.c: New test.
+	* gcc.target/riscv/inline-atomics-7.c: New test.
+	* gcc.target/riscv/inline-atomics-8.c: New test.
+
+Signed-off-by: Patrick O'Neill <patrick@rivosinc.com>
+Signed-off-by: Palmer Dabbelt <palmer@rivosinc.com>
+---
+ gcc/config/riscv/riscv-protos.h               |   2 +
+ gcc/config/riscv/riscv.cc                     |  49 ++
+ gcc/config/riscv/riscv.opt                    |   4 +
+ gcc/config/riscv/sync.md                      | 301 +++++++++
+ gcc/doc/invoke.texi                           |  10 +-
+ .../gcc.target/riscv/inline-atomics-1.c       |  18 +
+ .../gcc.target/riscv/inline-atomics-2.c       |   9 +
+ .../gcc.target/riscv/inline-atomics-3.c       | 569 ++++++++++++++++++
+ .../gcc.target/riscv/inline-atomics-4.c       | 566 +++++++++++++++++
+ .../gcc.target/riscv/inline-atomics-5.c       |  87 +++
+ .../gcc.target/riscv/inline-atomics-6.c       |  87 +++
+ .../gcc.target/riscv/inline-atomics-7.c       |  69 +++
+ .../gcc.target/riscv/inline-atomics-8.c       |  69 +++
+ libgcc/config/riscv/atomic.c                  |   2 +
+ 14 files changed, 1841 insertions(+), 1 deletion(-)
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-1.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-2.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-3.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-4.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-5.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-6.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-7.c
+ create mode 100644 gcc/testsuite/gcc.target/riscv/inline-atomics-8.c
+
+--- a/gcc/config/riscv/riscv-protos.h
++++ b/gcc/config/riscv/riscv-protos.h
+@@ -74,6 +74,8 @@ extern bool riscv_expand_block_move (rtx
+ extern bool riscv_store_data_bypass_p (rtx_insn *, rtx_insn *);
+ extern rtx riscv_gen_gpr_save_insn (struct riscv_frame_info *);
+ extern bool riscv_gpr_save_operation_p (rtx);
++extern void riscv_subword_address (rtx, rtx *, rtx *, rtx *, rtx *);
++extern void riscv_lshift_subword (machine_mode, rtx, rtx, rtx *);
+ 
+ /* Routines implemented in riscv-c.c.  */
+ void riscv_cpu_cpp_builtins (cpp_reader *);
+--- a/gcc/config/riscv/riscv.c
++++ b/gcc/config/riscv/riscv.c
+@@ -5351,6 +5351,55 @@ riscv_asan_shadow_offset (void)
+   return TARGET_64BIT ? (HOST_WIDE_INT_1 << 29) : 0;
+ }
+ 
++/* Given memory reference MEM, expand code to compute the aligned
++   memory address, shift and mask values and store them into
++   *ALIGNED_MEM, *SHIFT, *MASK and *NOT_MASK.  */
++
++void
++riscv_subword_address (rtx mem, rtx *aligned_mem, rtx *shift, rtx *mask,
++		       rtx *not_mask)
++{
++  /* Align the memory address to a word.  */
++  rtx addr = force_reg (Pmode, XEXP (mem, 0));
++
++  rtx addr_mask = gen_int_mode (-4, Pmode);
++
++  rtx aligned_addr = gen_reg_rtx (Pmode);
++  emit_move_insn (aligned_addr,  gen_rtx_AND (Pmode, addr, addr_mask));
++
++  *aligned_mem = change_address (mem, SImode, aligned_addr);
++
++  /* Calculate the shift amount.  */
++  emit_move_insn (*shift, gen_rtx_AND (SImode, gen_lowpart (SImode, addr),
++				       gen_int_mode (3, SImode)));
++  emit_move_insn (*shift, gen_rtx_ASHIFT (SImode, *shift,
++					  gen_int_mode (3, SImode)));
++
++  /* Calculate the mask.  */
++  int unshifted_mask = GET_MODE_MASK (GET_MODE (mem));
++
++  emit_move_insn (*mask, gen_int_mode (unshifted_mask, SImode));
++
++  emit_move_insn (*mask, gen_rtx_ASHIFT (SImode, *mask,
++					 gen_lowpart (QImode, *shift)));
++
++  emit_move_insn (*not_mask, gen_rtx_NOT(SImode, *mask));
++}
++
++/* Leftshift a subword within an SImode register.  */
++
++void
++riscv_lshift_subword (machine_mode mode, rtx value, rtx shift,
++		      rtx *shifted_value)
++{
++  rtx value_reg = gen_reg_rtx (SImode);
++  emit_move_insn (value_reg, simplify_gen_subreg (SImode, value,
++						  mode, 0));
++
++  emit_move_insn(*shifted_value, gen_rtx_ASHIFT (SImode, value_reg,
++						 gen_lowpart (QImode, shift)));
++}
++
+ /* Initialize the GCC target structure.  */
+ #undef TARGET_ASM_ALIGNED_HI_OP
+ #define TARGET_ASM_ALIGNED_HI_OP "\t.half\t"
+--- a/gcc/config/riscv/riscv.opt
++++ b/gcc/config/riscv/riscv.opt
+@@ -195,6 +195,10 @@ long riscv_stack_protector_guard_offset
+ TargetVariable
+ int riscv_zi_subext
+ 
++minline-atomics
++Target Var(TARGET_INLINE_SUBWORD_ATOMIC) Init(1)
++Always inline subword atomic operations.
++
+ Enum
+ Name(isa_spec_class) Type(enum riscv_isa_spec_class)
+ Supported ISA specs (for use with the -misa-spec= option):
+--- a/gcc/config/riscv/sync.md
++++ b/gcc/config/riscv/sync.md
+@@ -21,8 +21,11 @@
+ 
+ (define_c_enum "unspec" [
+   UNSPEC_COMPARE_AND_SWAP
++  UNSPEC_COMPARE_AND_SWAP_SUBWORD
+   UNSPEC_SYNC_OLD_OP
++  UNSPEC_SYNC_OLD_OP_SUBWORD
+   UNSPEC_SYNC_EXCHANGE
++  UNSPEC_SYNC_EXCHANGE_SUBWORD
+   UNSPEC_ATOMIC_STORE
+   UNSPEC_MEMORY_BARRIER
+ ])
+@@ -92,6 +95,135 @@
+   "%F3amo<insn>.<amo>%A3 %0,%z2,%1"
+   [(set (attr "length") (const_int 8))])
+ 
++(define_insn "subword_atomic_fetch_strong_<atomic_optab>"
++  [(set (match_operand:SI 0 "register_operand" "=&r")		   ;; old value at mem
++	(match_operand:SI 1 "memory_operand" "+A"))		   ;; mem location
++   (set (match_dup 1)
++	(unspec_volatile:SI
++	  [(any_atomic:SI (match_dup 1)
++		     (match_operand:SI 2 "register_operand" "rI")) ;; value for op
++	   (match_operand:SI 3 "register_operand" "rI")]	   ;; mask
++	 UNSPEC_SYNC_OLD_OP_SUBWORD))
++    (match_operand:SI 4 "register_operand" "rI")		   ;; not_mask
++    (clobber (match_scratch:SI 5 "=&r"))			   ;; tmp_1
++    (clobber (match_scratch:SI 6 "=&r"))]			   ;; tmp_2
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++  {
++    return "1:\;"
++	   "lr.w.aq\t%0, %1\;"
++	   "<insn>\t%5, %0, %2\;"
++	   "and\t%5, %5, %3\;"
++	   "and\t%6, %0, %4\;"
++	   "or\t%6, %6, %5\;"
++	   "sc.w.rl\t%5, %6, %1\;"
++	   "bnez\t%5, 1b";
++  }
++  [(set (attr "length") (const_int 28))])
++
++(define_expand "atomic_fetch_nand<mode>"
++  [(match_operand:SHORT 0 "register_operand")			      ;; old value at mem
++   (not:SHORT (and:SHORT (match_operand:SHORT 1 "memory_operand")     ;; mem location
++			 (match_operand:SHORT 2 "reg_or_0_operand"))) ;; value for op
++   (match_operand:SI 3 "const_int_operand")]			      ;; model
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++{
++  /* We have no QImode/HImode atomics, so form a mask, then use
++     subword_atomic_fetch_strong_nand to implement a LR/SC version of the
++     operation. */
++
++  /* Logic duplicated in gcc/libgcc/config/riscv/atomic.c for use when inlining
++     is disabled */
++
++  rtx old = gen_reg_rtx (SImode);
++  rtx mem = operands[1];
++  rtx value = operands[2];
++  rtx aligned_mem = gen_reg_rtx (SImode);
++  rtx shift = gen_reg_rtx (SImode);
++  rtx mask = gen_reg_rtx (SImode);
++  rtx not_mask = gen_reg_rtx (SImode);
++
++  riscv_subword_address (mem, &aligned_mem, &shift, &mask, &not_mask);
++
++  rtx shifted_value = gen_reg_rtx (SImode);
++  riscv_lshift_subword (<MODE>mode, value, shift, &shifted_value);
++
++  emit_insn (gen_subword_atomic_fetch_strong_nand (old, aligned_mem,
++						   shifted_value,
++						   mask, not_mask));
++
++  emit_move_insn (old, gen_rtx_ASHIFTRT (SImode, old,
++					 gen_lowpart (QImode, shift)));
++
++  emit_move_insn (operands[0], gen_lowpart (<MODE>mode, old));
++
++  DONE;
++})
++
++(define_insn "subword_atomic_fetch_strong_nand"
++  [(set (match_operand:SI 0 "register_operand" "=&r")			  ;; old value at mem
++	(match_operand:SI 1 "memory_operand" "+A"))			  ;; mem location
++   (set (match_dup 1)
++	(unspec_volatile:SI
++	  [(not:SI (and:SI (match_dup 1)
++			   (match_operand:SI 2 "register_operand" "rI"))) ;; value for op
++	   (match_operand:SI 3 "register_operand" "rI")]		  ;; mask
++	 UNSPEC_SYNC_OLD_OP_SUBWORD))
++    (match_operand:SI 4 "register_operand" "rI")			  ;; not_mask
++    (clobber (match_scratch:SI 5 "=&r"))				  ;; tmp_1
++    (clobber (match_scratch:SI 6 "=&r"))]				  ;; tmp_2
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++  {
++    return "1:\;"
++	   "lr.w.aq\t%0, %1\;"
++	   "and\t%5, %0, %2\;"
++	   "not\t%5, %5\;"
++	   "and\t%5, %5, %3\;"
++	   "and\t%6, %0, %4\;"
++	   "or\t%6, %6, %5\;"
++	   "sc.w.rl\t%5, %6, %1\;"
++	   "bnez\t%5, 1b";
++  }
++  [(set (attr "length") (const_int 32))])
++
++(define_expand "atomic_fetch_<atomic_optab><mode>"
++  [(match_operand:SHORT 0 "register_operand")			 ;; old value at mem
++   (any_atomic:SHORT (match_operand:SHORT 1 "memory_operand")	 ;; mem location
++		     (match_operand:SHORT 2 "reg_or_0_operand")) ;; value for op
++   (match_operand:SI 3 "const_int_operand")]			 ;; model
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++{
++  /* We have no QImode/HImode atomics, so form a mask, then use
++     subword_atomic_fetch_strong_<mode> to implement a LR/SC version of the
++     operation. */
++
++  /* Logic duplicated in gcc/libgcc/config/riscv/atomic.c for use when inlining
++     is disabled */
++
++  rtx old = gen_reg_rtx (SImode);
++  rtx mem = operands[1];
++  rtx value = operands[2];
++  rtx aligned_mem = gen_reg_rtx (SImode);
++  rtx shift = gen_reg_rtx (SImode);
++  rtx mask = gen_reg_rtx (SImode);
++  rtx not_mask = gen_reg_rtx (SImode);
++
++  riscv_subword_address (mem, &aligned_mem, &shift, &mask, &not_mask);
++
++  rtx shifted_value = gen_reg_rtx (SImode);
++  riscv_lshift_subword (<MODE>mode, value, shift, &shifted_value);
++
++  emit_insn (gen_subword_atomic_fetch_strong_<atomic_optab> (old, aligned_mem,
++							     shifted_value,
++							     mask, not_mask));
++
++  emit_move_insn (old, gen_rtx_ASHIFTRT (SImode, old,
++					 gen_lowpart (QImode, shift)));
++
++  emit_move_insn (operands[0], gen_lowpart (<MODE>mode, old));
++
++  DONE;
++})
++
+ (define_insn "atomic_exchange<mode>"
+   [(set (match_operand:GPR 0 "register_operand" "=&r")
+ 	(unspec_volatile:GPR
+@@ -104,6 +236,56 @@
+   "%F3amoswap.<amo>%A3 %0,%z2,%1"
+   [(set (attr "length") (const_int 8))])
+ 
++(define_expand "atomic_exchange<mode>"
++  [(match_operand:SHORT 0 "register_operand") ;; old value at mem
++   (match_operand:SHORT 1 "memory_operand")   ;; mem location
++   (match_operand:SHORT 2 "register_operand") ;; value
++   (match_operand:SI 3 "const_int_operand")]  ;; model
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++{
++  rtx old = gen_reg_rtx (SImode);
++  rtx mem = operands[1];
++  rtx value = operands[2];
++  rtx aligned_mem = gen_reg_rtx (SImode);
++  rtx shift = gen_reg_rtx (SImode);
++  rtx mask = gen_reg_rtx (SImode);
++  rtx not_mask = gen_reg_rtx (SImode);
++
++  riscv_subword_address (mem, &aligned_mem, &shift, &mask, &not_mask);
++
++  rtx shifted_value = gen_reg_rtx (SImode);
++  riscv_lshift_subword (<MODE>mode, value, shift, &shifted_value);
++
++  emit_insn (gen_subword_atomic_exchange_strong (old, aligned_mem,
++						 shifted_value, not_mask));
++
++  emit_move_insn (old, gen_rtx_ASHIFTRT (SImode, old,
++					 gen_lowpart (QImode, shift)));
++
++  emit_move_insn (operands[0], gen_lowpart (<MODE>mode, old));
++  DONE;
++})
++
++(define_insn "subword_atomic_exchange_strong"
++  [(set (match_operand:SI 0 "register_operand" "=&r")	 ;; old value at mem
++	(match_operand:SI 1 "memory_operand" "+A"))	 ;; mem location
++   (set (match_dup 1)
++	(unspec_volatile:SI
++	  [(match_operand:SI 2 "reg_or_0_operand" "rI")  ;; value
++	   (match_operand:SI 3 "reg_or_0_operand" "rI")] ;; not_mask
++      UNSPEC_SYNC_EXCHANGE_SUBWORD))
++    (clobber (match_scratch:SI 4 "=&r"))]		 ;; tmp_1
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++  {
++    return "1:\;"
++	   "lr.w.aq\t%0, %1\;"
++	   "and\t%4, %0, %3\;"
++	   "or\t%4, %4, %2\;"
++	   "sc.w.rl\t%4, %4, %1\;"
++	   "bnez\t%4, 1b";
++  }
++  [(set (attr "length") (const_int 20))])
++
+ (define_insn "atomic_cas_value_strong<mode>"
+   [(set (match_operand:GPR 0 "register_operand" "=&r")
+ 	(match_operand:GPR 1 "memory_operand" "+A"))
+@@ -152,6 +334,125 @@
+   DONE;
+ })
+ 
++(define_expand "atomic_compare_and_swap<mode>"
++  [(match_operand:SI 0 "register_operand")    ;; bool output
++   (match_operand:SHORT 1 "register_operand") ;; val output
++   (match_operand:SHORT 2 "memory_operand")   ;; memory
++   (match_operand:SHORT 3 "reg_or_0_operand") ;; expected value
++   (match_operand:SHORT 4 "reg_or_0_operand") ;; desired value
++   (match_operand:SI 5 "const_int_operand")   ;; is_weak
++   (match_operand:SI 6 "const_int_operand")   ;; mod_s
++   (match_operand:SI 7 "const_int_operand")]  ;; mod_f
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++{
++  emit_insn (gen_atomic_cas_value_strong<mode> (operands[1], operands[2],
++						operands[3], operands[4],
++						operands[6], operands[7]));
++
++  rtx val = gen_reg_rtx (SImode);
++  if (operands[1] != const0_rtx)
++    emit_move_insn (val, gen_rtx_SIGN_EXTEND (SImode, operands[1]));
++  else
++    emit_move_insn (val, const0_rtx);
++
++  rtx exp = gen_reg_rtx (SImode);
++  if (operands[3] != const0_rtx)
++    emit_move_insn (exp, gen_rtx_SIGN_EXTEND (SImode, operands[3]));
++  else
++    emit_move_insn (exp, const0_rtx);
++
++  rtx compare = val;
++  if (exp != const0_rtx)
++    {
++      rtx difference = gen_rtx_MINUS (SImode, val, exp);
++      compare = gen_reg_rtx (SImode);
++      emit_move_insn  (compare, difference);
++    }
++
++  if (word_mode != SImode)
++    {
++      rtx reg = gen_reg_rtx (word_mode);
++      emit_move_insn (reg, gen_rtx_SIGN_EXTEND (word_mode, compare));
++      compare = reg;
++    }
++
++  emit_move_insn (operands[0], gen_rtx_EQ (SImode, compare, const0_rtx));
++  DONE;
++})
++
++(define_expand "atomic_cas_value_strong<mode>"
++  [(match_operand:SHORT 0 "register_operand") ;; val output
++   (match_operand:SHORT 1 "memory_operand")   ;; memory
++   (match_operand:SHORT 2 "reg_or_0_operand") ;; expected value
++   (match_operand:SHORT 3 "reg_or_0_operand") ;; desired value
++   (match_operand:SI 4 "const_int_operand")   ;; mod_s
++   (match_operand:SI 5 "const_int_operand")   ;; mod_f
++   (match_scratch:SHORT 6)]
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++{
++  /* We have no QImode/HImode atomics, so form a mask, then use
++     subword_atomic_cas_strong<mode> to implement a LR/SC version of the
++     operation. */
++
++  /* Logic duplicated in gcc/libgcc/config/riscv/atomic.c for use when inlining
++     is disabled */
++
++  rtx old = gen_reg_rtx (SImode);
++  rtx mem = operands[1];
++  rtx aligned_mem = gen_reg_rtx (SImode);
++  rtx shift = gen_reg_rtx (SImode);
++  rtx mask = gen_reg_rtx (SImode);
++  rtx not_mask = gen_reg_rtx (SImode);
++
++  riscv_subword_address (mem, &aligned_mem, &shift, &mask, &not_mask);
++
++  rtx o = operands[2];
++  rtx n = operands[3];
++  rtx shifted_o = gen_reg_rtx (SImode);
++  rtx shifted_n = gen_reg_rtx (SImode);
++
++  riscv_lshift_subword (<MODE>mode, o, shift, &shifted_o);
++  riscv_lshift_subword (<MODE>mode, n, shift, &shifted_n);
++
++  emit_move_insn (shifted_o, gen_rtx_AND (SImode, shifted_o, mask));
++  emit_move_insn (shifted_n, gen_rtx_AND (SImode, shifted_n, mask));
++
++  emit_insn (gen_subword_atomic_cas_strong (old, aligned_mem,
++					    shifted_o, shifted_n,
++					    mask, not_mask));
++
++  emit_move_insn (old, gen_rtx_ASHIFTRT (SImode, old,
++					 gen_lowpart (QImode, shift)));
++
++  emit_move_insn (operands[0], gen_lowpart (<MODE>mode, old));
++
++  DONE;
++})
++
++(define_insn "subword_atomic_cas_strong"
++  [(set (match_operand:SI 0 "register_operand" "=&r")			   ;; old value at mem
++	(match_operand:SI 1 "memory_operand" "+A"))			   ;; mem location
++   (set (match_dup 1)
++	(unspec_volatile:SI [(match_operand:SI 2 "reg_or_0_operand" "rJ")  ;; expected value
++			     (match_operand:SI 3 "reg_or_0_operand" "rJ")] ;; desired value
++	 UNSPEC_COMPARE_AND_SWAP_SUBWORD))
++	(match_operand:SI 4 "register_operand" "rI")			   ;; mask
++	(match_operand:SI 5 "register_operand" "rI")			   ;; not_mask
++	(clobber (match_scratch:SI 6 "=&r"))]				   ;; tmp_1
++  "TARGET_ATOMIC && TARGET_INLINE_SUBWORD_ATOMIC"
++  {
++    return "1:\;"
++	   "lr.w.aq\t%0, %1\;"
++	   "and\t%6, %0, %4\;"
++	   "bne\t%6, %z2, 1f\;"
++	   "and\t%6, %0, %5\;"
++	   "or\t%6, %6, %3\;"
++	   "sc.w.rl\t%6, %6, %1\;"
++	   "bnez\t%6, 1b\;"
++	   "1:";
++  }
++  [(set (attr "length") (const_int 28))])
++
+ (define_expand "atomic_test_and_set"
+   [(match_operand:QI 0 "register_operand" "")     ;; bool output
+    (match_operand:QI 1 "memory_operand" "+A")    ;; memory
+--- a/gcc/doc/invoke.texi
++++ b/gcc/doc/invoke.texi
+@@ -734,7 +734,8 @@ Objective-C and Objective-C++ Dialects}.
+ -moverride=@var{string}  -mverbose-cost-dump @gol
+ -mstack-protector-guard=@var{guard} -mstack-protector-guard-reg=@var{sysreg} @gol
+ -mstack-protector-guard-offset=@var{offset} -mtrack-speculation @gol
+--moutline-atomics }
++-moutline-atomics
++-minline-atomics  -mno-inline-atomics}
+ 
+ @emph{Adapteva Epiphany Options}
+ @gccoptlist{-mhalf-reg-file  -mprefer-short-insn-regs @gol
+@@ -26742,6 +26743,13 @@ Do or don't use smaller but slower prolo
+ library function calls.  The default is to use fast inline prologues and
+ epilogues.
+ 
++@opindex minline-atomics
++@item -minline-atomics
++@itemx -mno-inline-atomics
++Do or don't use smaller but slower subword atomic emulation code that uses
++libatomic function calls.  The default is to use fast inline subword atomics
++that do not require libatomic.
++
+ @item -mshorten-memrefs
+ @itemx -mno-shorten-memrefs
+ @opindex mshorten-memrefs
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-1.c
+@@ -0,0 +1,18 @@
++/* { dg-do compile } */
++/* { dg-options "-mno-inline-atomics" } */
++/* { dg-message "note: '__sync_fetch_and_nand' changed semantics in GCC 4.4" "fetch_and_nand" { target *-*-* } 0 } */
++/* { dg-final { scan-assembler "\tcall\t__sync_fetch_and_add_1" } } */
++/* { dg-final { scan-assembler "\tcall\t__sync_fetch_and_nand_1" } } */
++/* { dg-final { scan-assembler "\tcall\t__sync_bool_compare_and_swap_1" } } */
++
++char foo;
++char bar;
++char baz;
++
++int
++main ()
++{
++  __sync_fetch_and_add(&foo, 1);
++  __sync_fetch_and_nand(&bar, 1);
++  __sync_bool_compare_and_swap (&baz, 1, 2);
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-2.c
+@@ -0,0 +1,9 @@
++/* { dg-do compile } */
++/* Verify that subword atomics do not generate calls.  */
++/* { dg-options "-minline-atomics" } */
++/* { dg-message "note: '__sync_fetch_and_nand' changed semantics in GCC 4.4" "fetch_and_nand" { target *-*-* } 0 } */
++/* { dg-final { scan-assembler-not "\tcall\t__sync_fetch_and_add_1" } } */
++/* { dg-final { scan-assembler-not "\tcall\t__sync_fetch_and_nand_1" } } */
++/* { dg-final { scan-assembler-not "\tcall\t__sync_bool_compare_and_swap_1" } } */
++
++#include "inline-atomics-1.c"
+\ No newline at end of file
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-3.c
+@@ -0,0 +1,569 @@
++/* Check all char alignments.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-op-1.c */
++/* Test __atomic routines for existence and proper execution on 1 byte
++   values with each valid memory model.  */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics -Wno-address-of-packed-member" } */
++
++/* Test the execution of the __atomic_*OP builtin routines for a char.  */
++
++extern void abort(void);
++
++char count, res;
++const char init = ~0;
++
++struct A
++{
++   char a;
++   char b;
++   char c;
++   char d;
++} __attribute__ ((packed)) A;
++
++/* The fetch_op routines return the original value before the operation.  */
++
++void
++test_fetch_add (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_RELAXED) != 0)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_CONSUME) != 1)
++    abort ();
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_ACQUIRE) != 2)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_RELEASE) != 3)
++    abort ();
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_ACQ_REL) != 4)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_SEQ_CST) != 5)
++    abort ();
++}
++
++
++void
++test_fetch_sub (char* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_RELAXED) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_CONSUME) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_ACQUIRE) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_RELEASE) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_ACQ_REL) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_SEQ_CST) !=  res--)
++    abort ();
++}
++
++void
++test_fetch_and (char* v)
++{
++  *v = init;
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, init, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_fetch_and (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_fetch_nand (char* v)
++{
++  *v = init;
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_ACQUIRE) !=  0 )
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_ACQ_REL) !=  0)
++    abort ();
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++void
++test_fetch_xor (char* v)
++{
++  *v = init;
++  count = 0;
++
++  if (__atomic_fetch_xor (v, count, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_RELEASE) !=  0)
++    abort ();
++
++  if (__atomic_fetch_xor (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++void
++test_fetch_or (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_fetch_or (v, count, __ATOMIC_RELAXED) !=  0)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, 2, __ATOMIC_CONSUME) !=  1)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_ACQUIRE) !=  3)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, 8, __ATOMIC_RELEASE) !=  7)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_ACQ_REL) !=  15)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_SEQ_CST) !=  31)
++    abort ();
++}
++
++/* The OP_fetch routines return the new value after the operation.  */
++
++void
++test_add_fetch (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_RELAXED) != 1)
++    abort ();
++
++  if (__atomic_add_fetch (v, 1, __ATOMIC_CONSUME) != 2)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_ACQUIRE) != 3)
++    abort ();
++
++  if (__atomic_add_fetch (v, 1, __ATOMIC_RELEASE) != 4)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_ACQ_REL) != 5)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_SEQ_CST) != 6)
++    abort ();
++}
++
++
++void
++test_sub_fetch (char* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_RELAXED) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, 1, __ATOMIC_CONSUME) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_ACQUIRE) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, 1, __ATOMIC_RELEASE) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_ACQ_REL) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_SEQ_CST) !=  --res)
++    abort ();
++}
++
++void
++test_and_fetch (char* v)
++{
++  *v = init;
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_RELAXED) !=  0)
++    abort ();
++
++  *v = init;
++  if (__atomic_and_fetch (v, init, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_and_fetch (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_ACQ_REL) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_and_fetch (v, 0, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_nand_fetch (char* v)
++{
++  *v = init;
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_ACQUIRE) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_RELEASE) !=  0)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++
++
++void
++test_xor_fetch (char* v)
++{
++  *v = init;
++  count = 0;
++
++  if (__atomic_xor_fetch (v, count, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_xor_fetch (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_or_fetch (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_or_fetch (v, count, __ATOMIC_RELAXED) !=  1)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, 2, __ATOMIC_CONSUME) !=  3)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_ACQUIRE) !=  7)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, 8, __ATOMIC_RELEASE) !=  15)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_ACQ_REL) !=  31)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_SEQ_CST) !=  63)
++    abort ();
++}
++
++
++/* Test the OP routines with a result which isn't used. Use both variations
++   within each function.  */
++
++void
++test_add (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  __atomic_add_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != 1)
++    abort ();
++
++  __atomic_fetch_add (v, count, __ATOMIC_CONSUME);
++  if (*v != 2)
++    abort ();
++
++  __atomic_add_fetch (v, 1 , __ATOMIC_ACQUIRE);
++  if (*v != 3)
++    abort ();
++
++  __atomic_fetch_add (v, 1, __ATOMIC_RELEASE);
++  if (*v != 4)
++    abort ();
++
++  __atomic_add_fetch (v, count, __ATOMIC_ACQ_REL);
++  if (*v != 5)
++    abort ();
++
++  __atomic_fetch_add (v, count, __ATOMIC_SEQ_CST);
++  if (*v != 6)
++    abort ();
++}
++
++
++void
++test_sub (char* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  __atomic_sub_fetch (v, count + 1, __ATOMIC_RELAXED);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, count + 1, __ATOMIC_CONSUME);
++  if (*v != --res)
++    abort ();
++
++  __atomic_sub_fetch (v, 1, __ATOMIC_ACQUIRE);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, 1, __ATOMIC_RELEASE);
++  if (*v != --res)
++    abort ();
++
++  __atomic_sub_fetch (v, count + 1, __ATOMIC_ACQ_REL);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, count + 1, __ATOMIC_SEQ_CST);
++  if (*v != --res)
++    abort ();
++}
++
++void
++test_and (char* v)
++{
++  *v = init;
++
++  __atomic_and_fetch (v, 0, __ATOMIC_RELAXED);
++  if (*v != 0)
++    abort ();
++
++  *v = init;
++  __atomic_fetch_and (v, init, __ATOMIC_CONSUME);
++  if (*v != init)
++    abort ();
++
++  __atomic_and_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != 0)
++    abort ();
++
++  *v = ~*v;
++  __atomic_fetch_and (v, init, __ATOMIC_RELEASE);
++  if (*v != init)
++    abort ();
++
++  __atomic_and_fetch (v, 0, __ATOMIC_ACQ_REL);
++  if (*v != 0)
++    abort ();
++
++  *v = ~*v;
++  __atomic_fetch_and (v, 0, __ATOMIC_SEQ_CST);
++  if (*v != 0)
++    abort ();
++}
++
++void
++test_nand (char* v)
++{
++  *v = init;
++
++  __atomic_fetch_nand (v, 0, __ATOMIC_RELAXED);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_nand (v, init, __ATOMIC_CONSUME);
++  if (*v != 0)
++    abort ();
++
++  __atomic_nand_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != init)
++    abort ();
++
++  __atomic_nand_fetch (v, init, __ATOMIC_RELEASE);
++  if (*v != 0)
++    abort ();
++
++  __atomic_fetch_nand (v, init, __ATOMIC_ACQ_REL);
++  if (*v != init)
++    abort ();
++
++  __atomic_nand_fetch (v, 0, __ATOMIC_SEQ_CST);
++  if (*v != init)
++    abort ();
++}
++
++
++
++void
++test_xor (char* v)
++{
++  *v = init;
++  count = 0;
++
++  __atomic_xor_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_xor (v, ~count, __ATOMIC_CONSUME);
++  if (*v != 0)
++    abort ();
++
++  __atomic_xor_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != 0)
++    abort ();
++
++  __atomic_fetch_xor (v, ~count, __ATOMIC_RELEASE);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_xor (v, 0, __ATOMIC_ACQ_REL);
++  if (*v != init)
++    abort ();
++
++  __atomic_xor_fetch (v, ~count, __ATOMIC_SEQ_CST);
++  if (*v != 0)
++    abort ();
++}
++
++void
++test_or (char* v)
++{
++  *v = 0;
++  count = 1;
++
++  __atomic_or_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != 1)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, count, __ATOMIC_CONSUME);
++  if (*v != 3)
++    abort ();
++
++  count *= 2;
++  __atomic_or_fetch (v, 4, __ATOMIC_ACQUIRE);
++  if (*v != 7)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, 8, __ATOMIC_RELEASE);
++  if (*v != 15)
++    abort ();
++
++  count *= 2;
++  __atomic_or_fetch (v, count, __ATOMIC_ACQ_REL);
++  if (*v != 31)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, count, __ATOMIC_SEQ_CST);
++  if (*v != 63)
++    abort ();
++}
++
++int
++main ()
++{
++  char* V[] = {&A.a, &A.b, &A.c, &A.d};
++
++  for (int i = 0; i < 4; i++) {
++    test_fetch_add (V[i]);
++    test_fetch_sub (V[i]);
++    test_fetch_and (V[i]);
++    test_fetch_nand (V[i]);
++    test_fetch_xor (V[i]);
++    test_fetch_or (V[i]);
++
++    test_add_fetch (V[i]);
++    test_sub_fetch (V[i]);
++    test_and_fetch (V[i]);
++    test_nand_fetch (V[i]);
++    test_xor_fetch (V[i]);
++    test_or_fetch (V[i]);
++
++    test_add (V[i]);
++    test_sub (V[i]);
++    test_and (V[i]);
++    test_nand (V[i]);
++    test_xor (V[i]);
++    test_or (V[i]);
++  }
++
++  return 0;
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-4.c
+@@ -0,0 +1,566 @@
++/* Check all short alignments.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-op-2.c */
++/* Test __atomic routines for existence and proper execution on 2 byte
++   values with each valid memory model.  */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics -Wno-address-of-packed-member" } */
++
++/* Test the execution of the __atomic_*OP builtin routines for a short.  */
++
++extern void abort(void);
++
++short count, res;
++const short init = ~0;
++
++struct A
++{
++   short a;
++   short b;
++} __attribute__ ((packed)) A;
++
++/* The fetch_op routines return the original value before the operation.  */
++
++void
++test_fetch_add (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_RELAXED) != 0)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_CONSUME) != 1)
++    abort ();
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_ACQUIRE) != 2)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_RELEASE) != 3)
++    abort ();
++
++  if (__atomic_fetch_add (v, count, __ATOMIC_ACQ_REL) != 4)
++    abort ();
++
++  if (__atomic_fetch_add (v, 1, __ATOMIC_SEQ_CST) != 5)
++    abort ();
++}
++
++
++void
++test_fetch_sub (short* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_RELAXED) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_CONSUME) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_ACQUIRE) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_RELEASE) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, count + 1, __ATOMIC_ACQ_REL) !=  res--)
++    abort ();
++
++  if (__atomic_fetch_sub (v, 1, __ATOMIC_SEQ_CST) !=  res--)
++    abort ();
++}
++
++void
++test_fetch_and (short* v)
++{
++  *v = init;
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, init, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_fetch_and (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_fetch_and (v, 0, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_fetch_nand (short* v)
++{
++  *v = init;
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_ACQUIRE) !=  0 )
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_fetch_nand (v, init, __ATOMIC_ACQ_REL) !=  0)
++    abort ();
++
++  if (__atomic_fetch_nand (v, 0, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++void
++test_fetch_xor (short* v)
++{
++  *v = init;
++  count = 0;
++
++  if (__atomic_fetch_xor (v, count, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_RELEASE) !=  0)
++    abort ();
++
++  if (__atomic_fetch_xor (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_fetch_xor (v, ~count, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++void
++test_fetch_or (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_fetch_or (v, count, __ATOMIC_RELAXED) !=  0)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, 2, __ATOMIC_CONSUME) !=  1)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_ACQUIRE) !=  3)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, 8, __ATOMIC_RELEASE) !=  7)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_ACQ_REL) !=  15)
++    abort ();
++
++  count *= 2;
++  if (__atomic_fetch_or (v, count, __ATOMIC_SEQ_CST) !=  31)
++    abort ();
++}
++
++/* The OP_fetch routines return the new value after the operation.  */
++
++void
++test_add_fetch (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_RELAXED) != 1)
++    abort ();
++
++  if (__atomic_add_fetch (v, 1, __ATOMIC_CONSUME) != 2)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_ACQUIRE) != 3)
++    abort ();
++
++  if (__atomic_add_fetch (v, 1, __ATOMIC_RELEASE) != 4)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_ACQ_REL) != 5)
++    abort ();
++
++  if (__atomic_add_fetch (v, count, __ATOMIC_SEQ_CST) != 6)
++    abort ();
++}
++
++
++void
++test_sub_fetch (short* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_RELAXED) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, 1, __ATOMIC_CONSUME) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_ACQUIRE) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, 1, __ATOMIC_RELEASE) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_ACQ_REL) !=  --res)
++    abort ();
++
++  if (__atomic_sub_fetch (v, count + 1, __ATOMIC_SEQ_CST) !=  --res)
++    abort ();
++}
++
++void
++test_and_fetch (short* v)
++{
++  *v = init;
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_RELAXED) !=  0)
++    abort ();
++
++  *v = init;
++  if (__atomic_and_fetch (v, init, __ATOMIC_CONSUME) !=  init)
++    abort ();
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_and_fetch (v, init, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_and_fetch (v, 0, __ATOMIC_ACQ_REL) !=  0)
++    abort ();
++
++  *v = ~*v;
++  if (__atomic_and_fetch (v, 0, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_nand_fetch (short* v)
++{
++  *v = init;
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_ACQUIRE) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_RELEASE) !=  0)
++    abort ();
++
++  if (__atomic_nand_fetch (v, init, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_nand_fetch (v, 0, __ATOMIC_SEQ_CST) !=  init)
++    abort ();
++}
++
++
++
++void
++test_xor_fetch (short* v)
++{
++  *v = init;
++  count = 0;
++
++  if (__atomic_xor_fetch (v, count, __ATOMIC_RELAXED) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_CONSUME) !=  0)
++    abort ();
++
++  if (__atomic_xor_fetch (v, 0, __ATOMIC_ACQUIRE) !=  0)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_RELEASE) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, 0, __ATOMIC_ACQ_REL) !=  init)
++    abort ();
++
++  if (__atomic_xor_fetch (v, ~count, __ATOMIC_SEQ_CST) !=  0)
++    abort ();
++}
++
++void
++test_or_fetch (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  if (__atomic_or_fetch (v, count, __ATOMIC_RELAXED) !=  1)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, 2, __ATOMIC_CONSUME) !=  3)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_ACQUIRE) !=  7)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, 8, __ATOMIC_RELEASE) !=  15)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_ACQ_REL) !=  31)
++    abort ();
++
++  count *= 2;
++  if (__atomic_or_fetch (v, count, __ATOMIC_SEQ_CST) !=  63)
++    abort ();
++}
++
++
++/* Test the OP routines with a result which isn't used. Use both variations
++   within each function.  */
++
++void
++test_add (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  __atomic_add_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != 1)
++    abort ();
++
++  __atomic_fetch_add (v, count, __ATOMIC_CONSUME);
++  if (*v != 2)
++    abort ();
++
++  __atomic_add_fetch (v, 1 , __ATOMIC_ACQUIRE);
++  if (*v != 3)
++    abort ();
++
++  __atomic_fetch_add (v, 1, __ATOMIC_RELEASE);
++  if (*v != 4)
++    abort ();
++
++  __atomic_add_fetch (v, count, __ATOMIC_ACQ_REL);
++  if (*v != 5)
++    abort ();
++
++  __atomic_fetch_add (v, count, __ATOMIC_SEQ_CST);
++  if (*v != 6)
++    abort ();
++}
++
++
++void
++test_sub (short* v)
++{
++  *v = res = 20;
++  count = 0;
++
++  __atomic_sub_fetch (v, count + 1, __ATOMIC_RELAXED);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, count + 1, __ATOMIC_CONSUME);
++  if (*v != --res)
++    abort ();
++
++  __atomic_sub_fetch (v, 1, __ATOMIC_ACQUIRE);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, 1, __ATOMIC_RELEASE);
++  if (*v != --res)
++    abort ();
++
++  __atomic_sub_fetch (v, count + 1, __ATOMIC_ACQ_REL);
++  if (*v != --res)
++    abort ();
++
++  __atomic_fetch_sub (v, count + 1, __ATOMIC_SEQ_CST);
++  if (*v != --res)
++    abort ();
++}
++
++void
++test_and (short* v)
++{
++  *v = init;
++
++  __atomic_and_fetch (v, 0, __ATOMIC_RELAXED);
++  if (*v != 0)
++    abort ();
++
++  *v = init;
++  __atomic_fetch_and (v, init, __ATOMIC_CONSUME);
++  if (*v != init)
++    abort ();
++
++  __atomic_and_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != 0)
++    abort ();
++
++  *v = ~*v;
++  __atomic_fetch_and (v, init, __ATOMIC_RELEASE);
++  if (*v != init)
++    abort ();
++
++  __atomic_and_fetch (v, 0, __ATOMIC_ACQ_REL);
++  if (*v != 0)
++    abort ();
++
++  *v = ~*v;
++  __atomic_fetch_and (v, 0, __ATOMIC_SEQ_CST);
++  if (*v != 0)
++    abort ();
++}
++
++void
++test_nand (short* v)
++{
++  *v = init;
++
++  __atomic_fetch_nand (v, 0, __ATOMIC_RELAXED);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_nand (v, init, __ATOMIC_CONSUME);
++  if (*v != 0)
++    abort ();
++
++  __atomic_nand_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != init)
++    abort ();
++
++  __atomic_nand_fetch (v, init, __ATOMIC_RELEASE);
++  if (*v != 0)
++    abort ();
++
++  __atomic_fetch_nand (v, init, __ATOMIC_ACQ_REL);
++  if (*v != init)
++    abort ();
++
++  __atomic_nand_fetch (v, 0, __ATOMIC_SEQ_CST);
++  if (*v != init)
++    abort ();
++}
++
++
++
++void
++test_xor (short* v)
++{
++  *v = init;
++  count = 0;
++
++  __atomic_xor_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_xor (v, ~count, __ATOMIC_CONSUME);
++  if (*v != 0)
++    abort ();
++
++  __atomic_xor_fetch (v, 0, __ATOMIC_ACQUIRE);
++  if (*v != 0)
++    abort ();
++
++  __atomic_fetch_xor (v, ~count, __ATOMIC_RELEASE);
++  if (*v != init)
++    abort ();
++
++  __atomic_fetch_xor (v, 0, __ATOMIC_ACQ_REL);
++  if (*v != init)
++    abort ();
++
++  __atomic_xor_fetch (v, ~count, __ATOMIC_SEQ_CST);
++  if (*v != 0)
++    abort ();
++}
++
++void
++test_or (short* v)
++{
++  *v = 0;
++  count = 1;
++
++  __atomic_or_fetch (v, count, __ATOMIC_RELAXED);
++  if (*v != 1)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, count, __ATOMIC_CONSUME);
++  if (*v != 3)
++    abort ();
++
++  count *= 2;
++  __atomic_or_fetch (v, 4, __ATOMIC_ACQUIRE);
++  if (*v != 7)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, 8, __ATOMIC_RELEASE);
++  if (*v != 15)
++    abort ();
++
++  count *= 2;
++  __atomic_or_fetch (v, count, __ATOMIC_ACQ_REL);
++  if (*v != 31)
++    abort ();
++
++  count *= 2;
++  __atomic_fetch_or (v, count, __ATOMIC_SEQ_CST);
++  if (*v != 63)
++    abort ();
++}
++
++int
++main () {
++  short* V[] = {&A.a, &A.b};
++
++  for (int i = 0; i < 2; i++) {
++    test_fetch_add (V[i]);
++    test_fetch_sub (V[i]);
++    test_fetch_and (V[i]);
++    test_fetch_nand (V[i]);
++    test_fetch_xor (V[i]);
++    test_fetch_or (V[i]);
++
++    test_add_fetch (V[i]);
++    test_sub_fetch (V[i]);
++    test_and_fetch (V[i]);
++    test_nand_fetch (V[i]);
++    test_xor_fetch (V[i]);
++    test_or_fetch (V[i]);
++
++    test_add (V[i]);
++    test_sub (V[i]);
++    test_and (V[i]);
++    test_nand (V[i]);
++    test_xor (V[i]);
++    test_or (V[i]);
++  }
++
++  return 0;
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-5.c
+@@ -0,0 +1,87 @@
++/* Test __atomic routines for existence and proper execution on 1 byte
++   values with each valid memory model.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-compare-exchange-1.c */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics" } */
++
++/* Test the execution of the __atomic_compare_exchange_n builtin for a char.  */
++
++extern void abort(void);
++
++char v = 0;
++char expected = 0;
++char max = ~0;
++char desired = ~0;
++char zero = 0;
++
++#define STRONG 0
++#define WEAK 1
++
++int
++main ()
++{
++
++  if (!__atomic_compare_exchange_n (&v, &expected, max, STRONG , __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (__atomic_compare_exchange_n (&v, &expected, 0, STRONG , __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != max)
++    abort ();
++
++  if (!__atomic_compare_exchange_n (&v, &expected, 0, STRONG , __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != max)
++    abort ();
++  if (v != 0)
++    abort ();
++
++  if (__atomic_compare_exchange_n (&v, &expected, desired, WEAK, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (!__atomic_compare_exchange_n (&v, &expected, desired, STRONG , __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
++    abort ();
++  if (expected != 0)
++    abort ();
++  if (v != max)
++    abort ();
++
++  /* Now test the generic version.  */
++
++  v = 0;
++
++  if (!__atomic_compare_exchange (&v, &expected, &max, STRONG, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (__atomic_compare_exchange (&v, &expected, &zero, STRONG , __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != max)
++    abort ();
++
++  if (!__atomic_compare_exchange (&v, &expected, &zero, STRONG , __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != max)
++    abort ();
++  if (v != 0)
++    abort ();
++
++  if (__atomic_compare_exchange (&v, &expected, &desired, WEAK, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (!__atomic_compare_exchange (&v, &expected, &desired, STRONG , __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
++    abort ();
++  if (expected != 0)
++    abort ();
++  if (v != max)
++    abort ();
++
++  return 0;
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-6.c
+@@ -0,0 +1,87 @@
++/* Test __atomic routines for existence and proper execution on 2 byte
++   values with each valid memory model.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-compare-exchange-2.c */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics" } */
++
++/* Test the execution of the __atomic_compare_exchange_n builtin for a short.  */
++
++extern void abort(void);
++
++short v = 0;
++short expected = 0;
++short max = ~0;
++short desired = ~0;
++short zero = 0;
++
++#define STRONG 0
++#define WEAK 1
++
++int
++main ()
++{
++
++  if (!__atomic_compare_exchange_n (&v, &expected, max, STRONG , __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (__atomic_compare_exchange_n (&v, &expected, 0, STRONG , __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != max)
++    abort ();
++
++  if (!__atomic_compare_exchange_n (&v, &expected, 0, STRONG , __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != max)
++    abort ();
++  if (v != 0)
++    abort ();
++
++  if (__atomic_compare_exchange_n (&v, &expected, desired, WEAK, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (!__atomic_compare_exchange_n (&v, &expected, desired, STRONG , __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
++    abort ();
++  if (expected != 0)
++    abort ();
++  if (v != max)
++    abort ();
++
++  /* Now test the generic version.  */
++
++  v = 0;
++
++  if (!__atomic_compare_exchange (&v, &expected, &max, STRONG, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (__atomic_compare_exchange (&v, &expected, &zero, STRONG , __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
++    abort ();
++  if (expected != max)
++    abort ();
++
++  if (!__atomic_compare_exchange (&v, &expected, &zero, STRONG , __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != max)
++    abort ();
++  if (v != 0)
++    abort ();
++
++  if (__atomic_compare_exchange (&v, &expected, &desired, WEAK, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
++    abort ();
++  if (expected != 0)
++    abort ();
++
++  if (!__atomic_compare_exchange (&v, &expected, &desired, STRONG , __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
++    abort ();
++  if (expected != 0)
++    abort ();
++  if (v != max)
++    abort ();
++
++  return 0;
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-7.c
+@@ -0,0 +1,69 @@
++/* Test __atomic routines for existence and proper execution on 1 byte
++   values with each valid memory model.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-exchange-1.c */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics" } */
++
++/* Test the execution of the __atomic_exchange_n builtin for a char.  */
++
++extern void abort(void);
++
++char v, count, ret;
++
++int
++main ()
++{
++  v = 0;
++  count = 0;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_RELAXED) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_ACQUIRE) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_RELEASE) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_ACQ_REL) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_SEQ_CST) != count)
++    abort ();
++  count++;
++
++  /* Now test the generic version.  */
++
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_RELAXED);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_ACQUIRE);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_RELEASE);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_ACQ_REL);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_SEQ_CST);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  return 0;
++}
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/riscv/inline-atomics-8.c
+@@ -0,0 +1,69 @@
++/* Test __atomic routines for existence and proper execution on 2 byte
++   values with each valid memory model.  */
++/* Duplicate logic as libatomic/testsuite/libatomic.c/atomic-exchange-2.c */
++/* { dg-do run } */
++/* { dg-options "-minline-atomics" } */
++
++/* Test the execution of the __atomic_X builtin for a short.  */
++
++extern void abort(void);
++
++short v, count, ret;
++
++int
++main ()
++{
++  v = 0;
++  count = 0;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_RELAXED) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_ACQUIRE) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_RELEASE) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_ACQ_REL) != count)
++    abort ();
++  count++;
++
++  if (__atomic_exchange_n (&v, count + 1, __ATOMIC_SEQ_CST) != count)
++    abort ();
++  count++;
++
++  /* Now test the generic version.  */
++
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_RELAXED);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_ACQUIRE);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_RELEASE);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_ACQ_REL);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  __atomic_exchange (&v, &count, &ret, __ATOMIC_SEQ_CST);
++  if (ret != count - 1 || v != count)
++    abort ();
++  count++;
++
++  return 0;
++}
+--- a/libgcc/config/riscv/atomic.c
++++ b/libgcc/config/riscv/atomic.c
+@@ -30,6 +30,8 @@ see the files COPYING3 and COPYING.RUNTI
+ #define INVERT		"not %[tmp1], %[tmp1]\n\t"
+ #define DONT_INVERT	""
+ 
++/* Logic duplicated in gcc/gcc/config/riscv/sync.md for use when inlining is enabled */
++
+ #define GENERATE_FETCH_AND_OP(type, size, opname, insn, invert, cop)	\
+   type __sync_fetch_and_ ## opname ## _ ## size (type *p, type v)	\
+   {									\

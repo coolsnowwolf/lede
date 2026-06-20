@@ -38,6 +38,14 @@ $$(if $$($(1)), \
 endef
 
 
+define Host/SetToolchainInfo
+	if [ -f $(CONFIG_TOOLCHAIN_ROOT)/info.mk ]; then \
+		$(CP) $(CONFIG_TOOLCHAIN_ROOT)/info.mk $(TOOLCHAIN_DIR)/; \
+	else \
+		$(SED) 's,GCC_VERSION=.*,GCC_VERSION=$(CONFIG_GCC_VERSION),' $(TOOLCHAIN_DIR)/info.mk; \
+	fi
+endef
+
 define Host/Prepare
 	$(call toolchain_test,CONFIG_SOFT_FLOAT,softfloat)
 	$(call toolchain_test,CONFIG_IPV6,ipv6)
@@ -53,10 +61,12 @@ endef
 
 define Host/Install
 	$(call toolchain_util,--wrap "$(TOOLCHAIN_DIR)/bin")
+	$(call Host/SetToolchainInfo)
 endef
 
 define Host/Clean
 	rm -rf $(TOOLCHAIN_DIR)/bin
+	rm -rf $(TOOLCHAIN_DIR)/info.mk
 endef
 
 $(eval $(call HostBuild))

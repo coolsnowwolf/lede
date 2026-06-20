@@ -1,0 +1,242 @@
+From 4a0b2cb7210c65c8c9f4a56345749bb7294fbfbf Mon Sep 17 00:00:00 2001
+From: Carlos Galvez <carlosgalvezp@gmail.com>
+Date: Sat, 21 Dec 2024 21:25:40 +0000
+Subject: [PATCH] Fix -Wenum-constexpr-conversion in enum-flags.h
+
+This fixes PR 31331:
+https://sourceware.org/bugzilla/show_bug.cgi?id=31331
+
+Currently, enum-flags.h implements enum_underlying_type by casting
+integer -1 to the enum type, checking if it is less than 0, and
+choosing signed/unsigned underlying type based on that.
+
+This is undefined behavior in C++ if the integer falls outside the range
+of the enum, which Clang 21 detects and flags as a constexpr conversion error.
+
+Fix it by using std::underlying_type instead, which is standard and does
+not suffer from this issue.
+
+Signed-off-by: Carlos Galvez <carlosgalvezp@gmail.com>
+---
+ gdb/unittests/enum-flags-selftests.c | 27 ---------------------------
+ gdbsupport/enum-flags.h              | 83 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--------------------
+ include/diagnostics.h                |  9 ---------
+ 3 files changed, 63 insertions(+), 56 deletions(-)
+
+--- a/gdb/unittests/enum-flags-selftests.c
++++ b/gdb/unittests/enum-flags-selftests.c
+@@ -233,33 +233,6 @@ CHECK_VALID (true,  EF,   true ? RE () : EF ())
+ CHECK_VALID (true,  EF,   true ? EF () : RE ())
+ CHECK_VALID (true,  EF,   true ? RE () : EF ())
+ 
+-/* These are valid, but it's not a big deal since you won't be able to
+-   assign the resulting integer to an enum or an enum_flags without a
+-   cast.
+-
+-   The latter two tests are disabled on older GCCs because they
+-   incorrectly fail with gcc 4.8 and 4.9 at least.  Running the test
+-   outside a SFINAE context shows:
+-
+-    invalid user-defined conversion from ‘EF’ to ‘RE2’
+-
+-   They've been confirmed to compile/pass with gcc 5.3, gcc 7.1 and
+-   clang 3.7.  */
+-
+-CHECK_VALID (true,  int,  true ? EF () : EF2 ())
+-CHECK_VALID (true,  int,  true ? EF2 () : EF ())
+-CHECK_VALID (true,  int,  true ? EF () : RE2 ())
+-CHECK_VALID (true,  int,  true ? RE2 () : EF ())
+-
+-/* Same, but with an unsigned enum.  */
+-
+-typedef unsigned int uns;
+-
+-CHECK_VALID (true,  uns,  true ? EF () : UEF ())
+-CHECK_VALID (true,  uns,  true ? UEF () : EF ())
+-CHECK_VALID (true,  uns,  true ? EF () : URE ())
+-CHECK_VALID (true,  uns,  true ? URE () : EF ())
+-
+ /* Unfortunately this can't work due to the way C++ computes the
+    return type of the ternary conditional operator.  int isn't
+    implicitly convertible to the raw enum type, so the type of the
+--- a/gdbsupport/enum-flags.h
++++ b/gdbsupport/enum-flags.h
+@@ -78,30 +78,6 @@
+    namespace.  The compiler finds the corresponding
+    is_enum_flags_enum_type function via ADL.  */
+ 
+-/* Note that std::underlying_type<enum_type> is not what we want here,
+-   since that returns unsigned int even when the enum decays to signed
+-   int.  */
+-template<int size, bool sign> class integer_for_size { typedef void type; };
+-template<> struct integer_for_size<1, 0> { typedef uint8_t type; };
+-template<> struct integer_for_size<2, 0> { typedef uint16_t type; };
+-template<> struct integer_for_size<4, 0> { typedef uint32_t type; };
+-template<> struct integer_for_size<8, 0> { typedef uint64_t type; };
+-template<> struct integer_for_size<1, 1> { typedef int8_t type; };
+-template<> struct integer_for_size<2, 1> { typedef int16_t type; };
+-template<> struct integer_for_size<4, 1> { typedef int32_t type; };
+-template<> struct integer_for_size<8, 1> { typedef int64_t type; };
+-
+-template<typename T>
+-struct enum_underlying_type
+-{
+-  DIAGNOSTIC_PUSH
+-  DIAGNOSTIC_IGNORE_ENUM_CONSTEXPR_CONVERSION
+-  typedef typename
+-    integer_for_size<sizeof (T), static_cast<bool>(T (-1) < T (0))>::type
+-    type;
+-  DIAGNOSTIC_POP
+-};
+-
+ namespace enum_flags_detail
+ {
+ 
+@@ -119,11 +95,62 @@
+ /* gdb::Requires trait helpers.  */
+ template <typename enum_type>
+ using EnumIsUnsigned
+-  = std::is_unsigned<typename enum_underlying_type<enum_type>::type>;
++  = std::is_unsigned<typename std::underlying_type<enum_type>::type>;
++
++/* Helper to detect whether an enum has a fixed underlying type. This can be
++   achieved by using a scoped enum (in which case the type is "int") or
++   an explicit underlying type. C-style enums that are unscoped or do not
++   have an explicit underlying type have an implementation-defined underlying
++   type.
++
++   https://timsong-cpp.github.io/cppwp/n4659/dcl.enum#5
++
++   We need this trait in order to ensure that operator~ below does NOT
++   operate on old-style enums. This is because we apply operator~ on
++   the value and then cast the result to the enum_type. This is however
++   Undefined Behavior if the result does not fit in the range of possible
++   values for the enum. For enums with fixed underlying type, the entire
++   range of the integer is available. However, for old-style enums, the range
++   is only the smallest bit-field that can hold all the values of the
++   enumeration, typically much smaller than the underlying integer:
++
++   https://timsong-cpp.github.io/cppwp/n4659/expr.static.cast#10
++   https://timsong-cpp.github.io/cppwp/n4659/dcl.enum#8
++
++   To implement this, we leverage the fact that, since C++17, enums with
++   fixed underlying type can be list-initialized from an integer:
++   https://timsong-cpp.github.io/cppwp/n4659/dcl.init.list#3.7
++
++   Old-style enums cannot be initialized like that, leading to ill-formed
++   code.
++
++   We then use this together with SFINAE to create the desired trait.
++
++*/
++template <typename enum_type, typename = void>
++struct EnumHasFixedUnderlyingType : std::false_type
++{
++  static_assert(std::is_enum<enum_type>::value);
++};
++
++/* Specialization that is active only if enum_type can be
++   list-initialized from an integer (0).  Only enums with fixed
++   underlying type satisfy this property in C++17.  */
+ template <typename enum_type>
+-using EnumIsSigned
+-  = std::is_signed<typename enum_underlying_type<enum_type>::type>;
++struct EnumHasFixedUnderlyingType<enum_type, std::void_t<decltype(enum_type{0})>> : std::true_type
++{
++  static_assert(std::is_enum<enum_type>::value);
++};
+ 
++template <typename enum_type>
++using EnumIsSafeForBitwiseComplement = std::conjunction<
++  EnumIsUnsigned<enum_type>,
++  EnumHasFixedUnderlyingType<enum_type>
++>;
++
++template <typename enum_type>
++using EnumIsUnsafeForBitwiseComplement = std::negation<EnumIsSafeForBitwiseComplement<enum_type>>;
++
+ }
+ 
+ template <typename E>
+@@ -131,7 +158,7 @@
+ {
+ public:
+   typedef E enum_type;
+-  typedef typename enum_underlying_type<enum_type>::type underlying_type;
++  typedef typename std::underlying_type<enum_type>::type underlying_type;
+ 
+   /* For to_string.  Maps one enumerator of E to a string.  */
+   struct string_mapping
+@@ -394,33 +421,41 @@
+ template <typename enum_type,
+ 	  typename = is_enum_flags_enum_type_t<enum_type>,
+ 	  typename
+-	    = gdb::Requires<enum_flags_detail::EnumIsUnsigned<enum_type>>>
++	    = gdb::Requires<enum_flags_detail::EnumIsSafeForBitwiseComplement<enum_type>>>
+ constexpr enum_type
+ operator~ (enum_type e)
+ {
+   using underlying = typename enum_flags<enum_type>::underlying_type;
+-  return (enum_type) ~underlying (e);
++  /* Cast to ULONGEST first, to prevent integer promotions from enums
++     with fixed underlying type std::uint8_t or std::uint16_t to
++     signed int.  This ensures we apply the bitwise complement on an
++     unsigned type.  */
++  return (enum_type)(underlying) ~ULONGEST (e);
+ }
+ 
+ template <typename enum_type,
+ 	  typename = is_enum_flags_enum_type_t<enum_type>,
+-	  typename = gdb::Requires<enum_flags_detail::EnumIsSigned<enum_type>>>
++	  typename = gdb::Requires<enum_flags_detail::EnumIsUnsafeForBitwiseComplement<enum_type>>>
+ constexpr void operator~ (enum_type e) = delete;
+ 
+ template <typename enum_type,
+ 	  typename = is_enum_flags_enum_type_t<enum_type>,
+ 	  typename
+-	    = gdb::Requires<enum_flags_detail::EnumIsUnsigned<enum_type>>>
++	    = gdb::Requires<enum_flags_detail::EnumIsSafeForBitwiseComplement<enum_type>>>
+ constexpr enum_flags<enum_type>
+ operator~ (enum_flags<enum_type> e)
+ {
+   using underlying = typename enum_flags<enum_type>::underlying_type;
+-  return (enum_type) ~underlying (e);
++  /* Cast to ULONGEST first, to prevent integer promotions from enums
++     with fixed underlying type std::uint8_t or std::uint16_t to
++     signed int.  This ensures we apply the bitwise complement on an
++     unsigned type.  */
++  return (enum_type)(underlying) ~ULONGEST (e);
+ }
+ 
+ template <typename enum_type,
+ 	  typename = is_enum_flags_enum_type_t<enum_type>,
+-	  typename = gdb::Requires<enum_flags_detail::EnumIsSigned<enum_type>>>
++	  typename = gdb::Requires<enum_flags_detail::EnumIsUnsafeForBitwiseComplement<enum_type>>>
+ constexpr void operator~ (enum_flags<enum_type> e) = delete;
+ 
+ /* Delete operator<< and operator>>.  */
+--- a/include/diagnostics.h
++++ b/include/diagnostics.h
+@@ -76,11 +76,6 @@
+ # define DIAGNOSTIC_ERROR_SWITCH \
+   DIAGNOSTIC_ERROR ("-Wswitch")
+ 
+-# if __has_warning ("-Wenum-constexpr-conversion")
+-#  define DIAGNOSTIC_IGNORE_ENUM_CONSTEXPR_CONVERSION \
+-   DIAGNOSTIC_IGNORE ("-Wenum-constexpr-conversion")
+-# endif
+-
+ #elif defined (__GNUC__) /* GCC */
+ 
+ # define DIAGNOSTIC_IGNORE_DEPRECATED_DECLARATIONS \
+@@ -157,10 +152,6 @@
+ 
+ #ifndef DIAGNOSTIC_ERROR_SWITCH
+ # define DIAGNOSTIC_ERROR_SWITCH
+-#endif
+-
+-#ifndef DIAGNOSTIC_IGNORE_ENUM_CONSTEXPR_CONVERSION
+-# define DIAGNOSTIC_IGNORE_ENUM_CONSTEXPR_CONVERSION
+ #endif
+ 
+ #endif /* DIAGNOSTICS_H */

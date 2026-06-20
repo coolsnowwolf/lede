@@ -16,28 +16,16 @@ PKG_CPE_ID:=cpe:/a:gnu:binutils
 
 TAR_OPTIONS += --exclude='*.rej'
 
-ifeq ($(PKG_VERSION),2.37)
-  PKG_HASH:=820d9724f020a3e69cb337893a0b63c2db161dadcb0e06fc11dc29eb1e84a32c
-endif
-
-ifeq ($(PKG_VERSION),2.38)
-  PKG_HASH:=e316477a914f567eccc34d5d29785b8b0f5a10208d36bbacedcc39048ecfe024
-endif
-
-ifeq ($(PKG_VERSION),2.39)
-  PKG_HASH:=645c25f563b8adc0a81dbd6a41cffbf4d37083a382e02d5d3df4f65c09516d00
-endif
-
 ifeq ($(PKG_VERSION),2.40)
   PKG_HASH:=0f8a4c272d7f17f369ded10a4aca28b8e304828e95526da482b0ccc4dfc9d8e1
 endif
 
-ifeq ($(PKG_VERSION),2.41)
-  PKG_HASH:=ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450
-endif
-
 ifeq ($(PKG_VERSION),2.42)
   PKG_HASH:=f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800
+endif
+
+ifeq ($(PKG_VERSION),2.43.1)
+  PKG_HASH:=13f74202a3c4c51118b797a39ea4200d3f6cfbe224da6d1d95bb938480132dfd
 endif
 
 HOST_BUILD_PARALLEL:=1
@@ -59,7 +47,7 @@ HOST_CONFIGURE_ARGS = \
 	--target=$(REAL_GNU_TARGET_NAME) \
 	--with-sysroot=$(TOOLCHAIN_DIR) \
 	--with-system-zlib \
-	--without-zstd \
+	--with-zstd \
 	--enable-deterministic-archives \
 	--enable-plugins \
 	--enable-lto \

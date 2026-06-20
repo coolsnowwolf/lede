@@ -20,7 +20,7 @@ define Host/Install
 		install
 	( cd $(TOOLCHAIN_DIR) ; \
 		for d in lib usr/lib ; do \
-		  for f in libc.so libpthread.so libgcc_s.so ; do \
+		  for f in libc.so libm.so libpthread.so libgcc_s.so ; do \
 		    if [ -f $$$$d/$$$$f -a ! -L $$$$d/$$$$f ] ; then \
 		      $(SED) 's,/usr/lib/,,g;s,/lib/,,g' $$$$d/$$$$f ; \
 		    fi \
