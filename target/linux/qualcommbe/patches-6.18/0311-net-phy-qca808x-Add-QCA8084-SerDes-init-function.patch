@@ -1,0 +1,446 @@
+From 94540ce4131c873e9294088f29230fdac8e97081 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Mon, 23 Sep 2024 20:59:40 +0800
+Subject: [PATCH] net: phy: qca808x: Add QCA8084 SerDes init function
+
+When QCA8084 works on 10G-QXGMII, the XPCS and PCS need to be
+configured in the PHY package init function.
+
+Change-Id: Iac48c44f0e80adf055fa9c2095e99a04ba24c4bb
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+---
+ drivers/net/phy/qcom/qca8084_serdes.c | 374 ++++++++++++++++++++++++++
+ drivers/net/phy/qcom/qca8084_serdes.h |   2 +
+ drivers/net/phy/qcom/qca808x.c        |  11 +
+ 3 files changed, 387 insertions(+)
+
+--- a/drivers/net/phy/qcom/qca8084_serdes.c
++++ b/drivers/net/phy/qcom/qca8084_serdes.c
+@@ -24,6 +24,92 @@
+  */
+ #define QCA8084_CHANNEL_MAX			4
+ 
++/* MII registers */
++#define PLL_POWER_ON_AND_RESET			0x0
++#define PCS_ANA_SW_RESET			BIT(6)
++
++#define PLL_CONTROL				6
++#define PLL_CONTROL_CMLDIV2_IBSEL_MASK		GENMASK(5, 4)
++
++/* MMD_PMAPMD registers */
++#define CDR_CONTRL				0x20
++#define SSC_FIX_MODE				BIT(3)
++
++#define CALIBRATION4				0x78
++#define CALIBRATION_DONE			BIT(7)
++
++#define MODE_CONTROL				0x11b
++#define MODE_CONTROL_SEL_MASK			GENMASK(12, 8)
++#define MODE_CONTROL_XPCS			0x10
++#define MODE_CONTROL_SGMII_PLUS			0x8
++#define MODE_CONTROL_SGMII			0x4
++#define MODE_CONTROL_SGMII_SEL_MASK		GENMASK(6, 4)
++#define MODE_CONTROL_SGMII_PHY			1
++#define MODE_CONTROL_SGMII_MAC			2
++
++#define QP_USXG_OPTION1				0x180
++#define QP_USXG_OPTION1_DATAPASS		BIT(0)
++#define QP_USXG_OPTION1_DATAPASS_SGMII		0
++#define QP_USXG_OPTION1_DATAPASS_USXGMII	1
++
++#define BYPASS_TUNNING_IPG			0x189
++#define BYPASS_TUNNING_IPG_MASK			GENMASK(11, 0)
++
++/* MDIO_MMD_PCS register */
++#define PCS_CONTROL2				0x7
++#define PCS_TYPE_MASK				GENMASK(3, 0)
++#define PCS_TYPE_BASER				0
++
++#define PCS_EEE_CONTROL				0x14
++#define EEE_CAPABILITY				BIT(6)
++
++#define PCS_STATUS1				0x20
++#define PCS_BASER_UP				BIT(12)
++
++#define DIG_CTRL1				0x8000
++#define DIG_CTRL1_USXGMII_EN			BIT(9)
++#define DIG_CTRL1_XPCS_RESET			BIT(15)
++#define FIFO_RESET_CH0				BIT(10)
++#define FIFO_RESET_CH1_CH2_CH3			BIT(5)
++
++#define EEE_MODE_CONTROL			0x8006
++#define EEE_LCT_RES				GENMASK(11, 8)
++#define EEE_SIGN				BIT(6)
++#define EEE_LRX_EN				BIT(1)
++#define EEE_LTX_EN				BIT(0)
++
++#define PCS_TPC					0x8007
++#define PCS_QXGMII_MODE_MASK			GENMASK(12, 10)
++#define PCS_QXGMII_EN				0x5
++
++#define EEE_RX_TIMER				0x8009
++#define EEE_RX_TIMER_100US_RES			GENMASK(7, 0)
++#define EEE_RX_TIMER_RWR_RES			GENMASK(12, 8)
++
++#define AM_LINK_TIMER				0x800a
++#define AM_LINK_TIMER_VAL			0x6018
++
++#define EEE_MODE_CONTROL1			0x800b
++#define TRANS_LPI_MODE				BIT(0)
++#define TRANS_RX_LPI_MODE			BIT(8)
++
++/* QXGMII channel MMD register */
++#define MII_CONTROL				0x0
++#define AUTO_NEGOTIATION_EN			BIT(12)
++#define AUTO_NEGOTIATION_RESTART		BIT(9)
++#define PCS_SPEED_2500				BIT(5)
++#define PCS_SPEED_1000				BIT(6)
++#define PCS_SPEED_100				BIT(13)
++#define PCS_SPEED_10				0
++
++#define DIG_CONTROL2				0x8001
++#define MII_BIT_CONTROL				BIT(8)
++#define TX_CONFIG				BIT(3)
++#define AUTO_NEGOTIATION_CMPLT_INTR		BIT(0)
++
++#define XAUI_CONTROL				0x8004
++#define TX_IPG_CHECK_DISABLE			BIT(0)
++
+ enum pcs_clk_id {
+ 	PCS_CLK,
+ 	PCS_RX_ROOT_CLK,
+@@ -76,6 +162,8 @@ static const char *const pcs_clock_names
+ 	[PCS_TX_ROOT_CLK] =	"pcs_tx_root",
+ };
+ 
++static const int qca8084_xpcs_ch_mmd[QCA8084_CHANNEL_MAX] = { 31, 26, 27, 28 };
++
+ struct mdio_device *qca8084_package_pcs_probe(struct device_node *pcs_np)
+ {
+ 	struct qca8084_pcs_data *pcs_data;
+@@ -247,3 +335,289 @@ void qca8084_package_xpcs_and_pcs_remove
+ 	mdio_device_put(xpcs_mdiodev);
+ 	mdio_device_put(pcs_mdiodev);
+ }
++
++static int qca8084_pcs_set_interface_mode(struct mdio_device *mdio_dev,
++					  phy_interface_t ifmode)
++{
++	int ret, hw_ifmode, data;
++
++	switch (ifmode) {
++	case PHY_INTERFACE_MODE_SGMII:
++		hw_ifmode = MODE_CONTROL_SGMII;
++		data = QP_USXG_OPTION1_DATAPASS_SGMII;
++		break;
++	case PHY_INTERFACE_MODE_2500BASEX:
++		hw_ifmode = MODE_CONTROL_SGMII_PLUS;
++		data = QP_USXG_OPTION1_DATAPASS_SGMII;
++		break;
++	case PHY_INTERFACE_MODE_10G_QXGMII:
++		hw_ifmode = MODE_CONTROL_XPCS;
++		data = QP_USXG_OPTION1_DATAPASS_USXGMII;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	/* For PLL stable under high temperature */
++	ret = mdiodev_modify(mdio_dev, PLL_CONTROL,
++			     PLL_CONTROL_CMLDIV2_IBSEL_MASK,
++			     FIELD_PREP(PLL_CONTROL_CMLDIV2_IBSEL_MASK, 3));
++	if (ret)
++		return ret;
++
++	/* Configure the interface mode of PCS */
++	ret = mdiodev_c45_modify(mdio_dev, MDIO_MMD_PMAPMD, MODE_CONTROL,
++				 MODE_CONTROL_SEL_MASK,
++				 FIELD_PREP(MODE_CONTROL_SEL_MASK, hw_ifmode));
++	if (ret)
++		return ret;
++
++	/* Data pass selects SGMII or USXGMII */
++	return mdiodev_c45_modify(mdio_dev, MDIO_MMD_PMAPMD, QP_USXG_OPTION1,
++				  QP_USXG_OPTION1_DATAPASS,
++				  FIELD_PREP(QP_USXG_OPTION1_DATAPASS, data));
++}
++
++static int qca8084_do_calibration(struct mdio_device *mdio_dev)
++{
++	int ret;
++
++	ret = mdiodev_modify(mdio_dev, PLL_POWER_ON_AND_RESET,
++			     PCS_ANA_SW_RESET, 0);
++	if (ret)
++		return ret;
++
++	usleep_range(10000, 11000);
++	ret = mdiodev_modify(mdio_dev, PLL_POWER_ON_AND_RESET,
++			     PCS_ANA_SW_RESET, PCS_ANA_SW_RESET);
++	if (ret)
++		return ret;
++
++	/* Wait calibration done */
++	return read_poll_timeout(mdiodev_c45_read, ret,
++				 (ret & CALIBRATION_DONE),
++				 100, 100000, true, mdio_dev,
++				 MDIO_MMD_PMAPMD, CALIBRATION4);
++}
++
++
++static int qca8084_xpcs_set_mode(struct mdio_device *xpcs_mdiodev)
++{
++	int ret, val, i;
++
++	/* Configure BaseR mode */
++	ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS, PCS_CONTROL2,
++				 PCS_TYPE_MASK,
++				 FIELD_PREP(PCS_TYPE_MASK, PCS_TYPE_BASER));
++	if (ret)
++		return ret;
++
++	/* Wait BaseR link up */
++	ret = read_poll_timeout(mdiodev_c45_read, val,
++				(val & PCS_BASER_UP), 1000, 100000, true,
++				xpcs_mdiodev,
++				MDIO_MMD_PCS, PCS_STATUS1);
++	if (ret) {
++		dev_err(&xpcs_mdiodev->dev, "BaseR link failed!\n");
++		return ret;
++	}
++
++	/* Enable USXGMII mode */
++	ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS, DIG_CTRL1,
++				 DIG_CTRL1_USXGMII_EN,
++				 DIG_CTRL1_USXGMII_EN);
++	if (ret)
++		return ret;
++
++	/* Configure QXGMII mode */
++	ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS, PCS_TPC,
++				 PCS_QXGMII_MODE_MASK,
++				 FIELD_PREP(PCS_QXGMII_MODE_MASK,
++					    PCS_QXGMII_EN));
++	if (ret)
++		return ret;
++
++	/* Configure AM interval */
++	ret = mdiodev_c45_write(xpcs_mdiodev, MDIO_MMD_PCS, AM_LINK_TIMER,
++				AM_LINK_TIMER_VAL);
++	if (ret)
++		return ret;
++
++	/* Reset XPCS */
++	ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS, DIG_CTRL1,
++				 DIG_CTRL1_XPCS_RESET,
++				 DIG_CTRL1_XPCS_RESET);
++	if (ret)
++		return ret;
++
++	/* Wait XPCS reset done */
++	ret = read_poll_timeout(mdiodev_c45_read, val,
++				!(val & DIG_CTRL1_XPCS_RESET),
++				1000, 100000, true, xpcs_mdiodev,
++				MDIO_MMD_PCS, DIG_CTRL1);
++	if (ret) {
++		dev_err(&xpcs_mdiodev->dev, "XPCS reset failed!\n");
++		return ret;
++	}
++
++	/* Enable auto-negotiation complete interrupt, using mii-4bit
++	 * and TX configureation of PHY side on all XPCS channels.
++	 */
++	for (i = 0; i < QCA8084_CHANNEL_MAX; i++) {
++		ret = mdiodev_c45_modify(xpcs_mdiodev, qca8084_xpcs_ch_mmd[i],
++					 DIG_CONTROL2,
++					 (MII_BIT_CONTROL | TX_CONFIG |
++					 AUTO_NEGOTIATION_CMPLT_INTR),
++					 (TX_CONFIG | AUTO_NEGOTIATION_CMPLT_INTR));
++		if (ret)
++			return ret;
++
++		/* Enable auto-negotiation capability */
++		ret = mdiodev_c45_modify(xpcs_mdiodev, qca8084_xpcs_ch_mmd[i],
++					 MII_CONTROL,
++					 AUTO_NEGOTIATION_EN,
++					 AUTO_NEGOTIATION_EN);
++		if (ret)
++			return ret;
++
++		/* Disable TX IPG check */
++		ret = mdiodev_c45_modify(xpcs_mdiodev, qca8084_xpcs_ch_mmd[i],
++					 XAUI_CONTROL,
++					 TX_IPG_CHECK_DISABLE,
++					 TX_IPG_CHECK_DISABLE);
++		if (ret)
++			return ret;
++	}
++
++	/* Check EEE capability supported or not */
++	ret = mdiodev_c45_read(xpcs_mdiodev, MDIO_MMD_PCS, PCS_EEE_CONTROL);
++	if (ret < 0)
++		return ret;
++
++	if (ret & EEE_CAPABILITY) {
++		ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS,
++					 EEE_MODE_CONTROL,
++					 EEE_LCT_RES | EEE_SIGN,
++					 FIELD_PREP(EEE_LCT_RES, 1) | EEE_SIGN);
++		if (ret)
++			return ret;
++
++		ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS,
++					 EEE_RX_TIMER,
++					 EEE_RX_TIMER_100US_RES | EEE_RX_TIMER_RWR_RES,
++					 FIELD_PREP(EEE_RX_TIMER_100US_RES, 0xc8) |
++					 FIELD_PREP(EEE_RX_TIMER_RWR_RES, 0x1c));
++		if (ret)
++			return ret;
++
++		/* Enable EEE LPI */
++		ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS,
++					 EEE_MODE_CONTROL1,
++					 TRANS_LPI_MODE | TRANS_RX_LPI_MODE,
++					 TRANS_LPI_MODE | TRANS_RX_LPI_MODE);
++		if (ret)
++			return ret;
++
++		/* Enable TX/RX LPI pattern */
++		ret = mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS,
++					 EEE_MODE_CONTROL,
++					 EEE_LRX_EN | EEE_LTX_EN,
++					 EEE_LRX_EN | EEE_LTX_EN);
++	}
++
++	return ret;
++}
++
++static int qca8084_pcs_set_mode(struct mdio_device *xpcs_mdiodev,
++				       struct mdio_device *pcs_mdiodev)
++{
++	struct qca8084_xpcs_data *xpcs_data = mdiodev_get_drvdata(xpcs_mdiodev);
++	struct qca8084_pcs_data *pcs_data = mdiodev_get_drvdata(pcs_mdiodev);
++	struct qca8084_xpcs_channel_priv xpcs_ch;
++	int ret, channel;
++
++	/* Enable clock and de-assert for PCS. */
++	ret = clk_prepare_enable(pcs_data->clks[PCS_CLK]);
++	if (ret)
++		return ret;
++
++	ret = reset_control_deassert(pcs_data->rstc);
++	if (ret)
++		return ret;
++
++	/* IPG tunning selection for RX, TX and XGMII of all channels. */
++	ret = mdiodev_c45_modify(pcs_mdiodev, MDIO_MMD_PMAPMD,
++				 BYPASS_TUNNING_IPG,
++				 BYPASS_TUNNING_IPG_MASK, 0);
++	if (ret)
++		return ret;
++
++	reset_control_assert(xpcs_data->rstc);
++
++	ret = qca8084_pcs_set_interface_mode(pcs_mdiodev,
++					     PHY_INTERFACE_MODE_10G_QXGMII);
++	if (ret)
++		return ret;
++
++	/* Reset of 4 channels */
++	for (channel = 0; channel < QCA8084_CHANNEL_MAX; channel++) {
++		xpcs_ch = xpcs_data->xpcs_ch[channel];
++		ret = reset_control_reset(xpcs_ch.rstcs);
++		if (ret)
++			return ret;
++	}
++
++	ret = qca8084_do_calibration(pcs_mdiodev);
++	if (ret) {
++		dev_err(&pcs_mdiodev->dev, "PCS calibration timeout!\n");
++		return ret;
++	}
++
++	/* Enable PCS SSC to fix mode */
++	ret = mdiodev_c45_modify(pcs_mdiodev, MDIO_MMD_PMAPMD,
++				 CDR_CONTRL, SSC_FIX_MODE, SSC_FIX_MODE);
++	if (ret)
++		return ret;
++
++	return reset_control_deassert(xpcs_data->rstc);
++}
++
++static int qca8084_xpcs_clock_parent_set(struct mdio_device *xpcs_mdiodev,
++					 struct mdio_device *pcs_mdiodev)
++{
++	struct qca8084_xpcs_data *xpcs_data = mdiodev_get_drvdata(xpcs_mdiodev);
++	struct qca8084_pcs_data *pcs_data = mdiodev_get_drvdata(pcs_mdiodev);
++	struct qca8084_xpcs_channel_priv xpcs_ch;
++	int ret, channel;
++
++	for (channel = 0; channel < QCA8084_CHANNEL_MAX; channel++) {
++		xpcs_ch = xpcs_data->xpcs_ch[channel];
++		ret = clk_set_parent(xpcs_ch.clks[XPCS_RX_SRC_CLK],
++				     pcs_data->clks[PCS_RX_ROOT_CLK]);
++		if (ret)
++			return ret;
++
++		ret = clk_set_parent(xpcs_ch.clks[XPCS_TX_SRC_CLK],
++				     pcs_data->clks[PCS_TX_ROOT_CLK]);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++int qca8084_qxgmii_set_mode(struct mdio_device *xpcs_mdiodev,
++			    struct mdio_device *pcs_mdiodev)
++{
++	int ret;
++
++	ret = qca8084_xpcs_clock_parent_set(xpcs_mdiodev, pcs_mdiodev);
++	if (ret)
++		return ret;
++
++	ret = qca8084_pcs_set_mode(xpcs_mdiodev, pcs_mdiodev);
++	if (ret)
++		return ret;
++
++	return qca8084_xpcs_set_mode(xpcs_mdiodev);
++}
+--- a/drivers/net/phy/qcom/qca8084_serdes.h
++++ b/drivers/net/phy/qcom/qca8084_serdes.h
+@@ -15,4 +15,6 @@ struct mdio_device *qca8084_package_pcs_
+ struct mdio_device *qca8084_package_xpcs_probe(struct device_node *xpcs_np);
+ void qca8084_package_xpcs_and_pcs_remove(struct mdio_device *xpcs_mdiodev,
+ 					 struct mdio_device *pcs_mdiodev);
++int qca8084_qxgmii_set_mode(struct mdio_device *xpcs_mdiodev,
++			    struct mdio_device *pcs_mdiodev);
+ #endif /* _QCA8084_SERDES_H_ */
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -947,6 +947,14 @@ static int qca8084_phy_package_config_in
+ 
+ 	usleep_range(10000, 11000);
+ 
++	/* Configure PCS working on 10G-QXGMII mode */
++	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII) {
++		ret = qca8084_qxgmii_set_mode(shared_priv->mdiodev[1],
++					      shared_priv->mdiodev[0]);
++		if (ret)
++			return ret;
++	}
++
+ 	/* Initialize the PHY package clock and reset, which is the
+ 	 * necessary config sequence after GPIO reset on the PHY package.
+ 	 */
+@@ -1185,6 +1193,9 @@ static int qca8084_probe(struct phy_devi
+ 
+ static void qca8084_remove(struct phy_device *phydev)
+ {
++	if (phydev->interface != PHY_INTERFACE_MODE_10G_QXGMII)
++		return;
++
+ 	if (phy_package_remove_once(phydev))
+ 		qca8084_phy_package_remove_once(phydev);
+ }

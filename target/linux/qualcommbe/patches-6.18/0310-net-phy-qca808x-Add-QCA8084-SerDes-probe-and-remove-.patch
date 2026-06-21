@@ -1,0 +1,438 @@
+From bc9732a26a25719475f2c6babb6968842cf97108 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Mon, 23 Sep 2024 20:28:24 +0800
+Subject: [PATCH] net: phy: qca808x: Add QCA8084 SerDes probe and remove
+ functions
+
+QCA8084 PHY package integrates the XPCS and PCS, which is used
+to support 10G-QXGMII. XPCS includes 4 channels to connect with
+Quad PHY, and PCS controls the interface mode configured.
+
+XPCS and PCS are probed and removed by PHY package.
+
+Change-Id: Ided0a5cd4c996dc2a2a0d0598e930fab060caaf8
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+Alex G: Use phy_package_get_*() accessors
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ drivers/net/phy/qcom/Makefile         |   2 +-
+ drivers/net/phy/qcom/qca8084_serdes.c | 249 ++++++++++++++++++++++++++
+ drivers/net/phy/qcom/qca8084_serdes.h |  18 ++
+ drivers/net/phy/qcom/qca808x.c        |  53 ++++++
+ 4 files changed, 321 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/phy/qcom/qca8084_serdes.c
+ create mode 100644 drivers/net/phy/qcom/qca8084_serdes.h
+
+--- a/drivers/net/phy/qcom/Makefile
++++ b/drivers/net/phy/qcom/Makefile
+@@ -2,5 +2,5 @@
+ obj-$(CONFIG_QCOM_NET_PHYLIB)	+= qcom-phy-lib.o
+ obj-$(CONFIG_AT803X_PHY)	+= at803x.o
+ obj-$(CONFIG_QCA83XX_PHY)	+= qca83xx.o
+-obj-$(CONFIG_QCA808X_PHY)	+= qca808x.o
++obj-$(CONFIG_QCA808X_PHY)	+= qca808x.o qca8084_serdes.o
+ obj-$(CONFIG_QCA807X_PHY)	+= qca807x.o
+--- /dev/null
++++ b/drivers/net/phy/qcom/qca8084_serdes.c
+@@ -0,0 +1,249 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#include <linux/clk.h>
++#include <linux/dev_printk.h>
++#include <linux/mdio.h>
++#include <linux/of.h>
++#include <linux/phy.h>
++#include <linux/property.h>
++#include <linux/reset.h>
++
++#include "qca8084_serdes.h"
++
++/* XPCS includes 4 channels, each channel has the different MMD ID for
++ * configuring auto-negotiation complete interrupt, mii-4bit, auto-
++ * negotiation capabilities and TX configuration for the connected PHY.
++ *
++ * MMD31 is for channel 0;
++ * MMD26 is for channel 1;
++ * MMD27 is for channel 2;
++ * MMD28 is for channel 3;
++ */
++#define QCA8084_CHANNEL_MAX			4
++
++enum pcs_clk_id {
++	PCS_CLK,
++	PCS_RX_ROOT_CLK,
++	PCS_TX_ROOT_CLK,
++	PCS_CLK_MAX
++};
++
++enum xpcs_clk_id {
++	XPCS_XGMII_RX_CLK,
++	XPCS_XGMII_TX_CLK,
++	XPCS_RX_CLK,
++	XPCS_TX_CLK,
++	XPCS_PORT_RX_CLK,
++	XPCS_PORT_TX_CLK,
++	XPCS_RX_SRC_CLK,
++	XPCS_TX_SRC_CLK,
++	XPCS_CLK_MAX
++};
++
++struct qca8084_xpcs_channel_priv {
++	int ch_id;
++	struct reset_control *rstcs;
++	struct clk *clks[XPCS_CLK_MAX];
++};
++
++struct qca8084_pcs_data {
++	struct reset_control *rstc;
++	struct clk *clks[PCS_CLK_MAX];
++};
++
++struct qca8084_xpcs_data {
++	struct reset_control *rstc;
++	struct qca8084_xpcs_channel_priv xpcs_ch[QCA8084_CHANNEL_MAX];
++};
++
++static const char *const xpcs_clock_names[XPCS_CLK_MAX] = {
++	[XPCS_XGMII_RX_CLK] =	"xgmii_rx",
++	[XPCS_XGMII_TX_CLK] =	"xgmii_tx",
++	[XPCS_RX_CLK] =		"xpcs_rx",
++	[XPCS_TX_CLK] =		"xpcs_tx",
++	[XPCS_PORT_RX_CLK] =	"port_rx",
++	[XPCS_PORT_TX_CLK] =	"port_tx",
++	[XPCS_RX_SRC_CLK] =	"rx_src",
++	[XPCS_TX_SRC_CLK] =	"tx_src",
++};
++
++static const char *const pcs_clock_names[PCS_CLK_MAX] = {
++	[PCS_CLK] =		"pcs",
++	[PCS_RX_ROOT_CLK] =	"pcs_rx_root",
++	[PCS_TX_ROOT_CLK] =	"pcs_tx_root",
++};
++
++struct mdio_device *qca8084_package_pcs_probe(struct device_node *pcs_np)
++{
++	struct qca8084_pcs_data *pcs_data;
++	struct mdio_device *mdiodev;
++	struct reset_control *rstc;
++	struct device *dev;
++	struct clk *clk;
++	int i;
++
++	mdiodev = fwnode_mdio_find_device(of_fwnode_handle(pcs_np));
++	if (!mdiodev)
++		return ERR_PTR(-EPROBE_DEFER);
++
++	dev = &mdiodev->dev;
++	pcs_data = devm_kzalloc(dev, sizeof(*pcs_data), GFP_KERNEL);
++	if (!pcs_data) {
++		dev_err(dev, "Allocate PCS data failed\n");
++		return ERR_PTR(-ENOMEM);
++	}
++
++	rstc = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(rstc)) {
++		dev_err(dev, "Get PCS reset failed\n");
++		return ERR_CAST(rstc);
++	}
++
++	pcs_data->rstc = rstc;
++
++	for (i = 0; i < ARRAY_SIZE(pcs_clock_names); i++) {
++		clk = devm_clk_get(dev, pcs_clock_names[i]);
++		if (IS_ERR(clk)) {
++			dev_err(dev, "Failed to get the PCS clock ID %s\n",
++				pcs_clock_names[i]);
++			return ERR_CAST(clk);
++		}
++		pcs_data->clks[i] = clk;
++	}
++
++	mdiodev_set_drvdata(mdiodev, pcs_data);
++
++	return mdiodev;
++}
++
++struct mdio_device *qca8084_package_xpcs_probe(struct device_node *xpcs_np)
++{
++	struct qca8084_xpcs_data *xpcs_data;
++	struct mdio_device *mdiodev;
++	struct reset_control *rstc;
++	struct device_node *child;
++	struct device *dev;
++	struct clk *clk;
++	int i, j, node;
++
++	mdiodev = fwnode_mdio_find_device(of_fwnode_handle(xpcs_np));
++	if (!mdiodev)
++		return ERR_PTR(-EPROBE_DEFER);
++
++	dev = &mdiodev->dev;
++
++	xpcs_data = devm_kzalloc(dev, sizeof(*xpcs_data), GFP_KERNEL);
++	if (!xpcs_data) {
++		dev_err(dev, "Allocate XPCS data failed\n");
++		return ERR_PTR(-ENOMEM);
++	}
++
++	rstc = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(rstc)) {
++		dev_err(dev, "Get XPCS reset failed\n");
++		return ERR_CAST(rstc);
++	}
++
++	xpcs_data->rstc = rstc;
++
++	/* Sanity check the number of channel sub nodes */
++	node = of_get_available_child_count(xpcs_np);
++	if (node != QCA8084_CHANNEL_MAX)
++		return ERR_PTR(-EINVAL);
++
++	node = 0;
++	for_each_available_child_of_node(xpcs_np, child) {
++		struct qca8084_xpcs_channel_priv *ch_data;
++		u32 channel;
++
++		/* The subnode name must be 'channel'. */
++		if (!(of_node_name_eq(child, "channel")))
++			continue;
++
++		if (of_property_read_u32(child, "reg", &channel)) {
++			dev_err(dev, "%s: Failed to get reg\n",
++				child->full_name);
++
++			mdiodev = ERR_PTR(-EINVAL);
++			goto put_ch_clk_rst;
++		}
++
++		if (channel >= QCA8084_CHANNEL_MAX) {
++			dev_err(dev, "%s: Invalid reg %d\n",
++				child->full_name, channel);
++
++			mdiodev = ERR_PTR(-EINVAL);
++			goto put_ch_clk_rst;
++		}
++
++		ch_data = &xpcs_data->xpcs_ch[node];
++		ch_data->ch_id = channel;
++
++		ch_data->rstcs = of_reset_control_array_get_exclusive(child);
++		if (IS_ERR(ch_data->rstcs)) {
++			dev_err(dev, "%s: Failed to get reset\n",
++				child->full_name);
++
++			mdiodev = ERR_CAST(ch_data->rstcs);
++			goto put_ch_clk_rst;
++		}
++
++		for (j = 0; j < ARRAY_SIZE(xpcs_clock_names); j++) {
++			clk = of_clk_get_by_name(child, xpcs_clock_names[j]);
++			if (IS_ERR(clk)) {
++				dev_err(dev, "Failed to get the clock ID %s\n",
++					xpcs_clock_names[j]);
++				mdiodev = ERR_CAST(clk);
++				goto put_ch_child;
++			}
++			ch_data->clks[j] = clk;
++		}
++
++		node++;
++	}
++
++	mdiodev_set_drvdata(mdiodev, xpcs_data);
++
++	return mdiodev;
++
++put_ch_child:
++	node++;
++
++put_ch_clk_rst:
++	for (i = 0; i < node; i++) {
++		j--;
++		while (j >= 0) {
++			clk_put(xpcs_data->xpcs_ch[i].clks[j]);
++			j--;
++		}
++
++		j = ARRAY_SIZE(xpcs_clock_names);
++	}
++
++	for (i = 0; i < node; i++)
++		reset_control_put(xpcs_data->xpcs_ch[i].rstcs);
++
++	of_node_put(child);
++
++	return mdiodev;
++}
++
++void qca8084_package_xpcs_and_pcs_remove(struct mdio_device *xpcs_mdiodev,
++					 struct mdio_device *pcs_mdiodev)
++{
++	struct qca8084_xpcs_data *xpcs_data = mdiodev_get_drvdata(xpcs_mdiodev);
++	int i, j;
++
++	for (i = 0; i < ARRAY_SIZE(xpcs_data->xpcs_ch); i++) {
++		reset_control_put(xpcs_data->xpcs_ch[i].rstcs);
++
++		for (j = 0; j < ARRAY_SIZE(xpcs_data->xpcs_ch[i].clks); j++)
++			clk_put(xpcs_data->xpcs_ch[i].clks[j]);
++	}
++
++	mdio_device_put(xpcs_mdiodev);
++	mdio_device_put(pcs_mdiodev);
++}
+--- /dev/null
++++ b/drivers/net/phy/qcom/qca8084_serdes.h
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Driver for QCA8084 SerDes
++ *
++ * Copyright (c) 2024 Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#ifndef _QCA8084_SERDES_H_
++#define _QCA8084_SERDES_H_
++
++#include <linux/mdio.h>
++#include <linux/of.h>
++
++struct mdio_device *qca8084_package_pcs_probe(struct device_node *pcs_np);
++struct mdio_device *qca8084_package_xpcs_probe(struct device_node *xpcs_np);
++void qca8084_package_xpcs_and_pcs_remove(struct mdio_device *xpcs_mdiodev,
++					 struct mdio_device *pcs_mdiodev);
++#endif /* _QCA8084_SERDES_H_ */
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -8,6 +8,7 @@
+ #include <dt-bindings/net/qcom,qca808x.h>
+ 
+ #include "../phylib.h"
++#include "qca8084_serdes.h"
+ #include "qcom.h"
+ 
+ /* ADC threshold */
+@@ -172,12 +173,14 @@ enum {
+ 
+ struct qca808x_priv {
+ 	int led_polarity_mode;
++	int channel_id;
+ 	struct qcom_phy_hw_stats hw_stats;
+ };
+ 
+ struct qca808x_shared_priv {
+ 	int package_mode;
+ 	struct clk *clk[PACKAGE_CLK_MAX];
++	struct mdio_device *mdiodev[2];	/* PCS and XPCS mdio device */
+ };
+ 
+ static const char *const qca8084_package_clk_name[PACKAGE_CLK_MAX] = {
+@@ -355,6 +358,8 @@ static int qca808x_probe(struct phy_devi
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+ 	struct qca808x_priv *priv;
++	u32 ch_id = 0;
++	int ret;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+ 	if (!priv)
+@@ -363,6 +368,14 @@ static int qca808x_probe(struct phy_devi
+ 	/* Init LED polarity mode to -1 */
+ 	priv->led_polarity_mode = -1;
+ 
++	/* DT property qcom,xpcs-channel" is optional and only available for
++	 * 10G-QXGMII mode.
++	 */
++	ret = of_property_read_u32(dev->of_node, "qcom,xpcs-channel", &ch_id);
++	if (ret && ret != -EINVAL)
++		return ret;
++
++	priv->channel_id = ch_id;
+ 	phydev->priv = priv;
+ 
+ 	return 0;
+@@ -1033,6 +1046,7 @@ static int qca8084_phy_package_probe_onc
+ 	struct device_node *np = phy_package_get_node(phydev);
+ 	struct qca808x_shared_priv *shared_priv;
+ 	struct reset_control *rstc;
++	struct device_node *child;
+ 	int i, ret, clear, set;
+ 	struct clk *clk;
+ 
+@@ -1093,6 +1107,26 @@ static int qca8084_phy_package_probe_onc
+ 	if (ret && ret != -EINVAL)
+ 		return ret;
+ 
++	for_each_available_child_of_node(np, child) {
++		struct mdio_device *mdiodev;
++
++		if (of_node_name_eq(child, "pcs-phy")) {
++			mdiodev = qca8084_package_pcs_probe(child);
++			if (IS_ERR(mdiodev))
++				return PTR_ERR(mdiodev);
++
++			shared_priv->mdiodev[0] = mdiodev;
++		}
++
++		if (of_node_name_eq(child, "xpcs-phy")) {
++			mdiodev = qca8084_package_xpcs_probe(child);
++			if (IS_ERR(mdiodev))
++				return PTR_ERR(mdiodev);
++
++			shared_priv->mdiodev[1] = mdiodev;
++		}
++	}
++
+ 	rstc = of_reset_control_get_exclusive(np, NULL);
+ 	if (IS_ERR(rstc))
+ 		return dev_err_probe(&phydev->mdio.dev, PTR_ERR(rstc),
+@@ -1102,6 +1136,14 @@ static int qca8084_phy_package_probe_onc
+ 	return reset_control_deassert(rstc);
+ }
+ 
++static void qca8084_phy_package_remove_once(struct phy_device *phydev)
++{
++	struct qca808x_shared_priv *shared_priv = phy_package_get_priv(phydev);;
++
++	qca8084_package_xpcs_and_pcs_remove(shared_priv->mdiodev[1],
++					    shared_priv->mdiodev[0]);
++}
++
+ static int qca8084_probe(struct phy_device *phydev)
+ {
+ 	struct qca808x_shared_priv *shared_priv;
+@@ -1120,6 +1162,10 @@ static int qca8084_probe(struct phy_devi
+ 			return ret;
+ 	}
+ 
++	ret = qca808x_probe(phydev);
++	if (ret)
++		return ret;
++
+ 	/* Enable clock of PHY device, so that the PHY register
+ 	 * can be accessed to get PHY features.
+ 	 */
+@@ -1137,6 +1183,12 @@ static int qca8084_probe(struct phy_devi
+ 	return reset_control_deassert(rstc);
+ }
+ 
++static void qca8084_remove(struct phy_device *phydev)
++{
++	if (phy_package_remove_once(phydev))
++		qca8084_phy_package_remove_once(phydev);
++}
++
+ static struct phy_driver qca808x_driver[] = {
+ {
+ 	/* Qualcomm QCA8081 */
+@@ -1190,6 +1242,7 @@ static struct phy_driver qca808x_driver[
+ 	.config_init		= qca8084_config_init,
+ 	.link_change_notify	= qca8084_link_change_notify,
+ 	.probe			= qca8084_probe,
++	.remove			= qca8084_remove,
+ }, };
+ 
+ module_phy_driver(qca808x_driver);

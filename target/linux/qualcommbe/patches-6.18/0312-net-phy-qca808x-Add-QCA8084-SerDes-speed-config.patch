@@ -1,0 +1,252 @@
+From c2d664e748ce7b96dbd07f79091527aaf1725165 Mon Sep 17 00:00:00 2001
+From: Luo Jie <quic_luoj@quicinc.com>
+Date: Mon, 23 Sep 2024 21:24:56 +0800
+Subject: [PATCH] net: phy: qca808x: Add QCA8084 SerDes speed config
+
+When the link of PHY is changed, the XPCS channel needs to be
+configured to adapt the current link status.
+
+Change-Id: I50d8973691dff133fc6bec1e9a1043bb646811fc
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+Alex G: Use phy_package_get_*() accessors
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ drivers/net/phy/qcom/qca8084_serdes.c | 159 ++++++++++++++++++++++++++
+ drivers/net/phy/qcom/qca8084_serdes.h |   3 +
+ drivers/net/phy/qcom/qca808x.c        |  16 ++-
+ 3 files changed, 176 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/phy/qcom/qca8084_serdes.c
++++ b/drivers/net/phy/qcom/qca8084_serdes.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/dev_printk.h>
+ #include <linux/mdio.h>
+ #include <linux/of.h>
+@@ -55,6 +56,13 @@
+ #define BYPASS_TUNNING_IPG			0x189
+ #define BYPASS_TUNNING_IPG_MASK			GENMASK(11, 0)
+ 
++#define QP_USXG_RESET				0x18c
++#define QP_USXG_SGMII_FUNC_RESET		BIT(4)
++#define QP_USXG_P3_FUNC_RESET			BIT(3)
++#define QP_USXG_P2_FUNC_RESET			BIT(2)
++#define QP_USXG_P1_FUNC_RESET			BIT(1)
++#define QP_USXG_P0_FUNC_RESET			BIT(0)
++
+ /* MDIO_MMD_PCS register */
+ #define PCS_CONTROL2				0x7
+ #define PCS_TYPE_MASK				GENMASK(3, 0)
+@@ -107,6 +115,9 @@
+ #define TX_CONFIG				BIT(3)
+ #define AUTO_NEGOTIATION_CMPLT_INTR		BIT(0)
+ 
++#define PCS_ERR_SEL				0x8002
++#define PCS_AN_COMPLETE				BIT(0)
++
+ #define XAUI_CONTROL				0x8004
+ #define TX_IPG_CHECK_DISABLE			BIT(0)
+ 
+@@ -621,3 +632,151 @@ int qca8084_qxgmii_set_mode(struct mdio_
+ 
+ 	return qca8084_xpcs_set_mode(xpcs_mdiodev);
+ }
++
++static int qca8084_pcs_ipg_tune_reset(struct mdio_device *mdio_dev,
++				      int reset_function)
++{
++	int ret;
++
++	ret = mdiodev_c45_modify(mdio_dev, MDIO_MMD_PMAPMD, QP_USXG_RESET,
++				 reset_function, 0);
++	if (ret)
++		return ret;
++
++	usleep_range(1000, 1100);
++
++	return mdiodev_c45_modify(mdio_dev, MDIO_MMD_PMAPMD, QP_USXG_RESET,
++				  reset_function, reset_function);
++}
++
++static int qca8084_xpcs_an_restart(struct mdio_device *xpcs_mdiodev,
++				   int channel)
++{
++	int ret, mmd;
++
++	mmd = qca8084_xpcs_ch_mmd[channel];
++
++	/* Restart auto-negotiation */
++	ret = mdiodev_c45_modify(xpcs_mdiodev, mmd, MII_CONTROL,
++				 AUTO_NEGOTIATION_RESTART,
++				 AUTO_NEGOTIATION_RESTART);
++	if (ret)
++		return ret;
++
++	usleep_range(1000, 1100);
++
++	/* Clear pcs auto-negotiation complete interrupt */
++	return mdiodev_c45_modify(xpcs_mdiodev, mmd, PCS_ERR_SEL,
++				  PCS_AN_COMPLETE, 0);
++}
++
++void qca8084_qxgmii_set_speed(struct mdio_device *xpcs_mdiodev,
++			      struct mdio_device *pcs_mdiodev,
++			      int channel, int speed)
++{
++	struct qca8084_xpcs_data *xpcs_data = mdiodev_get_drvdata(xpcs_mdiodev);
++	struct qca8084_xpcs_channel_priv *xpcs_ch;
++	int mmd, i, ret, xpcs_rate;
++	unsigned long rate;
++
++	for (i = 0; i < QCA8084_CHANNEL_MAX; i++) {
++		xpcs_ch = &xpcs_data->xpcs_ch[i];
++		if (channel == xpcs_ch->ch_id)
++			break;
++	}
++
++	if (i == QCA8084_CHANNEL_MAX) {
++		dev_err(&xpcs_mdiodev->dev, "Invalid channel %d\n", channel);
++		return;
++	}
++
++	mmd = qca8084_xpcs_ch_mmd[channel];
++
++	ret = qca8084_xpcs_an_restart(xpcs_mdiodev, channel);
++	if (ret)
++		return;
++
++	switch (speed) {
++	case SPEED_2500:
++		rate = 312500000;
++		xpcs_rate = PCS_SPEED_2500;
++		break;
++	case SPEED_1000:
++		rate = 125000000;
++		xpcs_rate = PCS_SPEED_1000;
++		break;
++	case SPEED_100:
++		rate = 25000000;
++		xpcs_rate = PCS_SPEED_100;
++		break;
++	case SPEED_10:
++	default:
++		rate = 2500000;
++		xpcs_rate = PCS_SPEED_10;
++		break;
++	}
++
++	clk_set_rate(xpcs_ch->clks[XPCS_RX_CLK], rate);
++	clk_set_rate(xpcs_ch->clks[XPCS_TX_CLK], rate);
++
++	/* XGMII takes the different clock rate 78.125Mhz from XPCS clock
++	 * when linked at 2500M.
++	 */
++	if (speed == SPEED_2500)
++		rate = 78125000;
++
++	clk_set_rate(xpcs_ch->clks[XPCS_XGMII_RX_CLK], rate);
++	clk_set_rate(xpcs_ch->clks[XPCS_XGMII_TX_CLK], rate);
++
++	ret = mdiodev_c45_modify(xpcs_mdiodev, mmd, MII_CONTROL,
++				 PCS_SPEED_2500 | PCS_SPEED_1000 |
++				 PCS_SPEED_100 | PCS_SPEED_10,
++				 xpcs_rate);
++	if (ret)
++		return;
++
++	/* Disable clocks if link down with unknown speed. The channel clocks
++	 * are disabled by default, __clk_is_enabled() is used to avoid
++	 * disabling the clocks that is already in the disabled status.
++	 */
++	if (speed == SPEED_UNKNOWN) {
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_RX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_RX_CLK]);
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_TX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_TX_CLK]);
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_PORT_RX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_PORT_RX_CLK]);
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_PORT_TX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_PORT_TX_CLK]);
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_XGMII_RX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_XGMII_RX_CLK]);
++		if (__clk_is_enabled(xpcs_ch->clks[XPCS_XGMII_TX_CLK]))
++			clk_disable_unprepare(xpcs_ch->clks[XPCS_XGMII_TX_CLK]);
++	} else {
++		clk_prepare_enable(xpcs_ch->clks[XPCS_RX_CLK]);
++		clk_prepare_enable(xpcs_ch->clks[XPCS_TX_CLK]);
++		clk_prepare_enable(xpcs_ch->clks[XPCS_PORT_RX_CLK]);
++		clk_prepare_enable(xpcs_ch->clks[XPCS_PORT_TX_CLK]);
++		clk_prepare_enable(xpcs_ch->clks[XPCS_XGMII_RX_CLK]);
++		clk_prepare_enable(xpcs_ch->clks[XPCS_XGMII_TX_CLK]);
++	}
++
++	msleep(100);
++
++	ret = reset_control_reset(xpcs_ch->rstcs);
++	if (ret)
++		return;
++
++	/* Reset IPG tune of PCS device. */
++	ret = qca8084_pcs_ipg_tune_reset(pcs_mdiodev, BIT(channel));
++	if (ret)
++		return;
++
++	if (channel == 0)
++		mdiodev_c45_modify(xpcs_mdiodev, MDIO_MMD_PCS, DIG_CTRL1,
++				   FIFO_RESET_CH0, FIFO_RESET_CH0);
++	else
++		mdiodev_c45_modify(xpcs_mdiodev, mmd, DIG_CTRL1,
++				   FIFO_RESET_CH1_CH2_CH3,
++				   FIFO_RESET_CH1_CH2_CH3);
++}
+--- a/drivers/net/phy/qcom/qca8084_serdes.h
++++ b/drivers/net/phy/qcom/qca8084_serdes.h
+@@ -17,4 +17,7 @@ void qca8084_package_xpcs_and_pcs_remove
+ 					 struct mdio_device *pcs_mdiodev);
+ int qca8084_qxgmii_set_mode(struct mdio_device *xpcs_mdiodev,
+ 			    struct mdio_device *pcs_mdiodev);
++void qca8084_qxgmii_set_speed(struct mdio_device *xpcs_mdiodev,
++			      struct mdio_device *pcs_mdiodev,
++			      int channel, int speed);
+ #endif /* _QCA8084_SERDES_H_ */
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -997,6 +997,7 @@ static int qca8084_config_init(struct ph
+ 
+ static void qca8084_link_change_notify(struct phy_device *phydev)
+ {
++	struct qca808x_shared_priv *shared_priv;
+ 	int ret;
+ 
+ 	/* Assert the FIFO between PHY and MAC. */
+@@ -1028,14 +1029,25 @@ static void qca8084_link_change_notify(s
+ 		}
+ 	}
+ 
+-	/* Enable IPG level 10 to 11 tuning for link speed 1000M in the
++	/* Enable IPG level 10 to 11 tuning for link speed 1000M and
++	 * configure the related XPCS channel with the phydev in the
+ 	 * 10G_QXGMII mode.
+ 	 */
+-	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII)
++	if (phydev->interface == PHY_INTERFACE_MODE_10G_QXGMII) {
++		struct qca808x_priv *priv = phydev->priv;
++
++		shared_priv = phy_package_get_priv(phydev);
++
+ 		phy_modify_mmd(phydev, MDIO_MMD_AN, QCA8084_MMD7_IPG_OP,
+ 			       QCA8084_IPG_10_TO_11_EN,
+ 			       phydev->speed == SPEED_1000 ?
+ 			       QCA8084_IPG_10_TO_11_EN : 0);
++
++		qca8084_qxgmii_set_speed(shared_priv->mdiodev[1],
++					 shared_priv->mdiodev[0],
++					 priv->channel_id,
++					 phydev->speed);
++	}
+ }
+ 
+ /* QCA8084 is a four-port PHY, which integrates the clock controller,
