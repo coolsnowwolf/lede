@@ -9678,7 +9678,7 @@ call_qcsapi_wifi_get_wpa_status( call_qcsapi_bundle *p_calling_bundle, int argc,
 		}
 
 		if (strnlen( argv[ 0 ], MAC_ADDR_STR_LEN + 1 ) == MAC_ADDR_STR_LEN ) {
-			strcpy( mac_addr, argv[ 0 ] );
+			snprintf( mac_addr, sizeof(mac_addr), "%s", argv[ 0 ] );
 		} else {
 			print_out( print, "mac address input error \n");
 			return( statval );
@@ -9712,7 +9712,7 @@ call_qcsapi_wifi_get_auth_state( call_qcsapi_bundle *p_calling_bundle, int argc,
 
 	if (argc > 0) {
 		if (strnlen( argv[ 0 ], (MAC_ADDR_STR_LEN + 1) ) == MAC_ADDR_STR_LEN ) {
-			strcpy( mac_addr, argv[ 0 ] );
+			snprintf( mac_addr, sizeof(mac_addr), "%s", argv[ 0 ] );
 		} else {
 			print_out( print, "Mac address input is invalid!\n" );
 			return( statval );
