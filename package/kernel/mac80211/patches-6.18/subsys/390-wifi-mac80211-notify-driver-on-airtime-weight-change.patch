@@ -1,0 +1,143 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Wed, 10 Jun 2026 11:22:25 +0000
+Subject: [PATCH] wifi: mac80211: notify driver on airtime weight changes
+
+Add a new sta_set_airtime_weight driver op so drivers can program the
+airtime fairness weight into hardware. The op is called when the weight
+is updated via sta_apply_parameters, and on station upload if a
+non-default weight is already set.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -4484,6 +4484,8 @@ struct ieee80211_prep_tx_info {
+  * @set_sar_specs: Update the SAR (TX power) settings.
+  * @sta_set_decap_offload: Called to notify the driver when a station is allowed
+  *	to use rx decapsulation offload
++ * @sta_set_airtime_weight: Called to notify the driver of a change to a
++ *	station's airtime fairness weight, so it can be programmed in hardware.
+  * @add_twt_setup: Update hw with TWT agreement parameters received from the peer.
+  *	This callback allows the hw to check if requested parameters
+  *	are supported and if there is enough room for a new agreement.
+@@ -4896,6 +4898,9 @@ struct ieee80211_ops {
+ 	void (*sta_set_decap_offload)(struct ieee80211_hw *hw,
+ 				      struct ieee80211_vif *vif,
+ 				      struct ieee80211_sta *sta, bool enabled);
++	void (*sta_set_airtime_weight)(struct ieee80211_hw *hw,
++				       struct ieee80211_vif *vif,
++				       struct ieee80211_sta *sta, u16 weight);
+ 	void (*add_twt_setup)(struct ieee80211_hw *hw,
+ 			      struct ieee80211_sta *sta,
+ 			      struct ieee80211_twt_setup *twt);
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -2298,8 +2298,12 @@ static int sta_apply_parameters(struct i
+ 	if (ieee80211_vif_is_mesh(&sdata->vif))
+ 		sta_apply_mesh_params(local, sta, params);
+ 
+-	if (params->airtime_weight)
++	if (params->airtime_weight) {
+ 		sta->airtime_weight = params->airtime_weight;
++		if (sta->uploaded)
++			drv_sta_set_airtime_weight(local, sdata, &sta->sta,
++						   sta->airtime_weight);
++	}
+ 
+ 	/* set the STA state after all sta info from usermode has been set */
+ 	if (test_sta_flag(sta, WLAN_STA_TDLS_PEER) ||
+--- a/net/mac80211/driver-ops.c
++++ b/net/mac80211/driver-ops.c
+@@ -157,6 +157,10 @@ int drv_sta_state(struct ieee80211_local
+ 			sta->uploaded = true;
+ 			if (rcu_access_pointer(sta->sta.rates))
+ 				drv_sta_rate_tbl_update(local, sdata, &sta->sta);
++			if (sta->airtime_weight != IEEE80211_DEFAULT_AIRTIME_WEIGHT)
++				drv_sta_set_airtime_weight(local, sdata,
++							   &sta->sta,
++							   sta->airtime_weight);
+ 		}
+ 	} else if (old_state == IEEE80211_STA_ASSOC &&
+ 		   new_state == IEEE80211_STA_AUTH) {
+--- a/net/mac80211/driver-ops.h
++++ b/net/mac80211/driver-ops.h
+@@ -1633,6 +1633,25 @@ static inline void drv_sta_set_decap_off
+ 	trace_drv_return_void(local);
+ }
+ 
++static inline void drv_sta_set_airtime_weight(struct ieee80211_local *local,
++					      struct ieee80211_sub_if_data *sdata,
++					      struct ieee80211_sta *sta,
++					      u16 weight)
++{
++	sdata = get_bss_sdata(sdata);
++
++	might_sleep();
++	lockdep_assert_wiphy(local->hw.wiphy);
++	if (!check_sdata_in_driver(sdata))
++		return;
++
++	trace_drv_sta_set_airtime_weight(local, sdata, sta, weight);
++	if (local->ops->sta_set_airtime_weight)
++		local->ops->sta_set_airtime_weight(&local->hw, &sdata->vif, sta,
++						   weight);
++	trace_drv_return_void(local);
++}
++
+ static inline void drv_add_twt_setup(struct ieee80211_local *local,
+ 				     struct ieee80211_sub_if_data *sdata,
+ 				     struct ieee80211_sta *sta,
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -832,8 +832,13 @@ static int sta_info_insert_drv_state(str
+ 		 * Drivers using legacy sta_add/sta_remove callbacks only
+ 		 * get uploaded set to true after sta_add is called.
+ 		 */
+-		if (!local->ops->sta_add)
++		if (!local->ops->sta_add) {
+ 			sta->uploaded = true;
++			if (sta->airtime_weight != IEEE80211_DEFAULT_AIRTIME_WEIGHT)
++				drv_sta_set_airtime_weight(local, sdata,
++							   &sta->sta,
++							   sta->airtime_weight);
++		}
+ 		return 0;
+ 	}
+ 
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -2481,6 +2481,33 @@ DEFINE_EVENT(sta_flag_evt, drv_sta_set_d
+ 	TP_ARGS(local, sdata, sta, enabled)
+ );
+ 
++TRACE_EVENT(drv_sta_set_airtime_weight,
++	TP_PROTO(struct ieee80211_local *local,
++		 struct ieee80211_sub_if_data *sdata,
++		 struct ieee80211_sta *sta, u16 weight),
++
++	TP_ARGS(local, sdata, sta, weight),
++
++	TP_STRUCT__entry(
++		LOCAL_ENTRY
++		VIF_ENTRY
++		STA_ENTRY
++		__field(u16, weight)
++	),
++
++	TP_fast_assign(
++		LOCAL_ASSIGN;
++		VIF_ASSIGN;
++		STA_ASSIGN;
++		__entry->weight = weight;
++	),
++
++	TP_printk(
++		LOCAL_PR_FMT  VIF_PR_FMT  STA_PR_FMT " weight:%u",
++		LOCAL_PR_ARG, VIF_PR_ARG, STA_PR_ARG, __entry->weight
++	)
++);
++
+ TRACE_EVENT(drv_add_twt_setup,
+ 	TP_PROTO(struct ieee80211_local *local,
+ 		 struct ieee80211_sta *sta,
