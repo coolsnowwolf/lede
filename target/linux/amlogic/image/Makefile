@@ -26,7 +26,7 @@ define Build/emmc-common
 	$(CP) $(IMAGE_KERNEL) $(KDIR)/boot.fat/uImage
 	mcopy -i $@.boot $(KDIR)/boot.fat/uImage ::
 
-	$(foreach dts,$(shell echo $(DEVICE_DTS)),$(CP) $(DTS_DIR)/$(dts).dtb $(KDIR)/boot.fat/dtb;)
+	$(foreach dts,$(shell echo $(DEVICE_DTS)),$(CP) $(if $(DEVICE_DTS_DIR),$(DEVICE_DTS_DIR),$(DTS_DIR))/$(dts).dtb $(KDIR)/boot.fat/dtb;)
 	mcopy -i $@.boot $(KDIR)/boot.fat/dtb ::
 
 	$(RM) -rf $(KDIR)/boot.fat
