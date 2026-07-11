@@ -1,0 +1,279 @@
+From 99e204d255c9b47a188dd79762b9406d9c5fed9b Mon Sep 17 00:00:00 2001
+Message-ID: <99e204d255c9b47a188dd79762b9406d9c5fed9b.1779348625.git.lorenzo@kernel.org>
+In-Reply-To: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
+References: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 20 May 2026 17:16:39 +0200
+Subject: [PATCH 13/13] net: airoha: Rework MTU configuration
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c  | 85 +++++++++++------------
+ drivers/net/ethernet/airoha/airoha_eth.h  |  1 +
+ drivers/net/ethernet/airoha/airoha_ppe.c  |  8 +--
+ drivers/net/ethernet/airoha/airoha_regs.h |  9 ++-
+ 4 files changed, 49 insertions(+), 54 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -181,10 +181,15 @@ static void airoha_fe_maccr_init(struct
+ {
+ 	int p;
+ 
+-	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++)
++	for (p = 1; p <= ARRAY_SIZE(eth->ports); p++) {
+ 		airoha_fe_set(eth, REG_GDM_FWD_CFG(p),
+ 			      GDM_TCP_CKSUM_MASK | GDM_UDP_CKSUM_MASK |
+ 			      GDM_IP4_CKSUM_MASK | GDM_DROP_CRC_ERR_MASK);
++		airoha_fe_rmw(eth, REG_GDM_LEN_CFG(p),
++			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
++			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
++			      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_RX_SIZE));
++	}
+ 
+ 	airoha_fe_rmw(eth, REG_CDM_VLAN_CTRL(1), CDM_VLAN_MASK,
+ 		      FIELD_PREP(CDM_VLAN_MASK, 0x8100));
+@@ -2102,15 +2107,25 @@ static void airoha_qdma_stop(struct airo
+ 	}
+ }
+ 
++static void airoha_dev_set_mtu(struct net_device *netdev)
++{
++	struct airoha_gdm_dev *dev = netdev_priv(netdev);
++
++	airoha_ppe_set_mtu(dev);
++	if (!airoha_is_lan_gdm_dev(dev))
++		airoha_fe_rmw(dev->eth, REG_WAN_MTU0,
++			      WAN_MTU0_MASK,
++			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu));
++}
++
+ static int airoha_dev_open(struct net_device *netdev)
+ {
+-	int err, len = ETH_HLEN + netdev->mtu + ETH_FCS_LEN;
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 	struct airoha_gdm_port *port = dev->port;
+-	u32 cur_len, pse_port = FE_PSE_PORT_PPE1;
+ 	struct airoha_eth *eth = dev->eth;
+ 	struct airoha_qdma *qdma;
+-	int qdma_id;
++	u32 pse_port = FE_PSE_PORT_PPE1;
++	int err, qdma_id;
+ 
+ 	/* HW LRO is configured on the QDMA and it is shared between
+ 	 * all the devices using it. Refuse to open a second device on
+@@ -2146,19 +2161,7 @@ static int airoha_dev_open(struct net_de
+ 		airoha_fe_clear(eth, REG_GDM_INGRESS_CFG(port->id),
+ 				GDM_STAG_EN_MASK);
+ 
+-	cur_len = airoha_fe_get(eth, REG_GDM_LEN_CFG(port->id),
+-				GDM_LONG_LEN_MASK);
+-	if (!port->users || len > cur_len) {
+-		/* Opening a sibling net_device with a larger MTU updates the
+-		 * MTU of already running devices. This is required to allow
+-		 * multiple net_devices with different MTUs to share the same
+-		 * GDM port.
+-		 */
+-		airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
+-			      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+-			      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
+-			      FIELD_PREP(GDM_LONG_LEN_MASK, len));
+-	}
++	airoha_dev_set_mtu(netdev);
+ 	port->users++;
+ 
+ 	airoha_qdma_start(qdma);
+@@ -2177,30 +2180,6 @@ static int airoha_dev_open(struct net_de
+ 	return 0;
+ }
+ 
+-static void airoha_set_port_mtu(struct airoha_eth *eth,
+-				struct airoha_gdm_port *port)
+-{
+-	u32 len = 0;
+-	int i;
+-
+-	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
+-		struct airoha_gdm_dev *dev = port->devs[i];
+-		struct net_device *netdev;
+-
+-		if (!dev)
+-			continue;
+-
+-		netdev = netdev_from_priv(dev);
+-		if (netif_running(netdev))
+-			len = max_t(u32, len, netdev->mtu);
+-	}
+-	len += ETH_HLEN + ETH_FCS_LEN;
+-
+-	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(port->id),
+-		      GDM_LONG_LEN_MASK,
+-		      FIELD_PREP(GDM_LONG_LEN_MASK, len));
+-}
+-
+ static int airoha_dev_stop(struct net_device *netdev)
+ {
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+@@ -2215,7 +2194,7 @@ static int airoha_dev_stop(struct net_de
+ 
+ 	qdma = airoha_qdma_deref(dev);
+ 	if (--port->users)
+-		airoha_set_port_mtu(dev->eth, port);
++		airoha_ppe_set_mtu(dev);
+ 	else
+ 		airoha_set_gdm_port_fwd_cfg(qdma->eth,
+ 					    REG_GDM_FWD_CFG(port->id),
+@@ -2274,10 +2253,6 @@ static int airoha_enable_gdm2_loopback(s
+ 		      FIELD_PREP(LPBK_CHAN_MASK, chan) |
+ 		      LBK_GAP_MODE_MASK | LBK_LEN_MODE_MASK |
+ 		      LBK_CHAN_MODE_MASK | LPBK_EN_MASK);
+-	airoha_fe_rmw(eth, REG_GDM_LEN_CFG(AIROHA_GDM2_IDX),
+-		      GDM_SHORT_LEN_MASK | GDM_LONG_LEN_MASK,
+-		      FIELD_PREP(GDM_SHORT_LEN_MASK, 60) |
+-		      FIELD_PREP(GDM_LONG_LEN_MASK, AIROHA_MAX_MTU));
+ 	/* Forward the traffic to the proper GDM port */
+ 	pse_port = port->id == AIROHA_GDM3_IDX ? FE_PSE_PORT_GDM3
+ 					       : FE_PSE_PORT_GDM4;
+@@ -2472,7 +2447,7 @@ static int airoha_dev_change_mtu(struct
+ 
+ 	WRITE_ONCE(netdev->mtu, mtu);
+ 	if (port->users)
+-		airoha_set_port_mtu(dev->eth, port);
++		airoha_dev_set_mtu(netdev);
+ 
+ 	return 0;
+ }
+@@ -3497,6 +3472,7 @@ static void airoha_disable_qos_for_gdm34
+ 
+ 	dev->flags &= ~AIROHA_PRIV_F_WAN;
+ 	airoha_dev_set_qdma(dev);
++	airoha_dev_set_mtu(netdev);
+ 
+ 	airoha_set_macaddr(dev, netdev->dev_addr);
+ 	if (netif_running(netdev))
+@@ -3545,6 +3521,7 @@ static int airoha_enable_qos_for_gdm34(s
+ 	if (err)
+ 		goto error_disable_loopback;
+ 
++	airoha_dev_set_mtu(netdev);
+ 	if (netif_running(netdev)) {
+ 		u32 pse_port;
+ 
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -23,6 +23,7 @@
+ #define AIROHA_MAX_DSA_PORTS		7
+ #define AIROHA_MAX_NUM_RSTS		3
+ #define AIROHA_MAX_MTU			9220
++#define AIROHA_MAX_RX_SIZE		16128
+ #define AIROHA_MAX_PACKET_SIZE		2048
+ #define AIROHA_NUM_QOS_CHANNELS		4
+ #define AIROHA_NUM_QOS_QUEUES		8
+@@ -715,6 +716,7 @@ airoha_qdma_deref(struct airoha_gdm_dev
+ 					 lockdep_is_held(&flow_offload_mutex));
+ }
+ 
++void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev);
+ void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
+ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
+ void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -101,6 +101,39 @@ void airoha_ppe_set_cpu_port(struct airo
+ 		      __field_prep(DFT_CPORT_MASK(fport), fe_cpu_port));
+ }
+ 
++void airoha_ppe_set_mtu(struct airoha_gdm_dev *dev)
++{
++	struct airoha_gdm_port *port = dev->port;
++	struct airoha_eth *eth = dev->eth;
++	struct airoha_qdma *qdma;
++	int i, ppe_id, index;
++	u32 mtu = 0;
++
++	qdma = airoha_qdma_deref(dev);
++	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
++		struct airoha_gdm_dev *d = port->devs[i];
++		struct net_device *netdev;
++		struct airoha_qdma *q;
++
++		if (!d)
++			continue;
++
++		q = airoha_qdma_deref(d);
++		if (q != qdma)
++			continue;
++
++		netdev = netdev_from_priv(d);
++		if (netif_running(netdev))
++			mtu = max_t(u32, mtu, netdev->mtu);
++	}
++
++	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
++	index = port->id == AIROHA_GDM4_IDX ? 7 : port->id;
++	airoha_fe_rmw(eth, REG_PPE_MTU(ppe_id, index),
++		      FP_EGRESS_MTU_MASK(index),
++		      __field_prep(FP_EGRESS_MTU_MASK(index), mtu));
++}
++
+ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)
+ {
+ 	u32 sram_ppe_num_data_entries = PPE_SRAM_NUM_ENTRIES, sram_num_entries;
+@@ -119,8 +152,6 @@ static void airoha_ppe_hw_init(struct ai
+ 		PPE_RAM_NUM_ENTRIES_SHIFT(sram_ppe_num_data_entries);
+ 
+ 	for (i = 0; i < eth->soc->num_ppe; i++) {
+-		int p;
+-
+ 		airoha_fe_wr(eth, REG_PPE_TB_BASE(i),
+ 			     ppe->foe_dma + sram_tb_size);
+ 
+@@ -170,15 +201,6 @@ static void airoha_ppe_hw_init(struct ai
+ 		airoha_fe_wr(eth, REG_PPE_HASH_SEED(i), PPE_HASH_SEED);
+ 		airoha_fe_clear(eth, REG_PPE_PPE_FLOW_CFG(i),
+ 				PPE_FLOW_CFG_IP6_6RD_MASK);
+-
+-		for (p = 0; p < ARRAY_SIZE(eth->ports); p++)
+-			airoha_fe_rmw(eth, REG_PPE_MTU(i, p),
+-				      FP0_EGRESS_MTU_MASK |
+-				      FP1_EGRESS_MTU_MASK,
+-				      FIELD_PREP(FP0_EGRESS_MTU_MASK,
+-						 AIROHA_MAX_MTU) |
+-				      FIELD_PREP(FP1_EGRESS_MTU_MASK,
+-						 AIROHA_MAX_MTU));
+ 	}
+ 
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+@@ -200,6 +222,7 @@ static void airoha_ppe_hw_init(struct ai
+ 				 airoha_ppe_is_enabled(eth, 1);
+ 			fport = airoha_get_fe_port(dev);
+ 			airoha_ppe_set_cpu_port(dev, ppe_id, fport);
++			airoha_ppe_set_mtu(dev);
+ 		}
+ 	}
+ }
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -341,9 +341,8 @@
+ #define PPE_SRAM_TABLE_EN_MASK			BIT(0)
+ 
+ #define REG_PPE_MTU_BASE(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x304)
+-#define REG_PPE_MTU(_m, _n)			(REG_PPE_MTU_BASE(_m) + ((_n) << 2))
+-#define FP1_EGRESS_MTU_MASK			GENMASK(29, 16)
+-#define FP0_EGRESS_MTU_MASK			GENMASK(13, 0)
++#define REG_PPE_MTU(_m, _n)			(REG_PPE_MTU_BASE(_m) + (((_n) / 2) << 2))
++#define FP_EGRESS_MTU_MASK(_n)			GENMASK(13 + (((_n) % 2) << 4), ((_n) % 2) << 4)
+ 
+ #define REG_PPE_RAM_CTRL(_n)			(((_n) ? PPE2_BASE : PPE1_BASE) + 0x31c)
+ #define PPE_SRAM_CTRL_ACK_MASK			BIT(31)
+@@ -404,6 +403,10 @@
+ #define FC_ID_OF_SRC_PORT_MASK(_n)	GENMASK(4 + ((_n) << 3), ((_n) << 3))
+ #define FC_MAP6_DEF_VALUE		0x1b1a1918
+ 
++#define REG_WAN_MTU0			0x2300
++#define WAN_MTU1_MASK			GENMASK(29, 16)
++#define WAN_MTU0_MASK			GENMASK(13, 0)
++
+ #define REG_CDM5_RX_OQ1_DROP_CNT	0x29d4
+ 
+ /* QDMA */

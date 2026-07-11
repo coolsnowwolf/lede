@@ -1,0 +1,94 @@
+From b9870ade9498f4119d3f8f8368fcd13e1fa0c7c9 Mon Sep 17 00:00:00 2001
+Message-ID: <b9870ade9498f4119d3f8f8368fcd13e1fa0c7c9.1779086987.git.lorenzo@kernel.org>
+In-Reply-To: <6408cdca652b1f85e5b8582c283203d11f4dedcb.1779086987.git.lorenzo@kernel.org>
+References: <6408cdca652b1f85e5b8582c283203d11f4dedcb.1779086987.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Mon, 18 May 2026 08:36:20 +0200
+Subject: [PATCH net-next 2/2] net: airoha: Set hw QoS parameter according to
+ the packet dscp
+
+Introduce the capability to hw offload via netfilter flowtable APIs the
+IP TOS info in order to configure hw queue and dscp field.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_ppe.c | 24 ++++++++++++++++++------
+ 1 file changed, 18 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -11,6 +11,7 @@
+ #include <linux/rhashtable.h>
+ #include <net/ipv6.h>
+ #include <net/pkt_cls.h>
++#include <net/route.h>
+ 
+ #include "airoha_regs.h"
+ #include "airoha_eth.h"
+@@ -314,7 +315,7 @@ static int airoha_ppe_foe_entry_prepare(
+ 					struct airoha_foe_entry *hwe,
+ 					struct net_device *netdev, int type,
+ 					struct airoha_flow_data *data,
+-					int l4proto)
++					int l4proto, u8 dsfield)
+ {
+ 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
+ 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
+@@ -349,7 +350,7 @@ static int airoha_ppe_foe_entry_prepare(
+ 		} else {
+ 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 			struct airoha_gdm_port *port;
+-			u8 pse_port, channel;
++			u8 pse_port, channel, priority;
+ 
+ 			if (!airoha_is_valid_gdm_dev(eth, dev))
+ 				return -EINVAL;
+@@ -369,9 +370,13 @@ static int airoha_ppe_foe_entry_prepare(
+ 			 */
+ 			channel = dsa_port >= 0 ? dsa_port : port->id;
+ 			channel = channel % AIROHA_NUM_QOS_CHANNELS;
+-			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel);
++			priority = rt_tos2priority(dsfield);
++			priority = priority % AIROHA_NUM_QOS_QUEUES;
++			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
++				 FIELD_PREP(AIROHA_FOE_QID, priority);
+ 
+ 			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
++			       FIELD_PREP(AIROHA_FOE_IB2_DSCP, dsfield) |
+ 			       AIROHA_FOE_IB2_PSE_QOS;
+ 			/* For downlink traffic consume SRAM memory for hw
+ 			 * forwarding descriptors queue.
+@@ -1063,9 +1068,9 @@ static int airoha_ppe_flow_offload_repla
+ 	struct net_device *odev = NULL;
+ 	struct flow_action_entry *act;
+ 	struct airoha_foe_entry hwe;
++	u8 dsfield = 0, l4proto = 0;
+ 	int err, i, offload_type;
+ 	u16 addr_type = 0;
+-	u8 l4proto = 0;
+ 
+ 	if (rhashtable_lookup(&eth->flow_table, &f->cookie,
+ 			      airoha_flow_table_params))
+@@ -1095,6 +1100,13 @@ static int airoha_ppe_flow_offload_repla
+ 		return -EOPNOTSUPP;
+ 	}
+ 
++	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IP)) {
++		struct flow_match_ip match;
++
++		flow_rule_match_ip(rule, &match);
++		dsfield = match.key->tos;
++	}
++
+ 	switch (addr_type) {
+ 	case 0:
+ 		offload_type = PPE_PKT_TYPE_BRIDGE;
+@@ -1160,7 +1172,7 @@ static int airoha_ppe_flow_offload_repla
+ 		return -EINVAL;
+ 
+ 	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
+-					   &data, l4proto);
++					   &data, l4proto, dsfield);
+ 	if (err)
+ 		return err;
+ 

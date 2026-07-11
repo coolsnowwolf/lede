@@ -1,0 +1,52 @@
+From 86e51aa24686cc95bb35613059e8b94b9b81e3f0 Mon Sep 17 00:00:00 2001
+Message-ID: <86e51aa24686cc95bb35613059e8b94b9b81e3f0.1782312099.git.lorenzo@kernel.org>
+From: Wayen Yan <win847@gmail.com>
+Date: Sat, 20 Jun 2026 16:17:44 +0800
+Subject: [PATCH] net: airoha: Fix skb->priority underflow in
+ airoha_dev_select_queue()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In airoha_dev_select_queue(), the expression:
+
+  queue = (skb->priority - 1) % AIROHA_NUM_QOS_QUEUES;
+
+implicitly converts to unsigned arithmetic: when skb->priority is 0
+(the default for unclassified traffic), (0u - 1u) wraps to UINT_MAX,
+and UINT_MAX % 8 = 7, routing default best-effort packets to the
+highest-priority QoS queue. This causes QoS inversion where the
+majority of traffic on a PON gateway starves actual high-priority
+flows (VoIP, gaming, etc.).
+
+The "- 1" offset was a leftover from the ETS offload implementation
+that has since been removed. The correct mapping is a direct modulo:
+
+  queue = skb->priority % AIROHA_NUM_QOS_QUEUES;
+
+This maps priority 0 → queue 0 (lowest), priority 7 → queue 7
+(highest), with higher priorities wrapping around. This is the
+standard Linux sk_prio → HW queue mapping used by other drivers.
+
+Fixes: 2b288b81560b ("net: airoha: Introduce ndo_select_queue callback")
+Link: https://lore.kernel.org/netdev/178185573207.2378135.3729126358670287878@gmail.com/
+Acked-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Joe Damato <joe@dama.to>
+Signed-off-by: Wayen Yan <win847@gmail.com>
+Link: https://patch.msgid.link/178194366700.2485734.5368768965976693502@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2110,7 +2110,7 @@ static u16 airoha_dev_select_queue(struc
+ 	 */
+ 	channel = netdev_uses_dsa(netdev) ? skb_get_queue_mapping(skb) : port->id;
+ 	channel = channel % AIROHA_NUM_QOS_CHANNELS;
+-	queue = (skb->priority - 1) % AIROHA_NUM_QOS_QUEUES; /* QoS queue */
++	queue = skb->priority % AIROHA_NUM_QOS_QUEUES;
+ 	queue = channel * AIROHA_NUM_QOS_QUEUES + queue;
+ 
+ 	return queue < netdev->num_tx_queues ? queue : 0;

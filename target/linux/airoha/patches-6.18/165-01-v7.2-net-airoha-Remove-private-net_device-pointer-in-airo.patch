@@ -1,0 +1,125 @@
+From 4408f520680990042a1e6bfdf3cef217a1abf152 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 3 Jun 2026 08:00:16 +0200
+Subject: [PATCH 1/5] net: airoha: Remove private net_device pointer in
+ airoha_gdm_dev struct
+
+Remove redundant net_device pointer inside airoha_gdm_dev struct and
+rely on netdev_from_priv routine instead. Please note this patch does
+not introduce any logical change, just code refactoring.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260603-airoha-eth-multi-serdes-v9-2-5d476bc2f426@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 23 ++++++++++++++---------
+ drivers/net/ethernet/airoha/airoha_eth.h |  1 -
+ drivers/net/ethernet/airoha/airoha_ppe.c |  2 +-
+ 3 files changed, 15 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -629,7 +629,7 @@ static int airoha_qdma_rx_process(struct
+ 		if (!port->dev)
+ 			goto free_frag;
+ 
+-		netdev = port->dev->dev;
++		netdev = netdev_from_priv(port->dev);
+ 		if (!q->skb) { /* first buffer */
+ 			q->skb = napi_build_skb(e->buf - AIROHA_RX_HEADROOM,
+ 						q->buf_size);
+@@ -853,6 +853,7 @@ static void airoha_qdma_wake_netdev_txqs
+ 	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
+ 		struct airoha_gdm_port *port = eth->ports[i];
+ 		struct airoha_gdm_dev *dev;
++		struct net_device *netdev;
+ 		int j;
+ 
+ 		if (!port)
+@@ -865,11 +866,12 @@ static void airoha_qdma_wake_netdev_txqs
+ 		if (dev->qdma != qdma)
+ 			continue;
+ 
+-		for (j = 0; j < dev->dev->num_tx_queues; j++) {
++		netdev = netdev_from_priv(dev);
++		for (j = 0; j < netdev->num_tx_queues; j++) {
+ 			if (airoha_qdma_get_txq(qdma, j) != qid)
+ 				continue;
+ 
+-			netif_wake_subqueue(dev->dev, j);
++			netif_wake_subqueue(netdev, j);
+ 		}
+ 	}
+ 	q->txq_stopped = false;
+@@ -1870,7 +1872,7 @@ static int airoha_dev_init(struct net_de
+ 
+ 	/* QDMA0 is used for lan ports while QDMA1 is used for WAN ports */
+ 	dev->qdma = &eth->qdma[!airoha_is_lan_gdm_dev(dev)];
+-	dev->dev->irq = dev->qdma->irq_banks[0].irq;
++	netdev->irq = dev->qdma->irq_banks[0].irq;
+ 	airoha_set_macaddr(dev, netdev->dev_addr);
+ 
+ 	switch (port->id) {
+@@ -3047,7 +3049,6 @@ static int airoha_alloc_gdm_device(struc
+ 	}
+ 
+ 	dev = netdev_priv(netdev);
+-	dev->dev = netdev;
+ 	dev->port = port;
+ 	port->dev = dev;
+ 	dev->eth = eth;
+@@ -3110,7 +3111,7 @@ static int airoha_register_gdm_devices(s
+ 		if (!port)
+ 			continue;
+ 
+-		err = register_netdev(port->dev->dev);
++		err = register_netdev(netdev_from_priv(port->dev));
+ 		if (err)
+ 			return err;
+ 	}
+@@ -3225,8 +3226,12 @@ error_napi_stop:
+ 			continue;
+ 
+ 		dev = port->dev;
+-		if (dev && dev->dev->reg_state == NETREG_REGISTERED)
+-			unregister_netdev(dev->dev);
++		if (dev) {
++			struct net_device *netdev = netdev_from_priv(dev);
++
++			if (netdev->reg_state == NETREG_REGISTERED)
++				unregister_netdev(netdev);
++		}
+ 		airoha_metadata_dst_free(port);
+ 	}
+ 	airoha_hw_cleanup(eth);
+@@ -3254,7 +3259,7 @@ static void airoha_remove(struct platfor
+ 
+ 		dev = port->dev;
+ 		if (dev)
+-			unregister_netdev(dev->dev);
++			unregister_netdev(netdev_from_priv(dev));
+ 		airoha_metadata_dst_free(port);
+ 	}
+ 	airoha_hw_cleanup(eth);
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -540,7 +540,6 @@ struct airoha_qdma {
+ struct airoha_gdm_dev {
+ 	struct airoha_gdm_port *port;
+ 	struct airoha_qdma *qdma;
+-	struct net_device *dev;
+ 	struct airoha_eth *eth;
+ 
+ 	DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -1475,8 +1475,8 @@ void airoha_ppe_check_skb(struct airoha_
+ 
+ void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev)
+ {
++	struct net_device *netdev = netdev_from_priv(dev);
+ 	struct airoha_gdm_port *port = dev->port;
+-	struct net_device *netdev = dev->dev;
+ 	struct airoha_eth *eth = dev->eth;
+ 	const u8 *addr = netdev->dev_addr;
+ 	u32 val;

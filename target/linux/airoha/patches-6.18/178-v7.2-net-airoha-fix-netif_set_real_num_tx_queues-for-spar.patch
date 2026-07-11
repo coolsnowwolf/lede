@@ -1,0 +1,84 @@
+From 788663dd28e424639318842ba5ae290672528609 Mon Sep 17 00:00:00 2001
+Message-ID: <788663dd28e424639318842ba5ae290672528609.1782366471.git.lorenzo@kernel.org>
+In-Reply-To: <bfcce49c4aaab9339ef7b9a7fa4d8ac5a19cc820.1782366471.git.lorenzo@kernel.org>
+References: <bfcce49c4aaab9339ef7b9a7fa4d8ac5a19cc820.1782366471.git.lorenzo@kernel.org>
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 19 Jun 2026 13:37:14 +0200
+Subject: [PATCH 2/2] net: airoha: fix netif_set_real_num_tx_queues for sparse
+ QoS channels
+
+airoha_tc_htb_alloc_leaf_queue() assigns queue IDs based on the channel
+index (opt->qid = AIROHA_NUM_TX_RING + channel), but updates
+real_num_tx_queues with a simple increment (num_tx_queues + 1). When QoS
+channels are allocated sparsely (e.g., channels 0 and 3 without 1 and
+2), the returned qid can exceed real_num_tx_queues, causing out-of-bounds
+accesses in the networking stack.
+For example, allocating channel 0 then channel 3 results in
+real_num_tx_queues = 34 but qid = 35, which is out of range [0, 34).
+Fix this by computing real_num_tx_queues based on the highest active
+channel index rather than using a simple counter, in both the allocation
+and deletion paths.
+
+Fixes: ef1ca9271313b ("net: airoha: Add sched HTB offload support")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20260619-airoha-qos-fixes-v2-2-5c43485038f9@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 25 +++++++++++++++---------
+ 1 file changed, 16 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2789,7 +2789,7 @@ static int airoha_tc_htb_alloc_leaf_queu
+ 					  struct tc_htb_qopt_offload *opt)
+ {
+ 	u32 channel = TC_H_MIN(opt->classid) % AIROHA_NUM_QOS_CHANNELS;
+-	int err, num_tx_queues = netdev->real_num_tx_queues;
++	int err, num_tx_queues = AIROHA_NUM_TX_RING + channel + 1;
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 	struct airoha_qdma *qdma = dev->qdma;
+ 
+@@ -2806,13 +2806,15 @@ static int airoha_tc_htb_alloc_leaf_queu
+ 	if (err)
+ 		goto error;
+ 
+-	err = netif_set_real_num_tx_queues(netdev, num_tx_queues + 1);
+-	if (err) {
+-		airoha_qdma_set_tx_rate_limit(netdev, channel, 0,
+-					      opt->quantum);
+-		NL_SET_ERR_MSG_MOD(opt->extack,
+-				   "failed setting real_num_tx_queues");
+-		goto error;
++	if (num_tx_queues > netdev->real_num_tx_queues) {
++		err = netif_set_real_num_tx_queues(netdev, num_tx_queues);
++		if (err) {
++			airoha_qdma_set_tx_rate_limit(netdev, channel, 0,
++						      opt->quantum);
++			NL_SET_ERR_MSG_MOD(opt->extack,
++					   "failed setting real_num_tx_queues");
++			goto error;
++		}
+ 	}
+ 
+ 	set_bit(channel, dev->qos_sq_bmap);
+@@ -3003,13 +3005,18 @@ static int airoha_dev_setup_tc_block(str
+ static void airoha_tc_remove_htb_queue(struct net_device *netdev, int queue)
+ {
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
++	int num_tx_queues = AIROHA_NUM_TX_RING;
+ 	struct airoha_qdma *qdma = dev->qdma;
+ 
+-	netif_set_real_num_tx_queues(netdev, netdev->real_num_tx_queues - 1);
+ 	airoha_qdma_set_tx_rate_limit(netdev, queue, 0, 0);
+ 
+ 	clear_bit(queue, qdma->qos_channel_map);
+ 	clear_bit(queue, dev->qos_sq_bmap);
++
++	if (!bitmap_empty(dev->qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS))
++		num_tx_queues += find_last_bit(dev->qos_sq_bmap,
++					       AIROHA_NUM_QOS_CHANNELS) + 1;
++	netif_set_real_num_tx_queues(netdev, num_tx_queues);
+ }
+ 
+ static int airoha_tc_htb_delete_leaf_queue(struct net_device *netdev,
