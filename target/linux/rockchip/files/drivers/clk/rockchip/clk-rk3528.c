@@ -10,8 +10,18 @@
 #include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/syscore_ops.h>
+#include <linux/version.h>
 #include <dt-bindings/clock/rk3528-cru.h>
 #include "clk.h"
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+#define RK3528_ACLK_GATE		GATE_NO_SET_RATE
+#define RK3528_SDMMC_CON(x)	((x) ? RK3528_SDMMC_CON1 : RK3528_SDMMC_CON0)
+#define RK3528_SDIO0_CON(x)	((x) ? RK3528_SDIO0_CON1 : RK3528_SDIO0_CON0)
+#define RK3528_SDIO1_CON(x)	((x) ? RK3528_SDIO1_CON1 : RK3528_SDIO1_CON0)
+#else
+#define RK3528_ACLK_GATE		GATE
+#endif
 
 #define RK3528_GRF_SOC_STATUS0		0x1a0
 
@@ -793,12 +803,12 @@ static struct rockchip_clk_branch rk3528_clk_branches[] __initdata = {
 	COMPOSITE_NODIV(ACLK_VO_ROOT, "aclk_vo_root", mux_339m_200m_100m_24m_p, CLK_IS_CRITICAL,
 	                RK3528_CLKSEL_CON(83), 0, 2, MFLAGS,
 	                RK3528_CLKGATE_CON(39), 0, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_RGA2E, "aclk_rga2e", "aclk_vo_root", 0,
-	                 RK3528_CLKGATE_CON(39), 8, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_VDPP, "aclk_vdpp", "aclk_vo_root", 0,
-	                 RK3528_CLKGATE_CON(39), 11, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_HDCP, "aclk_hdcp", "aclk_vo_root", 0,
-	                 RK3528_CLKGATE_CON(41), 0, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_RGA2E, "aclk_rga2e", "aclk_vo_root", 0,
+			  RK3528_CLKGATE_CON(39), 8, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_VDPP, "aclk_vdpp", "aclk_vo_root", 0,
+			  RK3528_CLKGATE_CON(39), 11, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_HDCP, "aclk_hdcp", "aclk_vo_root", 0,
+			  RK3528_CLKGATE_CON(41), 0, GFLAGS),
 
 	COMPOSITE(CCLK_SRC_SDMMC0, "cclk_src_sdmmc0", mux_gpll_cpll_xin24m_p, 0,
 	          RK3528_CLKSEL_CON(85), 6, 2, MFLAGS, 0, 6, DFLAGS,
@@ -920,15 +930,15 @@ static struct rockchip_clk_branch rk3528_clk_branches[] __initdata = {
 	COMPOSITE_NODIV(ACLK_VPU_L_ROOT, "aclk_vpu_l_root", mux_200m_100m_24m_p, CLK_IS_CRITICAL,
 	                RK3528_CLKSEL_CON(60), 0, 2, MFLAGS,
 	                RK3528_CLKGATE_CON(25), 0, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_EMMC, "aclk_emmc", "aclk_vpu_l_root", 0,
-	                 RK3528_CLKGATE_CON(26), 1, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_MAC_VPU, "aclk_gmac1", "aclk_vpu_l_root", 0,
-	                 RK3528_CLKGATE_CON(28), 5, GFLAGS),
-	GATE_NO_SET_RATE(ACLK_PCIE, "aclk_pcie", "aclk_vpu_l_root", 0,
-	                 RK3528_CLKGATE_CON(30), 3, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_EMMC, "aclk_emmc", "aclk_vpu_l_root", 0,
+			  RK3528_CLKGATE_CON(26), 1, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_MAC_VPU, "aclk_gmac1", "aclk_vpu_l_root", 0,
+			  RK3528_CLKGATE_CON(28), 5, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_PCIE, "aclk_pcie", "aclk_vpu_l_root", 0,
+			  RK3528_CLKGATE_CON(30), 3, GFLAGS),
 
-	GATE_NO_SET_RATE(ACLK_USB3OTG, "aclk_usb3otg", "aclk_vpu_l_root", 0,
-	                 RK3528_CLKGATE_CON(33), 1, GFLAGS),
+	RK3528_ACLK_GATE(ACLK_USB3OTG, "aclk_usb3otg", "aclk_vpu_l_root", 0,
+			  RK3528_CLKGATE_CON(33), 1, GFLAGS),
 
 	COMPOSITE_NODIV(HCLK_VPU_ROOT, "hclk_vpu_root", mux_200m_100m_50m_24m_p, CLK_IS_CRITICAL,
 	                RK3528_CLKSEL_CON(61), 2, 2, MFLAGS,
@@ -1046,12 +1056,12 @@ static struct rockchip_clk_branch rk3528_clk_branches[] __initdata = {
 };
 
 static struct rockchip_clk_branch rk3528_grf_clk_branches[] __initdata = {
-	MMC(SCLK_SDMMC_DRV, "sdmmc_drv", "cclk_src_sdmmc0", RK3528_SDMMC_CON0, 1),
-	MMC(SCLK_SDMMC_SAMPLE, "sdmmc_sample", "cclk_src_sdmmc0", RK3528_SDMMC_CON1, 1),
-	MMC(SCLK_SDIO0_DRV, "sdio0_drv", "cclk_src_sdio0", RK3528_SDIO0_CON0, 1),
-	MMC(SCLK_SDIO0_SAMPLE, "sdio0_sample", "cclk_src_sdio0", RK3528_SDIO0_CON1, 1),
-	MMC(SCLK_SDIO1_DRV, "sdio1_drv", "cclk_src_sdio1", RK3528_SDIO1_CON0, 1),
-	MMC(SCLK_SDIO1_SAMPLE, "sdio1_sample", "cclk_src_sdio1", RK3528_SDIO1_CON1, 1),
+	MMC(SCLK_SDMMC_DRV, "sdmmc_drv", "cclk_src_sdmmc0", RK3528_SDMMC_CON(0), 1),
+	MMC(SCLK_SDMMC_SAMPLE, "sdmmc_sample", "cclk_src_sdmmc0", RK3528_SDMMC_CON(1), 1),
+	MMC(SCLK_SDIO0_DRV, "sdio0_drv", "cclk_src_sdio0", RK3528_SDIO0_CON(0), 1),
+	MMC(SCLK_SDIO0_SAMPLE, "sdio0_sample", "cclk_src_sdio0", RK3528_SDIO0_CON(1), 1),
+	MMC(SCLK_SDIO1_DRV, "sdio1_drv", "cclk_src_sdio1", RK3528_SDIO1_CON(0), 1),
+	MMC(SCLK_SDIO1_SAMPLE, "sdio1_sample", "cclk_src_sdio1", RK3528_SDIO1_CON(1), 1),
 };
 
 static void __iomem *rk3528_cru_base;

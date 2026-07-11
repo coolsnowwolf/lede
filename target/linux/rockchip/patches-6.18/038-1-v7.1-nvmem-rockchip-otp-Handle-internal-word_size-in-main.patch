@@ -1,0 +1,177 @@
+From 6c403594354d59fb288978c5a23008da89ba2741 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Fri, 27 Mar 2026 13:17:48 +0000
+Subject: [PATCH] nvmem: rockchip-otp: Handle internal word_size in main
+ reg_read op
+
+Rockchip SoCs RK3576 and RK3588 read data from the OTP using 32-bit
+words instead of normal 8-bit bytes. Similar RK3506, RK3528, RK3562 and
+RK3568 will read data from OTP using 16-bit words.
+
+The nvmem core stride and word_size cannot fully be used as cells is not
+always aligned. Continue to report a stride=1 and word_size=1 in
+nvmem_config and instead handle use of SoC specific word_size internally
+in the driver.
+
+Move current SoC specific word_size handling from the RK3588 read_reg
+operation to the main read_reg operation to help simplify the SoC
+specific read_reg operation and allow code reuse in a future RK3568
+reg_read operation.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+Tested-by: Willy Tarreau <w@1wt.eu>
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+Reviewed-by: Heiko Stuebner <heiko@sntech.de>
+Tested-by: Heiko Stuebner <heiko@sntech.de>
+Signed-off-by: Srinivas Kandagatla <srini@kernel.org>
+Link: https://patch.msgid.link/20260327131751.3026030-7-srini@kernel.org
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/nvmem/rockchip-otp.c | 72 ++++++++++++++++++++----------------
+ 1 file changed, 40 insertions(+), 32 deletions(-)
+
+--- a/drivers/nvmem/rockchip-otp.c
++++ b/drivers/nvmem/rockchip-otp.c
+@@ -59,7 +59,6 @@
+ #define RK3588_OTPC_AUTO_EN		0x08
+ #define RK3588_OTPC_INT_ST		0x84
+ #define RK3588_OTPC_DOUT0		0x20
+-#define RK3588_NBYTES			4
+ #define RK3588_BURST_NUM		1
+ #define RK3588_BURST_SHIFT		8
+ #define RK3588_ADDR_SHIFT		16
+@@ -69,6 +68,7 @@
+ struct rockchip_data {
+ 	int size;
+ 	int read_offset;
++	int word_size;
+ 	const char * const *clks;
+ 	int num_clks;
+ 	nvmem_reg_read_t reg_read;
+@@ -185,48 +185,28 @@ read_end:
+ }
+ 
+ static int rk3588_otp_read(void *context, unsigned int offset,
+-			   void *val, size_t bytes)
++			   void *val, size_t count)
+ {
+ 	struct rockchip_otp *otp = context;
+-	unsigned int addr_start, addr_end, addr_len;
+-	int ret, i = 0;
+-	u32 data;
+-	u8 *buf;
+-
+-	addr_start = round_down(offset, RK3588_NBYTES) / RK3588_NBYTES;
+-	addr_end = round_up(offset + bytes, RK3588_NBYTES) / RK3588_NBYTES;
+-	addr_len = addr_end - addr_start;
+-	addr_start += otp->data->read_offset / RK3588_NBYTES;
+-
+-	buf = kzalloc(array_size(addr_len, RK3588_NBYTES), GFP_KERNEL);
+-	if (!buf)
+-		return -ENOMEM;
++	u32 *buf = val;
++	int ret;
+ 
+-	while (addr_len--) {
+-		writel((addr_start << RK3588_ADDR_SHIFT) |
++	while (count--) {
++		writel((offset++ << RK3588_ADDR_SHIFT) |
+ 		       (RK3588_BURST_NUM << RK3588_BURST_SHIFT),
+ 		       otp->base + RK3588_OTPC_AUTO_CTRL);
+ 		writel(RK3588_AUTO_EN, otp->base + RK3588_OTPC_AUTO_EN);
+ 
+ 		ret = rockchip_otp_wait_status(otp, RK3588_OTPC_INT_ST,
+ 					       RK3588_RD_DONE);
+-		if (ret < 0) {
++		if (ret) {
+ 			dev_err(otp->dev, "timeout during read setup\n");
+-			goto read_end;
++			return ret;
+ 		}
+ 
+-		data = readl(otp->base + RK3588_OTPC_DOUT0);
+-		memcpy(&buf[i], &data, RK3588_NBYTES);
+-
+-		i += RK3588_NBYTES;
+-		addr_start++;
++		*buf++ = readl(otp->base + RK3588_OTPC_DOUT0);
+ 	}
+ 
+-	memcpy(val, buf + offset % RK3588_NBYTES, bytes);
+-
+-read_end:
+-	kfree(buf);
+-
+ 	return ret;
+ }
+ 
+@@ -234,7 +214,7 @@ static int rockchip_otp_read(void *conte
+ 			     void *val, size_t bytes)
+ {
+ 	struct rockchip_otp *otp = context;
+-	int ret;
++	int ret, word_size;
+ 
+ 	if (!otp->data || !otp->data->reg_read)
+ 		return -EINVAL;
+@@ -245,8 +225,34 @@ static int rockchip_otp_read(void *conte
+ 		return ret;
+ 	}
+ 
+-	ret = otp->data->reg_read(context, offset, val, bytes);
++	offset += otp->data->read_offset;
++	word_size = otp->data->word_size;
++
++	if (word_size > 1) {
++		unsigned int addr_start, addr_end;
++		size_t count;
++		u8 *buf;
++
++		addr_start = offset / word_size;
++		addr_end = DIV_ROUND_UP(offset + bytes, word_size);
++		count = addr_end - addr_start;
++
++		buf = kzalloc(array_size(count, word_size), GFP_KERNEL);
++		if (!buf) {
++			ret = -ENOMEM;
++			goto err;
++		}
++
++		ret = otp->data->reg_read(context, addr_start, buf, count);
++		if (!ret)
++			memcpy(val, buf + (offset % word_size), bytes);
++
++		kfree(buf);
++	} else {
++		ret = otp->data->reg_read(context, offset, val, bytes);
++	}
+ 
++err:
+ 	clk_bulk_disable_unprepare(otp->data->num_clks, otp->clks);
+ 
+ 	return ret;
+@@ -259,7 +265,7 @@ static struct nvmem_config otp_config =
+ 	.type = NVMEM_TYPE_OTP,
+ 	.read_only = true,
+ 	.stride = 1,
+-	.word_size = 1,
++	.word_size = sizeof(u8),
+ 	.reg_read = rockchip_otp_read,
+ };
+ 
+@@ -277,6 +283,7 @@ static const struct rockchip_data px30_d
+ static const struct rockchip_data rk3576_data = {
+ 	.size = 0x100,
+ 	.read_offset = 0x700,
++	.word_size = sizeof(u32),
+ 	.clks = px30_otp_clocks,
+ 	.num_clks = ARRAY_SIZE(px30_otp_clocks),
+ 	.reg_read = rk3588_otp_read,
+@@ -289,6 +296,7 @@ static const char * const rk3588_otp_clo
+ static const struct rockchip_data rk3588_data = {
+ 	.size = 0x400,
+ 	.read_offset = 0xc00,
++	.word_size = sizeof(u32),
+ 	.clks = rk3588_otp_clocks,
+ 	.num_clks = ARRAY_SIZE(rk3588_otp_clocks),
+ 	.reg_read = rk3588_otp_read,
