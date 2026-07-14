@@ -1,0 +1,106 @@
+From 9e89f02da718bc912f7f253b58804d4a52efed30 Mon Sep 17 00:00:00 2001
+From: Sebastian Reichel <sebastian.reichel@collabora.com>
+Date: Wed, 11 Dec 2024 17:58:50 +0100
+Subject: [PATCH] clk: rockchip: support clocks registered late
+
+When some clocks are registered late and some clocks are registered
+early we need to make sure the late registered clocks report probe defer
+until the final registration has happened.
+
+But we do not want to keep reporting probe defer after the late
+registration has happened. Also not all Rockchip SoCs have late
+registered clocks and may not need to report probe defer at all.
+
+This restructures code a bit, so that there is a new function
+rockchip_clk_init_early(), which should be used for initializing the CRU
+structure on SoCs making use of late initialization in addition to the
+early init. These platforms should call rockchip_clk_finalize()
+once all clocks have been registered.
+
+Signed-off-by: Sebastian Reichel <sebastian.reichel@collabora.com>
+[added EXPORT_SYMBOL_GPL(rockchip_clk_finalize) to match the early function]
+Link: https://lore.kernel.org/r/20241211165957.94922-2-sebastian.reichel@collabora.com
+Signed-off-by: Heiko Stuebner <heiko@sntech.de>
+---
+ drivers/clk/rockchip/clk.c | 36 ++++++++++++++++++++++++++++++++----
+ drivers/clk/rockchip/clk.h |  3 +++
+ 2 files changed, 35 insertions(+), 4 deletions(-)
+
+--- a/drivers/clk/rockchip/clk.c
++++ b/drivers/clk/rockchip/clk.c
+@@ -359,14 +359,17 @@ static struct clk *rockchip_clk_register
+ 	return hw->clk;
+ }
+ 
+-struct rockchip_clk_provider *rockchip_clk_init(struct device_node *np,
+-						void __iomem *base,
+-						unsigned long nr_clks)
++static struct rockchip_clk_provider *rockchip_clk_init_base(
++		struct device_node *np, void __iomem *base,
++		unsigned long nr_clks, bool has_late_clocks)
+ {
+ 	struct rockchip_clk_provider *ctx;
+ 	struct clk **clk_table;
++	struct clk *default_clk_val;
+ 	int i;
+ 
++	default_clk_val = ERR_PTR(has_late_clocks ? -EPROBE_DEFER : -ENOENT);
++
+ 	ctx = kzalloc(sizeof(struct rockchip_clk_provider), GFP_KERNEL);
+ 	if (!ctx)
+ 		return ERR_PTR(-ENOMEM);
+@@ -376,7 +379,7 @@ struct rockchip_clk_provider *rockchip_c
+ 		goto err_free;
+ 
+ 	for (i = 0; i < nr_clks; ++i)
+-		clk_table[i] = ERR_PTR(-ENOENT);
++		clk_table[i] = default_clk_val;
+ 
+ 	ctx->reg_base = base;
+ 	ctx->clk_data.clks = clk_table;
+@@ -393,8 +396,33 @@ err_free:
+ 	kfree(ctx);
+ 	return ERR_PTR(-ENOMEM);
+ }
++
++struct rockchip_clk_provider *rockchip_clk_init(struct device_node *np,
++						void __iomem *base,
++						unsigned long nr_clks)
++{
++	return rockchip_clk_init_base(np, base, nr_clks, false);
++}
+ EXPORT_SYMBOL_GPL(rockchip_clk_init);
+ 
++struct rockchip_clk_provider *rockchip_clk_init_early(struct device_node *np,
++						      void __iomem *base,
++						      unsigned long nr_clks)
++{
++	return rockchip_clk_init_base(np, base, nr_clks, true);
++}
++EXPORT_SYMBOL_GPL(rockchip_clk_init_early);
++
++void rockchip_clk_finalize(struct rockchip_clk_provider *ctx)
++{
++	int i;
++
++	for (i = 0; i < ctx->clk_data.clk_num; ++i)
++		if (ctx->clk_data.clks[i] == ERR_PTR(-EPROBE_DEFER))
++			ctx->clk_data.clks[i] = ERR_PTR(-ENOENT);
++}
++EXPORT_SYMBOL_GPL(rockchip_clk_finalize);
++
+ void rockchip_clk_of_add_provider(struct device_node *np,
+ 				  struct rockchip_clk_provider *ctx)
+ {
+--- a/drivers/clk/rockchip/clk.h
++++ b/drivers/clk/rockchip/clk.h
+@@ -1024,6 +1024,9 @@ struct rockchip_clk_branch {
+ 
+ struct rockchip_clk_provider *rockchip_clk_init(struct device_node *np,
+ 			void __iomem *base, unsigned long nr_clks);
++struct rockchip_clk_provider *rockchip_clk_init_early(struct device_node *np,
++			void __iomem *base, unsigned long nr_clks);
++void rockchip_clk_finalize(struct rockchip_clk_provider *ctx);
+ void rockchip_clk_of_add_provider(struct device_node *np,
+ 				struct rockchip_clk_provider *ctx);
+ unsigned long rockchip_clk_find_max_clk_id(struct rockchip_clk_branch *list,
