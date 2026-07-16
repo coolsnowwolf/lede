@@ -844,11 +844,7 @@ MODULE_DEVICE_TABLE(of, rk3328dmc_devfreq_of_match);
 
 static struct platform_driver rk3328_dmcfreq_driver = {
 	.probe	= rk3328_dmcfreq_probe,
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 10, 0)
 	.remove = rk3328_dmcfreq_remove,
-#else
-	.remove_new = rk3328_dmcfreq_remove,
-#endif
 	.driver = {
 		.name	= "rk3328-dmc-freq",
 		.pm	= &rk3328_dmcfreq_pm,
