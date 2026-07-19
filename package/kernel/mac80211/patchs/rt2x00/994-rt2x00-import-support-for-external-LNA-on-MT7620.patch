@@ -1,0 +1,121 @@
+From 0fce1109f894ec7fcd72cb098843a1eff786716a Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 16 Sep 2022 20:49:42 +0100
+Subject: [PATCH 16/16] rt2x00: import support for external LNA on MT7620
+To: linux-wireless@vger.kernel.org,
+    Stanislaw Gruszka <stf_xl@wp.pl>,
+    Helmut Schaa <helmut.schaa@googlemail.com>
+Cc: Kalle Valo <kvalo@kernel.org>,
+    David S. Miller <davem@davemloft.net>,
+    Eric Dumazet <edumazet@google.com>,
+    Jakub Kicinski <kuba@kernel.org>,
+    Paolo Abeni <pabeni@redhat.com>,
+    Johannes Berg <johannes.berg@intel.com>
+
+In order to carry out calibration on boards with ePA or eLNA the PA pin
+needs to be switch to GPIO mode on MT7620. Implement that by selecting
+pinctrl state "pa_gpio" which should be defined for MT7620 boards with
+eLNA or ePA beside the "default" state.
+
+Reported-by: Serge Vasilugin <vasilugin@yandex.ru>
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ .../net/wireless/ralink/rt2x00/rt2800lib.c    | 58 +++++++++++++++++++
+ drivers/net/wireless/ralink/rt2x00/rt2x00.h   |  5 ++
+ .../net/wireless/ralink/rt2x00/rt2x00soc.c    | 15 +++++
+ 3 files changed, 78 insertions(+)
+
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800lib.c
+@@ -305,6 +305,24 @@ static void rt2800_rf_write(struct rt2x0
+ 	mutex_unlock(&rt2x00dev->csr_mutex);
+ }
+ 
++void rt6352_enable_pa_pin(struct rt2x00_dev *rt2x00dev, int enable)
++{
++	if (!rt2x00dev->pinctrl)
++		return;
++
++	if (enable) {
++		if (!rt2x00dev->pins_default)
++			return;
++
++		pinctrl_select_state(rt2x00dev->pinctrl, rt2x00dev->pins_default);
++	} else {
++		if (!rt2x00dev->pins_pa_gpio)
++			return;
++
++		pinctrl_select_state(rt2x00dev->pinctrl, rt2x00dev->pins_pa_gpio);
++	}
++}
++
+ static const unsigned int rt2800_eeprom_map[EEPROM_WORD_COUNT] = {
+ 	[EEPROM_CHIP_ID]		= 0x0000,
+ 	[EEPROM_VERSION]		= 0x0001,
+@@ -10407,8 +10425,10 @@ static void rt2800_calibration_rt6352(st
+ 	u32 reg;
+ 
+ 	if (rt2x00_has_cap_external_pa(rt2x00dev) ||
+-	    rt2x00_has_cap_external_lna_bg(rt2x00dev))
++	    rt2x00_has_cap_external_lna_bg(rt2x00dev)) {
++		rt6352_enable_pa_pin(rt2x00dev, 0);
+ 		rt2800_restore_rf_bbp_rt6352(rt2x00dev);
++	}
+ 
+ 	rt2800_r_calibration(rt2x00dev);
+ 	rt2800_rf_self_txdc_cal(rt2x00dev);
+@@ -10426,6 +10446,8 @@ static void rt2800_calibration_rt6352(st
+ 	    !rt2x00_has_cap_external_lna_bg(rt2x00dev))
+ 		return;
+ 
++	rt6352_enable_pa_pin(rt2x00dev, 1);
++
+ 	if (rt2x00_has_cap_external_pa(rt2x00dev)) {
+ 		reg = rt2800_register_read(rt2x00dev, RF_CONTROL3);
+ 		reg |= 0x00000101;
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00.h
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00.h
+@@ -28,6 +28,7 @@
+ #include <linux/average.h>
+ #include <linux/usb.h>
+ #include <linux/clk.h>
++#include <linux/pinctrl/consumer.h>
+ #include <linux/rt2x00_platform.h>
+ 
+ #include <net/mac80211.h>
+@@ -1027,6 +1028,11 @@ struct rt2x00_dev {
+ 
+ 	/* Clock for System On Chip devices. */
+ 	struct clk *clk;
++
++	/* pinctrl and states for System On Chip devices with PA/LNA. */
++	struct pinctrl *pinctrl;
++	struct pinctrl_state *pins_default;
++	struct pinctrl_state *pins_pa_gpio;
+ };
+ 
+ struct rt2x00_bar_list_entry {
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00soc.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00soc.c
+@@ -97,6 +97,21 @@ int rt2x00soc_probe(struct platform_devi
+ 	if (retval)
+ 		goto exit_free_reg;
+ 
++	rt2x00dev->pinctrl = devm_pinctrl_get(&pdev->dev);
++	if (IS_ERR(rt2x00dev->pinctrl)) {
++		rt2x00dev->pinctrl = NULL;
++		rt2x00dev->pins_default = NULL;
++		rt2x00dev->pins_pa_gpio = NULL;
++	} else {
++		rt2x00dev->pins_default = pinctrl_lookup_state(rt2x00dev->pinctrl, "default");
++		if (IS_ERR(rt2x00dev->pins_default))
++			rt2x00dev->pins_default = NULL;
++
++		rt2x00dev->pins_pa_gpio = pinctrl_lookup_state(rt2x00dev->pinctrl, "pa_gpio");
++		if (IS_ERR(rt2x00dev->pins_pa_gpio))
++			rt2x00dev->pins_pa_gpio = NULL;
++	}
++
+ 	return 0;
+ 
+ exit_free_reg:

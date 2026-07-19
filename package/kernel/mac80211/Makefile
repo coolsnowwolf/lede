@@ -15,13 +15,13 @@ PKG_VERSION:=6.18.39
 PKG_HASH:=8951c1e270d7c311432377bd50951cd1d5dee2b5fedf33d30db41aa8e428aeb0
 PKG_SOURCE_URL:=https://github.com/openwrt/backports/releases/download/backports-v$(PKG_VERSION)
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.zst
-PATCH_DIR:=./patches-6.18
+PATCH_DIR:=./patches
 else
 PKG_VERSION:=6.6.15
 PKG_HASH:=3bbc461121134fda9089c084a5eed577d05e7837a157edf9a3797937172a3ece
 PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
-PATCH_DIR:=./patches
+PATCH_DIR:=./patchs
 endif
 
 PKG_RELEASE:=3
@@ -50,7 +50,6 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_IWLWIFI_DEBUG \
 	CONFIG_PACKAGE_IWLWIFI_DEBUGFS \
 	CONFIG_PACKAGE_RTLWIFI_DEBUG \
-	CONFIG_WIFI_SCRIPTS_UCODE \
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -114,7 +113,7 @@ PKG_CONFIG_DEPENDS += \
 define KernelPackage/cfg80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=cfg80211 - wireless configuration API
-  DEPENDS+= +iw +!WIFI_SCRIPTS_UCODE:iwinfo +wifi-scripts +wireless-regdb +USE_RFKILL:kmod-rfkill
+  DEPENDS+= +iw +iwinfo +wireless-regdb +USE_RFKILL:kmod-rfkill
   ABI_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
   FILES:= \
 	$(PKG_BUILD_DIR)/compat/compat.ko \
@@ -397,9 +396,9 @@ define Build/Patch
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
 ifdef CONFIG_ATH11K_NSS_SUPPORT
-	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/subsys,nss/subsys/)
-	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/ath10k,nss/ath10k/)
-	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/ath11k,nss/ath11k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/subsys,nss/subsys/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/ath10k,nss/ath10k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/ath11k,nss/ath11k/)
 endif
 	$(if $(QUILT),touch $(PKG_BUILD_DIR)/.quilt_used)
 endef
@@ -419,9 +418,9 @@ define Quilt/Refresh/Package
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
 ifdef CONFIG_ATH11K_NSS_SUPPORT
-	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/subsys,nss/subsys/)
-	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/ath10k,nss/ath10k/)
-	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/ath11k,nss/ath11k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/subsys,nss/subsys/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/ath10k,nss/ath10k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/nss/ath11k,nss/ath11k/)
 endif
 endef
 
@@ -444,6 +443,14 @@ define Build/InstallDev
 	rm -f $(1)/usr/include/mac80211-backport/linux/module.h
 endef
 
+
+define KernelPackage/cfg80211/install
+	$(INSTALL_DIR) $(1)/lib/wifi $(1)/lib/netifd/wireless
+	$(INSTALL_DATA) ./files/lib/wifi/mac80211.sh $(1)/lib/wifi
+	$(INSTALL_BIN) ./files/lib/netifd/wireless/mac80211.sh $(1)/lib/netifd/wireless
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/ieee80211
+	$(INSTALL_DATA) ./files/mac80211.hotplug $(1)/etc/hotplug.d/ieee80211/10-wifi-detect
+endef
 
 $(eval $(foreach drv,$(PKG_DRIVERS),$(call KernelPackage,$(drv))))
 $(eval $(call KernelPackage,cfg80211))

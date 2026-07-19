@@ -23,7 +23,7 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
 
 --- a/drivers/net/wireless/ath/ath11k/reg.c
 +++ b/drivers/net/wireless/ath/ath11k/reg.c
-@@ -362,129 +362,6 @@ static u32 ath11k_map_fw_phy_flags(u32 p
+@@ -353,134 +353,6 @@ static u32 ath11k_map_fw_phy_flags(u32 p
  	return flags;
  }
  
@@ -89,6 +89,11 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
 -	/* Use the flags of both the rules */
 -	new_rule->flags = rule1->flags | rule2->flags;
 -
+-	if ((rule1->flags & NL80211_RRF_PSD) && (rule2->flags & NL80211_RRF_PSD))
+-		new_rule->psd = min_t(s8, rule1->psd, rule2->psd);
+-	else
+-		new_rule->flags &= ~NL80211_RRF_PSD;
+-
 -	/* To be safe, lts use the max cac timeout of both rules */
 -	new_rule->dfs_cac_ms = max_t(u32, rule1->dfs_cac_ms,
 -				     rule2->dfs_cac_ms);
@@ -153,20 +158,22 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
  static const char *
  ath11k_reg_get_regdom_str(enum nl80211_dfs_regions dfs_region)
  {
-@@ -619,9 +496,9 @@ ath11k_reg_update_weather_radar_band(str
+@@ -631,11 +503,11 @@ ath11k_reg_ap_pwr_convert(enum ieee80211
  
  struct ieee80211_regdomain *
  ath11k_reg_build_regd(struct ath11k_base *ab,
--		      struct cur_regulatory_info *reg_info, bool intersect)
-+		      struct cur_regulatory_info *reg_info)
+-		      struct cur_regulatory_info *reg_info, bool intersect,
++		      struct cur_regulatory_info *reg_info,
+ 		      enum wmi_vdev_type vdev_type,
+ 		      enum ieee80211_ap_reg_power power_type)
  {
 -	struct ieee80211_regdomain *tmp_regd, *default_regd, *new_regd = NULL;
 +	struct ieee80211_regdomain *new_regd = NULL;
- 	struct cur_reg_rule *reg_rule;
+ 	struct cur_reg_rule *reg_rule, *reg_rule_6ghz;
  	u8 i = 0, j = 0, k = 0;
  	u8 num_rules;
-@@ -638,26 +515,26 @@ ath11k_reg_build_regd(struct ath11k_base
- 		num_rules += reg_info->num_6ghz_rules_ap[WMI_REG_INDOOR_AP];
+@@ -678,26 +550,26 @@ ath11k_reg_build_regd(struct ath11k_base
+ 	}
  
  	if (!num_rules)
 -		goto ret;
@@ -199,7 +206,7 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
  		   reg_info->dfs_region, num_rules);
  	/* Update reg_rules[] below. Firmware is expected to
  	 * send these rules in order(2 GHz rules first and then 5 GHz)
-@@ -697,7 +574,7 @@ ath11k_reg_build_regd(struct ath11k_base
+@@ -736,7 +608,7 @@ ath11k_reg_build_regd(struct ath11k_base
  		flags |= ath11k_map_fw_reg_flags(reg_rule->flags);
  		flags |= ath11k_map_fw_phy_flags(reg_info->phybitmap);
  
@@ -208,7 +215,7 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
  				       reg_rule->start_freq,
  				       reg_rule->end_freq, max_bw,
  				       reg_rule->ant_gain, reg_rule->reg_power,
-@@ -712,7 +589,7 @@ ath11k_reg_build_regd(struct ath11k_base
+@@ -751,7 +623,7 @@ ath11k_reg_build_regd(struct ath11k_base
  		    reg_info->dfs_region == ATH11K_DFS_REG_ETSI &&
  		    (reg_rule->end_freq > ETSI_WEATHER_RADAR_BAND_LOW &&
  		    reg_rule->start_freq < ETSI_WEATHER_RADAR_BAND_HIGH)){
@@ -217,7 +224,7 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
  							     reg_rule, &i,
  							     flags, max_bw);
  			continue;
-@@ -723,37 +600,20 @@ ath11k_reg_build_regd(struct ath11k_base
+@@ -762,37 +634,20 @@ ath11k_reg_build_regd(struct ath11k_base
  				   "\t%d. (%d - %d @ %d) (%d, %d) (%d ms) (FLAGS %d) (%d, %d)\n",
  				   i + 1, reg_rule->start_freq, reg_rule->end_freq,
  				   max_bw, reg_rule->ant_gain, reg_rule->reg_power,
@@ -236,7 +243,8 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
  	}
  
 -	tmp_regd->n_reg_rules = i;
--
++	new_regd->n_reg_rules = i;
+ 
 -	if (intersect) {
 -		default_regd = ab->default_regd[reg_info->phy_id];
 -
@@ -252,27 +260,13 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
 -	} else {
 -		new_regd = tmp_regd;
 -	}
-+	new_regd->n_reg_rules = i;
- 
+-
 -ret:
  	return new_regd;
  }
  
---- a/drivers/net/wireless/ath/ath11k/reg.h
-+++ b/drivers/net/wireless/ath/ath11k/reg.h
-@@ -33,7 +33,7 @@ void ath11k_reg_free(struct ath11k_base
- void ath11k_regd_update_work(struct work_struct *work);
- struct ieee80211_regdomain *
- ath11k_reg_build_regd(struct ath11k_base *ab,
--		      struct cur_regulatory_info *reg_info, bool intersect);
-+		      struct cur_regulatory_info *reg_info);
- int ath11k_regd_update(struct ath11k *ar);
- int ath11k_reg_update_chan_list(struct ath11k *ar, bool wait);
- #endif
---- a/drivers/net/wireless/ath/ath11k/wmi.c
-+++ b/drivers/net/wireless/ath/ath11k/wmi.c
-@@ -7060,24 +7060,12 @@ static void ath11k_wmi_htc_tx_complete(s
- 		wake_up(&wmi->tx_ce_desc_wq);
+@@ -844,17 +699,6 @@ void ath11k_regd_update_chan_list_work(s
+ 	}
  }
  
 -static bool ath11k_reg_is_world_alpha(char *alpha)
@@ -286,19 +280,20 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
 -	return false;
 -}
 -
- static int ath11k_reg_chan_list_event(struct ath11k_base *ab,
- 				      struct sk_buff *skb,
- 				      enum wmi_reg_chan_list_cmd_type id)
+ static enum wmi_vdev_type ath11k_reg_get_ar_vdev_type(struct ath11k *ar)
  {
- 	struct cur_regulatory_info *reg_info = NULL;
- 	struct ieee80211_regdomain *regd = NULL;
+ 	struct ath11k_vif *arvif;
+@@ -877,7 +721,6 @@ int ath11k_reg_handle_chan_list(struct a
+ 				enum ieee80211_ap_reg_power power_type)
+ {
+ 	struct ieee80211_regdomain *regd;
 -	bool intersect = false;
- 	int ret = 0, pdev_idx, i, j;
+ 	int pdev_idx;
  	struct ath11k *ar;
- 
-@@ -7141,17 +7129,7 @@ static int ath11k_reg_chan_list_event(st
- 		    (char *)reg_info->alpha2, 2))
- 		goto mem_free;
+ 	enum wmi_vdev_type vdev_type;
+@@ -932,24 +775,14 @@ int ath11k_reg_handle_chan_list(struct a
+ 		return 0;
+ 	}
  
 -	/* Intersect new rules with default regd if a new country setting was
 -	 * requested, i.e a default regd was already set during initialization
@@ -310,8 +305,28 @@ Signed-off-by: Aditya Kumar Singh <quic_adisi@quicinc.com>
 -	    !ath11k_reg_is_world_alpha((char *)reg_info->alpha2))
 -		intersect = true;
 -
--	regd = ath11k_reg_build_regd(ab, reg_info, intersect);
-+	regd = ath11k_reg_build_regd(ab, reg_info);
+ 	ar = ab->pdevs[pdev_idx].ar;
+ 	vdev_type = ath11k_reg_get_ar_vdev_type(ar);
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_WMI,
+-		   "wmi handle chan list power type %d vdev type %d intersect %d\n",
+-		   power_type, vdev_type, intersect);
++		   "wmi handle chan list power type %d vdev type %d\n",
++		   power_type, vdev_type);
+ 
+-	regd = ath11k_reg_build_regd(ab, reg_info, intersect, vdev_type, power_type);
++	regd = ath11k_reg_build_regd(ab, reg_info, vdev_type, power_type);
  	if (!regd) {
  		ath11k_warn(ab, "failed to build regd from reg_info\n");
  		goto fallback;
+--- a/drivers/net/wireless/ath/ath11k/reg.h
++++ b/drivers/net/wireless/ath/ath11k/reg.h
+@@ -36,7 +36,7 @@ void ath11k_regd_update_work(struct work
+ void ath11k_regd_update_chan_list_work(struct work_struct *work);
+ struct ieee80211_regdomain *
+ ath11k_reg_build_regd(struct ath11k_base *ab,
+-		      struct cur_regulatory_info *reg_info, bool intersect,
++		      struct cur_regulatory_info *reg_info,
+ 		      enum wmi_vdev_type vdev_type,
+ 		      enum ieee80211_ap_reg_power power_type);
+ int ath11k_regd_update(struct ath11k *ar);

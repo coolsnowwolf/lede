@@ -14,14 +14,14 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  drivers/net/wireless/ralink/rt2x00/rt2x00.h   |  1 +
  .../net/wireless/ralink/rt2x00/rt2x00dev.c    |  9 +++
  .../net/wireless/ralink/rt2x00/rt2x00eeprom.c | 75 +++++++++++++++++++
- .../net/wireless/ralink/rt2x00/rt2x00soc.c    |  1 +
- .../net/wireless/ralink/rt2x00/rt2x00soc.h    |  9 +++
+ .../net/wireless/ralink/rt2x00/rt2800soc.c    |  1 +
+ .../net/wireless/ralink/rt2x00/rt2800soc.h    |  9 +++
  8 files changed, 102 insertions(+), 14 deletions(-)
  create mode 100644 drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
 
 --- a/local-symbols
 +++ b/local-symbols
-@@ -352,6 +352,7 @@ RT2X00_LIB_FIRMWARE=
+@@ -337,6 +337,7 @@ RT2X00_LIB_FIRMWARE=
  RT2X00_LIB_CRYPTO=
  RT2X00_LIB_LEDS=
  RT2X00_LIB_DEBUGFS=
@@ -37,9 +37,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	select RT2X00_LIB_FIRMWARE
 +	select RT2X00_LIB_EEPROM
  	select RT2X00_LIB_CRYPTO
- 	depends on CRC_CCITT
  	depends on EEPROM_93CX6
-@@ -216,6 +217,7 @@ config RT2800SOC
+ 	help
+@@ -213,6 +214,7 @@ config RT2800SOC
  	select RT2X00_LIB_MMIO
  	select RT2X00_LIB_CRYPTO
  	select RT2X00_LIB_FIRMWARE
@@ -47,7 +47,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	select RT2800_LIB
  	select RT2800_LIB_MMIO
  	help
-@@ -266,6 +268,9 @@ config RT2X00_LIB_FIRMWARE
+@@ -259,6 +261,9 @@ config RT2X00_LIB_FIRMWARE
  config RT2X00_LIB_CRYPTO
  	bool
  
@@ -89,7 +89,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  /* Firmware functions */
  static char *rt2800soc_get_firmware_name(struct rt2x00_dev *rt2x00dev)
  {
-@@ -168,7 +155,7 @@ static const struct rt2800_ops rt2800soc
+@@ -190,7 +177,7 @@ static const struct rt2800_ops rt2800soc
  	.register_multiread	= rt2x00mmio_register_multiread,
  	.register_multiwrite	= rt2x00mmio_register_multiwrite,
  	.regbusy_read		= rt2x00mmio_regbusy_read,
@@ -98,9 +98,17 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  	.hwcrypt_disabled	= rt2800soc_hwcrypt_disabled,
  	.drv_write_firmware	= rt2800soc_write_firmware,
  	.drv_init_registers	= rt2800mmio_init_registers,
+@@ -304,6 +291,7 @@ static int rt2x00soc_probe(struct platfo
+ 	rt2x00dev->name = pdev->dev.driver->name;
+ 	rt2x00dev->csr.base = mem;
+ 
++	set_bit(REQUIRE_EEPROM_FILE, &rt2x00dev->cap_flags);
+ 	rt2x00_set_chip_intf(rt2x00dev, RT2X00_CHIP_INTF_SOC);
+ 
+ 	retval = rt2x00lib_probe_dev(rt2x00dev);
 --- a/drivers/net/wireless/ralink/rt2x00/rt2x00.h
 +++ b/drivers/net/wireless/ralink/rt2x00/rt2x00.h
-@@ -703,6 +703,7 @@ enum rt2x00_capability_flags {
+@@ -692,6 +692,7 @@ enum rt2x00_capability_flags {
  	REQUIRE_HT_TX_DESC,
  	REQUIRE_PS_AUTOWAKE,
  	REQUIRE_DELAYED_RFKILL,
@@ -108,9 +116,23 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  
  	/*
  	 * Capabilities
+@@ -1506,4 +1507,13 @@ void rt2x00lib_remove_dev(struct rt2x00_
+ int rt2x00lib_suspend(struct rt2x00_dev *rt2x00dev);
+ int rt2x00lib_resume(struct rt2x00_dev *rt2x00dev);
+ 
++/*
++ * EEPROM file handlers.
++ */
++#ifdef CPTCFG_RT2X00_LIB_EEPROM
++int rt2x00lib_read_eeprom(struct rt2x00_dev *rt2x00dev);
++#else
++#define rt2x00lib_read_eeprom	NULL
++#endif /* CPTCFG_RT2X00_LIB_EEPROM */
++ 
+ #endif /* RT2X00_H */
 --- /dev/null
 +++ b/drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,78 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 + *	Copyright (C) 2004 - 2009 Gertjan van Wingerde <gwingerde@gmail.com>
@@ -123,17 +145,18 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +#include <linux/kernel.h>
 +#include <linux/module.h>
++#include <linux/of.h>
 +
 +#include "rt2x00.h"
-+#include "rt2x00soc.h"
 +
 +static const char *
 +rt2x00lib_get_eeprom_file_name(struct rt2x00_dev *rt2x00dev)
 +{
-+	struct rt2x00_platform_data *pdata = rt2x00dev->dev->platform_data;
++	struct device_node *np = rt2x00dev->dev->of_node;
++	const char *eep;
 +
-+	if (pdata && pdata->eeprom_file_name)
-+		return pdata->eeprom_file_name;
++	if (np && !of_property_read_string(np, "ralink,eeprom", &eep))
++		return eep;
 +
 +	return NULL;
 +}
@@ -151,7 +174,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	}
 +
 +	if (!ee_name)
-+		return 0;
++		return -ENOENT;
 +
 +	rt2x00_info(rt2x00dev, "Loading EEPROM data from '%s'.\n", ee_name);
 +
@@ -188,29 +211,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	return rt2x00lib_read_eeprom_file(rt2x00dev);
 +}
 +EXPORT_SYMBOL_GPL(rt2x00lib_read_eeprom);
---- a/drivers/net/wireless/ralink/rt2x00/rt2x00soc.c
-+++ b/drivers/net/wireless/ralink/rt2x00/rt2x00soc.c
-@@ -86,6 +86,7 @@ int rt2x00soc_probe(struct platform_devi
- 	if (IS_ERR(rt2x00dev->clk))
- 		rt2x00dev->clk = NULL;
+--- a/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2800pci.c
+@@ -278,6 +278,9 @@ static int rt2800pci_read_eeprom(struct
+ {
+ 	int retval;
  
-+	set_bit(REQUIRE_EEPROM_FILE, &rt2x00dev->cap_flags);
- 	rt2x00_set_chip_intf(rt2x00dev, RT2X00_CHIP_INTF_SOC);
- 
- 	retval = rt2x00soc_alloc_reg(rt2x00dev);
---- a/drivers/net/wireless/ralink/rt2x00/rt2x00soc.h
-+++ b/drivers/net/wireless/ralink/rt2x00/rt2x00soc.h
-@@ -26,4 +26,13 @@ int rt2x00soc_resume(struct platform_dev
- #define rt2x00soc_resume	NULL
- #endif /* CONFIG_PM */
- 
-+/*
-+ * EEPROM file handlers.
-+ */
-+#ifdef CPTCFG_RT2X00_LIB_EEPROM
-+int rt2x00lib_read_eeprom(struct rt2x00_dev *rt2x00dev);
-+#else
-+#define rt2x00lib_read_eeprom	NULL
-+#endif /* CPTCFG_RT2X00_LIB_EEPROM */
++	if (!rt2x00lib_read_eeprom(rt2x00dev))
++		return 0;
 +
- #endif /* RT2X00SOC_H */
+ 	if (rt2800pci_efuse_detect(rt2x00dev))
+ 		retval = rt2800pci_read_eeprom_efuse(rt2x00dev);
+ 	else

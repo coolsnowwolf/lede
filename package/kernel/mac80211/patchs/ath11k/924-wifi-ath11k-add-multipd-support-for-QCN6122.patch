@@ -1,0 +1,110 @@
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Wed, 27 Oct 2024 16:34:11 +0400
+Subject: [PATCH] wifi: ath11k: add multipd support for QCN6122
+
+IPQ5018/QCN6122 platforms use multi PD (protection domains) to avoid having 
+one instance of the running Q6 firmware crashing resulting in crashing the 
+others. See below patch for more info:
+https://lore.kernel.org/all/20231110091939.3025413-1-quic_mmanikan@quicinc.com/
+
+The IPQ5018 platform can have multiple (2) QCN6122 wifi cards. To differentiate
+the two, the PD instance number (1 or 2) is added to the QMI service instance
+ID, which the QCN6122 firmware also expects. IPQ5018 is always the first PD, so
+the QCN6122 cards should be the second or third.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+--- a/drivers/net/wireless/ath/ath11k/ahb.c
++++ b/drivers/net/wireless/ath/ath11k/ahb.c
+@@ -434,6 +434,7 @@ static void ath11k_ahb_init_qmi_ce_confi
+ 	cfg->svc_to_ce_map_len = ab->hw_params.svc_to_ce_map_len;
+ 	cfg->svc_to_ce_map = ab->hw_params.svc_to_ce_map;
+ 	ab->qmi.service_ins_id = ab->hw_params.qmi_service_ins_id;
++	ab->qmi.service_ins_id += ab->userpd_id;
+ }
+ 
+ static void ath11k_ahb_free_ext_irq(struct ath11k_base *ab)
+@@ -1082,6 +1083,27 @@ err_unregister:
+ 	return ret;
+ }
+ 
++static int ath11k_get_userpd_id(struct device *dev)
++{
++	int ret;
++	int userpd_id = 0;
++	const char *subsys_name;
++
++	ret = of_property_read_string(dev->of_node,
++				      "qcom,userpd-subsys-name",
++				      &subsys_name);
++	if (ret) 
++		return 0;
++
++	if (strcmp(subsys_name, "q6v5_wcss_userpd2") == 0)
++		userpd_id = ATH11K_QCN6122_USERPD_2;
++	else if (strcmp(subsys_name, "q6v5_wcss_userpd3") == 0)
++		userpd_id = ATH11K_QCN6122_USERPD_3;
++	dev_info(dev, "Multipd architecture - userpd: %d\n", userpd_id + 1);
++
++	return userpd_id;
++}
++
+ static int ath11k_ahb_fw_resource_deinit(struct ath11k_base *ab)
+ {
+ 	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+@@ -1124,7 +1146,7 @@ static int ath11k_ahb_probe(struct platf
+ 	const struct ath11k_hif_ops *hif_ops;
+ 	const struct ath11k_pci_ops *pci_ops;
+ 	enum ath11k_hw_rev hw_rev;
+-	int ret;
++	int ret, userpd_id;
+ 
+ 	of_id = of_match_device(ath11k_ahb_of_match, &pdev->dev);
+ 	if (!of_id) {
+@@ -1154,6 +1176,7 @@ static int ath11k_ahb_probe(struct platf
+ 		return -EOPNOTSUPP;
+ 	}
+ 
++	userpd_id = ath11k_get_userpd_id(&pdev->dev);
+ 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+ 	if (ret) {
+ 		dev_err(&pdev->dev, "failed to set 32-bit consistent dma\n");
+@@ -1170,6 +1193,7 @@ static int ath11k_ahb_probe(struct platf
+ 	ab->hif.ops = hif_ops;
+ 	ab->pdev = pdev;
+ 	ab->hw_rev = hw_rev;
++	ab->userpd_id = userpd_id;
+ 	ab->fw_mode = ATH11K_FIRMWARE_MODE_NORMAL;
+ 	platform_set_drvdata(pdev, ab);
+ 
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -42,6 +42,9 @@
+ #define ATH11K_INVALID_HW_MAC_ID	0xFF
+ #define ATH11K_CONNECTION_LOSS_HZ	(3 * HZ)
+ 
++#define	ATH11K_QCN6122_USERPD_2		1
++#define	ATH11K_QCN6122_USERPD_3		2
++
+ /* SMBIOS type containing Board Data File Name Extension */
+ #define ATH11K_SMBIOS_BDF_EXT_TYPE 0xF8
+ 
+@@ -903,6 +906,7 @@ struct ath11k_base {
+ 	struct list_head peers;
+ 	wait_queue_head_t peer_mapping_wq;
+ 	u8 mac_addr[ETH_ALEN];
++	int userpd_id;
+ 	int irq_num[ATH11K_IRQ_NUM_MAX];
+ 	struct ath11k_ext_irq_grp ext_irq_grp[ATH11K_EXT_IRQ_GRP_NUM_MAX];
+ 	struct ath11k_targ_cap target_caps;
+--- a/drivers/net/wireless/ath/ath11k/pci.c
++++ b/drivers/net/wireless/ath/ath11k/pci.c
+@@ -388,6 +388,8 @@ static void ath11k_pci_init_qmi_ce_confi
+ 	} else
+ 		ab->qmi.service_ins_id = ab->hw_params.qmi_service_ins_id;
+ 
++	ab->qmi.service_ins_id += ab->userpd_id;
++
+ 	ath11k_ce_get_shadow_config(ab, &cfg->shadow_reg_v2,
+ 				    &cfg->shadow_reg_v2_len);
+ }

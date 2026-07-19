@@ -1,0 +1,111 @@
+From 71261ca81b491a4c3b08690347c12e96a75ad0d0 Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Sun, 17 Mar 2013 00:55:04 +0100
+Subject: [PATCH 3/5] wifi: rt2x00: Add support for loading EEPROM from MTD
+
+Add support for loading EEPROM from MTD.
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/wireless/ralink/rt2x00/Kconfig    |  1 +
+ .../net/wireless/ralink/rt2x00/rt2x00eeprom.c | 66 +++++++++++++++++++
+ 2 files changed, 67 insertions(+)
+
+--- a/drivers/net/wireless/ralink/rt2x00/Kconfig
++++ b/drivers/net/wireless/ralink/rt2x00/Kconfig
+@@ -220,6 +220,7 @@ config RT2800SOC
+ 	select RT2X00_LIB_EEPROM
+ 	select RT2800_LIB
+ 	select RT2800_LIB_MMIO
++	select MTD if SOC_RT288X || SOC_RT305X
+ 	help
+ 	  This adds support for Ralink WiSoC devices.
+ 	  Supported chips: RT2880, RT3050, RT3052, RT3350, RT3352.
+--- a/drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
++++ b/drivers/net/wireless/ralink/rt2x00/rt2x00eeprom.c
+@@ -10,11 +10,69 @@
+ 
+ #include <linux/kernel.h>
+ #include <linux/module.h>
++#if IS_ENABLED(CONFIG_MTD)
++#include <linux/mtd/mtd.h>
++#include <linux/mtd/partitions.h>
++#endif
+ #include <linux/of.h>
+ 
+ #include "rt2x00.h"
+ #include "rt2x00soc.h"
+ 
++#if IS_ENABLED(CONFIG_MTD)
++static int rt2800lib_read_eeprom_mtd(struct rt2x00_dev *rt2x00dev)
++{
++	int ret = -EINVAL;
++#ifdef CONFIG_OF
++	struct device_node *np = rt2x00dev->dev->of_node, *mtd_np = NULL;
++	int size, offset = 0;
++	struct mtd_info *mtd;
++	const char *part;
++	const __be32 *list;
++	phandle phandle;
++	size_t retlen;
++
++	list = of_get_property(np, "ralink,mtd-eeprom", &size);
++	if (!list)
++		return -ENOENT;
++
++	phandle = be32_to_cpup(list++);
++	if (phandle)
++		mtd_np = of_find_node_by_phandle(phandle);
++	if (!mtd_np) {
++		dev_err(rt2x00dev->dev, "failed to load mtd phandle\n");
++		return -EINVAL;
++	}
++
++	part = of_get_property(mtd_np, "label", NULL);
++	if (!part)
++		part = mtd_np->name;
++
++	mtd = get_mtd_device_nm(part);
++	if (IS_ERR(mtd)) {
++		dev_err(rt2x00dev->dev, "failed to get mtd device \"%s\"\n", part);
++		return PTR_ERR(mtd);
++	}
++
++	if (size > sizeof(*list))
++		offset = be32_to_cpup(list);
++
++	ret = mtd_read(mtd, offset, rt2x00dev->ops->eeprom_size,
++		       &retlen, (u_char *)rt2x00dev->eeprom);
++	put_mtd_device(mtd);
++
++	if (retlen != rt2x00dev->ops->eeprom_size || ret) {
++		dev_err(rt2x00dev->dev, "failed to load eeprom from device \"%s\"\n", part);
++		return ret;
++	}
++
++	dev_info(rt2x00dev->dev, "loaded eeprom from mtd device \"%s\"\n", part);
++#endif
++
++	return ret;
++}
++#endif
++
+ static const char *
+ rt2x00lib_get_eeprom_file_name(struct rt2x00_dev *rt2x00dev)
+ {
+@@ -83,6 +141,14 @@ err_exit:
+ 
+ int rt2x00lib_read_eeprom(struct rt2x00_dev *rt2x00dev)
+ {
++	int ret;
++
++#if IS_ENABLED(CONFIG_MTD)
++	ret = rt2800lib_read_eeprom_mtd(rt2x00dev);
++	if (!ret)
++		return 0;
++#endif
++
+ 	return rt2x00lib_read_eeprom_file(rt2x00dev);
+ }
+ EXPORT_SYMBOL_GPL(rt2x00lib_read_eeprom);
