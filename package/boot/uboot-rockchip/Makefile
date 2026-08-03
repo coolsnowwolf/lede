@@ -5,10 +5,10 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
-PKG_VERSION:=2026.01
+PKG_VERSION:=2026.07
 PKG_RELEASE:=1
 
-PKG_HASH:=b60d5865cefdbc75da8da4156c56c458e00de75a49b80c1a2e58a96e30ad0d54
+PKG_HASH:=78e8bfc382fe388f9b55aa1daf8c563522a037779b5d4c349d1415e381f1243e
 
 PKG_MAINTAINER:=Tobias Maedel <openwrt@tbspace.de>
 
@@ -217,6 +217,14 @@ define U-Boot/generic-rk3528
     widora_mangopi-m28c \
     widora_mangopi-m28k \
     widora_mangopi-m28k-pro
+endef
+
+define U-Boot/nanopi-zero2-rk3528
+  $(U-Boot/rk3528/Default)
+  NAME:=NanoPi Zero2
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r28s \
+    friendlyarm_nanopi-zero2
 endef
 
 define U-Boot/radxa-e20c-rk3528
@@ -492,6 +500,7 @@ endef
 
 UBOOT_TARGETS := \
   generic-rk3528 \
+  nanopi-zero2-rk3528 \
   radxa-e20c-rk3528 \
   nanopi-r3s-rk3566 \
   panther-x2-rk3566 \
