@@ -1,0 +1,68 @@
+From 75baf4f561029dc48a5b244320c50773356f9f3e Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 15:08:11 +0100
+Subject: [PATCH 1/9] net: ethernet: mtk_ppe_offload: use
+ rhashtable_lookup_fast in flow ops
+
+mtk_flow_offload_replace(), mtk_flow_offload_destroy() and
+mtk_flow_offload_stats() look up the flow hash table with
+rhashtable_lookup(), which is annotated __must_hold_shared(RCU)
+and, per kerneldoc, "must only be called under the RCU read lock."
+
+All three call sites run under mtk_flow_offload_mutex but without
+an explicit rcu_read_lock(), so CONFIG_PROVE_RCU trips:
+
+  suspicious rcu_dereference_check() usage!
+  include/linux/rhashtable.h:632 ...
+  Call trace:
+    mtk_flow_offload_replace+0x...
+    mtk_flow_offload_cmd+0x...
+    ...
+
+Switch to rhashtable_lookup_fast(), which takes the RCU read lock
+around the lookup internally.  The driver's mutex keeps the entry
+pointer alive past the rhashtable_lookup_fast() call -- exactly the
+"other mechanism guaranteeing that the object won't go away" that
+rhashtable_lookup_fast()'s kerneldoc requires.
+
+No functional change; just silences a lockdep false positive.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_ppe_offload.c | 11 ++++++-----
+ 1 file changed, 6 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -280,7 +280,8 @@ mtk_flow_offload_replace(struct mtk_eth
+ 	int err = 0;
+ 	int i;
+ 
+-	if (rhashtable_lookup(&eth->flow_table, &f->cookie, mtk_flow_ht_params))
++	if (rhashtable_lookup_fast(&eth->flow_table, &f->cookie,
++				   mtk_flow_ht_params))
+ 		return -EEXIST;
+ 
+ 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_META)) {
+@@ -522,8 +523,8 @@ mtk_flow_offload_destroy(struct mtk_eth
+ {
+ 	struct mtk_flow_entry *entry;
+ 
+-	entry = rhashtable_lookup(&eth->flow_table, &f->cookie,
+-				  mtk_flow_ht_params);
++	entry = rhashtable_lookup_fast(&eth->flow_table, &f->cookie,
++				       mtk_flow_ht_params);
+ 	if (!entry)
+ 		return -ENOENT;
+ 
+@@ -544,8 +545,8 @@ mtk_flow_offload_stats(struct mtk_eth *e
+ 	u64 packets, bytes;
+ 	int idle;
+ 
+-	entry = rhashtable_lookup(&eth->flow_table, &f->cookie,
+-				  mtk_flow_ht_params);
++	entry = rhashtable_lookup_fast(&eth->flow_table, &f->cookie,
++				       mtk_flow_ht_params);
+ 	if (!entry)
+ 		return -ENOENT;
+ 

@@ -1,0 +1,662 @@
+From 4635ca1f29bc5838d556b09e3c186b76a5198ddb Mon Sep 17 00:00:00 2001
+From: Manikanta Pubbisetty <mpubbise@codeaurora.org>
+Date: Fri, 18 Aug 2023 11:43:33 +0530
+Subject: [PATCH] ath11k: add rx histogram stats
+
+Adding rx rate table and byte level peer rx statistics. Also,
+adding a debugfs knob to reset rx stats specific to the peer.
+
+Signed-off-by: Manikanta Pubbisetty <mpubbise@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.h        |  19 ++-
+ drivers/net/wireless/ath/ath11k/debugfs_sta.c | 152 ++++++++++++++++--
+ drivers/net/wireless/ath/ath11k/dp_rx.c       |  95 +++++++++--
+ drivers/net/wireless/ath/ath11k/dp_rx.h       |  19 +++
+ drivers/net/wireless/ath/ath11k/hal_rx.c      |  85 +++++++---
+ drivers/net/wireless/ath/ath11k/hal_rx.h      |  21 +++
+ drivers/net/wireless/ath/ath11k/hw.c          |  18 +++
+ drivers/net/wireless/ath/ath11k/hw.h          |   1 +
+ 8 files changed, 351 insertions(+), 59 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -47,6 +47,8 @@
+ 
+ #define ATH11K_INVALID_HW_MAC_ID	0xFF
+ #define ATH11K_CONNECTION_LOSS_HZ	(3 * HZ)
++#define ATH11K_RX_RATE_TABLE_NUM 320
++#define ATH11K_RX_RATE_TABLE_11AX_NUM 576
+ 
+ #define	ATH11K_QCN6122_USERPD_2		1
+ #define	ATH11K_QCN6122_USERPD_3		2
+@@ -433,6 +435,17 @@ struct ath11k_vif_iter {
+ 	struct ath11k_vif *arvif;
+ };
+ 
++struct ath11k_rx_peer_rate_stats {
++	u64 ht_mcs_count[HAL_RX_MAX_MCS_HT + 1];
++	u64 vht_mcs_count[HAL_RX_MAX_MCS_VHT + 1];
++	u64 he_mcs_count[HAL_RX_MAX_MCS_HE + 1];
++	u64 nss_count[HAL_RX_MAX_NSS];
++	u64 bw_count[HAL_RX_BW_MAX];
++	u64 gi_count[HAL_RX_GI_MAX];
++	u64 legacy_count[HAL_RX_MAX_NUM_LEGACY_RATES];
++	u64 rx_rate[ATH11K_RX_RATE_TABLE_11AX_NUM];
++};
++
+ struct ath11k_rx_peer_stats {
+ 	u64 num_msdu;
+ 	u64 num_mpdu_fcs_ok;
+@@ -444,10 +457,6 @@ struct ath11k_rx_peer_stats {
+ 	u64 non_ampdu_msdu_count;
+ 	u64 stbc_count;
+ 	u64 beamformed_count;
+-	u64 mcs_count[HAL_RX_MAX_MCS + 1];
+-	u64 nss_count[HAL_RX_MAX_NSS];
+-	u64 bw_count[HAL_RX_BW_MAX];
+-	u64 gi_count[HAL_RX_GI_MAX];
+ 	u64 coding_count[HAL_RX_SU_MU_CODING_MAX];
+ 	u64 tid_count[IEEE80211_NUM_TIDS + 1];
+ 	u64 pream_cnt[HAL_RX_PREAMBLE_MAX];
+@@ -455,6 +464,8 @@ struct ath11k_rx_peer_stats {
+ 	u64 rx_duration;
+ 	u64 dcm_count;
+ 	u64 ru_alloc_cnt[HAL_RX_RU_ALLOC_TYPE_MAX];
++	struct ath11k_rx_peer_rate_stats pkt_stats;
++	struct ath11k_rx_peer_rate_stats byte_stats;
+ };
+ 
+ #define ATH11K_HE_MCS_NUM       12
+--- a/drivers/net/wireless/ath/ath11k/debugfs_sta.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs_sta.c
+@@ -12,6 +12,7 @@
+ #include "peer.h"
+ #include "debug.h"
+ #include "dp_tx.h"
++#include "dp_rx.h"
+ #include "debugfs_htt_stats.h"
+ 
+ void ath11k_debugfs_sta_add_tx_stats(struct ath11k_sta *arsta,
+@@ -249,8 +250,14 @@ static ssize_t ath11k_dbg_sta_dump_rx_st
+ 	struct ath11k *ar = arsta->arvif->ar;
+ 	struct ath11k_rx_peer_stats *rx_stats = arsta->rx_stats;
+ 	int len = 0, i, retval = 0;
+-	const int size = 4096;
++	const int size = 4 * 4096;
+ 	char *buf;
++	int he_rates_avail = (rx_stats->pream_cnt[HAL_RX_PREAMBLE_11AX] > 1) ? 1 : 0;
++	int rate_table_len = he_rates_avail ? ATH11K_RX_RATE_TABLE_11AX_NUM :
++					      ATH11K_RX_RATE_TABLE_NUM;
++	char *legacy_rate_str[] = {"1Mbps", "2Mbps", "5.5Mbps", "6Mbps",
++				   "9Mbps", "11Mbps", "12Mbps", "18Mbps",
++				   "24Mbps", "36 Mbps", "48Mbps", "54Mbps"};
+ 
+ 	if (!rx_stats)
+ 		return -ENOENT;
+@@ -281,14 +288,6 @@ static ssize_t ath11k_dbg_sta_dump_rx_st
+ 			 rx_stats->num_mpdu_fcs_ok);
+ 	len += scnprintf(buf + len, size - len, "Num of MPDUs with FCS error: %llu\n",
+ 			 rx_stats->num_mpdu_fcs_err);
+-	len += scnprintf(buf + len, size - len,
+-			 "GI: 0.8us %llu 0.4us %llu 1.6us %llu 3.2us %llu\n",
+-			 rx_stats->gi_count[0], rx_stats->gi_count[1],
+-			 rx_stats->gi_count[2], rx_stats->gi_count[3]);
+-	len += scnprintf(buf + len, size - len,
+-			 "BW: 20Mhz %llu 40Mhz %llu 80Mhz %llu 160Mhz %llu\n",
+-			 rx_stats->bw_count[0], rx_stats->bw_count[1],
+-			 rx_stats->bw_count[2], rx_stats->bw_count[3]);
+ 	len += scnprintf(buf + len, size - len, "BCC %llu LDPC %llu\n",
+ 			 rx_stats->coding_count[0], rx_stats->coding_count[1]);
+ 	len += scnprintf(buf + len, size - len,
+@@ -303,14 +302,96 @@ static ssize_t ath11k_dbg_sta_dump_rx_st
+ 	len += scnprintf(buf + len, size - len, "TID(0-15) Legacy TID(16):");
+ 	for (i = 0; i <= IEEE80211_NUM_TIDS; i++)
+ 		len += scnprintf(buf + len, size - len, "%llu ", rx_stats->tid_count[i]);
+-	len += scnprintf(buf + len, size - len, "\nMCS(0-11) Legacy MCS(12):");
+-	for (i = 0; i < HAL_RX_MAX_MCS + 1; i++)
+-		len += scnprintf(buf + len, size - len, "%llu ", rx_stats->mcs_count[i]);
+-	len += scnprintf(buf + len, size - len, "\nNSS(1-8):");
+-	for (i = 0; i < HAL_RX_MAX_NSS; i++)
+-		len += scnprintf(buf + len, size - len, "%llu ", rx_stats->nss_count[i]);
+-	len += scnprintf(buf + len, size - len, "\nRX Duration:%llu ",
++	len += scnprintf(buf + len, size - len, "\nRX Duration:%llu\n",
+ 			 rx_stats->rx_duration);
++
++	len += scnprintf(buf + len, size - len, "\nRX success packet stats:\n");
++	len += scnprintf(buf + len, size - len, "\nHE packet stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_HE; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->pkt_stats.he_mcs_count[i],
++				 (i + 1) % 6 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nVHT packet stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_VHT; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->pkt_stats.vht_mcs_count[i],
++				 (i + 1) % 5 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nHT packet stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_HT; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->pkt_stats.ht_mcs_count[i],
++				 (i + 1) % 8 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nLegacy rate packet stats:\n");
++	for (i = 0; i < HAL_RX_MAX_NUM_LEGACY_RATES; i++)
++		len += scnprintf(buf + len, size - len, "%s: %llu%s", legacy_rate_str[i],
++				 rx_stats->pkt_stats.legacy_count[i],
++				 (i + 1) % 4 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nNSS packet stats:\n");
++	for (i = 0; i < HAL_RX_MAX_NSS; i++)
++		len += scnprintf(buf + len, size - len, "%dx%d: %llu ", i + 1, i + 1,
++				 rx_stats->pkt_stats.nss_count[i]);
++	len += scnprintf(buf + len, size - len,
++			 "\n\nGI: 0.8us %llu 0.4us %llu 1.6us %llu 3.2us %llu\n",
++			 rx_stats->pkt_stats.gi_count[0],
++			 rx_stats->pkt_stats.gi_count[1],
++			 rx_stats->pkt_stats.gi_count[2],
++			 rx_stats->pkt_stats.gi_count[3]);
++	len += scnprintf(buf + len, size - len,
++			 "BW: 20Mhz %llu 40Mhz %llu 80Mhz %llu 160Mhz %llu\n",
++			 rx_stats->pkt_stats.bw_count[0],
++			 rx_stats->pkt_stats.bw_count[1],
++			 rx_stats->pkt_stats.bw_count[2],
++			 rx_stats->pkt_stats.bw_count[3]);
++	len += scnprintf(buf + len, size - len, "\nRate Table (packets):\n");
++	for (i = 0; i < rate_table_len; i++)
++		len += scnprintf(buf + len, size - len, "%10llu%s",
++				rx_stats->pkt_stats.rx_rate[i],
++				(i + 1) % (he_rates_avail ? 12 : 8) ? "\t" : "\n");
++
++	len += scnprintf(buf + len, size - len, "\nRX success byte stats:\n");
++	len += scnprintf(buf + len, size - len, "\nHE byte stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_HE; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->byte_stats.he_mcs_count[i],
++				 (i + 1) % 6 ? "\t" : "\n");
++
++	len += scnprintf(buf + len, size - len, "\nVHT byte stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_VHT; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->byte_stats.vht_mcs_count[i],
++				 (i + 1) % 5 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nHT byte stats:\n");
++	for (i = 0; i <= HAL_RX_MAX_MCS_HT; i++)
++		len += scnprintf(buf + len, size - len, "MCS %d: %llu%s", i,
++				 rx_stats->byte_stats.ht_mcs_count[i],
++				 (i + 1) % 8 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nLegacy rate byte stats:\n");
++	for (i = 0; i < HAL_RX_MAX_NUM_LEGACY_RATES; i++)
++		len += scnprintf(buf + len, size - len, "%s: %llu%s", legacy_rate_str[i],
++				 rx_stats->byte_stats.legacy_count[i],
++				 (i + 1) % 4 ? "\t" : "\n");
++	len += scnprintf(buf + len, size - len, "\nNSS byte stats:\n");
++	for (i = 0; i < HAL_RX_MAX_NSS; i++)
++		len += scnprintf(buf + len, size - len, "%dx%d: %llu ", i + 1, i + 1,
++				 rx_stats->byte_stats.nss_count[i]);
++	len += scnprintf(buf + len, size - len,
++			 "\n\nGI: 0.8us %llu 0.4us %llu 1.6us %llu 3.2us %llu\n",
++			 rx_stats->byte_stats.gi_count[0],
++			 rx_stats->byte_stats.gi_count[1],
++			 rx_stats->byte_stats.gi_count[2],
++			 rx_stats->byte_stats.gi_count[3]);
++	len += scnprintf(buf + len, size - len,
++			 "BW: 20Mhz %llu 40Mhz %llu 80Mhz %llu 160Mhz %llu\n",
++			 rx_stats->byte_stats.bw_count[0],
++			 rx_stats->byte_stats.bw_count[1],
++			 rx_stats->byte_stats.bw_count[2],
++			 rx_stats->byte_stats.bw_count[3]);
++	len += scnprintf(buf + len, size - len, "\nRate Table (bytes):\n");
++	for (i = 0; i < rate_table_len; i++)
++		len += scnprintf(buf + len, size - len, "%10llu%s",
++				rx_stats->byte_stats.rx_rate[i],
++				(i + 1) % (he_rates_avail ? 12 : 8) ? "\t" : "\n");
++
+ 	len += scnprintf(buf + len, size - len,
+ 			 "\nDCM: %llu\nRU: 26 %llu 52: %llu 106: %llu 242: %llu 484: %llu 996: %llu\n",
+ 			 rx_stats->dcm_count, rx_stats->ru_alloc_cnt[0],
+@@ -849,6 +930,40 @@ static const struct file_operations fops
+ 	.llseek = default_llseek,
+ };
+ 
++static ssize_t ath11k_dbg_sta_reset_rx_stats(struct file *file,
++					     const char __user *buf,
++					     size_t count, loff_t *ppos)
++{
++	struct ieee80211_sta *sta = file->private_data;
++	struct ath11k_sta *arsta = (struct ath11k_sta *)sta->drv_priv;
++	struct ath11k *ar = arsta->arvif->ar;
++	int ret, reset;
++
++	if (!arsta->rx_stats)
++		return -ENOENT;
++
++	ret = kstrtoint_from_user(buf, count, 0, &reset);
++	if (ret)
++		return ret;
++
++	if (!reset || reset > 1)
++		return -EINVAL;
++
++	spin_lock_bh(&ar->ab->base_lock);
++	memset(arsta->rx_stats, 0, sizeof(*arsta->rx_stats));
++	spin_unlock_bh(&ar->ab->base_lock);
++
++	ret = count;
++	return ret;
++}
++
++static const struct file_operations fops_reset_rx_stats = {
++	.write = ath11k_dbg_sta_reset_rx_stats,
++	.open = simple_open,
++	.owner = THIS_MODULE,
++	.llseek = default_llseek,
++};
++
+ void ath11k_debugfs_sta_op_add(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			       struct ieee80211_sta *sta, struct dentry *dir)
+ {
+@@ -857,9 +972,12 @@ void ath11k_debugfs_sta_op_add(struct ie
+ 	if (ath11k_debugfs_is_extd_tx_stats_enabled(ar))
+ 		debugfs_create_file("tx_stats", 0400, dir, sta,
+ 				    &fops_tx_stats);
+-	if (ath11k_debugfs_is_extd_rx_stats_enabled(ar))
++	if (ath11k_debugfs_is_extd_rx_stats_enabled(ar)) {
+ 		debugfs_create_file("rx_stats", 0400, dir, sta,
+ 				    &fops_rx_stats);
++		debugfs_create_file("reset_rx_stats", 0600, dir, sta,
++				    &fops_reset_rx_stats);
++	}
+ 
+ 	debugfs_create_file("htt_peer_stats", 0400, dir, sta,
+ 			    &fops_htt_peer_stats);
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -2752,10 +2752,43 @@ exit:
+ 	return total_msdu_reaped;
+ }
+ 
++static void
++ath11k_dp_rx_update_peer_rate_table_stats(struct ath11k_rx_peer_stats *rx_stats,
++					  struct hal_rx_mon_ppdu_info *ppdu_info,
++					  u32 num_msdu)
++{
++	u32 rate_idx = 0;
++	u32 mcs_idx = ppdu_info->mcs;
++	u32 nss_idx = ppdu_info->nss - 1;
++	u32 bw_idx = ppdu_info->bw;
++	u32 gi_idx = ppdu_info->gi;
++
++	if ((mcs_idx > HAL_RX_MAX_MCS_HE) || (nss_idx >= HAL_RX_MAX_NSS) ||
++	    (bw_idx >= HAL_RX_BW_MAX) || (gi_idx >= HAL_RX_GI_MAX)) {
++		return;
++	}
++
++	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11N ||
++	    ppdu_info->preamble_type == HAL_RX_PREAMBLE_11AC) {
++		rate_idx = mcs_idx * 8 + 8 * 10 * nss_idx;
++		rate_idx += bw_idx * 2 + gi_idx;
++	} else if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11AX) {
++		gi_idx = ath11k_he_gi_to_nl80211_he_gi(ppdu_info->gi);
++		rate_idx = mcs_idx * 12 + 12 * 12 * nss_idx;
++		rate_idx += bw_idx * 3 + gi_idx;
++	}  else {
++		return;
++	}
++
++	rx_stats->pkt_stats.rx_rate[rate_idx] += num_msdu;
++	rx_stats->byte_stats.rx_rate[rate_idx] += ppdu_info->mpdu_len;
++}
++
+ static void ath11k_dp_rx_update_peer_stats(struct ath11k_sta *arsta,
+ 					   struct hal_rx_mon_ppdu_info *ppdu_info)
+ {
+ 	struct ath11k_rx_peer_stats *rx_stats = arsta->rx_stats;
++	struct ath11k *ar = arsta->arvif->ar;
+ 	u32 num_msdu;
+ 	int i;
+ 
+@@ -2765,6 +2798,8 @@ static void ath11k_dp_rx_update_peer_sta
+ 	arsta->rssi_comb = ppdu_info->rssi_comb;
+ 	ewma_avg_rssi_add(&arsta->avg_rssi, ppdu_info->rssi_comb);
+ 
++	if (!ath11k_debugfs_is_extd_rx_stats_enabled(ar))
++		return;
+ 	num_msdu = ppdu_info->tcp_msdu_count + ppdu_info->tcp_ack_msdu_count +
+ 		   ppdu_info->udp_msdu_count + ppdu_info->other_msdu_count;
+ 
+@@ -2781,18 +2816,6 @@ static void ath11k_dp_rx_update_peer_sta
+ 		ppdu_info->tid = IEEE80211_NUM_TIDS;
+ 	}
+ 
+-	if (ppdu_info->nss > 0 && ppdu_info->nss <= HAL_RX_MAX_NSS)
+-		rx_stats->nss_count[ppdu_info->nss - 1] += num_msdu;
+-
+-	if (ppdu_info->mcs <= HAL_RX_MAX_MCS)
+-		rx_stats->mcs_count[ppdu_info->mcs] += num_msdu;
+-
+-	if (ppdu_info->gi < HAL_RX_GI_MAX)
+-		rx_stats->gi_count[ppdu_info->gi] += num_msdu;
+-
+-	if (ppdu_info->bw < HAL_RX_BW_MAX)
+-		rx_stats->bw_count[ppdu_info->bw] += num_msdu;
+-
+ 	if (ppdu_info->ldpc < HAL_RX_SU_MU_CODING_MAX)
+ 		rx_stats->coding_count[ppdu_info->ldpc] += num_msdu;
+ 
+@@ -2829,6 +2852,52 @@ static void ath11k_dp_rx_update_peer_sta
+ 
+ 	rx_stats->rx_duration += ppdu_info->rx_duration;
+ 	arsta->rx_duration = rx_stats->rx_duration;
++
++	if (ppdu_info->nss > 0 && ppdu_info->nss <= HAL_RX_MAX_NSS) {
++		rx_stats->pkt_stats.nss_count[ppdu_info->nss - 1] += num_msdu;
++		rx_stats->byte_stats.nss_count[ppdu_info->nss - 1] += ppdu_info->mpdu_len;
++	}
++
++	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11N &&
++	    ppdu_info->mcs <= HAL_RX_MAX_MCS_HT) {
++			rx_stats->pkt_stats.ht_mcs_count[ppdu_info->mcs] += num_msdu;
++			rx_stats->byte_stats.ht_mcs_count[ppdu_info->mcs] += ppdu_info->mpdu_len;
++			/* To fit into rate table for HT packets */
++			ppdu_info->mcs = ppdu_info->mcs % 8;
++	}
++
++	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11AC &&
++	    ppdu_info->mcs <= HAL_RX_MAX_MCS_VHT) {
++		rx_stats->pkt_stats.vht_mcs_count[ppdu_info->mcs] += num_msdu;
++		rx_stats->byte_stats.vht_mcs_count[ppdu_info->mcs] += ppdu_info->mpdu_len;
++	}
++
++	if (ppdu_info->preamble_type == HAL_RX_PREAMBLE_11AX &&
++	    ppdu_info->mcs <= HAL_RX_MAX_MCS_HE) {
++		rx_stats->pkt_stats.he_mcs_count[ppdu_info->mcs] += num_msdu;
++		rx_stats->byte_stats.he_mcs_count[ppdu_info->mcs] += ppdu_info->mpdu_len;
++	}
++
++
++	if ((ppdu_info->preamble_type == HAL_RX_PREAMBLE_11A ||
++	     ppdu_info->preamble_type == HAL_RX_PREAMBLE_11B) &&
++	     ppdu_info->rate < HAL_RX_LEGACY_RATE_INVALID) {
++		rx_stats->pkt_stats.legacy_count[ppdu_info->rate] += num_msdu;
++		rx_stats->byte_stats.legacy_count[ppdu_info->rate] += ppdu_info->mpdu_len;
++	}
++
++	if (ppdu_info->gi < HAL_RX_GI_MAX) {
++		rx_stats->pkt_stats.gi_count[ppdu_info->gi] += num_msdu;
++		rx_stats->byte_stats.gi_count[ppdu_info->gi] += ppdu_info->mpdu_len;
++	}
++
++	if (ppdu_info->bw < HAL_RX_BW_MAX) {
++		rx_stats->pkt_stats.bw_count[ppdu_info->bw] += num_msdu;
++		rx_stats->byte_stats.bw_count[ppdu_info->bw] += ppdu_info->mpdu_len;
++	}
++
++	ath11k_dp_rx_update_peer_rate_table_stats(rx_stats, ppdu_info, num_msdu);
++
+ }
+ 
+ static struct sk_buff *ath11k_dp_rx_alloc_mon_status_buf(struct ath11k_base *ab,
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.h
+@@ -42,6 +42,25 @@ struct ath11k_dp_rfc1042_hdr {
+ 	__be16 snap_type;
+ } __packed;
+ 
++static inline u32 ath11k_he_gi_to_nl80211_he_gi(u8 sgi)
++{
++	u32 ret = 0;
++
++	switch (sgi) {
++	case RX_MSDU_START_SGI_0_8_US:
++		ret = NL80211_RATE_INFO_HE_GI_0_8;
++		break;
++	case RX_MSDU_START_SGI_1_6_US:
++		ret = NL80211_RATE_INFO_HE_GI_1_6;
++		break;
++	case RX_MSDU_START_SGI_3_2_US:
++		ret = NL80211_RATE_INFO_HE_GI_3_2;
++		break;
++	}
++
++	return ret;
++}
++
+ int ath11k_dp_rx_ampdu_start(struct ath11k *ar,
+ 			     struct ieee80211_ampdu_params *params);
+ int ath11k_dp_rx_ampdu_stop(struct ath11k *ar,
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.c
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.c
+@@ -977,44 +977,78 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 		ppdu_info->is_stbc = FIELD_GET(HAL_RX_HT_SIG_INFO_INFO1_STBC,
+ 					       info1);
+ 		ppdu_info->ldpc = FIELD_GET(HAL_RX_HT_SIG_INFO_INFO1_FEC_CODING, info1);
+-		ppdu_info->gi = info1 & HAL_RX_HT_SIG_INFO_INFO1_GI;
+-
+-		switch (ppdu_info->mcs) {
+-		case 0 ... 7:
+-			ppdu_info->nss = 1;
+-			break;
+-		case 8 ... 15:
+-			ppdu_info->nss = 2;
+-			break;
+-		case 16 ... 23:
+-			ppdu_info->nss = 3;
+-			break;
+-		case 24 ... 31:
+-			ppdu_info->nss = 4;
+-			break;
+-		}
+-
+-		if (ppdu_info->nss > 1)
+-			ppdu_info->mcs = ppdu_info->mcs % 8;
+-
++		ppdu_info->gi = FIELD_GET(HAL_RX_HT_SIG_INFO_INFO1_GI, info1);
++		ppdu_info->nss = (ppdu_info->mcs >> 3) + 1;
+ 		ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_SU;
+ 		break;
+ 	}
+ 	case HAL_PHYRX_L_SIG_B: {
+ 		struct hal_rx_lsig_b_info *lsigb =
+ 			(struct hal_rx_lsig_b_info *)tlv_data;
++		u8 rate;
++
++		rate = FIELD_GET(HAL_RX_LSIG_B_INFO_INFO0_RATE,
++				 __le32_to_cpu(lsigb->info0));
+ 
+-		ppdu_info->rate = FIELD_GET(HAL_RX_LSIG_B_INFO_INFO0_RATE,
+-					    __le32_to_cpu(lsigb->info0));
++		switch (rate) {
++		case 1:
++			rate = HAL_RX_LEGACY_RATE_1_MBPS;
++			break;
++		case 2:
++		case 5:
++			rate = HAL_RX_LEGACY_RATE_2_MBPS;
++			break;
++		case 3:
++		case 6:
++			rate = HAL_RX_LEGACY_RATE_5_5_MBPS;
++			break;
++		case 4:
++		case 7:
++			rate = HAL_RX_LEGACY_RATE_11_MBPS;
++			break;
++		default:
++			rate = HAL_RX_LEGACY_RATE_INVALID;
++		}
++		ppdu_info->rate = rate;
+ 		ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_SU;
+ 		break;
+ 	}
+ 	case HAL_PHYRX_L_SIG_A: {
+ 		struct hal_rx_lsig_a_info *lsiga =
+ 			(struct hal_rx_lsig_a_info *)tlv_data;
++		u8 rate;
+ 
+-		ppdu_info->rate = FIELD_GET(HAL_RX_LSIG_A_INFO_INFO0_RATE,
+-					    __le32_to_cpu(lsiga->info0));
++		rate = FIELD_GET(HAL_RX_LSIG_A_INFO_INFO0_RATE,
++				 __le32_to_cpu(lsiga->info0));
++		switch (rate) {
++		case 8:
++			rate = HAL_RX_LEGACY_RATE_48_MBPS;
++			break;
++		case 9:
++			rate = HAL_RX_LEGACY_RATE_24_MBPS;
++			break;
++		case 10:
++			rate = HAL_RX_LEGACY_RATE_12_MBPS;
++			break;
++		case 11:
++			rate = HAL_RX_LEGACY_RATE_6_MBPS;
++			break;
++		case 12:
++			rate = HAL_RX_LEGACY_RATE_54_MBPS;
++			break;
++		case 13:
++			rate = HAL_RX_LEGACY_RATE_36_MBPS;
++			break;
++		case 14:
++			rate = HAL_RX_LEGACY_RATE_18_MBPS;
++			break;
++		case 15:
++			rate = HAL_RX_LEGACY_RATE_9_MBPS;
++			break;
++		default:
++			rate = HAL_RX_LEGACY_RATE_INVALID;
++		}
++		ppdu_info->rate = rate;
+ 		ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_SU;
+ 		break;
+ 	}
+@@ -1472,6 +1506,9 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 		peer_id = ath11k_hal_rx_mpduinfo_get_peerid(ab, mpdu_info);
+ 		if (peer_id)
+ 			ppdu_info->peer_id = peer_id;
++
++		ppdu_info->mpdu_len += ab->hw_params.hw_ops->rx_desc_get_hal_mpdu_len(mpdu_info);
++
+ 		break;
+ 	}
+ 	case HAL_RXPCU_PPDU_END_INFO: {
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.h
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.h
+@@ -20,7 +20,11 @@ struct hal_rx_wbm_rel_info {
+ #define VHT_SIG_SU_NSS_MASK 0x7
+ 
+ #define HAL_RX_MAX_MCS 12
++#define HAL_RX_MAX_MCS_HT 31
++#define HAL_RX_MAX_MCS_VHT 9
++#define HAL_RX_MAX_MCS_HE 11
+ #define HAL_RX_MAX_NSS 8
++#define HAL_RX_MAX_NUM_LEGACY_RATES 12
+ 
+ struct hal_rx_mon_status_tlv_hdr {
+ 	u32 hdr;
+@@ -104,6 +108,22 @@ struct hal_rx_user_status {
+ 	u32 mpdu_err_byte_count;
+ };
+ 
++enum hal_rx_legacy_rate {
++	HAL_RX_LEGACY_RATE_1_MBPS,
++	HAL_RX_LEGACY_RATE_2_MBPS,
++	HAL_RX_LEGACY_RATE_5_5_MBPS,
++	HAL_RX_LEGACY_RATE_6_MBPS,
++	HAL_RX_LEGACY_RATE_9_MBPS,
++	HAL_RX_LEGACY_RATE_11_MBPS,
++	HAL_RX_LEGACY_RATE_12_MBPS,
++	HAL_RX_LEGACY_RATE_18_MBPS,
++	HAL_RX_LEGACY_RATE_24_MBPS,
++	HAL_RX_LEGACY_RATE_36_MBPS,
++	HAL_RX_LEGACY_RATE_48_MBPS,
++	HAL_RX_LEGACY_RATE_54_MBPS,
++	HAL_RX_LEGACY_RATE_INVALID,
++};
++
+ #define HAL_TLV_STATUS_PPDU_NOT_DONE    HAL_RX_MON_STATUS_PPDU_NOT_DONE
+ #define HAL_TLV_STATUS_PPDU_DONE        HAL_RX_MON_STATUS_PPDU_DONE
+ #define HAL_TLV_STATUS_BUF_DONE         HAL_RX_MON_STATUS_BUF_DONE
+@@ -128,6 +148,7 @@ struct hal_rx_mon_ppdu_info {
+ 	u32 num_mpdu_fcs_ok;
+ 	u32 num_mpdu_fcs_err;
+ 	u32 preamble_type;
++	u32 mpdu_len;
+ 	u16 chan_num;
+ 	u16 tcp_msdu_count;
+ 	u16 tcp_ack_msdu_count;
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -900,6 +900,17 @@ static u32 ath11k_hw_wcn6750_get_tcl_rin
+ 	return skb_get_hash(skb);
+ }
+ 
++static u32 ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len(struct hal_rx_mpdu_info *mpdu_info)
++{
++	return FIELD_GET(HAL_RX_MPDU_INFO_INFO1_MPDU_LEN,
++			 __le32_to_cpu(mpdu_info->u.ipq8074.info1));
++}
++
++static u32 ath11k_hw_qcn9074_rx_desc_get_hal_mpdu_len(struct hal_rx_mpdu_info *mpdu_info)
++{
++	return FIELD_GET(HAL_RX_MPDU_INFO_INFO1_MPDU_LEN,
++			 __le32_to_cpu(mpdu_info->u.qcn9074.info1));
++}
+ const struct ath11k_hw_ops ipq8074_ops = {
+ 	.get_hw_mac_from_pdev_id = ath11k_hw_ipq8074_mac_from_pdev_id,
+ 	.wmi_init_config = ath11k_init_wmi_config_ipq8074,
+@@ -938,6 +949,7 @@ const struct ath11k_hw_ops ipq8074_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq8074_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ const struct ath11k_hw_ops ipq6018_ops = {
+@@ -978,6 +990,7 @@ const struct ath11k_hw_ops ipq6018_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq8074_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ const struct ath11k_hw_ops qca6390_ops = {
+@@ -1018,6 +1031,7 @@ const struct ath11k_hw_ops qca6390_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq8074_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq8074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ const struct ath11k_hw_ops qcn9074_ops = {
+@@ -1058,6 +1072,7 @@ const struct ath11k_hw_ops qcn9074_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq9074_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq9074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_qcn9074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ const struct ath11k_hw_ops wcn6855_ops = {
+@@ -1098,6 +1113,7 @@ const struct ath11k_hw_ops wcn6855_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_wcn6855_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_wcn6855_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_ipq8074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ const struct ath11k_hw_ops wcn6750_ops = {
+@@ -1179,6 +1195,7 @@ const struct ath11k_hw_ops ipq5018_ops =
+ 	.rx_desc_mac_addr2_valid = ath11k_hw_ipq9074_rx_desc_mac_addr2_valid,
+ 	.rx_desc_mpdu_start_addr2 = ath11k_hw_ipq9074_rx_desc_mpdu_start_addr2,
+ 	.get_ring_selector = ath11k_hw_ipq8074_get_tcl_ring_selector,
++	.rx_desc_get_hal_mpdu_len = ath11k_hw_qcn9074_rx_desc_get_hal_mpdu_len,
+ };
+ 
+ #define ATH11K_TX_RING_MASK_0 BIT(0)
+--- a/drivers/net/wireless/ath/ath11k/hw.h
++++ b/drivers/net/wireless/ath/ath11k/hw.h
+@@ -276,6 +276,7 @@ struct ath11k_hw_ops {
+ 	bool (*rx_desc_mac_addr2_valid)(struct hal_rx_desc *desc);
+ 	u8* (*rx_desc_mpdu_start_addr2)(struct hal_rx_desc *desc);
+ 	u32 (*get_ring_selector)(struct sk_buff *skb);
++	u32 (*rx_desc_get_hal_mpdu_len)(struct hal_rx_mpdu_info *mpdu_info);
+ };
+ 
+ extern const struct ath11k_hw_ops ipq8074_ops;

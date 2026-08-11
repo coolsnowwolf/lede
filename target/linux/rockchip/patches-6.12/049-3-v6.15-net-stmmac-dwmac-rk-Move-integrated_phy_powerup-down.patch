@@ -1,0 +1,126 @@
+From 0bed91f2b183bc38c216299ce035b44210148785 Mon Sep 17 00:00:00 2001
+From: Jonas Karlman <jonas@kwiboo.se>
+Date: Wed, 19 Mar 2025 21:44:07 +0000
+Subject: [PATCH] net: stmmac: dwmac-rk: Move integrated_phy_powerup/down
+ functions
+
+Rockchip RK3528 (and RV1106) has a different integrated PHY compared to
+the integrated PHY on RK3228/RK3328. Current powerup/down operation is
+not compatible with the integrated PHY found in these SoCs.
+
+Move the rk_gmac_integrated_phy_powerup/down functions to top of the
+file to prepare for them to be called directly by a GMAC variant
+specific powerup/down operation.
+
+Signed-off-by: Jonas Karlman <jonas@kwiboo.se>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20250319214415.3086027-4-jonas@kwiboo.se
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ .../net/ethernet/stmicro/stmmac/dwmac-rk.c    | 88 +++++++++----------
+ 1 file changed, 44 insertions(+), 44 deletions(-)
+
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-rk.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-rk.c
+@@ -92,6 +92,50 @@ struct rk_priv_data {
+ 	(((tx) ? soc##_GMAC_TXCLK_DLY_ENABLE : soc##_GMAC_TXCLK_DLY_DISABLE) | \
+ 	 ((rx) ? soc##_GMAC_RXCLK_DLY_ENABLE : soc##_GMAC_RXCLK_DLY_DISABLE))
+ 
++#define RK_GRF_MACPHY_CON0		0xb00
++#define RK_GRF_MACPHY_CON1		0xb04
++#define RK_GRF_MACPHY_CON2		0xb08
++#define RK_GRF_MACPHY_CON3		0xb0c
++
++#define RK_MACPHY_ENABLE		GRF_BIT(0)
++#define RK_MACPHY_DISABLE		GRF_CLR_BIT(0)
++#define RK_MACPHY_CFG_CLK_50M		GRF_BIT(14)
++#define RK_GMAC2PHY_RMII_MODE		(GRF_BIT(6) | GRF_CLR_BIT(7))
++#define RK_GRF_CON2_MACPHY_ID		HIWORD_UPDATE(0x1234, 0xffff, 0)
++#define RK_GRF_CON3_MACPHY_ID		HIWORD_UPDATE(0x35, 0x3f, 0)
++
++static void rk_gmac_integrated_phy_powerup(struct rk_priv_data *priv)
++{
++	if (priv->ops->integrated_phy_powerup)
++		priv->ops->integrated_phy_powerup(priv);
++
++	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_CFG_CLK_50M);
++	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_GMAC2PHY_RMII_MODE);
++
++	regmap_write(priv->grf, RK_GRF_MACPHY_CON2, RK_GRF_CON2_MACPHY_ID);
++	regmap_write(priv->grf, RK_GRF_MACPHY_CON3, RK_GRF_CON3_MACPHY_ID);
++
++	if (priv->phy_reset) {
++		/* PHY needs to be disabled before trying to reset it */
++		regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_DISABLE);
++		if (priv->phy_reset)
++			reset_control_assert(priv->phy_reset);
++		usleep_range(10, 20);
++		if (priv->phy_reset)
++			reset_control_deassert(priv->phy_reset);
++		usleep_range(10, 20);
++		regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_ENABLE);
++		msleep(30);
++	}
++}
++
++static void rk_gmac_integrated_phy_powerdown(struct rk_priv_data *priv)
++{
++	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_DISABLE);
++	if (priv->phy_reset)
++		reset_control_assert(priv->phy_reset);
++}
++
+ #define PX30_GRF_GMAC_CON1		0x0904
+ 
+ /* PX30_GRF_GMAC_CON1 */
+@@ -1481,50 +1525,6 @@ static const struct rk_gmac_ops rv1126_o
+ 	.set_rmii_speed = rv1126_set_rmii_speed,
+ };
+ 
+-#define RK_GRF_MACPHY_CON0		0xb00
+-#define RK_GRF_MACPHY_CON1		0xb04
+-#define RK_GRF_MACPHY_CON2		0xb08
+-#define RK_GRF_MACPHY_CON3		0xb0c
+-
+-#define RK_MACPHY_ENABLE		GRF_BIT(0)
+-#define RK_MACPHY_DISABLE		GRF_CLR_BIT(0)
+-#define RK_MACPHY_CFG_CLK_50M		GRF_BIT(14)
+-#define RK_GMAC2PHY_RMII_MODE		(GRF_BIT(6) | GRF_CLR_BIT(7))
+-#define RK_GRF_CON2_MACPHY_ID		HIWORD_UPDATE(0x1234, 0xffff, 0)
+-#define RK_GRF_CON3_MACPHY_ID		HIWORD_UPDATE(0x35, 0x3f, 0)
+-
+-static void rk_gmac_integrated_phy_powerup(struct rk_priv_data *priv)
+-{
+-	if (priv->ops->integrated_phy_powerup)
+-		priv->ops->integrated_phy_powerup(priv);
+-
+-	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_CFG_CLK_50M);
+-	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_GMAC2PHY_RMII_MODE);
+-
+-	regmap_write(priv->grf, RK_GRF_MACPHY_CON2, RK_GRF_CON2_MACPHY_ID);
+-	regmap_write(priv->grf, RK_GRF_MACPHY_CON3, RK_GRF_CON3_MACPHY_ID);
+-
+-	if (priv->phy_reset) {
+-		/* PHY needs to be disabled before trying to reset it */
+-		regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_DISABLE);
+-		if (priv->phy_reset)
+-			reset_control_assert(priv->phy_reset);
+-		usleep_range(10, 20);
+-		if (priv->phy_reset)
+-			reset_control_deassert(priv->phy_reset);
+-		usleep_range(10, 20);
+-		regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_ENABLE);
+-		msleep(30);
+-	}
+-}
+-
+-static void rk_gmac_integrated_phy_powerdown(struct rk_priv_data *priv)
+-{
+-	regmap_write(priv->grf, RK_GRF_MACPHY_CON0, RK_MACPHY_DISABLE);
+-	if (priv->phy_reset)
+-		reset_control_assert(priv->phy_reset);
+-}
+-
+ static int rk_gmac_clk_init(struct plat_stmmacenet_data *plat)
+ {
+ 	struct rk_priv_data *bsp_priv = plat->bsp_priv;

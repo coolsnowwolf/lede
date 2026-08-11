@@ -1,0 +1,53 @@
+From 479096a023928cc75aa38953b7170a8984acd0da Mon Sep 17 00:00:00 2001
+From: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+Date: Tue, 11 Jan 2022 14:04:09 +0530
+Subject: [PATCH] mac80211: Fix kernel panic due to unsafe sta usage
+
+Observing below crash in dynamic vlan scneario when
+abruptly killing hostapd while ping or any traffic to stations
+are going on.
+
+[  753.307213] Unable to handle kernel NULL pointer dereference at virtual address 0000058c
+[  753.309137] pgd = 7514769a
+[  753.317392] [0000058c] *pgd=00000000
+[  753.319892] Internal error: Oops: 5 [#1] PREEMPT SMP ARM
+[  753.604280] PC is at __ieee80211_subif_start_xmit+0xc58/0xe48 [mac80211]
+[  753.608954] LR is at __ieee80211_subif_start_xmit+0xc3c/0xe48 [mac80211]
+[  753.615729] pc : [<a18b0718>]    lr : [<a18b06fc>]    psr: 40000013
+[  753.622411] sp : 843b5940  ip : 98e7d348  fp : 99463e42
+[  753.628398] r10: 98e7d318  r9 : 92d0e000  r8 : 00000000
+[  753.633606] r7 : 963c8d20  r6 : 92d0e580  r5 : 00000000  r4 : 98e7d300
+[  753.638819] r3 : 00000163  r2 : fffffff0  r1 : 00000000  r0 : 98e7d318
+[  753.645416] Flags: nZcv  IRQs on  FIQs on  Mode SVC_32  ISA ARM  Segment user
+[  753.651928] Control: 10c0383d  Table: 5db8806a  DAC: 00000055
+[  753.659135] Process ping (pid: 4436, stack limit = 0xf466aee4)
+
+Its due to accessing the sta pointer
+unconditionally. Fix that by checking sta pointer is
+available or not before using.
+
+Signed-off-by: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+---
+ net/mac80211/tx.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -4746,7 +4746,7 @@ static void ieee80211_8023_xmit(struct i
+ 
+ 	ieee80211_aggr_check(sdata, sta, skb);
+ 
+-	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD)) {
++	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD) && sta) {
+ 		tid = skb->priority & IEEE80211_QOS_CTL_TAG1D_MASK;
+ 		tid_tx = rcu_dereference(sta->ampdu_mlme.tid_tx[tid]);
+ 		if (tid_tx) {
+@@ -4799,7 +4799,7 @@ static void ieee80211_8023_xmit(struct i
+ 	}
+ 
+ 	dev_sw_netstats_tx_add(dev, skbs, len);
+-	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD)) {
++	if (!ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD) && sta) {
+ 		sta->deflink.tx_stats.packets[queue] += skbs;
+ 		sta->deflink.tx_stats.bytes[queue] += len;
+ 	}

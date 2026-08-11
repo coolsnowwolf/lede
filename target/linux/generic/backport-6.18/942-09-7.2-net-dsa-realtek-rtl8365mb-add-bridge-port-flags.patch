@@ -1,0 +1,279 @@
+From 660a9e399ab02c0cb86d277ed6b0c9d10c350fdd Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Sat, 6 Jun 2026 05:29:33 -0300
+Subject: net: dsa: realtek: rtl8365mb: add bridge port flags
+
+Implement support for bridge port flags to control learning and flooding
+behavior. This patch maps hardware functionalities to the following
+bridge flags:
+
+- BR_LEARNING
+- BR_FLOOD
+- BR_MCAST_FLOOD
+- BR_BCAST_FLOOD
+
+By default, all flooding types are enabled during port setup to ensure
+standard bridge behavior.
+
+Reviewed-by: Linus Walleij <linusw@kernel.org>
+Reviewed-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Link: https://patch.msgid.link/20260606-realtek_forward-v13-9-b9e409687cbe@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/realtek/realtek.h        |   6 ++
+ drivers/net/dsa/realtek/rtl8365mb_main.c |  68 +++++++++++++++++++++
+ drivers/net/dsa/realtek/rtl83xx.c        | 101 +++++++++++++++++++++++++++++++
+ drivers/net/dsa/realtek/rtl83xx.h        |   4 ++
+ 4 files changed, 179 insertions(+)
+
+--- a/drivers/net/dsa/realtek/realtek.h
++++ b/drivers/net/dsa/realtek/realtek.h
+@@ -134,6 +134,12 @@ struct realtek_ops {
+ 	int	(*port_set_efid)(struct realtek_priv *priv, int port, u32 efid);
+ 	int	(*port_set_learning)(struct realtek_priv *priv, int port,
+ 				     bool enable);
++	int	(*port_set_ucast_flood)(struct realtek_priv *priv, int port,
++					bool enable);
++	int	(*port_set_mcast_flood)(struct realtek_priv *priv, int port,
++					bool enable);
++	int	(*port_set_bcast_flood)(struct realtek_priv *priv, int port,
++					bool enable);
+ 	int	(*l2_add_uc)(struct realtek_priv *priv, int port,
+ 			     const unsigned char addr[ETH_ALEN],
+ 			     u16 efid, u16 vid);
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -307,6 +307,21 @@
+ #define   RTL8365MB_MSTI_CTRL_PORT_STATE_MASK(_physport) \
+ 		(0x3 << RTL8365MB_MSTI_CTRL_PORT_STATE_OFFSET((_physport)))
+ 
++/* Unknown unicast DA flooding port mask */
++#define RTL8365MB_UNKNOWN_UNICAST_FLOODING_PMASK_REG		0x0890
++#define   RTL8365MB_UNKNOWN_UNICAST_FLOODING_PMASK_MASK		0x07FF
++
++/* Unknown multicast DA flooding port mask */
++#define RTL8365MB_UNKNOWN_MULTICAST_FLOODING_PMASK_REG		0x0891
++#define   RTL8365MB_UNKNOWN_MULTICAST_FLOODING_PMASK_MASK	0x07FF
++
++/* Broadcast flooding port mask */
++#define RTL8365MB_UNKNOWN_BROADCAST_FLOODING_PMASK_REG		0x0892
++#define   RTL8365MB_UNKNOWN_BROADCAST_FLOODING_PMASK_MASK	0x07FF
++
++#define RTL8365MB_SUPPORTED_BRIDGE_FLAGS \
++	    (BR_LEARNING | BR_FLOOD | BR_MCAST_FLOOD | BR_BCAST_FLOOD)
++
+ /* Miscellaneous port configuration register, incl. VLAN egress mode */
+ #define RTL8365MB_PORT_MISC_CFG_REG_BASE			0x000E
+ #define RTL8365MB_PORT_MISC_CFG_REG(_p) \
+@@ -1568,6 +1583,49 @@ static int rtl8365mb_port_set_learning(s
+ 			    enable ? RTL8365MB_LEARN_LIMIT_MAX : 0);
+ }
+ 
++static int rtl8365mb_port_set_ucast_flood(struct realtek_priv *priv, int port,
++					  bool enable)
++{
++	/* Frames with unknown unicast DA will be flooded to a programmable
++	 * port mask that by default includes all ports. Add or remove
++	 * the specified port from this port mask accordingly.
++	 */
++	return regmap_update_bits(priv->map,
++				  RTL8365MB_UNKNOWN_UNICAST_FLOODING_PMASK_REG,
++				  BIT(port), enable ? BIT(port) : 0);
++}
++
++static int rtl8365mb_port_set_mcast_flood(struct realtek_priv *priv, int port,
++					  bool enable)
++{
++	return regmap_update_bits(priv->map,
++			RTL8365MB_UNKNOWN_MULTICAST_FLOODING_PMASK_REG,
++			BIT(port), enable ? BIT(port) : 0);
++}
++
++static int rtl8365mb_port_set_bcast_flood(struct realtek_priv *priv, int port,
++					  bool enable)
++{
++	return regmap_update_bits(priv->map,
++			RTL8365MB_UNKNOWN_BROADCAST_FLOODING_PMASK_REG,
++			BIT(port), enable ? BIT(port) : 0);
++}
++
++static int rtl8365mb_port_pre_bridge_flags(struct dsa_switch *ds, int port,
++					   struct switchdev_brport_flags flags,
++					   struct netlink_ext_ack *extack)
++{
++	struct realtek_priv *priv = ds->priv;
++
++	dev_dbg(priv->dev, "pre_bridge_flags port:%d flags:%lx supported:%lx\n",
++		port, flags.mask, RTL8365MB_SUPPORTED_BRIDGE_FLAGS);
++
++	if (flags.mask & ~RTL8365MB_SUPPORTED_BRIDGE_FLAGS)
++		return -EINVAL;
++
++	return 0;
++}
++
+ static int rtl8365mb_port_set_efid(struct realtek_priv *priv, int port,
+ 				   u32 efid)
+ {
+@@ -2422,6 +2480,11 @@ static int rtl8365mb_setup(struct dsa_sw
+ 		if (ret)
+ 			goto out_teardown_irq;
+ 
++		/* Enable all types of flooding */
++		ret = rtl83xx_setup_port_flood_control(priv, dp->index);
++		if (ret)
++			goto out_teardown_irq;
++
+ 		/* Set up per-port private data */
+ 		p->priv = priv;
+ 		p->index = dp->index;
+@@ -2608,6 +2671,8 @@ static const struct dsa_switch_ops rtl83
+ 	.phylink_get_caps = rtl8365mb_phylink_get_caps,
+ 	.port_bridge_join = rtl83xx_port_bridge_join,
+ 	.port_bridge_leave = rtl83xx_port_bridge_leave,
++	.port_pre_bridge_flags = rtl8365mb_port_pre_bridge_flags,
++	.port_bridge_flags = rtl83xx_port_bridge_flags,
+ 	.port_stp_state_set = rtl8365mb_port_stp_state_set,
+ 	.port_fast_age = rtl83xx_port_fast_age,
+ 	.port_fdb_add = rtl83xx_port_fdb_add,
+@@ -2635,6 +2700,9 @@ static const struct realtek_ops rtl8365m
+ 	.port_remove_isolation = rtl8365mb_port_remove_isolation,
+ 	.port_set_efid = rtl8365mb_port_set_efid,
+ 	.port_set_learning = rtl8365mb_port_set_learning,
++	.port_set_ucast_flood = rtl8365mb_port_set_ucast_flood,
++	.port_set_mcast_flood = rtl8365mb_port_set_mcast_flood,
++	.port_set_bcast_flood = rtl8365mb_port_set_bcast_flood,
+ 	.l2_add_uc = rtl8365mb_l2_add_uc,
+ 	.l2_del_uc = rtl8365mb_l2_del_uc,
+ 	.l2_get_next_uc = rtl8365mb_l2_get_next_uc,
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -3,6 +3,7 @@
+ #include <linux/module.h>
+ #include <linux/regmap.h>
+ #include <linux/of_mdio.h>
++#include <linux/if_bridge.h>
+ #include <linux/etherdevice.h>
+ 
+ #include "realtek.h"
+@@ -787,6 +788,106 @@ int rtl83xx_port_mdb_del(struct dsa_swit
+ }
+ EXPORT_SYMBOL_NS_GPL(rtl83xx_port_mdb_del, "REALTEK_DSA");
+ 
++/**
++ * rtl83xx_port_bridge_flags() - set port bridge flags
++ * @ds: DSA switch instance
++ * @port: port index
++ * @flags: bridge port flags
++ * @extack: netlink extended ack for reporting errors
++ *
++ * This function handles setting bridge port flags like learning and flooding.
++ *
++ * Context: Can sleep.
++ * Return: 0 on success, negative value for failure.
++ */
++int rtl83xx_port_bridge_flags(struct dsa_switch *ds, int port,
++			      struct switchdev_brport_flags flags,
++			      struct netlink_ext_ack *extack)
++{
++	struct realtek_priv *priv = ds->priv;
++	bool enable;
++	int ret;
++
++	if (flags.mask & BR_LEARNING) {
++		if (!priv->ops->port_set_learning)
++			return -EOPNOTSUPP;
++
++		enable = !!(flags.val & BR_LEARNING);
++		ret = priv->ops->port_set_learning(priv, port, enable);
++		if (ret)
++			return ret;
++	}
++
++	if (flags.mask & BR_FLOOD) {
++		if (!priv->ops->port_set_ucast_flood)
++			return -EOPNOTSUPP;
++
++		enable = !!(flags.val & BR_FLOOD);
++		ret = priv->ops->port_set_ucast_flood(priv, port, enable);
++		if (ret)
++			return ret;
++	}
++
++	if (flags.mask & BR_MCAST_FLOOD) {
++		if (!priv->ops->port_set_mcast_flood)
++			return -EOPNOTSUPP;
++
++		enable = !!(flags.val & BR_MCAST_FLOOD);
++		ret = priv->ops->port_set_mcast_flood(priv, port, enable);
++		if (ret)
++			return ret;
++	}
++
++	if (flags.mask & BR_BCAST_FLOOD) {
++		if (!priv->ops->port_set_bcast_flood)
++			return -EOPNOTSUPP;
++
++		enable = !!(flags.val & BR_BCAST_FLOOD);
++		ret = priv->ops->port_set_bcast_flood(priv, port, enable);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_NS_GPL(rtl83xx_port_bridge_flags, "REALTEK_DSA");
++
++/**
++ * rtl83xx_setup_port_flood_control() - setup default flood control for a port
++ * @priv: realtek_priv pointer
++ * @port: port index
++ *
++ * This function enables flooding for a given port.
++ *
++ * Context: Can sleep.
++ * Return: 0 on success, negative value for failure.
++ */
++int rtl83xx_setup_port_flood_control(struct realtek_priv *priv, int port)
++{
++	int ret;
++
++	if (priv->ops->port_set_ucast_flood) {
++		ret = priv->ops->port_set_ucast_flood(priv, port, true);
++		if (ret)
++			return ret;
++	}
++
++	if (priv->ops->port_set_mcast_flood) {
++		ret = priv->ops->port_set_mcast_flood(priv, port, true);
++		if (ret)
++			return ret;
++	}
++
++	if (priv->ops->port_set_bcast_flood) {
++		ret = priv->ops->port_set_bcast_flood(priv, port, true);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++EXPORT_SYMBOL_NS_GPL(rtl83xx_setup_port_flood_control, "REALTEK_DSA");
++
+ MODULE_AUTHOR("Luiz Angelo Daros de Luca <luizluca@gmail.com>");
+ MODULE_AUTHOR("Linus Walleij <linus.walleij@linaro.org>");
+ MODULE_DESCRIPTION("Realtek DSA switches common module");
+--- a/drivers/net/dsa/realtek/rtl83xx.h
++++ b/drivers/net/dsa/realtek/rtl83xx.h
+@@ -27,6 +27,10 @@ int rtl83xx_port_bridge_join(struct dsa_
+ 			     struct netlink_ext_ack *extack);
+ void rtl83xx_port_bridge_leave(struct dsa_switch *ds, int port,
+ 			       struct dsa_bridge bridge);
++int rtl83xx_port_bridge_flags(struct dsa_switch *ds, int port,
++			      struct switchdev_brport_flags flags,
++			      struct netlink_ext_ack *extack);
++int rtl83xx_setup_port_flood_control(struct realtek_priv *priv, int port);
+ 
+ void rtl83xx_port_fast_age(struct dsa_switch *ds, int port);
+ int rtl83xx_port_fdb_add(struct dsa_switch *ds, int port,

@@ -1,0 +1,282 @@
+From 93abe1755de2727bf8fb5969bce25ae49c704484 Mon Sep 17 00:00:00 2001
+From: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+Date: Mon, 15 Nov 2021 18:15:38 +0530
+Subject: [PATCH] ath11k: Use idr_replace
+
+idr_alloc has been done multiple times upon reaping the msdu
+using idr_remove. This idr_alloc would take more cpu, to redue
+the cpu usage call idr_replace by storing used buf_ids instead
+of calling idr_alloc during replenish.
+
+Signed-off-by: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/core.h  |  6 +++
+ drivers/net/wireless/ath/ath11k/dp.c    |  2 +-
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 66 +++++++++++++++++++++++++--------
+ drivers/net/wireless/ath/ath11k/dp_rx.h |  2 +-
+ 4 files changed, 59 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -719,6 +719,11 @@ struct ath11k_per_peer_tx_stats {
+ #define ATH11K_FLUSH_TIMEOUT (5 * HZ)
+ #define ATH11K_VDEV_DELETE_TIMEOUT_HZ (5 * HZ)
+ 
++struct ath11k_rx_buf_id {
++	struct list_head list;
++	int used_buf_id;
++};
++
+ struct ath11k {
+ 	struct ath11k_base *ab;
+ 	struct ath11k_pdev *pdev;
+@@ -871,6 +876,7 @@ struct ath11k {
+ 	bool ps_state_enable;
+ 	bool ps_timekeeper_enable;
+ 	s8 max_allowed_tx_power;
++	struct ath11k_rx_buf_id rx_buf_id;
+ };
+ 
+ struct ath11k_band_cap {
+--- a/drivers/net/wireless/ath/ath11k/dp.c
++++ b/drivers/net/wireless/ath/ath11k/dp.c
+@@ -899,7 +899,7 @@ int ath11k_dp_service_srng(struct ath11k
+ 
+ 				hal_params = ab->hw_params.hal_params;
+ 				ath11k_dp_rxbufs_replenish(ab, id, rx_ring, 0,
+-							   hal_params->rx_buf_rbm);
++							   hal_params->rx_buf_rbm, NULL);
+ 			}
+ 		}
+ 	}
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -389,7 +389,8 @@ static inline u8 ath11k_dp_rx_h_msdu_sta
+ int ath11k_dp_rxbufs_replenish(struct ath11k_base *ab, int mac_id,
+ 			       struct dp_rxdma_ring *rx_ring,
+ 			       int req_entries,
+-			       enum hal_rx_buf_return_buf_manager mgr)
++			       enum hal_rx_buf_return_buf_manager mgr,
++				   u32 *buf_ids)
+ {
+ 	struct hal_srng *srng;
+ 	u32 *desc;
+@@ -397,9 +398,15 @@ int ath11k_dp_rxbufs_replenish(struct at
+ 	int num_free;
+ 	int num_remain;
+ 	int buf_id;
++	int buf_id_index;
+ 	u32 cookie;
+ 	dma_addr_t paddr;
+ 
++	if (!buf_ids)
++		buf_id_index = 0;
++	else
++		buf_id_index = min(req_entries, DP_RX_MAX_IDR_BUF);
++
+ 	req_entries = min(req_entries, rx_ring->bufs_max);
+ 
+ 	srng = &ab->hal.srng_list[rx_ring->refill_buf_ring.ring_id];
+@@ -435,8 +442,14 @@ int ath11k_dp_rxbufs_replenish(struct at
+ 			goto fail_free_skb;
+ 
+ 		spin_lock_bh(&rx_ring->idr_lock);
+-		buf_id = idr_alloc(&rx_ring->bufs_idr, skb, 1,
+-				   (rx_ring->bufs_max * 3) + 1, GFP_ATOMIC);
++		if (buf_ids && buf_id_index) {
++			buf_id_index--;
++			buf_id = buf_ids[buf_id_index];
++			idr_replace(&rx_ring->bufs_idr, skb, buf_id);
++		} else {
++			buf_id = idr_alloc(&rx_ring->bufs_idr, skb, 1,
++					(rx_ring->bufs_max * 3) + 1, GFP_ATOMIC);
++		}
+ 		spin_unlock_bh(&rx_ring->idr_lock);
+ 		if (buf_id <= 0)
+ 			goto fail_dma_unmap;
+@@ -459,6 +472,12 @@ int ath11k_dp_rxbufs_replenish(struct at
+ 
+ 	spin_unlock_bh(&srng->lock);
+ 
++	while (buf_id_index--) {
++		spin_lock_bh(&rx_ring->idr_lock);
++		idr_remove(&rx_ring->bufs_idr, buf_ids[buf_id_index]);
++		spin_unlock_bh(&rx_ring->idr_lock);
++	}
++
+ 	return req_entries - num_remain;
+ 
+ fail_idr_remove:
+@@ -533,7 +552,7 @@ static int ath11k_dp_rxdma_ring_buf_setu
+ 
+ 	rx_ring->bufs_max = num_entries;
+ 	ath11k_dp_rxbufs_replenish(ar->ab, dp->mac_id, rx_ring, num_entries,
+-				   ar->ab->hw_params.hal_params->rx_buf_rbm);
++				   ar->ab->hw_params.hal_params->rx_buf_rbm, NULL);
+ 	return 0;
+ }
+ 
+@@ -3337,11 +3356,14 @@ int ath11k_dp_process_rx(struct ath11k_b
+ 	struct ath11k *ar;
+ 	struct hal_reo_dest_ring *desc;
+ 	enum hal_reo_dest_ring_push_reason push_reason;
++	u32 *rx_buf_id[MAX_RADIOS];
+ 	u32 cookie;
+ 	int i;
+ 
+-	for (i = 0; i < MAX_RADIOS; i++)
++	for (i = 0; i < MAX_RADIOS; i++) {
+ 		__skb_queue_head_init(&msdu_list[i]);
++		rx_buf_id[i] = kzalloc(sizeof(u32) * DP_RX_MAX_IDR_BUF, GFP_ATOMIC);
++	}
+ 
+ 	srng = &ab->hal.srng_list[dp->reo_dst_ring[ring_id].ring_id];
+ 
+@@ -3364,8 +3386,15 @@ try_again:
+ 
+ 		ar = ab->pdevs[mac_id].ar;
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
++		i = num_buffs_reaped[mac_id];
++
+ 		spin_lock_bh(&rx_ring->idr_lock);
+-		msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		if (rx_buf_id[mac_id] && i < DP_RX_MAX_IDR_BUF) {
++			msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++			rx_buf_id[mac_id][i] = buf_id;
++		} else {
++			msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		}
+ 		spin_unlock_bh(&rx_ring->idr_lock);
+ 		if (unlikely(!msdu)) {
+ 			ath11k_warn(ab, "frame rx with invalid buf_id %d\n",
+@@ -3445,9 +3474,12 @@ try_again:
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
+ 
+ 		ath11k_dp_rxbufs_replenish(ab, i, rx_ring, num_buffs_reaped[i],
+-					   ab->hw_params.hal_params->rx_buf_rbm);
++					   ab->hw_params.hal_params->rx_buf_rbm, rx_buf_id[i]);
+ 	}
+ exit:
++	for (i = 0; i < MAX_RADIOS; i++)
++		kfree(rx_buf_id[i]);
++
+ 	return total_msdu_reaped;
+ }
+ 
+@@ -4811,7 +4843,7 @@ exit:
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
+ 
+ 		ath11k_dp_rxbufs_replenish(ab, i, rx_ring, n_bufs_reaped[i],
+-					   ab->hw_params.hal_params->rx_buf_rbm);
++					   ab->hw_params.hal_params->rx_buf_rbm, NULL);
+ 	}
+ 
+ 	return tot_n_bufs_reaped;
+@@ -5027,14 +5059,17 @@ int ath11k_dp_rx_process_wbm_err(struct
+ 	struct sk_buff *msdu;
+ 	struct sk_buff_head msdu_list[MAX_RADIOS];
+ 	struct ath11k_skb_rxcb *rxcb;
++	u32 *wbm_err_buf_id[MAX_RADIOS];
+ 	u32 *rx_desc;
+ 	int buf_id, mac_id;
+ 	int num_buffs_reaped[MAX_RADIOS] = {};
+ 	int total_num_buffs_reaped = 0;
+ 	int ret, i;
+ 
+-	for (i = 0; i < ab->num_radios; i++)
++	for (i = 0; i < ab->num_radios; i++) {
+ 		__skb_queue_head_init(&msdu_list[i]);
++		wbm_err_buf_id[i] = kzalloc(sizeof(u32) * DP_RX_MAX_IDR_BUF, GFP_ATOMIC);
++	}
+ 
+ 	srng = &ab->hal.srng_list[dp->rx_rel_ring.ring_id];
+ 
+@@ -5060,9 +5095,15 @@ int ath11k_dp_rx_process_wbm_err(struct
+ 
+ 		ar = ab->pdevs[mac_id].ar;
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
++		i = num_buffs_reaped[mac_id];
+ 
+ 		spin_lock_bh(&rx_ring->idr_lock);
+-		msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		if (wbm_err_buf_id[mac_id] && i < DP_RX_MAX_IDR_BUF) {
++			msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++			wbm_err_buf_id[mac_id][i] = buf_id;
++		} else {
++			msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		}
+ 		spin_unlock_bh(&rx_ring->idr_lock);
+ 		if (!msdu) {
+ 			ath11k_warn(ab, "frame rx with invalid buf_id %d pdev %d\n",
+@@ -5107,7 +5148,7 @@ int ath11k_dp_rx_process_wbm_err(struct
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
+ 
+ 		ath11k_dp_rxbufs_replenish(ab, i, rx_ring, num_buffs_reaped[i],
+-					   ab->hw_params.hal_params->rx_buf_rbm);
++					   ab->hw_params.hal_params->rx_buf_rbm, wbm_err_buf_id[i]);
+ 	}
+ 
+ 	rcu_read_lock();
+@@ -5129,6 +5170,8 @@ int ath11k_dp_rx_process_wbm_err(struct
+ 	}
+ 	rcu_read_unlock();
+ done:
++	for (i = 0; i < ab->num_radios; i++)
++		kfree(wbm_err_buf_id[i]);
+ 	return total_num_buffs_reaped;
+ }
+ 
+@@ -5214,7 +5257,7 @@ int ath11k_dp_process_rxdma_err(struct a
+ 
+ 	if (num_buf_freed)
+ 		ath11k_dp_rxbufs_replenish(ab, mac_id, rx_ring, num_buf_freed,
+-					   ab->hw_params.hal_params->rx_buf_rbm);
++					   ab->hw_params.hal_params->rx_buf_rbm, NULL);
+ 
+ 	return budget - quota;
+ }
+@@ -6185,12 +6228,12 @@ static void ath11k_dp_rx_mon_dest_proces
+ 			ath11k_dp_rxbufs_replenish(ar->ab, dp->mac_id,
+ 						   &dp->rxdma_mon_buf_ring,
+ 						   rx_bufs_used,
+-						   hal_params->rx_buf_rbm);
++						   hal_params->rx_buf_rbm, NULL);
+ 		else
+ 			ath11k_dp_rxbufs_replenish(ar->ab, dp->mac_id,
+ 						   &dp->rx_refill_buf_ring,
+ 						   rx_bufs_used,
+-						   hal_params->rx_buf_rbm);
++						   hal_params->rx_buf_rbm, NULL);
+ 	}
+ }
+ 
+@@ -6708,7 +6751,7 @@ next_entry:
+ 		ath11k_dp_rxbufs_replenish(ar->ab, dp->mac_id,
+ 					   &dp->rxdma_mon_buf_ring,
+ 					   rx_bufs_used,
+-					   HAL_RX_BUF_RBM_SW3_BM);
++					   HAL_RX_BUF_RBM_SW3_BM, NULL);
+ 	}
+ 
+ reap_status_ring:
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.h
+@@ -12,6 +12,8 @@
+ 
+ #define DP_MAX_NWIFI_HDR_LEN	36
+ 
++#define DP_RX_MAX_IDR_BUF    256
++
+ #define DP_RX_MPDU_ERR_FCS			BIT(0)
+ #define DP_RX_MPDU_ERR_DECRYPT			BIT(1)
+ #define DP_RX_MPDU_ERR_TKIP_MIC			BIT(2)
+@@ -126,7 +128,8 @@ int ath11k_dp_process_rx(struct ath11k_b
+ int ath11k_dp_rxbufs_replenish(struct ath11k_base *ab, int mac_id,
+ 			       struct dp_rxdma_ring *rx_ring,
+ 			       int req_entries,
+-			       enum hal_rx_buf_return_buf_manager mgr);
++ 			       enum hal_rx_buf_return_buf_manager mgr,
++			       u32 *buf_id);
+ int ath11k_dp_htt_tlv_iter(struct ath11k_base *ab, const void *ptr, size_t len,
+ 			   int (*iter)(struct ath11k_base *ar, u16 tag, u16 len,
+ 				       const void *ptr, void *data),

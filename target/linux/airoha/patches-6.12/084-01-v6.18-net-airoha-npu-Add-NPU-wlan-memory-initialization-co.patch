@@ -1,0 +1,179 @@
+From 564923b02c1d2fe02ee789f9849ff79979b63b9f Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Mon, 11 Aug 2025 17:31:37 +0200
+Subject: [PATCH 1/6] net: airoha: npu: Add NPU wlan memory initialization
+ commands
+
+Introduce wlan_init_reserved_memory callback used by MT76 driver during
+NPU wlan offloading setup.
+This is a preliminary patch to enable wlan flowtable offload for EN7581
+SoC with MT76 driver.
+
+Reviewed-by: Simon Horman <horms@kernel.org>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20250811-airoha-en7581-wlan-offlaod-v7-2-58823603bb4e@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_npu.c | 82 ++++++++++++++++++++++++
+ drivers/net/ethernet/airoha/airoha_npu.h | 38 +++++++++++
+ 2 files changed, 120 insertions(+)
+
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -124,6 +124,13 @@ struct ppe_mbox_data {
+ 	};
+ };
+ 
++struct wlan_mbox_data {
++	u32 ifindex:4;
++	u32 func_type:4;
++	u32 func_id;
++	DECLARE_FLEX_ARRAY(u8, d);
++};
++
+ static int airoha_npu_send_msg(struct airoha_npu *npu, int func_id,
+ 			       void *p, int size)
+ {
+@@ -390,6 +397,80 @@ out:
+ 	return err;
+ }
+ 
++static int airoha_npu_wlan_msg_send(struct airoha_npu *npu, int ifindex,
++				    enum airoha_npu_wlan_set_cmd func_id,
++				    void *data, int data_len, gfp_t gfp)
++{
++	struct wlan_mbox_data *wlan_data;
++	int err, len;
++
++	len = sizeof(*wlan_data) + data_len;
++	wlan_data = kzalloc(len, gfp);
++	if (!wlan_data)
++		return -ENOMEM;
++
++	wlan_data->ifindex = ifindex;
++	wlan_data->func_type = NPU_OP_SET;
++	wlan_data->func_id = func_id;
++	memcpy(wlan_data->d, data, data_len);
++
++	err = airoha_npu_send_msg(npu, NPU_FUNC_WIFI, wlan_data, len);
++	kfree(wlan_data);
++
++	return err;
++}
++
++static int
++airoha_npu_wlan_set_reserved_memory(struct airoha_npu *npu,
++				    int ifindex, const char *name,
++				    enum airoha_npu_wlan_set_cmd func_id)
++{
++	struct device *dev = npu->dev;
++	struct resource res;
++	int err;
++	u32 val;
++
++	err = of_reserved_mem_region_to_resource_byname(dev->of_node, name,
++							&res);
++	if (err)
++		return err;
++
++	val = res.start;
++	return airoha_npu_wlan_msg_send(npu, ifindex, func_id, &val,
++					sizeof(val), GFP_KERNEL);
++}
++
++static int airoha_npu_wlan_init_memory(struct airoha_npu *npu)
++{
++	enum airoha_npu_wlan_set_cmd cmd = WLAN_FUNC_SET_WAIT_NPU_BAND0_ONCPU;
++	u32 val = 0;
++	int err;
++
++	err = airoha_npu_wlan_msg_send(npu, 1, cmd, &val, sizeof(val),
++				       GFP_KERNEL);
++	if (err)
++		return err;
++
++	cmd = WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR;
++	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "tx-bufid", cmd);
++	if (err)
++		return err;
++
++	cmd = WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR;
++	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "pkt", cmd);
++	if (err)
++		return err;
++
++	cmd = WLAN_FUNC_SET_WAIT_TX_PKT_BUF_ADDR;
++	err = airoha_npu_wlan_set_reserved_memory(npu, 0, "tx-pkt", cmd);
++	if (err)
++		return err;
++
++	cmd = WLAN_FUNC_SET_WAIT_IS_FORCE_TO_CPU;
++	return airoha_npu_wlan_msg_send(npu, 0, cmd, &val, sizeof(val),
++					GFP_KERNEL);
++}
++
+ struct airoha_npu *airoha_npu_get(struct device *dev, dma_addr_t *stats_addr)
+ {
+ 	struct platform_device *pdev;
+@@ -493,6 +574,7 @@ static int airoha_npu_probe(struct platf
+ 	npu->ops.ppe_deinit = airoha_npu_ppe_deinit;
+ 	npu->ops.ppe_flush_sram_entries = airoha_npu_ppe_flush_sram_entries;
+ 	npu->ops.ppe_foe_commit_entry = airoha_npu_foe_commit_entry;
++	npu->ops.wlan_init_reserved_memory = airoha_npu_wlan_init_memory;
+ 
+ 	npu->regmap = devm_regmap_init_mmio(dev, base, &regmap_config);
+ 	if (IS_ERR(npu->regmap))
+--- a/drivers/net/ethernet/airoha/airoha_npu.h
++++ b/drivers/net/ethernet/airoha/airoha_npu.h
+@@ -6,6 +6,43 @@
+ 
+ #define NPU_NUM_CORES		8
+ 
++enum airoha_npu_wlan_set_cmd {
++	WLAN_FUNC_SET_WAIT_PCIE_ADDR,
++	WLAN_FUNC_SET_WAIT_DESC,
++	WLAN_FUNC_SET_WAIT_NPU_INIT_DONE,
++	WLAN_FUNC_SET_WAIT_TRAN_TO_CPU,
++	WLAN_FUNC_SET_WAIT_BA_WIN_SIZE,
++	WLAN_FUNC_SET_WAIT_DRIVER_MODEL,
++	WLAN_FUNC_SET_WAIT_DEL_STA,
++	WLAN_FUNC_SET_WAIT_DRAM_BA_NODE_ADDR,
++	WLAN_FUNC_SET_WAIT_PKT_BUF_ADDR,
++	WLAN_FUNC_SET_WAIT_IS_TEST_NOBA,
++	WLAN_FUNC_SET_WAIT_FLUSHONE_TIMEOUT,
++	WLAN_FUNC_SET_WAIT_FLUSHALL_TIMEOUT,
++	WLAN_FUNC_SET_WAIT_IS_FORCE_TO_CPU,
++	WLAN_FUNC_SET_WAIT_PCIE_STATE,
++	WLAN_FUNC_SET_WAIT_PCIE_PORT_TYPE,
++	WLAN_FUNC_SET_WAIT_ERROR_RETRY_TIMES,
++	WLAN_FUNC_SET_WAIT_BAR_INFO,
++	WLAN_FUNC_SET_WAIT_FAST_FLAG,
++	WLAN_FUNC_SET_WAIT_NPU_BAND0_ONCPU,
++	WLAN_FUNC_SET_WAIT_TX_RING_PCIE_ADDR,
++	WLAN_FUNC_SET_WAIT_TX_DESC_HW_BASE,
++	WLAN_FUNC_SET_WAIT_TX_BUF_SPACE_HW_BASE,
++	WLAN_FUNC_SET_WAIT_RX_RING_FOR_TXDONE_HW_BASE,
++	WLAN_FUNC_SET_WAIT_TX_PKT_BUF_ADDR,
++	WLAN_FUNC_SET_WAIT_INODE_TXRX_REG_ADDR,
++	WLAN_FUNC_SET_WAIT_INODE_DEBUG_FLAG,
++	WLAN_FUNC_SET_WAIT_INODE_HW_CFG_INFO,
++	WLAN_FUNC_SET_WAIT_INODE_STOP_ACTION,
++	WLAN_FUNC_SET_WAIT_INODE_PCIE_SWAP,
++	WLAN_FUNC_SET_WAIT_RATELIMIT_CTRL,
++	WLAN_FUNC_SET_WAIT_HWNAT_INIT,
++	WLAN_FUNC_SET_WAIT_ARHT_CHIP_INFO,
++	WLAN_FUNC_SET_WAIT_TX_BUF_CHECK_ADDR,
++	WLAN_FUNC_SET_WAIT_TOKEN_ID_SIZE,
++};
++
+ struct airoha_npu {
+ 	struct device *dev;
+ 	struct regmap *regmap;
+@@ -29,6 +66,7 @@ struct airoha_npu {
+ 					    dma_addr_t foe_addr,
+ 					    u32 entry_size, u32 hash,
+ 					    bool ppe2);
++		int (*wlan_init_reserved_memory)(struct airoha_npu *npu);
+ 	} ops;
+ };
+ 

@@ -1,0 +1,59 @@
+From eef4108f42f1b6e41274be5220253b2cd37ae8d1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 13:57:37 +0100
+Subject: [PATCH 3/9] net: ethernet: mtk_ppe_offload: set output device before
+ VLAN/PPPoE push
+
+In mtk_flow_offload_replace(), run mtk_flow_set_output_device() and
+mtk_wed_flow_add() before the VLAN push loop and PPPoE push, rather
+than after them.
+
+Today this is a no-op: set_output_device() on the DSA_TAG_PROTO_MTK
+path writes the special-tag etype into the L2 block, not a VLAN, so
+the relative order of VLAN push and output-device setup does not
+matter. The WED path likewise does not stack any VLANs.
+
+This prepares the ground for taggers whose output-device setup
+pushes an outer 802.1Q tag (e.g. DSA_TAG_PROTO_MXL862_8021Q) which
+must land in vlan1 so that subsequent user VLANs stack into vlan2.
+Getting that order wrong would put the DSA outer tag in vlan2 and
+the user VLAN in vlan1, which the switch catchall strip rule would
+then remove from the wrong layer.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_ppe_offload.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
++++ b/drivers/net/ethernet/mediatek/mtk_ppe_offload.c
+@@ -472,6 +472,14 @@ mtk_flow_offload_replace(struct mtk_eth
+ 			return err;
+ 	}
+ 
++	err = mtk_flow_set_output_device(eth, &foe, odev, data.eth.h_dest,
++					 &wed_index);
++	if (err)
++		return err;
++
++	if (wed_index >= 0 && (err = mtk_wed_flow_add(wed_index)) < 0)
++		return err;
++
+ 	if (offload_type == MTK_PPE_PKT_TYPE_BRIDGE)
+ 		foe.bridge.vlan = data.vlan_in;
+ 
+@@ -481,14 +489,6 @@ mtk_flow_offload_replace(struct mtk_eth
+ 	if (data.pppoe.num == 1)
+ 		mtk_foe_entry_set_pppoe(eth, &foe, data.pppoe.sid);
+ 
+-	err = mtk_flow_set_output_device(eth, &foe, odev, data.eth.h_dest,
+-					 &wed_index);
+-	if (err)
+-		return err;
+-
+-	if (wed_index >= 0 && (err = mtk_wed_flow_add(wed_index)) < 0)
+-		return err;
+-
+ 	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+ 	if (!entry)
+ 		return -ENOMEM;

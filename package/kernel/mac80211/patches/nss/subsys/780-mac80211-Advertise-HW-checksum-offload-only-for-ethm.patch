@@ -1,0 +1,112 @@
+From d4ddaebe2132dbb169f78da3666b11a21f645ea0 Mon Sep 17 00:00:00 2001
+From: Tamizh Chelvam Raja <quic_tamizhr@quicinc.com>
+Date: Fri, 21 Apr 2023 12:28:21 +0530
+Subject: [PATCH] mac80211: Advertise HW checksum offload only for ethmode
+
+Upper(NSS/SFE) layer might remove checksum offset from a skb
+for the net device which advertise HW checksum offload
+feature. This would create an issue if any software encrypted
+packet or for the netdev which don't support IEEE80211_OFFLOAD_*.
+Avoid this by advertising the HW checksum offload feature
+only for the netdev which supports IEEE80211_OFFLOAD_*
+and have an check before checking checksum offset for the
+exceptional packets getting called from 8023_xmit API.
+
+Signed-off-by: Tamizh Chelvam Raja <quic_tamizhr@quicinc.com>
+---
+ net/mac80211/ieee80211_i.h |  3 ++-
+ net/mac80211/iface.c       |  4 ++++
+ net/mac80211/tdls.c        |  2 +-
+ net/mac80211/tx.c          | 19 ++++++++++---------
+ 4 files changed, 17 insertions(+), 11 deletions(-)
+
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -38,6 +38,8 @@
+ #include "wme.h"
+ #include "rate.h"
+ 
++#define IS_HW_CSUM_NOT_ENABLED(dev)             (!((dev)->features & NETIF_F_HW_CSUM))
++
+ static void ieee80211_8023_xmit(struct ieee80211_sub_if_data *sdata,
+ 				struct net_device *dev, struct sta_info *sta,
+ 				struct ieee80211_key *key, struct sk_buff *skb,
+@@ -3656,7 +3658,7 @@ ieee80211_sdata_netdev_features(struct i
+ }
+ 
+ static struct sk_buff *
+-ieee80211_tx_skb_fixup(struct sk_buff *skb, netdev_features_t features)
++ieee80211_tx_skb_fixup(struct sk_buff *skb, netdev_features_t features, struct net_device *dev)
+ {
+ 	if (skb_is_gso(skb)) {
+ 		struct sk_buff *segs;
+@@ -3674,7 +3676,7 @@ ieee80211_tx_skb_fixup(struct sk_buff *s
+ 	if (skb_needs_linearize(skb, features) && __skb_linearize(skb))
+ 		goto free;
+ 
+-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++	if (skb->ip_summed == CHECKSUM_PARTIAL && IS_HW_CSUM_NOT_ENABLED(dev)) {
+ 		int ofs = skb_checksum_start_offset(skb);
+ 
+ 		if (skb->encapsulation)
+@@ -3822,7 +3824,7 @@ static bool ieee80211_xmit_fast(struct i
+ 	memcpy(&eth, skb->data, ETH_HLEN - 2);
+ 
+ 	/* after this point (skb is modified) we cannot return false */
+-	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata));
++	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata), sdata->dev);
+ 	if (!skb)
+ 		return true;
+ 
+@@ -4390,7 +4392,7 @@ void __ieee80211_subif_start_xmit(struct
+ 	 * things so we cannot really handle checksum or GSO offload.
+ 	 * fix it up in software before we handle anything else.
+ 	 */
+-	skb = ieee80211_tx_skb_fixup(skb, 0);
++	skb = ieee80211_tx_skb_fixup(skb, 0, dev);
+ 	if (!skb) {
+ 		len = 0;
+ 		goto out;
+@@ -4765,7 +4767,7 @@ static void ieee80211_8023_xmit(struct i
+ 		}
+ 	}
+ 
+-	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata));
++	skb = ieee80211_tx_skb_fixup(skb, ieee80211_sdata_netdev_features(sdata), dev);
+ 	if (!skb)
+ 		return;
+ 
+--- a/net/mac80211/iface.c
++++ b/net/mac80211/iface.c
+@@ -2373,6 +2373,11 @@ int ieee80211_if_add(struct ieee80211_lo
+ 
+ 		ndev->features |= local->hw.netdev_features;
+ 		ndev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
++		if ((type == NL80211_IFTYPE_AP || type == NL80211_IFTYPE_STATION ||
++		    type == NL80211_IFTYPE_AP_VLAN) &&
++		    ieee80211_hw_check(&local->hw, SUPPORTS_TX_ENCAP_OFFLOAD))
++			ndev->features |= NETIF_F_HW_CSUM;
++
+ 		ndev->hw_features |= ndev->features &
+ 					MAC80211_SUPPORTED_FEATURES_TX;
+ 		sdata->vif.netdev_features = local->hw.netdev_features;
+--- a/net/mac80211/mesh.c
++++ b/net/mac80211/mesh.c
+@@ -14,6 +14,8 @@
+ #include "wme.h"
+ #include "driver-ops.h"
+ 
++#define IS_HW_CSUM_NOT_ENABLED(dev)             (!((dev)->features & NETIF_F_HW_CSUM))
++
+ static int mesh_allocated;
+ static struct kmem_cache *rm_cache;
+ 
+@@ -786,7 +788,7 @@ bool ieee80211_mesh_xmit_fast(struct iee
+ 	if (sk_requests_wifi_status(skb->sk))
+ 		return false;
+ 
+-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
++	if (skb->ip_summed == CHECKSUM_PARTIAL && IS_HW_CSUM_NOT_ENABLED(sdata->dev)) {
+ 		skb_set_transport_header(skb, skb_checksum_start_offset(skb));
+ 		if (skb_checksum_help(skb))
+ 			return false;

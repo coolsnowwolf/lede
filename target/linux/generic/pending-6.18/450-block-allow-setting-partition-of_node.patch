@@ -1,0 +1,123 @@
+From decc6959a423c8617e87244fd269129fc4e7d0e6 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 7 Oct 2024 23:36:14 +0100
+Subject: [PATCH 1/8] block: allow setting partition of_node
+
+Allow partition parsers to set the Device Tree node for a partition by
+introducing of_put_partition() and extending struct parsed_partitions
+accordingly.
+
+As the partition information is preallocated independently of the actual
+number of partitions the additional pointer takes about 2 kiB of allocated
+memory which is worth avoiding in case CONFIG_OF is not set. This is
+achieved by only adding the corresponding field to the struct in case
+CONFIG_OF is set using #ifdef'ery.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ block/partitions/check.h | 16 +++++++++++++++-
+ block/partitions/core.c  | 14 +++++++++++---
+ 2 files changed, 26 insertions(+), 4 deletions(-)
+
+--- a/block/partitions/check.h
++++ b/block/partitions/check.h
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: GPL-2.0 */
+ #include <linux/pagemap.h>
+ #include <linux/blkdev.h>
++#include <linux/of.h>
+ #include "../blk.h"
+ 
+ /*
+@@ -16,6 +17,9 @@ struct parsed_partitions {
+ 		int flags;
+ 		bool has_info;
+ 		struct partition_meta_info info;
++#ifdef CONFIG_OF
++		struct device_node *np;
++#endif
+ 	} *parts;
+ 	int next;
+ 	int limit;
+@@ -34,18 +38,28 @@ static inline void put_dev_sector(Sector
+ }
+ 
+ static inline void
+-put_partition(struct parsed_partitions *p, int n, sector_t from, sector_t size)
++of_put_partition(struct parsed_partitions *p, int n, sector_t from, sector_t size,
++		 struct device_node *np)
+ {
+ 	if (n < p->limit) {
+ 		char tmp[1 + BDEVNAME_SIZE + 10 + 1];
+ 
+ 		p->parts[n].from = from;
+ 		p->parts[n].size = size;
++#ifdef CONFIG_OF
++		p->parts[n].np = np;
++#endif
+ 		snprintf(tmp, sizeof(tmp), " %s%d", p->name, n);
+ 		strlcat(p->pp_buf, tmp, PAGE_SIZE);
+ 	}
+ }
+ 
++static inline void
++put_partition(struct parsed_partitions *p, int n, sector_t from, sector_t size)
++{
++	of_put_partition(p, n, from, size, NULL);
++}
++
+ /* detection routines go here in alphabetical order: */
+ int adfspart_check_ADFS(struct parsed_partitions *state);
+ int adfspart_check_CUMANA(struct parsed_partitions *state);
+--- a/block/partitions/core.c
++++ b/block/partitions/core.c
+@@ -9,6 +9,7 @@
+ #include <linux/slab.h>
+ #include <linux/ctype.h>
+ #include <linux/vmalloc.h>
++#include <linux/device.h>
+ #include <linux/raid/detect.h>
+ #include "check.h"
+ 
+@@ -292,7 +293,8 @@ static const DEVICE_ATTR(whole_disk, 044
+  */
+ static struct block_device *add_partition(struct gendisk *disk, int partno,
+ 				sector_t start, sector_t len, int flags,
+-				struct partition_meta_info *info)
++				struct partition_meta_info *info,
++				struct device_node *np)
+ {
+ 	dev_t devt = MKDEV(0, 0);
+ 	struct device *ddev = disk_to_dev(disk);
+@@ -341,6 +343,7 @@ static struct block_device *add_partitio
+ 	pdev->class = &block_class;
+ 	pdev->type = &part_type;
+ 	pdev->parent = ddev;
++	device_set_node(pdev, of_fwnode_handle(np));
+ 
+ 	/* in consecutive minor range? */
+ 	if (bdev_partno(bdev) < disk->minors) {
+@@ -447,7 +450,7 @@ int bdev_add_partition(struct gendisk *d
+ 	}
+ 
+ 	part = add_partition(disk, partno, start, length,
+-			ADDPART_FLAG_NONE, NULL);
++			ADDPART_FLAG_NONE, NULL, NULL);
+ 	ret = PTR_ERR_OR_ZERO(part);
+ out:
+ 	mutex_unlock(&disk->open_mutex);
+@@ -561,8 +564,13 @@ static bool blk_add_partition(struct gen
+ 		size = get_capacity(disk) - from;
+ 	}
+ 
++#ifdef CONFIG_OF
+ 	part = add_partition(disk, p, from, size, state->parts[p].flags,
+-			     &state->parts[p].info);
++			     &state->parts[p].info, state->parts[p].np);
++#else
++	part = add_partition(disk, p, from, size, state->parts[p].flags,
++			     &state->parts[p].info, NULL);
++#endif
+ 	if (IS_ERR(part)) {
+ 		if (PTR_ERR(part) != -ENXIO) {
+ 			printk(KERN_ERR " %s: p%d could not be added: %pe\n",

@@ -24,19 +24,68 @@ Signed-off-by: Daniel Golle <daniel@makrotopia.org>
  #define RTL8366RB_POWER_SAVE			0x15
  #define RTL8366RB_POWER_SAVE_ON			BIT(12)
  
-@@ -1090,6 +1094,15 @@ static int rtl822xb_config_init(struct p
+@@ -175,6 +179,10 @@ struct rtl821x_priv {
+ 	u32 saved_wolopts;
+ };
+ 
++struct rtl822x_priv {
++	bool enable_aldps;
++};
++
+ static int rtl821x_read_page(struct phy_device *phydev)
+ {
+ 	return __phy_read(phydev, RTL821x_PAGE_SELECT);
+@@ -1025,6 +1033,18 @@ static int rtl822x_write_mmd(struct phy_
+ 
+ static int rtl822x_probe(struct phy_device *phydev)
+ {
++	struct device *dev = &phydev->mdio.dev;
++	struct rtl822x_priv *priv;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->enable_aldps = of_property_read_bool(dev->of_node,
++						   "realtek,aldps-enable");
++
++	phydev->priv = priv;
++
+ 	if (IS_ENABLED(CONFIG_REALTEK_PHY_HWMON) &&
+ 	    phydev->phy_id != RTL_GENERIC_PHYID)
+ 		return rtl822x_hwmon_init(phydev);
+@@ -1032,6 +1052,19 @@ static int rtl822x_probe(struct phy_devi
+ 	return 0;
+ }
+ 
++static int rtl822x_init_phycr1(struct phy_device *phydev, bool no_aldps)
++{
++	struct rtl822x_priv *priv = phydev->priv;
++	u16 val = 0;
++
++	if (priv->enable_aldps && !no_aldps)
++		val = RTL8221B_PHYCR1_ALDPS_EN | RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN;
++
++	return phy_modify_mmd_changed(phydev, MDIO_MMD_VEND2, RTL8221B_PHYCR1,
++				      RTL8221B_PHYCR1_ALDPS_EN |
++				      RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN, val);
++}
++
+ static int rtl822xb_config_init(struct phy_device *phydev)
+ {
+ 	bool has_2500, has_sgmii;
+@@ -1108,6 +1141,14 @@ static int rtl822xb_config_init(struct p
  	if (ret < 0)
  		return ret;
  
-+	if (of_property_read_bool(phydev->mdio.dev.of_node, "realtek,aldps-enable"))
-+		ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND1, RTL8221B_PHYCR1,
-+				 RTL8221B_PHYCR1_ALDPS_EN | RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN);
-+	else
-+		ret = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, RTL8221B_PHYCR1,
-+				   RTL8221B_PHYCR1_ALDPS_EN | RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN);
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6f11, 0x8020);
 +	if (ret < 0)
 +		return ret;
 +
- 	/* Disable SGMII AN */
- 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x7588, 0x2);
- 	if (ret < 0)
++	ret = rtl822x_init_phycr1(phydev, false);
++	if (ret < 0)
++		return ret;
++
+ 	return 0;
+ }
+ 

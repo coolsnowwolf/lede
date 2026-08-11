@@ -1,0 +1,72 @@
+From fed4225f75b6fe6898e48f472cbbee0aaa046760 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 24 Mar 2026 16:30:17 +0000
+Subject: [PATCH 13/19] net: dsa: mxl862xx: add SMDIO clause-22 register access
+
+Add mxl862xx_smdio_read() and mxl862xx_smdio_write() for clause-22
+SMDIO register access. MCUboot rescue mode only exposes clause-22
+registers; the existing clause-45 MMD interface is unavailable during
+firmware transfer. The MDIO bus lock is held per-transaction (not
+across polls) so that SB PDI polling during flash erase does not
+starve other MDIO users.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-host.c | 35 ++++++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-host.h |  2 ++
+ 2 files changed, 37 insertions(+)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-host.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-host.c
+@@ -493,6 +493,41 @@ out:
+ 	return ret;
+ }
+ 
++#define MXL862XX_SMDIO_ADDR_REG		0x1f
++#define MXL862XX_SMDIO_PAGE_MASK	0xfff0
++#define MXL862XX_SMDIO_OFF_MASK		0x000f
++
++int mxl862xx_smdio_read(struct mxl862xx_priv *priv, u32 addr)
++{
++	struct mii_bus *bus = priv->mdiodev->bus;
++	int phy = priv->mdiodev->addr;
++	int ret;
++
++	mutex_lock(&bus->mdio_lock);
++	ret = __mdiobus_write(bus, phy, MXL862XX_SMDIO_ADDR_REG,
++			      addr & MXL862XX_SMDIO_PAGE_MASK);
++	if (ret >= 0)
++		ret = __mdiobus_read(bus, phy, addr & MXL862XX_SMDIO_OFF_MASK);
++	mutex_unlock(&bus->mdio_lock);
++	return ret;
++}
++
++int mxl862xx_smdio_write(struct mxl862xx_priv *priv, u32 addr, u16 val)
++{
++	struct mii_bus *bus = priv->mdiodev->bus;
++	int phy = priv->mdiodev->addr;
++	int ret;
++
++	mutex_lock(&bus->mdio_lock);
++	ret = __mdiobus_write(bus, phy, MXL862XX_SMDIO_ADDR_REG,
++			      addr & MXL862XX_SMDIO_PAGE_MASK);
++	if (ret >= 0)
++		ret = __mdiobus_write(bus, phy, addr & MXL862XX_SMDIO_OFF_MASK,
++				      val);
++	mutex_unlock(&bus->mdio_lock);
++	return ret;
++}
++
+ void mxl862xx_host_init(struct mxl862xx_priv *priv)
+ {
+ 	INIT_WORK(&priv->crc_err_work, mxl862xx_crc_err_work_fn);
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-host.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-host.h
+@@ -18,5 +18,7 @@ int mxl862xx_api_wrap(struct mxl862xx_pr
+ 	mxl862xx_api_wrap(dev, cmd, &(data), sizeof((data)), true, true)
+ 
+ int mxl862xx_reset(struct mxl862xx_priv *priv);
++int mxl862xx_smdio_read(struct mxl862xx_priv *priv, u32 addr);
++int mxl862xx_smdio_write(struct mxl862xx_priv *priv, u32 addr, u16 val);
+ 
+ #endif /* __MXL862XX_HOST_H */

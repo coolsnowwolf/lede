@@ -1,0 +1,62 @@
+From: David Bauer <mail@david-bauer.net>
+To: hostap@lists.infradead.org
+Cc: =?utf-8?q?=C3=89tienne_Morice?= <neon.emorice@mail.com>
+Subject: [PATCH] nl80211: add extra-ies only if allowed by driver
+Date: Sun, 30 Jan 2022 20:22:00 +0100
+Message-Id: <20220130192200.10883-1-mail@david-bauer.net>
+List-Id: <hostap.lists.infradead.org>
+
+Upgrading wpa_supplicant from 2.9 to 2.10 breaks broadcom-wl
+based adapters. The reason for it is hostapd tries to install additional
+IEs for scanning while the driver does not support this.
+
+The kernel indicates the maximum number of bytes for additional scan IEs
+using the NL80211_ATTR_MAX_SCAN_IE_LEN attribute. Save this value and
+only add additional scan IEs in case the driver can accommodate these
+additional IEs.
+
+Reported-by: Étienne Morice <neon.emorice@mail.com>
+Tested-by: Étienne Morice <neon.emorice@mail.com>
+Signed-off-by: David Bauer <mail@david-bauer.net>
+---
+ src/drivers/driver.h              | 3 +++
+ src/drivers/driver_nl80211_capa.c | 4 ++++
+ src/drivers/driver_nl80211_scan.c | 2 +-
+ 3 files changed, 8 insertions(+), 1 deletion(-)
+
+--- a/src/drivers/driver.h
++++ b/src/drivers/driver.h
+@@ -2390,6 +2390,9 @@ struct wpa_driver_capa {
+ 	/** Maximum number of iterations in a single scan plan */
+ 	u32 max_sched_scan_plan_iterations;
+ 
++	/** Maximum number of extra IE bytes for scans */
++	u16 max_scan_ie_len;
++
+ 	/** Whether sched_scan (offloaded scanning) is supported */
+ 	int sched_scan_supported;
+ 
+--- a/src/drivers/driver_nl80211_capa.c
++++ b/src/drivers/driver_nl80211_capa.c
+@@ -976,6 +976,10 @@ static int wiphy_info_handler(struct nl_
+ 			nla_get_u32(tb[NL80211_ATTR_MAX_SCAN_PLAN_ITERATIONS]);
+ 	}
+ 
++	if (tb[NL80211_ATTR_MAX_SCAN_IE_LEN])
++		capa->max_scan_ie_len =
++			nla_get_u16(tb[NL80211_ATTR_MAX_SCAN_IE_LEN]);
++
+ 	if (tb[NL80211_ATTR_MAX_MATCH_SETS])
+ 		capa->max_match_sets =
+ 			nla_get_u8(tb[NL80211_ATTR_MAX_MATCH_SETS]);
+--- a/src/drivers/driver_nl80211_scan.c
++++ b/src/drivers/driver_nl80211_scan.c
+@@ -235,7 +235,7 @@ nl80211_scan_common(struct i802_bss *bss
+ 		wpa_printf(MSG_DEBUG, "nl80211: Passive scan requested");
+ 	}
+ 
+-	if (params->extra_ies) {
++	if (params->extra_ies && drv->capa.max_scan_ie_len >= params->extra_ies_len) {
+ 		wpa_hexdump(MSG_MSGDUMP, "nl80211: Scan extra IEs",
+ 			    params->extra_ies, params->extra_ies_len);
+ 		if (nla_put(msg, NL80211_ATTR_IE, params->extra_ies_len,

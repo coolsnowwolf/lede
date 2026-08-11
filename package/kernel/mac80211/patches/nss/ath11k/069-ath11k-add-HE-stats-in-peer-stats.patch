@@ -1,0 +1,774 @@
+From e4f16128c53b48f166301085cecc23f77bf3ff8e Mon Sep 17 00:00:00 2001
+From: Miles Hu <milehu@codeaurora.org>
+Date: Fri, 11 Oct 2019 19:24:06 -0700
+Subject: [PATCH] ath11k: add HE stats in peer stats packet counters for MIMO
+ and OFDMA
+
+Signed-off-by: Miles Hu <milehu@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.h        |  23 ++++-
+ drivers/net/wireless/ath/ath11k/debugfs_sta.c | 127 +++++++++++++++++++++++++-
+ drivers/net/wireless/ath/ath11k/dp.h          |  21 ++++-
+ drivers/net/wireless/ath/ath11k/dp_rx.c       |  17 +++-
+ drivers/net/wireless/ath/ath11k/rx_desc.h     |   5 +
+ 5 files changed, 185 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -33,6 +33,7 @@
+ #include "dbring.h"
+ #include "spectral.h"
+ #include "wow.h"
++#include "rx_desc.h"
+ #include "fw.h"
+ #include "coredump.h"
+ 
+@@ -526,6 +527,8 @@ struct ath11k_htt_data_stats {
+ 	u64 bw[ATH11K_COUNTER_TYPE_MAX][ATH11K_BW_NUM];
+ 	u64 nss[ATH11K_COUNTER_TYPE_MAX][ATH11K_NSS_NUM];
+ 	u64 gi[ATH11K_COUNTER_TYPE_MAX][ATH11K_GI_NUM];
++	u64 transmit_type[ATH11K_COUNTER_TYPE_MAX][HAL_RX_RECEPTION_TYPE_MAX];
++	u64 ru_loc[ATH11K_COUNTER_TYPE_MAX][HAL_RX_RU_ALLOC_TYPE_MAX];
+ };
+ 
+ struct ath11k_htt_tx_stats {
+@@ -533,6 +536,9 @@ struct ath11k_htt_tx_stats {
+ 	u64 tx_duration;
+ 	u64 ba_fails;
+ 	u64 ack_fails;
++	u16 ru_start;
++	u16 ru_tones;
++	u32 mu_group[MAX_MU_GROUP_ID];
+ };
+ 
+ struct ath11k_per_ppdu_tx_stats {
+@@ -651,11 +657,16 @@ struct ath11k_per_peer_tx_stats {
+ 	u32 succ_bytes;
+ 	u32 retry_bytes;
+ 	u32 failed_bytes;
++	u32 duration;
+ 	u16 succ_pkts;
+ 	u16 retry_pkts;
+ 	u16 failed_pkts;
+-	u32 duration;
++	u16 ru_start;
++	u16 ru_tones;
+ 	u8 ba_fails;
++	u8 ppdu_type;
++	u32 mu_grpid;
++	u32 mu_pos;
+ 	bool is_ampdu;
+ };
+ 
+--- a/drivers/net/wireless/ath/ath11k/debugfs_sta.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs_sta.c
+@@ -15,13 +15,39 @@
+ #include "dp_rx.h"
+ #include "debugfs_htt_stats.h"
+ 
++static inline u32 ath11k_he_tones_in_ru_to_nl80211_he_ru_alloc(u16 ru_tones)
++{
++	u32 ret = 0;
++	switch (ru_tones) {
++	case 26:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_26;
++		break;
++	case 52:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_52;
++		break;
++	case 106:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_106;
++		break;
++	case 242:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_242;
++		break;
++	case 484:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_484;
++		break;
++	case 996:
++		ret = NL80211_RATE_INFO_HE_RU_ALLOC_996;
++		break;
++	}
++	return ret;
++}
++
+ void ath11k_debugfs_sta_add_tx_stats(struct ath11k_sta *arsta,
+ 				     struct ath11k_per_peer_tx_stats *peer_stats,
+ 				     u8 legacy_rate_idx)
+ {
+ 	struct rate_info *txrate = &arsta->txrate;
+ 	struct ath11k_htt_tx_stats *tx_stats;
+-	int gi, mcs, bw, nss;
++	int gi, mcs, bw, nss, ru_type, ppdu_type;
+ 
+ 	if (!arsta->tx_stats)
+ 		return;
+@@ -66,6 +92,43 @@ void ath11k_debugfs_sta_add_tx_stats(str
+ 		STATS_OP_FMT(RETRY).legacy[1][mcs] += peer_stats->retry_pkts;
+ 	}
+ 
++	ppdu_type = peer_stats->ppdu_type;
++	if ((ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_OFDMA ||
++	    ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_MIMO_OFDMA) &&
++	    (txrate->flags & RATE_INFO_FLAGS_HE_MCS)){
++		ru_type = peer_stats->ru_tones;
++
++		if (ru_type <= NL80211_RATE_INFO_HE_RU_ALLOC_996) {
++			STATS_OP_FMT(SUCC).ru_loc[0][ru_type] += peer_stats->succ_bytes;
++			STATS_OP_FMT(SUCC).ru_loc[1][ru_type] += peer_stats->succ_pkts;
++			STATS_OP_FMT(FAIL).ru_loc[0][ru_type] += peer_stats->failed_bytes;
++			STATS_OP_FMT(FAIL).ru_loc[1][ru_type] += peer_stats->failed_pkts;
++			STATS_OP_FMT(RETRY).ru_loc[0][ru_type] += peer_stats->retry_bytes;
++			STATS_OP_FMT(RETRY).ru_loc[1][ru_type] += peer_stats->retry_pkts;
++			if (peer_stats->is_ampdu) {
++				STATS_OP_FMT(AMPDU).ru_loc[0][ru_type] +=
++					peer_stats->succ_bytes + peer_stats->retry_bytes;
++				STATS_OP_FMT(AMPDU).ru_loc[1][ru_type] +=
++					peer_stats->succ_pkts + peer_stats->retry_pkts;
++			}
++		}
++	}
++
++	if (ppdu_type < HTT_PPDU_STATS_PPDU_TYPE_MAX) {
++		STATS_OP_FMT(SUCC).transmit_type[0][ppdu_type] += peer_stats->succ_bytes;
++		STATS_OP_FMT(SUCC).transmit_type[1][ppdu_type] += peer_stats->succ_pkts;
++		STATS_OP_FMT(FAIL).transmit_type[0][ppdu_type] += peer_stats->failed_bytes;
++		STATS_OP_FMT(FAIL).transmit_type[1][ppdu_type] += peer_stats->failed_pkts;
++		STATS_OP_FMT(RETRY).transmit_type[0][ppdu_type] += peer_stats->retry_bytes;
++		STATS_OP_FMT(RETRY).transmit_type[1][ppdu_type] += peer_stats->retry_pkts;
++		if (peer_stats->is_ampdu) {
++			STATS_OP_FMT(AMPDU).transmit_type[0][ppdu_type] +=
++				peer_stats->succ_bytes + peer_stats->retry_bytes;
++			STATS_OP_FMT(AMPDU).transmit_type[1][ppdu_type] +=
++				peer_stats->succ_pkts + peer_stats->retry_pkts;
++		}
++	}
++
+ 	if (peer_stats->is_ampdu) {
+ 		tx_stats->ba_fails += peer_stats->ba_fails;
+ 
+@@ -126,6 +189,17 @@ void ath11k_debugfs_sta_add_tx_stats(str
+ 	STATS_OP_FMT(RETRY).gi[1][gi] += peer_stats->retry_pkts;
+ 
+ 	tx_stats->tx_duration += peer_stats->duration;
++
++	tx_stats->ru_start = peer_stats->ru_start;
++	tx_stats->ru_tones = peer_stats->ru_tones;
++
++	if (peer_stats->mu_grpid <= MAX_MU_GROUP_ID &&
++	    peer_stats->ppdu_type != HTT_PPDU_STATS_PPDU_TYPE_SU) {
++		if (peer_stats->mu_grpid & (MAX_MU_GROUP_ID - 1))
++			tx_stats->mu_group[peer_stats->mu_grpid] =
++						(peer_stats->mu_pos + 1);
++	}
++
+ }
+ 
+ void ath11k_debugfs_sta_update_txcompl(struct ath11k *ar,
+@@ -142,12 +216,13 @@ static ssize_t ath11k_dbg_sta_dump_tx_st
+ 	struct ath11k_sta *arsta = ath11k_sta_to_arsta(sta);
+ 	struct ath11k *ar = arsta->arvif->ar;
+ 	struct ath11k_htt_data_stats *stats;
+-	static const char *str_name[ATH11K_STATS_TYPE_MAX] = {"succ", "fail",
++	static const char *str_name[ATH11K_STATS_TYPE_MAX] = {"success", "fail",
+ 							      "retry", "ampdu"};
+ 	static const char *str[ATH11K_COUNTER_TYPE_MAX] = {"bytes", "packets"};
+ 	int len = 0, i, j, k, retval = 0;
+ 	const int size = 2 * 4096;
+-	char *buf;
++	char *buf, mu_group_id[MAX_MU_GROUP_LENGTH] = {0};
++	u32 index;
+ 
+ 	if (!arsta->tx_stats)
+ 		return -ENOENT;
+@@ -165,45 +240,46 @@ static ssize_t ath11k_dbg_sta_dump_tx_st
+ 			len += scnprintf(buf + len, size - len, "%s_%s\n",
+ 					 str_name[k],
+ 					 str[j]);
++			len += scnprintf(buf + len, size - len, "==========\n");
+ 			len += scnprintf(buf + len, size - len,
+-					 " HE MCS %s\n",
++					 " HE MCS %s\n\t",
+ 					 str[j]);
+ 			for (i = 0; i < ATH11K_HE_MCS_NUM; i++)
+ 				len += scnprintf(buf + len, size - len,
+-						 "  %llu ",
++						 "%llu ",
+ 						 stats->he[j][i]);
+ 			len += scnprintf(buf + len, size - len, "\n");
+ 			len += scnprintf(buf + len, size - len,
+-					 " VHT MCS %s\n",
++					 " VHT MCS %s\n\t",
+ 					 str[j]);
+ 			for (i = 0; i < ATH11K_VHT_MCS_NUM; i++)
+ 				len += scnprintf(buf + len, size - len,
+-						 "  %llu ",
++						 "%llu ",
+ 						 stats->vht[j][i]);
+ 			len += scnprintf(buf + len, size - len, "\n");
+-			len += scnprintf(buf + len, size - len, " HT MCS %s\n",
++			len += scnprintf(buf + len, size - len, " HT MCS %s\n\t",
+ 					 str[j]);
+ 			for (i = 0; i < ATH11K_HT_MCS_NUM; i++)
+ 				len += scnprintf(buf + len, size - len,
+-						 "  %llu ", stats->ht[j][i]);
++						 "%llu ", stats->ht[j][i]);
+ 			len += scnprintf(buf + len, size - len, "\n");
+ 			len += scnprintf(buf + len, size - len,
+ 					" BW %s (20,40,80,160 MHz)\n", str[j]);
+ 			len += scnprintf(buf + len, size - len,
+-					 "  %llu %llu %llu %llu\n",
++					 "\t%llu %llu %llu %llu\n",
+ 					 stats->bw[j][0], stats->bw[j][1],
+ 					 stats->bw[j][2], stats->bw[j][3]);
+ 			len += scnprintf(buf + len, size - len,
+ 					 " NSS %s (1x1,2x2,3x3,4x4)\n", str[j]);
+ 			len += scnprintf(buf + len, size - len,
+-					 "  %llu %llu %llu %llu\n",
++					 "\t%llu %llu %llu %llu\n",
+ 					 stats->nss[j][0], stats->nss[j][1],
+ 					 stats->nss[j][2], stats->nss[j][3]);
+ 			len += scnprintf(buf + len, size - len,
+ 					 " GI %s (0.4us,0.8us,1.6us,3.2us)\n",
+ 					 str[j]);
+ 			len += scnprintf(buf + len, size - len,
+-					 "  %llu %llu %llu %llu\n",
++					 "\t%llu %llu %llu %llu\n",
+ 					 stats->gi[j][0], stats->gi[j][1],
+ 					 stats->gi[j][2], stats->gi[j][3]);
+ 			len += scnprintf(buf + len, size - len,
+@@ -212,10 +288,68 @@ static ssize_t ath11k_dbg_sta_dump_tx_st
+ 			for (i = 0; i < ATH11K_LEGACY_NUM; i++)
+ 				len += scnprintf(buf + len, size - len, "%llu ",
+ 						 stats->legacy[j][i]);
+-			len += scnprintf(buf + len, size - len, "\n");
++
++			len += scnprintf(buf + len, size - len, "\n ru %s: \n", str[j]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 26: %llu\n", stats->ru_loc[j][0]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 52: %llu \n", stats->ru_loc[j][1]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 106: %llu \n", stats->ru_loc[j][2]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 242: %llu \n", stats->ru_loc[j][3]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 484: %llu \n", stats->ru_loc[j][4]);
++			len += scnprintf(buf + len, size - len,
++					 "\tru 996: %llu \n", stats->ru_loc[j][5]);
++
++			len += scnprintf(buf + len, size - len,
++					 " ppdu type %s: \n", str[j]);
++			if (k == ATH11K_STATS_TYPE_FAIL ||
++			    k == ATH11K_STATS_TYPE_RETRY) {
++				len += scnprintf(buf + len, size - len,
++						 "\tSU/MIMO: %llu\n",
++						 stats->transmit_type[j][0]);
++				len += scnprintf(buf + len, size - len,
++						 "\tOFDMA/OFDMA_MIMO: %llu\n",
++				 		 stats->transmit_type[j][2]);
++			} else {
++				len += scnprintf(buf + len, size - len,
++						 "\tSU: %llu\n",
++						 stats->transmit_type[j][0]);
++				len += scnprintf(buf + len, size - len,
++						 "\tMIMO: %llu\n",
++						 stats->transmit_type[j][1]);
++				len += scnprintf(buf + len, size - len,
++						 "\tOFDMA: %llu\n",
++				 		 stats->transmit_type[j][2]);
++				len += scnprintf(buf + len, size - len,
++						 "\tOFDMA_MIMO: %llu\n",
++						 stats->transmit_type[j][3]);
++			}
+ 		}
+ 	}
+ 
++	len += scnprintf(buf + len, size - len, "\n");
++
++	for (i = 0; i < MAX_MU_GROUP_ID;) {
++		index = 0;
++		for (j = 0; j < MAX_MU_GROUP_SHOW && i < MAX_MU_GROUP_ID;
++		     j++) {
++			index += snprintf(&mu_group_id[index],
++					     MAX_MU_GROUP_LENGTH - index,
++					     " %d",
++					     arsta->tx_stats->mu_group[i]);
++			i++;
++		}
++		len += scnprintf(buf + len, size - len,
++				  "User position list for GID %02d->%d: [%s]\n",
++				  i - MAX_MU_GROUP_SHOW, i - 1, mu_group_id);
++	}
++	len += scnprintf(buf + len, size - len,
++			  "\nLast Packet RU index [%d], Size [%d]\n",
++			  arsta->tx_stats->ru_start, arsta->tx_stats->ru_tones);
++
+ 	len += scnprintf(buf + len, size - len,
+ 			 "\nTX duration\n %llu usecs\n",
+ 			 arsta->tx_stats->tx_duration);
+@@ -223,6 +357,7 @@ static ssize_t ath11k_dbg_sta_dump_tx_st
+ 			"BA fails\n %llu\n", arsta->tx_stats->ba_fails);
+ 	len += scnprintf(buf + len, size - len,
+ 			"ack fails\n %llu\n", arsta->tx_stats->ack_fails);
++
+ 	spin_unlock_bh(&ar->data_lock);
+ 
+ 	if (len > size)
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -596,6 +596,45 @@ enum htt_ppdu_stats_tag_type {
+ 				    BIT(HTT_PPDU_STATS_TAG_TX_MGMTCTRL_PAYLOAD) | \
+ 				    HTT_PPDU_STATS_TAG_DEFAULT)
+ 
++#define HTT_STATS_FRAMECTRL_TYPE_MASK 0x0C
++#define HTT_STATS_GET_FRAME_CTRL_TYPE(_val)	\
++		(((_val) & HTT_STATS_FRAMECTRL_TYPE_MASK) >> 2)
++#define HTT_STATS_FRAME_CTRL_TYPE_MGMT	0x0
++#define HTT_STATS_FRAME_CTRL_TYPE_CTRL	0x1
++#define HTT_STATS_FRAME_CTRL_TYPE_DATA	0x2
++#define HTT_STATS_FRAME_CTRL_TYPE_RESV	0x3
++
++enum htt_stats_frametype {
++	HTT_STATS_FTYPE_SGEN_NDPA = 0,
++	HTT_STATS_FTYPE_SGEN_NDP,
++	HTT_STATS_FTYPE_SGEN_BRP,
++	HTT_STATS_FTYPE_SGEN_BAR,
++	HTT_STATS_FTYPE_SGEN_RTS,
++	HTT_STATS_FTYPE_SGEN_CTS,
++	HTT_STATS_FTYPE_SGEN_CFEND,
++	HTT_STATS_FTYPE_SGEN_AX_NDPA,
++	HTT_STATS_FTYPE_SGEN_AX_NDP,
++	HTT_STATS_FTYPE_SGEN_MU_TRIG,
++	HTT_STATS_FTYPE_SGEN_MU_BAR,
++	HTT_STATS_FTYPE_SGEN_MU_BRP,
++	HTT_STATS_FTYPE_SGEN_MU_RTS,
++	HTT_STATS_FTYPE_SGEN_MU_BSR,
++	HTT_STATS_FTYPE_SGEN_UL_BSR,
++	HTT_STATS_FTYPE_SGEN_UL_BSR_TRIGGER = HTT_STATS_FTYPE_SGEN_UL_BSR,
++	HTT_STATS_FTYPE_TIDQ_DATA_SU,
++	HTT_STATS_FTYPE_TIDQ_DATA_MU,
++	HTT_STATS_FTYPE_SGEN_UL_BSR_RESP,
++	HTT_STATS_FTYPE_SGEN_QOS_NULL,
++	HTT_STATS_FTYPE_MAX,
++};
++
++enum htt_stats_internal_ppdu_frametype {
++	HTT_STATS_PPDU_FTYPE_CTRL,
++	HTT_STATS_PPDU_FTYPE_DATA,
++	HTT_STATS_PPDU_FTYPE_BAR,
++	HTT_STATS_PPDU_FTYPE_MAX
++};
++
+ /* HTT_H2T_MSG_TYPE_RX_RING_SELECTION_CFG Message
+  *
+  * details:
+@@ -1235,6 +1274,19 @@ enum htt_ppdu_stats_gi {
+ #define HTT_PPDU_STATS_USER_RATE_INFO0_USER_POS_M	GENMASK(3, 0)
+ #define HTT_PPDU_STATS_USER_RATE_INFO0_MU_GROUP_ID_M	GENMASK(11, 4)
+ 
++enum HTT_PPDU_STATS_PPDU_TYPE {
++	HTT_PPDU_STATS_PPDU_TYPE_SU,
++	HTT_PPDU_STATS_PPDU_TYPE_MU_MIMO,
++	HTT_PPDU_STATS_PPDU_TYPE_MU_OFDMA,
++	HTT_PPDU_STATS_PPDU_TYPE_MU_MIMO_OFDMA,
++	HTT_PPDU_STATS_PPDU_TYPE_UL_TRIG,
++	HTT_PPDU_STATS_PPDU_TYPE_BURST_BCN,
++	HTT_PPDU_STATS_PPDU_TYPE_UL_BSR_RESP,
++	HTT_PPDU_STATS_PPDU_TYPE_UL_BSR_TRIG,
++	HTT_PPDU_STATS_PPDU_TYPE_UL_RESP,
++	HTT_PPDU_STATS_PPDU_TYPE_MAX
++};
++
+ #define HTT_PPDU_STATS_USER_RATE_INFO1_RESP_TYPE_VALD_M	BIT(0)
+ #define HTT_PPDU_STATS_USER_RATE_INFO1_PPDU_TYPE_M	GENMASK(5, 1)
+ 
+@@ -1262,6 +1314,12 @@ enum htt_ppdu_stats_gi {
+ 		FIELD_GET(HTT_PPDU_STATS_USER_RATE_FLAGS_GI_M, _val)
+ #define HTT_USR_RATE_DCM(_val) \
+ 		FIELD_GET(HTT_PPDU_STATS_USER_RATE_FLAGS_DCM_M, _val)
++#define HTT_USR_RATE_PPDU_TYPE(_val) \
++		FIELD_GET(HTT_PPDU_STATS_USER_RATE_INFO1_PPDU_TYPE_M, _val)
++#define HTT_USR_RATE_MU_GRPID(_val) \
++		FIELD_GET(HTT_PPDU_STATS_USER_RATE_INFO0_MU_GROUP_ID_M, _val)
++#define HTT_USR_RATE_USR_POS(_val) \
++		FIELD_GET(HTT_PPDU_STATS_USER_RATE_INFO0_USER_POS_M, _val)
+ 
+ #define HTT_PPDU_STATS_USER_RATE_RESP_FLAGS_LTF_SIZE_M		GENMASK(1, 0)
+ #define HTT_PPDU_STATS_USER_RATE_RESP_FLAGS_STBC_M		BIT(2)
+@@ -1353,16 +1411,33 @@ struct htt_ppdu_stats_usr_cmpltn_ack_ba_
+ 	u32 success_bytes;
+ } __packed;
+ 
++#define HTT_PPDU_STATS_USR_CMN_FLAG_DELAYBA	BIT(14)
++#define HTT_PPDU_STATS_USR_CMN_HDR_SW_PEERID	GENMASK(31, 16)
++#define HTT_PPDU_STATS_USR_CMN_CTL_FRM_CTRL	GENMASK(15, 0)
++
++struct htt_ppdu_stats_user_common {
++	u8 tid_num;
++	u8 vdev_id;
++	u16 sw_peer_id;
++	u32 info;
++	u32 ctrl;
++	u32 buffer_paddr_31_0;
++	u32 buffer_paddr_39_32;
++	u32 host_opaque_cookie;
++} __packed;
++
+ struct htt_ppdu_user_stats {
+ 	u16 peer_id;
++	u16 delay_ba;
+ 	u32 tlv_flags;
+ 	bool is_valid_peer_id;
+ 	struct htt_ppdu_stats_user_rate rate;
+ 	struct htt_ppdu_stats_usr_cmpltn_cmn cmpltn_cmn;
+ 	struct htt_ppdu_stats_usr_cmpltn_ack_ba_status ack_ba;
++	struct htt_ppdu_stats_user_common common;
+ };
+ 
+-#define HTT_PPDU_STATS_MAX_USERS	8
++#define HTT_PPDU_STATS_MAX_USERS	37
+ #define HTT_PPDU_DESC_MAX_DEPTH	16
+ 
+ struct htt_ppdu_stats {
+@@ -1371,7 +1446,7 @@ struct htt_ppdu_stats {
+ };
+ 
+ struct htt_ppdu_stats_info {
+-	u32 ppdu_id;
++	u32 tlv_bitmap, ppdu_id, frame_type, frame_ctrl, delay_ba, bar_num_users;
+ 	struct htt_ppdu_stats ppdu_stats;
+ 	struct list_head list;
+ };
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -1243,9 +1243,10 @@ static int ath11k_htt_tlv_ppdu_stats_par
+ 					   void *data)
+ {
+ 	struct htt_ppdu_stats_info *ppdu_info;
+-	struct htt_ppdu_user_stats *user_stats;
++	struct htt_ppdu_user_stats *user_stats = NULL;
+ 	int cur_user;
+ 	u16 peer_id;
++	u32 frame_type;
+ 
+ 	ppdu_info = data;
+ 
+@@ -1258,6 +1259,26 @@ static int ath11k_htt_tlv_ppdu_stats_par
+ 		}
+ 		memcpy((void *)&ppdu_info->ppdu_stats.common, ptr,
+ 		       sizeof(struct htt_ppdu_stats_common));
++		frame_type =
++			FIELD_GET(HTT_PPDU_STATS_CMN_FLAGS_FRAME_TYPE_M,
++				  ppdu_info->ppdu_stats.common.flags);
++		switch (frame_type) {
++		case HTT_STATS_FTYPE_TIDQ_DATA_SU:
++		case HTT_STATS_FTYPE_TIDQ_DATA_MU:
++			if (HTT_STATS_GET_FRAME_CTRL_TYPE(ppdu_info->frame_ctrl) <= HTT_STATS_FRAME_CTRL_TYPE_CTRL)
++				ppdu_info->frame_type = HTT_STATS_PPDU_FTYPE_CTRL;
++			else
++				ppdu_info->frame_type = HTT_STATS_PPDU_FTYPE_DATA;
++		break;
++		case HTT_STATS_FTYPE_SGEN_MU_BAR:
++		case HTT_STATS_FTYPE_SGEN_BAR:
++			ppdu_info->frame_type = HTT_STATS_PPDU_FTYPE_BAR;
++		break;
++		default:
++			ppdu_info->frame_type = HTT_STATS_PPDU_FTYPE_CTRL;
++		break;
++		}
++
+ 		break;
+ 	case HTT_PPDU_STATS_TAG_USR_RATE:
+ 		if (len < sizeof(struct htt_ppdu_stats_user_rate)) {
+@@ -1290,6 +1311,7 @@ static int ath11k_htt_tlv_ppdu_stats_par
+ 						      peer_id);
+ 		if (cur_user < 0)
+ 			return -EINVAL;
++		ppdu_info->bar_num_users += 1;
+ 		user_stats = &ppdu_info->ppdu_stats.user_stats[cur_user];
+ 		user_stats->peer_id = peer_id;
+ 		user_stats->is_valid_peer_id = true;
+@@ -1318,44 +1340,30 @@ static int ath11k_htt_tlv_ppdu_stats_par
+ 		       sizeof(struct htt_ppdu_stats_usr_cmpltn_ack_ba_status));
+ 		user_stats->tlv_flags |= BIT(tag);
+ 		break;
+-	}
+-	return 0;
+-}
+-
+-int ath11k_dp_htt_tlv_iter(struct ath11k_base *ab, const void *ptr, size_t len,
+-			   int (*iter)(struct ath11k_base *ar, u16 tag, u16 len,
+-				       const void *ptr, void *data),
+-			   void *data)
+-{
+-	const struct htt_tlv *tlv;
+-	const void *begin = ptr;
+-	u16 tlv_tag, tlv_len;
+-	int ret = -EINVAL;
+-
+-	while (len > 0) {
+-		if (len < sizeof(*tlv)) {
+-			ath11k_err(ab, "htt tlv parse failure at byte %zd (%zu bytes left, %zu expected)\n",
+-				   ptr - begin, len, sizeof(*tlv));
++	case HTT_PPDU_STATS_TAG_USR_COMMON:
++		if (len < sizeof(struct htt_ppdu_stats_user_common)) {
++			ath11k_warn(ab, "Invalid len %d for the tag 0x%x\n",
++				    len, tag);
+ 			return -EINVAL;
+ 		}
+-		tlv = (struct htt_tlv *)ptr;
+-		tlv_tag = FIELD_GET(HTT_TLV_TAG, tlv->header);
+-		tlv_len = FIELD_GET(HTT_TLV_LEN, tlv->header);
+-		ptr += sizeof(*tlv);
+-		len -= sizeof(*tlv);
+-
+-		if (tlv_len > len) {
+-			ath11k_err(ab, "htt tlv parse failure of tag %u at byte %zd (%zu bytes left, %u expected)\n",
+-				   tlv_tag, ptr - begin, len, tlv_len);
++		peer_id = ((struct htt_ppdu_stats_user_common *)ptr)->sw_peer_id;
++		cur_user = ath11k_get_ppdu_user_index(&ppdu_info->ppdu_stats,
++						      peer_id);
++		if (cur_user < 0)
+ 			return -EINVAL;
+-		}
+-		ret = iter(ab, tlv_tag, tlv_len, ptr, data);
+-		if (ret == -ENOMEM)
+-			return ret;
+-
+-		ptr += tlv_len;
+-		len -= tlv_len;
++		user_stats = &ppdu_info->ppdu_stats.user_stats[cur_user];
++		memcpy(&user_stats->common, ptr,
++		       sizeof(struct htt_ppdu_stats_user_common));
++		ppdu_info->frame_ctrl = FIELD_GET(HTT_PPDU_STATS_USR_CMN_CTL_FRM_CTRL,
++						  user_stats->common.ctrl);
++		user_stats->delay_ba = FIELD_GET(HTT_PPDU_STATS_USR_CMN_FLAG_DELAYBA,
++						  user_stats->common.info);
++		ppdu_info->delay_ba = user_stats->delay_ba;
++		break;
++	default:
++		break;
+ 	}
++	ppdu_info->tlv_bitmap |= BIT(tag);
+ 	return 0;
+ }
+ 
+@@ -1373,8 +1381,8 @@ ath11k_update_per_peer_tx_stats(struct a
+ 	struct htt_ppdu_stats_common *common = &ppdu_stats->common;
+ 	int ret;
+ 	u8 flags, mcs, nss, bw, sgi, dcm, rate_idx = 0;
+-	u32 succ_bytes = 0;
+-	u16 rate = 0, succ_pkts = 0;
++	u32 succ_bytes = 0, ppdu_type, mu_grpid, mu_pos;
++	u16 rate = 0, succ_pkts = 0, ru_tone, ru_start;
+ 	u32 tx_duration = 0;
+ 	u8 tid = HTT_PPDU_STATS_NON_QOS_TID;
+ 	bool is_ampdu = false;
+@@ -1405,6 +1413,11 @@ ath11k_update_per_peer_tx_stats(struct a
+ 	mcs = HTT_USR_RATE_MCS(user_rate->rate_flags);
+ 	sgi = HTT_USR_RATE_GI(user_rate->rate_flags);
+ 	dcm = HTT_USR_RATE_DCM(user_rate->rate_flags);
++	ppdu_type = HTT_USR_RATE_PPDU_TYPE(user_rate->info1);
++	mu_grpid = HTT_USR_RATE_MU_GRPID(user_rate->info0);
++	mu_pos = HTT_USR_RATE_USR_POS(user_rate->info0);
++	ru_start = user_rate->ru_start;
++	ru_tone = user_rate->ru_end;
+ 
+ 	/* Note: If host configured fixed rates and in some other special
+ 	 * cases, the broadcast/management frames are sent in different rates.
+@@ -1499,6 +1512,12 @@ ath11k_update_per_peer_tx_stats(struct a
+ 		peer_stats->ba_fails =
+ 			HTT_USR_CMPLTN_LONG_RETRY(usr_stats->cmpltn_cmn.flags) +
+ 			HTT_USR_CMPLTN_SHORT_RETRY(usr_stats->cmpltn_cmn.flags);
++		peer_stats->ppdu_type = ppdu_type;
++		peer_stats->ru_tones = ru_tone;
++		peer_stats->ru_start = ru_start;
++		peer_stats->mu_grpid = mu_grpid;
++		peer_stats->mu_pos   = mu_pos;
++		peer_stats->ru_tones = arsta->txrate.he_ru_alloc;
+ 
+ 		if (ath11k_debugfs_is_extd_tx_stats_enabled(ar))
+ 			ath11k_debugfs_sta_add_tx_stats(arsta, peer_stats, rate_idx);
+@@ -1551,13 +1570,89 @@ struct htt_ppdu_stats_info *ath11k_dp_ht
+ 	return ppdu_info;
+ }
+ 
++void ath11k_copy_to_delay_stats(struct ath11k_peer *peer,
++				  struct htt_ppdu_user_stats* usr_stats)
++{
++	peer->ppdu_stats_delayba.reserved0 = usr_stats->rate.reserved0;
++	peer->ppdu_stats_delayba.sw_peer_id = usr_stats->rate.sw_peer_id;
++	peer->ppdu_stats_delayba.info0 = usr_stats->rate.info0;
++	peer->ppdu_stats_delayba.ru_end = usr_stats->rate.ru_end;
++	peer->ppdu_stats_delayba.ru_start = usr_stats->rate.ru_start;
++	peer->ppdu_stats_delayba.info1 = usr_stats->rate.info1;
++	peer->ppdu_stats_delayba.rate_flags = usr_stats->rate.rate_flags;
++	peer->ppdu_stats_delayba.resp_rate_flags = usr_stats->rate.resp_rate_flags;
++
++	peer->delayba_flag = true;
++}
++
++void ath11k_copy_to_bar(struct ath11k_peer *peer,
++			struct htt_ppdu_user_stats* usr_stats)
++{
++	usr_stats->rate.reserved0 = peer->ppdu_stats_delayba.reserved0;
++	usr_stats->rate.sw_peer_id = peer->ppdu_stats_delayba.sw_peer_id;
++	usr_stats->rate.info0 = peer->ppdu_stats_delayba.info0;
++	usr_stats->rate.ru_end = peer->ppdu_stats_delayba.ru_end;
++	usr_stats->rate.ru_start = peer->ppdu_stats_delayba.ru_start;
++	usr_stats->rate.info1 = peer->ppdu_stats_delayba.info1;
++	usr_stats->rate.rate_flags = peer->ppdu_stats_delayba.rate_flags;
++	usr_stats->rate.resp_rate_flags = peer->ppdu_stats_delayba.resp_rate_flags;
++
++	peer->delayba_flag = false;
++}
++
++int ath11k_dp_htt_tlv_iter(struct ath11k_base *ab, const void *ptr, size_t len,
++			   int (*iter)(struct ath11k_base *ar, u16 tag, u16 len,
++				       const void *ptr, void *data),
++			   void *data)
++{
++	const struct htt_tlv *tlv;
++	const void *begin = ptr;
++	u16 tlv_tag, tlv_len;
++	int ret = -EINVAL;
++	struct htt_ppdu_stats_info * ppdu_info = NULL;
++
++	if (data) {
++		ppdu_info = (struct htt_ppdu_stats_info *)data;
++		ppdu_info->tlv_bitmap = 0;
++	}
++	while (len > 0) {
++		if (len < sizeof(*tlv)) {
++			ath11k_err(ab, "htt tlv parse failure at byte %zd (%zu bytes left, %zu expected)\n",
++				   ptr - begin, len, sizeof(*tlv));
++			return -EINVAL;
++		}
++		tlv = (struct htt_tlv *)ptr;
++		tlv_tag = FIELD_GET(HTT_TLV_TAG, tlv->header);
++		tlv_len = FIELD_GET(HTT_TLV_LEN, tlv->header);
++		ptr += sizeof(*tlv);
++		len -= sizeof(*tlv);
++
++		if (tlv_len > len) {
++			ath11k_err(ab, "htt tlv parse failure of tag %hhu at byte %zd (%zu bytes left, %hhu expected)\n",
++				   tlv_tag, ptr - begin, len, tlv_len);
++			return -EINVAL;
++		}
++
++		ret = iter(ab, tlv_tag, tlv_len, ptr, ppdu_info);
++		if (ret == -ENOMEM)
++			return ret;
++
++		ptr += tlv_len;
++		len -= tlv_len;
++	}
++	return 0;
++}
++
+ static int ath11k_htt_pull_ppdu_stats(struct ath11k_base *ab,
+ 				      struct sk_buff *skb)
+ {
+ 	struct ath11k_htt_ppdu_stats_msg *msg;
+ 	struct htt_ppdu_stats_info *ppdu_info;
++	struct ath11k_peer *peer = NULL;
++	struct htt_ppdu_user_stats* usr_stats = NULL;
++	u32 peer_id = 0;
+ 	struct ath11k *ar;
+-	int ret;
++	int ret, i;
+ 	u8 pdev_id;
+ 	u32 ppdu_id, len;
+ 
+@@ -1592,6 +1687,47 @@ static int ath11k_htt_pull_ppdu_stats(st
+ 		goto out_unlock_data;
+ 	}
+ 
++	/* back up data rate tlv for all peers */
++	if (ppdu_info->frame_type == HTT_STATS_PPDU_FTYPE_DATA &&
++	    (ppdu_info->tlv_bitmap & (1 << HTT_PPDU_STATS_TAG_USR_COMMON)) &&
++	    ppdu_info->delay_ba) {
++
++		for (i = 0; i < ppdu_info->ppdu_stats.common.num_users; i++) {
++			peer_id = ppdu_info->ppdu_stats.user_stats[i].peer_id;
++			spin_lock_bh(&ab->base_lock);
++			peer = ath11k_peer_find_by_id(ab, peer_id);
++			if (!peer) {
++				spin_unlock_bh(&ab->base_lock);
++				continue;
++			}
++
++			usr_stats = &ppdu_info->ppdu_stats.user_stats[i];
++			if (usr_stats->delay_ba)
++				ath11k_copy_to_delay_stats(peer, usr_stats);
++			spin_unlock_bh(&ab->base_lock);
++		}
++	}
++
++	/* restore all peers' data rate tlv to mu-bar tlv */
++	if (ppdu_info->frame_type == HTT_STATS_PPDU_FTYPE_BAR &&
++	    (ppdu_info->tlv_bitmap & (1 << HTT_PPDU_STATS_TAG_USR_COMMON))) {
++
++		for (i = 0; i < ppdu_info->bar_num_users; i++) {
++			peer_id = ppdu_info->ppdu_stats.user_stats[i].peer_id;
++			spin_lock_bh(&ab->base_lock);
++			peer = ath11k_peer_find_by_id(ab, peer_id);
++			if (!peer) {
++				spin_unlock_bh(&ab->base_lock);
++				continue;
++			}
++
++			usr_stats = &ppdu_info->ppdu_stats.user_stats[i];
++			if (peer->delayba_flag)
++				ath11k_copy_to_bar(peer, usr_stats);
++			spin_unlock_bh(&ab->base_lock);
++		}
++	}
++
+ out_unlock_data:
+ 	spin_unlock_bh(&ar->data_lock);
+ 
+--- a/drivers/net/wireless/ath/ath11k/rx_desc.h
++++ b/drivers/net/wireless/ath/ath11k/rx_desc.h
+@@ -1495,6 +1495,11 @@ struct hal_rx_desc {
+ 	} u;
+ } __packed;
+ 
++#define MAX_USER_POS 8
++#define MAX_MU_GROUP_ID 64
++#define MAX_MU_GROUP_SHOW 16
++#define MAX_MU_GROUP_LENGTH (6 * MAX_MU_GROUP_SHOW)
++
+ #define HAL_RX_RU_ALLOC_TYPE_MAX 6
+ #define RU_26  1
+ #define RU_52  2
+--- a/drivers/net/wireless/ath/ath11k/peer.h
++++ b/drivers/net/wireless/ath/ath11k/peer.h
+@@ -7,6 +7,17 @@
+ #ifndef ATH11K_PEER_H
+ #define ATH11K_PEER_H
+ 
++struct ppdu_user_delayba {
++	u8 reserved0;
++	u16 sw_peer_id;
++	u32 info0;
++	u16 ru_end;
++	u16 ru_start;
++	u32 info1;
++	u32 rate_flags;
++	u32 resp_rate_flags;
++};
++
+ struct ath11k_peer {
+ 	struct list_head list;
+ 	struct ieee80211_sta *sta;
+@@ -36,6 +47,8 @@ struct ath11k_peer {
+ 	u16 sec_type_grp;
+ 	bool is_authorized;
+ 	bool dp_setup_done;
++	struct ppdu_user_delayba ppdu_stats_delayba;
++	bool delayba_flag;
+ };
+ 
+ void ath11k_peer_unmap_event(struct ath11k_base *ab, u16 peer_id);

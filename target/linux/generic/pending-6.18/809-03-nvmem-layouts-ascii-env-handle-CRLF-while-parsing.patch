@@ -1,0 +1,58 @@
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Thu, 06 Feb 2025 21:55:28 +0400
+Subject: [PATCH] nvmem: layouts: ascii-env handle CRLF while parsing
+
+The current driver supports LF line endings only.
+
+For CRLF-based line endings in the ASCII env, the length of the value of
+the variable passed to nvmem_layout_parse_mac_base is 18 bytes instead
+of an expected length of 17 causing the parsing to fail.
+So, let's add the ability to handle CRLF line endings by adding a
+condition to check if the value ends with a '\r' character and replace it
+with '\0' to properly parse the mac address.
+
+Tested on Linksys MX2000, MX5500, and SPNMX56.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+--- a/drivers/nvmem/layouts/ascii-env.c
++++ b/drivers/nvmem/layouts/ascii-env.c
+@@ -25,18 +25,20 @@ struct ascii_env_match_data {
+ static int ascii_env_parse_cells(struct device *dev, struct nvmem_device *nvmem, uint8_t *buf,
+ 				 size_t data_len, const char delim)
+ {
+-	char *var, *value, *eq, *lf;
++	char *var, *value, *eq, *lf, *cr;
+ 	char *data = buf;
++	uint incr = 0;
+ 
+ 	/*
+ 	 * Warning the inner loop take care of replacing '\n'
+ 	 * with '\0', hence we can use strlen on value.
+ 	 */
+ 	for (var = data; var < data + data_len && *var;
+-	     var = value + strlen(value) + 1) {
++	     var = value + strlen(value) + incr) {
+ 		struct nvmem_cell_info info = {};
+ 		struct device_node *child;
+ 		const char *label;
++		incr = 0;
+ 
+ 		eq = strchr(var, delim);
+ 		if (!eq)
+@@ -49,6 +51,15 @@ static int ascii_env_parse_cells(struct
+ 		if (!lf)
+ 			break;
+ 		*lf = '\0';
++		incr++;
++
++		/* For CRLF based env, replace '\r' with '\0' too to use strlen
++		 * for value, and increment var by one in loop for next variable */
++		cr = strchr(value, '\r');
++		if (cr) {
++			*cr = '\0';
++			incr++;
++		}
+ 
+ 		info.name = devm_kstrdup(dev, var, GFP_KERNEL);
+ 		if (!info.name)

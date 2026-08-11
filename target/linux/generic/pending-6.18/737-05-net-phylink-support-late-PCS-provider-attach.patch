@@ -1,0 +1,254 @@
+From 684e49a015f2c5ae95ba968bb21ffc8fc36a2c7f Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sun, 6 Apr 2025 03:28:22 +0200
+Subject: [PATCH 5/7] net: phylink: support late PCS provider attach
+
+Add support in phylink for late PCS provider attach to a phylink
+instance. This works by creating a global notifier for the PCS provider
+and making each phylink instance that makes use of fwnode subscribe to
+this notifier.
+
+The PCS notifier will emit the event FWNODE_PCS_PROVIDER_ADD every time
+a new PCS provider is added.
+
+phylink will then react to this event and will call the new function
+fwnode_phylink_pcs_get_from_fwnode() that will check if the PCS fwnode
+provided by the event is present in the phy-handle property of the
+phylink instance.
+
+If a related PCS is found, then such PCS is added to the phylink
+instance PCS list.
+
+Then we link the PCS to the phylink instance if it's not disable and we
+refresh the supported interfaces of the phylink instance.
+
+Finally we check if we are in a major_config_failed scenario and trigger
+an interface reconfiguration in the next phylink resolve.
+
+If link was previously torn down due to removal of PCS, the link will be
+established again as the PCS came back and is not available to phylink.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/pcs/pcs.c     | 34 +++++++++++++++++++++++++
+ drivers/net/phy/phylink.c | 52 +++++++++++++++++++++++++++++++++++++++
+ include/linux/pcs/pcs.h   | 48 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 134 insertions(+)
+
+--- a/drivers/net/pcs/pcs.c
++++ b/drivers/net/pcs/pcs.c
+@@ -22,6 +22,13 @@ struct fwnode_pcs_provider {
+ 
+ static LIST_HEAD(fwnode_pcs_providers);
+ static DEFINE_MUTEX(fwnode_pcs_mutex);
++static BLOCKING_NOTIFIER_HEAD(fwnode_pcs_notify_list);
++
++int register_fwnode_pcs_notifier(struct notifier_block *nb)
++{
++	return blocking_notifier_chain_register(&fwnode_pcs_notify_list, nb);
++}
++EXPORT_SYMBOL_GPL(register_fwnode_pcs_notifier);
+ 
+ struct phylink_pcs *fwnode_pcs_simple_get(struct fwnode_reference_args *pcsspec,
+ 					  void *data)
+@@ -55,6 +62,10 @@ int fwnode_pcs_add_provider(struct fwnod
+ 
+ 	fwnode_dev_initialized(fwnode, true);
+ 
++	blocking_notifier_call_chain(&fwnode_pcs_notify_list,
++				     FWNODE_PCS_PROVIDER_ADD,
++				     fwnode);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(fwnode_pcs_add_provider);
+@@ -147,6 +158,29 @@ struct phylink_pcs *fwnode_pcs_get(struc
+ }
+ EXPORT_SYMBOL_GPL(fwnode_pcs_get);
+ 
++struct phylink_pcs *
++fwnode_phylink_pcs_get_from_fwnode(struct fwnode_handle *fwnode,
++				   struct fwnode_handle *pcs_fwnode)
++{
++	struct fwnode_reference_args pcsspec;
++	int i = 0;
++	int ret;
++
++	while (true) {
++		ret = fwnode_parse_pcsspec(fwnode, i, NULL, &pcsspec);
++		if (ret)
++			break;
++
++		if (pcsspec.fwnode == pcs_fwnode)
++			break;
++
++		i++;
++	}
++
++	return fwnode_pcs_get(fwnode, i);
++}
++EXPORT_SYMBOL_GPL(fwnode_phylink_pcs_get_from_fwnode);
++
+ static int fwnode_phylink_pcs_count(struct fwnode_handle *fwnode,
+ 				    unsigned int *num_pcs)
+ {
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -12,6 +12,7 @@
+ #include <linux/netdevice.h>
+ #include <linux/of.h>
+ #include <linux/of_mdio.h>
++#include <linux/pcs/pcs.h>
+ #include <linux/phy.h>
+ #include <linux/phy_fixed.h>
+ #include <linux/phylink.h>
+@@ -61,6 +62,7 @@ struct phylink {
+ 
+ 	/* List of available PCS */
+ 	struct list_head pcs_list;
++	struct notifier_block fwnode_pcs_nb;
+ 
+ 	/* What interface are supported by the current link.
+ 	 * Can change on removal or addition of new PCS.
+@@ -1952,6 +1954,51 @@ int phylink_set_fixed_link(struct phylin
+ }
+ EXPORT_SYMBOL_GPL(phylink_set_fixed_link);
+ 
++static int pcs_provider_notify(struct notifier_block *self,
++			       unsigned long val, void *data)
++{
++	struct phylink *pl = container_of(self, struct phylink, fwnode_pcs_nb);
++	struct fwnode_handle *pcs_fwnode = data;
++	struct phylink_pcs *pcs;
++
++	/* Check if the just added PCS provider is
++	 * in the phylink instance phy-handle property
++	 */
++	pcs = fwnode_phylink_pcs_get_from_fwnode(dev_fwnode(pl->config->dev),
++						 pcs_fwnode);
++	if (IS_ERR(pcs))
++		return NOTIFY_DONE;
++
++	/* Add the PCS */
++	rtnl_lock();
++
++	list_add(&pcs->list, &pl->pcs_list);
++
++	/* Link phylink if we are started */
++	if (!pl->phylink_disable_state)
++		pcs->phylink = pl;
++
++	/* Refresh supported interfaces */
++	phy_interface_copy(pl->supported_interfaces,
++			   pl->config->supported_interfaces);
++	list_for_each_entry(pcs, &pl->pcs_list, list)
++		phy_interface_or(pl->supported_interfaces,
++				 pl->supported_interfaces,
++				 pcs->supported_interfaces);
++
++	mutex_lock(&pl->state_mutex);
++	/* Force an interface reconfig if major config fail */
++	if (pl->major_config_failed)
++		pl->reconfig_interface = true;
++	mutex_unlock(&pl->state_mutex);
++
++	rtnl_unlock();
++
++	phylink_run_resolve(pl);
++
++	return NOTIFY_OK;
++}
++
+ /**
+  * phylink_create() - create a phylink instance
+  * @config: a pointer to the target &struct phylink_config
+@@ -2007,6 +2054,11 @@ struct phylink *phylink_create(struct ph
+ 				 pl->supported_interfaces,
+ 				 pcs->supported_interfaces);
+ 
++	if (!phy_interface_empty(config->pcs_interfaces)) {
++		pl->fwnode_pcs_nb.notifier_call = pcs_provider_notify;
++		register_fwnode_pcs_notifier(&pl->fwnode_pcs_nb);
++	}
++
+ 	pl->config = config;
+ 	if (config->type == PHYLINK_NETDEV) {
+ 		pl->netdev = to_net_dev(config->dev);
+--- a/include/linux/pcs/pcs.h
++++ b/include/linux/pcs/pcs.h
+@@ -4,8 +4,25 @@
+ 
+ #include <linux/phylink.h>
+ 
++enum fwnode_pcs_notify_event {
++	FWNODE_PCS_PROVIDER_ADD,
++};
++
+ #if IS_ENABLED(CONFIG_FWNODE_PCS)
+ /**
++ * register_fwnode_pcs_notifier - Register a notifier block for fwnode
++ *				  PCS events
++ * @nb: pointer to the notifier block
++ *
++ * Registers a notifier block to the fwnode_pcs_notify_list blocking
++ * notifier chain. This allows phylink instance to subscribe for
++ * PCS provider events.
++ *
++ * Returns 0 or a negative error.
++ */
++int register_fwnode_pcs_notifier(struct notifier_block *nb);
++
++/**
+  * fwnode_pcs_get - Retrieves a PCS from a firmware node
+  * @fwnode: firmware node
+  * @index: index fwnode PCS handle in firmware node
+@@ -21,6 +38,25 @@ struct phylink_pcs *fwnode_pcs_get(struc
+ 				   int index);
+ 
+ /**
++ * fwnode_phylink_pcs_get_from_fwnode - Retrieves the PCS provided
++ *					by the firmware node from a
++ *					firmware node
++ * @fwnode: firmware node
++ * @pcs_fwnode: PCS firmware node
++ *
++ * Parse 'pcs-handle' in 'fwnode' and get the PCS that match
++ * 'pcs_fwnode' firmware node.
++ *
++ * Returns a pointer to the phylink_pcs or a negative
++ * error pointer. Can return -EPROBE_DEFER if the PCS is not
++ * present in global providers list (either due to driver
++ * still needs to be probed or it failed to probe/removed)
++ */
++struct phylink_pcs *
++fwnode_phylink_pcs_get_from_fwnode(struct fwnode_handle *fwnode,
++				   struct fwnode_handle *pcs_fwnode);
++
++/**
+  * fwnode_phylink_pcs_parse - generic PCS parse for fwnode PCS provider
+  * @fwnode: firmware node
+  * @available_pcs: pointer to preallocated array of PCS
+@@ -39,11 +75,23 @@ int fwnode_phylink_pcs_parse(struct fwno
+ 			     struct phylink_pcs **available_pcs,
+ 			     unsigned int *num_pcs);
+ #else
++static inline int register_fwnode_pcs_notifier(struct notifier_block *nb)
++{
++	return -EOPNOTSUPP;
++}
++
+ static inline struct phylink_pcs *fwnode_pcs_get(struct fwnode_handle *fwnode,
+ 						 int index)
+ {
+ 	return ERR_PTR(-ENOENT);
+ }
++
++static inline struct phylink_pcs *
++fwnode_phylink_pcs_get_from_fwnode(struct fwnode_handle *fwnode,
++				   struct fwnode_handle *pcs_fwnode)
++{
++	return ERR_PTR(-ENOENT);
++}
+ 
+ static inline int fwnode_phylink_pcs_parse(struct fwnode_handle *fwnode,
+ 					   struct phylink_pcs **available_pcs,

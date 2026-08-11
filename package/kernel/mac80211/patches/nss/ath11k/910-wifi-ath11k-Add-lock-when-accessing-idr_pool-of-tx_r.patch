@@ -1,0 +1,75 @@
+From 1d840740e28058a5be16d96202c076f552839d7a Mon Sep 17 00:00:00 2001
+From: Aishwarya R <quic_aisr@quicinc.com>
+Date: Tue, 19 Mar 2024 15:14:30 +0530
+Subject: [PATCH] wifi: ath11k: Add lock when accessing idr_pool of tx_ring
+
+Lock is missed while accessing idr_pool of tx_ring which
+causes Use after free crash in dp_free path when unloading
+the module.
+
+Fix this by adding tx_idr_lock when accessing idr_pool
+of tx_ring.
+
+Signed-off-by: Aishwarya R <quic_aisr@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp_tx.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -348,8 +348,10 @@ fail_remove_idr:
+ 	if (ti.pkt_offset)
+ 		skb_pull(skb, ti.pkt_offset);
+ 
++	spin_lock_bh(&tx_ring->tx_idr_lock);
+ 	tx_ring->idr_pool[idr].id = -1;
+ 	clear_bit(idr, tx_ring->idrs);
++	spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 
+ 	if (tcl_ring_retry)
+ 		goto tcl_ring_sel;
+@@ -365,12 +367,14 @@ static void ath11k_dp_tx_free_txbuf(stru
+ 	struct sk_buff *msdu = NULL;
+ 	struct ath11k_skb_cb *skb_cb;
+ 
++	spin_lock_bh(&tx_ring->tx_idr_lock);
+ 	if (msdu_id < DP_TX_IDR_SIZE &&
+ 	    tx_ring->idr_pool[msdu_id].id == msdu_id) {
+ 		msdu = tx_ring->idr_pool[msdu_id].buf;
+ 		tx_ring->idr_pool[msdu_id].id = -1;
+ 		clear_bit(msdu_id, tx_ring->idrs);
+ 	}
++	spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 
+ 	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",
+@@ -402,12 +406,14 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 	u32 msdu_id = ts->msdu_id;
+ 	u8 flags;
+ 
++	spin_lock_bh(&tx_ring->tx_idr_lock);
+ 	if (msdu_id < DP_TX_IDR_SIZE &&
+ 	    tx_ring->idr_pool[msdu_id].id == msdu_id) {
+ 		msdu = tx_ring->idr_pool[msdu_id].buf;
+ 		tx_ring->idr_pool[msdu_id].id = -1;
+ 		clear_bit(msdu_id, tx_ring->idrs);
+ 	}
++	spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 
+ 	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "htt tx completion for unknown msdu_id %d\n",
+@@ -893,12 +899,14 @@ void ath11k_dp_tx_completion_handler(str
+ 			continue;
+ 		}
+ 
++		spin_lock_bh(&tx_ring->tx_idr_lock);
+ 		if (msdu_id < DP_TX_IDR_SIZE &&
+ 		    tx_ring->idr_pool[msdu_id].id == msdu_id) {
+ 			msdu = tx_ring->idr_pool[msdu_id].buf;
+ 			tx_ring->idr_pool[msdu_id].id = -1;
+ 			clear_bit(msdu_id, tx_ring->idrs);
+ 		}
++		spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 
+ 		if (unlikely(!msdu)) {
+ 			ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",

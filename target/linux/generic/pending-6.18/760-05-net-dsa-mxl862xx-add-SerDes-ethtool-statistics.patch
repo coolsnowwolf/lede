@@ -1,0 +1,268 @@
+From 3659914c43a587a1ca6418867834831aa518ac35 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 24 Mar 2026 18:14:33 +0000
+Subject: [PATCH 05/19] net: dsa: mxl862xx: add SerDes ethtool statistics
+
+Expose SerDes equalization and signal detect parameters as ethtool
+statistics on ports 9-16 (XPCS-backed ports). Uses the XPCS EQ_GET
+and SIGNAL_DETECT firmware commands to read TX/RX equalization
+coefficients, DFE taps, and link-level signal status.
+
+The 19 additional stats (serdes_tx_*, serdes_rx_*, serdes_pma_link,
+serdes_link_fault, serdes_in_reset) are appended after the standard
+RMON counters and gated on firmware >= 1.0.80.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-api.h     | 88 +++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-cmd.h     |  2 +
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c | 93 +++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.h |  3 +
+ drivers/net/dsa/mxl862xx/mxl862xx.c         |  6 +-
+ 5 files changed, 191 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-api.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-api.h
+@@ -1812,4 +1812,92 @@ struct mxl862xx_xpcs_reset_cfg {
+ 	__le16 result;
+ } __packed;
+ 
++/**
++ * struct mxl862xx_xpcs_eq_item - single equalization parameter
++ * @value: current initial value
++ * @ovrd: override value
++ * @ovrd_en: override enable flag
++ */
++struct mxl862xx_xpcs_eq_item {
++	u8 value;
++	u8 ovrd;
++	u8 ovrd_en;
++} __packed;
++
++/**
++ * struct mxl862xx_xpcs_tx_eq_info - TX equalization status
++ * @main: TX main cursor (0-63)
++ * @pre: TX pre-cursor (0-63)
++ * @post: TX post-cursor (0-63)
++ * @iboost_lvl: TX iboost level (0-15)
++ * @vboost_lvl: TX vboost level (0-7)
++ * @vboost_en: TX vboost enable (0-1)
++ */
++struct mxl862xx_xpcs_tx_eq_info {
++	struct mxl862xx_xpcs_eq_item main;
++	struct mxl862xx_xpcs_eq_item pre;
++	struct mxl862xx_xpcs_eq_item post;
++	struct mxl862xx_xpcs_eq_item iboost_lvl;
++	struct mxl862xx_xpcs_eq_item vboost_lvl;
++	struct mxl862xx_xpcs_eq_item vboost_en;
++} __packed;
++
++/**
++ * struct mxl862xx_xpcs_rx_eq_info - RX equalization status
++ * @att_lvl: RX attenuation level (0-7)
++ * @vga1_gain: RX VGA1 gain (0-7)
++ * @vga2_gain: RX VGA2 gain (0-7)
++ * @ctle_boost: RX CTLE boost (0-31)
++ * @ctle_pole: RX CTLE pole (0-3)
++ * @dfe_tap1: RX DFE tap1 (0-255)
++ * @dfe_bypass: RX DFE bypass (0-1)
++ * @adapt_mode: RX adapt mode (0-3)
++ * @adapt_sel: RX adapt select (0-1)
++ */
++struct mxl862xx_xpcs_rx_eq_info {
++	struct mxl862xx_xpcs_eq_item att_lvl;
++	struct mxl862xx_xpcs_eq_item vga1_gain;
++	struct mxl862xx_xpcs_eq_item vga2_gain;
++	struct mxl862xx_xpcs_eq_item ctle_boost;
++	struct mxl862xx_xpcs_eq_item ctle_pole;
++	struct mxl862xx_xpcs_eq_item dfe_tap1;
++	struct mxl862xx_xpcs_eq_item dfe_bypass;
++	struct mxl862xx_xpcs_eq_item adapt_mode;
++	struct mxl862xx_xpcs_eq_item adapt_sel;
++} __packed;
++
++/**
++ * struct mxl862xx_xpcs_eq_get - EQ get request/response
++ * @port_id: XPCS port index (0 or 1)
++ * @result: firmware result
++ * @tx: TX equalization info
++ * @rx: RX equalization info
++ */
++struct mxl862xx_xpcs_eq_get {
++	u8 port_id;
++	__le16 result;
++	struct mxl862xx_xpcs_tx_eq_info tx;
++	struct mxl862xx_xpcs_rx_eq_info rx;
++} __packed;
++
++/**
++ * struct mxl862xx_xpcs_signal_detect - signal detect status
++ * @port_id: XPCS port index (0 or 1)
++ * @rx_signal: RX signal detected
++ * @pma_link: PMA link up
++ * @link_fault: PCS link fault
++ * @in_reset: XPCS in reset
++ * @result: firmware result
++ */
++struct mxl862xx_xpcs_signal_detect {
++	u8 port_id:2;
++	u8 rx_signal:1;
++	u8 pma_link:1;
++	u8 link_fault:1;
++	u8 in_reset:1;
++	u8 __rsv:2;
++	u8 __pad;
++	__le16 result;
++} __packed;
++
+ #endif /* __MXL862XX_API_H */
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
+@@ -83,6 +83,8 @@
+ #define MXL862XX_XPCS_FORCE_SPEED	(MXL862XX_XPCS_MAGIC + 0x7)
+ #define MXL862XX_XPCS_LOOPBACK		(MXL862XX_XPCS_MAGIC + 0x8)
+ #define MXL862XX_XPCS_RESET		(MXL862XX_XPCS_MAGIC + 0x9)
++#define MXL862XX_XPCS_EQ_GET		(MXL862XX_XPCS_MAGIC + 0xc)
++#define MXL862XX_XPCS_SIGNAL_DETECT	(MXL862XX_XPCS_MAGIC + 0xd)
+ 
+ #define MMD_API_MAXIMUM_ID		0x7fff
+ 
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -456,3 +456,96 @@ const struct phylink_mac_ops mxl862xx_ph
+ 	.mac_link_up = mxl862xx_phylink_mac_link_up,
+ 	.mac_select_pcs = mxl862xx_phylink_mac_select_pcs,
+ };
++
++/* --- SerDes ethtool statistics --- */
++
++static const char mxl862xx_serdes_stats[][ETH_GSTRING_LEN] = {
++	"serdes_tx_main",
++	"serdes_tx_pre",
++	"serdes_tx_post",
++	"serdes_tx_iboost",
++	"serdes_tx_vboost",
++	"serdes_tx_vboost_en",
++	"serdes_rx_att",
++	"serdes_rx_vga1",
++	"serdes_rx_vga2",
++	"serdes_rx_ctle_boost",
++	"serdes_rx_ctle_pole",
++	"serdes_rx_dfe_tap1",
++	"serdes_rx_dfe_bypass",
++	"serdes_rx_adapt_mode",
++	"serdes_rx_adapt_sel",
++	"serdes_rx_signal",
++	"serdes_pma_link",
++	"serdes_link_fault",
++	"serdes_in_reset",
++};
++
++static bool mxl862xx_port_has_serdes_stats(struct dsa_switch *ds, int port)
++{
++	struct mxl862xx_priv *priv = ds->priv;
++
++	return port >= 9 && port <= 16 &&
++	       MXL862XX_FW_VER_MIN(priv, 1, 0, 80);
++}
++
++int mxl862xx_serdes_stats_count(struct dsa_switch *ds, int port)
++{
++	if (mxl862xx_port_has_serdes_stats(ds, port))
++		return ARRAY_SIZE(mxl862xx_serdes_stats);
++
++	return 0;
++}
++
++void mxl862xx_serdes_get_strings(struct dsa_switch *ds, int port, u8 *data)
++{
++	int i;
++
++	if (!mxl862xx_port_has_serdes_stats(ds, port))
++		return;
++
++	for (i = 0; i < ARRAY_SIZE(mxl862xx_serdes_stats); i++)
++		ethtool_puts(&data, mxl862xx_serdes_stats[i]);
++}
++
++void mxl862xx_serdes_get_stats(struct dsa_switch *ds, int port, u64 *data)
++{
++	struct mxl862xx_xpcs_eq_get eq = {
++		.port_id = mxl862xx_xpcs_port_id(port),
++	};
++	struct mxl862xx_xpcs_signal_detect sig = {};
++
++	if (!mxl862xx_port_has_serdes_stats(ds, port))
++		return;
++
++	sig.port_id = mxl862xx_xpcs_port_id(port);
++
++	if (!MXL862XX_API_READ(ds->priv, MXL862XX_XPCS_EQ_GET, eq)) {
++		*data++ = eq.tx.main.value;
++		*data++ = eq.tx.pre.value;
++		*data++ = eq.tx.post.value;
++		*data++ = eq.tx.iboost_lvl.value;
++		*data++ = eq.tx.vboost_lvl.value;
++		*data++ = eq.tx.vboost_en.value;
++		*data++ = eq.rx.att_lvl.value;
++		*data++ = eq.rx.vga1_gain.value;
++		*data++ = eq.rx.vga2_gain.value;
++		*data++ = eq.rx.ctle_boost.value;
++		*data++ = eq.rx.ctle_pole.value;
++		*data++ = eq.rx.dfe_tap1.value;
++		*data++ = eq.rx.dfe_bypass.value;
++		*data++ = eq.rx.adapt_mode.value;
++		*data++ = eq.rx.adapt_sel.value;
++	} else {
++		data += 15;
++	}
++
++	if (!MXL862XX_API_READ(ds->priv, MXL862XX_XPCS_SIGNAL_DETECT, sig)) {
++		*data++ = sig.rx_signal;
++		*data++ = sig.pma_link;
++		*data++ = sig.link_fault;
++		*data++ = sig.in_reset;
++	} else {
++		data += 4;
++	}
++}
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
+@@ -12,5 +12,8 @@ void mxl862xx_phylink_get_caps(struct ds
+ 			       struct phylink_config *config);
+ void mxl862xx_setup_pcs(struct mxl862xx_priv *priv, struct mxl862xx_pcs *pcs,
+ 			int port);
++int mxl862xx_serdes_stats_count(struct dsa_switch *ds, int port);
++void mxl862xx_serdes_get_strings(struct dsa_switch *ds, int port, u8 *data);
++void mxl862xx_serdes_get_stats(struct dsa_switch *ds, int port, u64 *data);
+ 
+ #endif /* __MXL862XX_PHYLINK_H */
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -1775,6 +1775,8 @@ static void mxl862xx_get_strings(struct
+ 
+ 	for (i = 0; i < ARRAY_SIZE(mxl862xx_mib); i++)
+ 		ethtool_puts(&data, mxl862xx_mib[i].name);
++
++	mxl862xx_serdes_get_strings(ds, port, data);
+ }
+ 
+ static int mxl862xx_get_sset_count(struct dsa_switch *ds, int port, int sset)
+@@ -1782,7 +1784,7 @@ static int mxl862xx_get_sset_count(struc
+ 	if (sset != ETH_SS_STATS)
+ 		return 0;
+ 
+-	return ARRAY_SIZE(mxl862xx_mib);
++	return ARRAY_SIZE(mxl862xx_mib) + mxl862xx_serdes_stats_count(ds, port);
+ }
+ 
+ static int mxl862xx_read_rmon(struct dsa_switch *ds, int port,
+@@ -1818,6 +1820,8 @@ static void mxl862xx_get_ethtool_stats(s
+ 		else
+ 			*data++ = le64_to_cpu(*(__le64 *)field);
+ 	}
++
++	mxl862xx_serdes_get_stats(ds, port, data);
+ }
+ 
+ static void mxl862xx_get_eth_mac_stats(struct dsa_switch *ds, int port,

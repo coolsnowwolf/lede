@@ -1,0 +1,381 @@
+From 71add81f4a3f1ea505f498d789e7a1721c4d7a6e Mon Sep 17 00:00:00 2001
+From: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+Date: Mon, 4 Sep 2023 12:48:19 +0530
+Subject: [PATCH] ath11k: Add support for dynamic vlan
+
+This patch adds support for dynamic vlan. VLAN group traffics
+are encrypted in software. vlan unicast packets shall be taking
+8023 xmit path if encap offload is enabled and mcast/bcast will
+be using 80211 xmit path.
+
+Metadata info in dp_tx added to notify firmware that the
+multicast/broadcast packets are encrypted in sw.
+
+Signed-off-by: Seevalamuthu Mariappan <seevalam@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.h  |   1 +
+ drivers/net/wireless/ath/ath11k/dp_tx.c |  80 +++++++++-
+ drivers/net/wireless/ath/ath11k/dp_tx.h | 198 ++++++++++++++++++++++++
+ drivers/net/wireless/ath/ath11k/mac.c   |   3 +
+ 4 files changed, 279 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.h
++++ b/drivers/net/wireless/ath/ath11k/core.h
+@@ -128,6 +128,7 @@ struct ath11k_skb_cb {
+ 	u32 cipher;
+ 	struct ath11k *ar;
+ 	struct ieee80211_vif *vif;
++	u32 pkt_offset;
+ } __packed;
+ 
+ struct ath11k_skb_rxcb {
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -80,6 +80,43 @@ enum hal_encrypt_type ath11k_dp_tx_get_e
+ 	}
+ }
+ 
++#define HTT_META_DATA_ALIGNMENT	0x8
++
++static int ath11k_dp_metadata_align_skb(struct sk_buff *skb, u8 align_len)
++{
++	if (unlikely(skb_cow_head(skb, align_len)))
++		return -ENOMEM;
++
++	skb_push(skb, align_len);
++	memset(skb->data, 0, align_len);
++	return 0;
++}
++
++static int ath11k_dp_prepare_htt_metadata(struct sk_buff *skb,
++					  u8 *htt_metadata_size)
++{
++	u8 htt_desc_size;
++	/* Size rounded of multiple of 8 bytes */
++	u8 htt_desc_size_aligned;
++	int ret;
++	struct htt_tx_msdu_desc_ext *desc_ext;
++
++	htt_desc_size = sizeof(struct htt_tx_msdu_desc_ext);
++	htt_desc_size_aligned = ALIGN(htt_desc_size, HTT_META_DATA_ALIGNMENT);
++
++	ret = ath11k_dp_metadata_align_skb(skb, htt_desc_size_aligned);
++	if (unlikely(ret))
++		return ret;
++
++	desc_ext = (struct htt_tx_msdu_desc_ext *)skb->data;
++	desc_ext->valid_encrypt_type = 1;
++	desc_ext->encrypt_type = 0;
++	desc_ext->host_tx_desc_pool = 1;
++	*htt_metadata_size = htt_desc_size_aligned;
++
++	return 0;
++}
++
+ int ath11k_dp_tx(struct ath11k *ar, struct ath11k_vif *arvif,
+ 		 struct ath11k_sta *arsta, struct sk_buff *skb)
+ {
+@@ -97,7 +134,8 @@ int ath11k_dp_tx(struct ath11k *ar, stru
+ 	int ret;
+ 	u32 ring_selector = 0;
+ 	u8 ring_map = 0;
+-	bool tcl_ring_retry;
++	bool tcl_ring_retry, is_diff_encap = false;
++	u8 align_pad, htt_meta_size = 0;
+ 
+ 	if (unlikely(test_bit(ATH11K_FLAG_CRASH_FLUSH, &ar->ab->dev_flags)))
+ 		return -ESHUTDOWN;
+@@ -190,7 +228,10 @@ tcl_ring_sel:
+ 
+ 	switch (ti.encap_type) {
+ 	case HAL_TCL_ENCAP_TYPE_NATIVE_WIFI:
+-		ath11k_dp_tx_encap_nwifi(skb);
++		if (arvif->vif->offload_flags & IEEE80211_OFFLOAD_ENCAP_ENABLED)
++			is_diff_encap = true;
++		else
++			ath11k_dp_tx_encap_nwifi(skb);
+ 		break;
+ 	case HAL_TCL_ENCAP_TYPE_RAW:
+ 		if (!test_bit(ATH11K_FLAG_RAW_MODE, &ab->dev_flags)) {
+@@ -209,6 +250,33 @@ tcl_ring_sel:
+ 		goto fail_remove_idr;
+ 	}
+ 
++	/* Add metadata for sw encrypted vlan group traffic */
++	if ((!test_bit(ATH11K_FLAG_HW_CRYPTO_DISABLED, &ar->ab->dev_flags) &&
++	    !(info->control.flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
++	    !info->control.hw_key && ieee80211_has_protected(hdr->frame_control)) ||
++	    (skb->protocol == cpu_to_be16(ETH_P_PAE) && is_diff_encap)) {
++		/* HW requirement is that metadata should always point to a
++		 * 8-byte aligned address. So we add alignment pad to start of
++		 * buffer. HTT Metadata should be ensured to be multiple of 8-bytes
++		 *  to get 8-byte aligned start address along with align_pad added
++		 */
++		align_pad = ((unsigned long)skb->data) & (HTT_META_DATA_ALIGNMENT - 1);
++		ret = ath11k_dp_metadata_align_skb(skb, align_pad);
++		if (unlikely(ret))
++			goto fail_remove_idr;
++
++		ti.pkt_offset += align_pad;
++		ret = ath11k_dp_prepare_htt_metadata(skb, &htt_meta_size);
++		if (unlikely(ret))
++			goto fail_remove_idr;
++
++		ti.pkt_offset += htt_meta_size;
++		ti.meta_data_flags |= HTT_TCL_META_DATA_VALID_HTT;
++		ti.flags0 |= FIELD_PREP(HAL_TCL_DATA_CMD_INFO1_TO_FW, 1);
++		ti.encap_type = HAL_TCL_ENCAP_TYPE_RAW;
++		ti.encrypt_type = HAL_ENCRYPT_TYPE_OPEN;
++	}
++
+ 	ti.paddr = dma_map_single(ab->dev, skb->data, skb->len, DMA_TO_DEVICE);
+ 	if (unlikely(dma_mapping_error(ab->dev, ti.paddr))) {
+ 		atomic_inc(&ab->soc_stats.tx_err.misc_fail);
+@@ -217,7 +285,8 @@ tcl_ring_sel:
+ 		goto fail_remove_idr;
+ 	}
+ 
+-	ti.data_len = skb->len;
++	ti.data_len = skb->len - ti.pkt_offset;
++	skb_cb->pkt_offset = ti.pkt_offset;
+ 	skb_cb->paddr = ti.paddr;
+ 	skb_cb->vif = arvif->vif;
+ 	skb_cb->ar = ar;
+@@ -273,6 +342,8 @@ fail_unmap_dma:
+ 	dma_unmap_single(ab->dev, ti.paddr, ti.data_len, DMA_TO_DEVICE);
+ 
+ fail_remove_idr:
++	if (ti.pkt_offset)
++		skb_pull(skb, ti.pkt_offset);
+ 	spin_lock_bh(&tx_ring->tx_idr_lock);
+ 	idr_remove(&tx_ring->txbuf_idr,
+ 		   FIELD_GET(DP_TX_DESC_ID_MSDU_ID, ti.desc_id));
+@@ -349,6 +420,9 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 		return;
+ 	}
+ 
++	if (skb_cb->pkt_offset)
++		skb_pull(msdu, skb_cb->pkt_offset); /* removing the alignment and htt meta data */
++
+ 	memset(&info->status, 0, sizeof(info->status));
+ 
+ 	if (ts->acked) {
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.h
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.h
+@@ -17,6 +17,204 @@ struct ath11k_dp_htt_wbm_tx_status {
+ 	u16 peer_id;
+ };
+ 
++/* htt_tx_msdu_desc_ext
++ *
++ * valid_pwr
++ *		if set, tx pwr spec is valid
++ *
++ * valid_mcs_mask
++ *		if set, tx MCS mask is valid
++ *
++ * valid_nss_mask
++ *		if set, tx Nss mask is valid
++ *
++ * valid_preamble_type
++ *		if set, tx preamble spec is valid
++ *
++ * valid_retries
++ *		if set, tx retries spec is valid
++ *
++ * valid_bw_info
++ *		if set, tx dyn_bw and bw_mask are valid
++ *
++ * valid_guard_interval
++ *		if set, tx guard intv spec is valid
++ *
++ * valid_chainmask
++ *		if set, tx chainmask is valid
++ *
++ * valid_encrypt_type
++ *		if set, encrypt type is valid
++ *
++ * valid_key_flags
++ *		if set, key flags is valid
++ *
++ * valid_expire_tsf
++ *		if set, tx expire TSF spec is valid
++ *
++ * valid_chanfreq
++ *		if set, chanfreq is valid
++ *
++ * is_dsrc
++ *		if set, MSDU is a DSRC frame
++ *
++ * guard_interval
++ *		0.4us, 0.8us, 1.6us, 3.2us
++ *
++ * encrypt_type
++ *		0 = NO_ENCRYPT,
++ *		1 = ENCRYPT,
++ *		2 ~ 3 - Reserved
++ *
++ * retry_limit
++ *		Specify the maximum number of transmissions, including the
++ *		initial transmission, to attempt before giving up if no ack
++ *		is received.
++ *		If the tx rate is specified, then all retries shall use the
++ *		same rate as the initial transmission.
++ *		If no tx rate is specified, the target can choose whether to
++ *		retain the original rate during the retransmissions, or to
++ *		fall back to a more robust rate.
++ *
++ * use_dcm_11ax
++ *		If set, Use Dual subcarrier modulation.
++ *		Valid only for 11ax preamble types HE_SU
++ *		and HE_EXT_SU
++ *
++ * ltf_subtype_11ax
++ *		Takes enum values of htt_11ax_ltf_subtype_t
++ *		Valid only for 11ax preamble types HE_SU
++ *		and HE_EXT_SU
++ *
++ * dyn_bw
++ *		0 = static bw, 1 = dynamic bw
++ *
++ * bw_mask
++ *		Valid only if dyn_bw == 0 (static bw).
++ *
++ * host_tx_desc_pool
++ *		If set, Firmware allocates tx_descriptors
++ *		in WAL_BUFFERID_TX_HOST_DATA_EXP,instead
++ *		of WAL_BUFFERID_TX_TCL_DATA_EXP.
++ *		Use cases:
++ *		Any time firmware uses TQM-BYPASS for Data
++ *		TID, firmware expect host to set this bit.
++ *
++ * power
++ *		unit of the power field is 0.5 dbm
++ *		signed value ranging from -64dbm to 63.5 dbm
++ *
++ * mcs_mask
++ *		mcs bit mask of 0 ~ 11
++ *		Setting more than one MCS isn't currently
++ *		supported by the target (but is supported
++ *		in the interface in case in the future
++ *		the target supports specifications of
++ *		a limited set of MCS values.
++ *
++ * nss_mask
++ *		Nss bit mask 0 ~ 7
++ *		Setting more than one Nss isn't currently
++ *		supported by the target (but is supported
++ *		in the interface in case in the future
++ *		the target supports specifications of
++ *		a limited set of Nss values.
++ *
++ * pream_type
++ *		Preamble types
++ *
++ * update_peer_cache
++ *		When set these custom values will be
++ *		used for all packets, until the next
++ *		update via this ext header.
++ *		This is to make sure not all packets
++ *		need to include this header.
++ *
++ * chain_mask
++ *		specify which chains to transmit from
++ *
++ * key_flags
++ *		Key Index and related flags - used in mesh mode
++ *
++ * chanfreq
++ *		Channel frequency: This identifies the desired channel
++ *		frequency (in MHz) for tx frames. This is used by FW to help
++ *		determine when it is safe to transmit or drop frames for
++ *		off-channel operation.
++ *		The default value of zero indicates to FW that the corresponding
++ *		VDEV's home channel (if there is one) is the desired channel
++ *		frequency.
++ *
++ * expire_tsf_lo
++ *		tx expiry time (TSF) LSBs
++ *
++ * expire_tsf_hi
++ *		tx expiry time (TSF) MSBs
++ *
++ * learning_frame
++ *		When this flag is set, this frame will be dropped by FW
++ *		rather than being enqueued to the Transmit Queue Manager (TQM) HW.
++ *
++ * send_as_standalone
++ *		This will indicate if the msdu needs to be sent as a singleton PPDU,
++ *		i.e. with no A-MSDU or A-MPDU aggregation.
++ *		The scope is extended to other use-cases.
++ *
++ * is_host_opaque_valid
++ *		set this bit to 1 if the host_opaque_cookie is populated
++ *		with valid information.
++ *
++ * host_opaque_cookie
++ *		Host opaque cookie for special frames
++ */
++
++struct htt_tx_msdu_desc_ext {
++	u32
++		valid_pwr            : 1,
++		valid_mcs_mask       : 1,
++		valid_nss_mask       : 1,
++		valid_preamble_type  : 1,
++		valid_retries        : 1,
++		valid_bw_info        : 1,
++		valid_guard_interval : 1,
++		valid_chainmask      : 1,
++		valid_encrypt_type   : 1,
++		valid_key_flags      : 1,
++		valid_expire_tsf     : 1,
++		valid_chanfreq       : 1,
++		is_dsrc              : 1,
++		guard_interval       : 2,
++		encrypt_type         : 2,
++		retry_limit          : 4,
++		use_dcm_11ax         : 1,
++		ltf_subtype_11ax     : 2,
++		dyn_bw               : 1,
++		bw_mask              : 6,
++		host_tx_desc_pool    : 1;
++	u32
++		power                : 8,
++		mcs_mask             : 12,
++		nss_mask             : 8,
++		pream_type           : 3,
++		update_peer_cache    : 1;
++	u32
++		chain_mask         : 8,
++		key_flags          : 8,
++		chanfreq           : 16;
++
++	u32 expire_tsf_lo;
++	u32 expire_tsf_hi;
++
++	u32
++		learning_frame       :  1,
++		send_as_standalone   :  1,
++		is_host_opaque_valid :  1,
++		rsvd0                : 29;
++	u32
++		host_opaque_cookie  : 16,
++		rsvd1               : 16;
++} __packed;
++
+ void ath11k_dp_tx_update_txcompl(struct ath11k *ar, struct hal_tx_status *ts);
+ int ath11k_dp_tx_htt_h2t_ver_req_msg(struct ath11k_base *ab);
+ int ath11k_dp_tx(struct ath11k *ar, struct ath11k_vif *arvif,
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -10623,6 +10623,9 @@ static int __ath11k_mac_register(struct
+ 		 */
+ 		ar->hw->wiphy->interface_modes &= ~BIT(NL80211_IFTYPE_MONITOR);
+ 
++	ar->hw->wiphy->interface_modes |= BIT(NL80211_IFTYPE_AP_VLAN);
++	ar->hw->wiphy->software_iftypes |= BIT(NL80211_IFTYPE_AP_VLAN);
++
+ 	/* Apply the regd received during initialization */
+ 	ret = ath11k_regd_update(ar);
+ 	if (ret) {

@@ -14,8 +14,7 @@ include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/target.mk
 
 define Package/autocore-arm
-  TITLE:=Arm auto core loadbalance script.
-  MAINTAINER:=CN_SZTL
+  TITLE:=Arm auto core loadbalance script
   DEPENDS:=@(arm||aarch64) \
     +TARGET_bcm27xx:bcm27xx-userland \
 	+TARGET_bcm53xx:nvram +ethtool
@@ -23,29 +22,15 @@ define Package/autocore-arm
 endef
 
 define Package/autocore-loongarch64
-  TITLE:=Loongarch64 auto core loadbalance script.
-  MAINTAINER:=LEAN
+  TITLE:=Loongarch64 auto core loadbalance script
   DEPENDS:=@loongarch64 +bc +ethtool +pciutils
   VARIANT:=loongarch64
 endef
 
 define Package/autocore-x86
-  TITLE:=x86/x64 auto core loadbalance script.
-  MAINTAINER:=Lean
-  DEPENDS:=@TARGET_x86 +bc +lm-sensors +ethtool +pciutils
+  TITLE:=x86/64 auto core loadbalance script
+  DEPENDS:=@TARGET_x86 +bc +ethtool +lm-sensors +pciutils
   VARIANT:=x86
-endef
-
-define Package/autocore-arm/description
-  A luci autoconfig hotplug script.
-endef
-
-define Package/autocore-loongarch64/description
-  A luci autoconfig hotplug script.
-endef
-
-define Package/autocore-x86/description
-  A usb autoconfig hotplug script.
 endef
 
 define Build/Compile

@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=linux-atm
 PKG_VERSION:=2.5.2
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
@@ -21,6 +21,7 @@ PKG_BUILD_PARALLEL:=1
 PKG_LICENSE:=GPL-2.0+
 PKG_CPE_ID:=cpe:/a:linux-atm:linux-atm
 PKG_FIXUP:=autoreconf
+PKG_FLAGS:=nonshared
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -97,6 +98,8 @@ define GenAtmPlugin
 endef
 
 $(foreach t,$(ATM_DEBUG_TOOLS),$(eval $(call GenAtmPlugin,atm-$(t),$(t))))
+
+TARGET_CFLAGS += -I$(LINUX_DIR)/user_headers/include
 
 define Build/Configure
 	$(call Build/Configure/Default)

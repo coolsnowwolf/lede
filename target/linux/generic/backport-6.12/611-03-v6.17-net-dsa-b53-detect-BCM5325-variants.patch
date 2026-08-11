@@ -1,0 +1,112 @@
+From 0cbec9aef5a86194117a956546dc1aec95031f37 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=C3=81lvaro=20Fern=C3=A1ndez=20Rojas?= <noltari@gmail.com>
+Date: Sat, 14 Jun 2025 09:59:50 +0200
+Subject: [PATCH] net: dsa: b53: detect BCM5325 variants
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+We need to be able to differentiate the BCM5325 variants because:
+- BCM5325M switches lack the ARLIO_PAGE->VLAN_ID_IDX register.
+- BCM5325E have less 512 ARL buckets instead of 1024.
+
+Signed-off-by: Álvaro Fernández Rojas <noltari@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20250614080000.1884236-5-noltari@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/b53/b53_common.c | 24 +++++++++++++++++++++---
+ drivers/net/dsa/b53/b53_priv.h   | 19 +++++++++++++++++++
+ 2 files changed, 40 insertions(+), 3 deletions(-)
+
+--- a/drivers/net/dsa/b53/b53_common.c
++++ b/drivers/net/dsa/b53/b53_common.c
+@@ -1835,7 +1835,8 @@ static int b53_arl_op(struct b53_device
+ 
+ 	/* Perform a read for the given MAC and VID */
+ 	b53_write48(dev, B53_ARLIO_PAGE, B53_MAC_ADDR_IDX, mac);
+-	b53_write16(dev, B53_ARLIO_PAGE, B53_VLAN_ID_IDX, vid);
++	if (!is5325m(dev))
++		b53_write16(dev, B53_ARLIO_PAGE, B53_VLAN_ID_IDX, vid);
+ 
+ 	/* Issue a read operation for this MAC */
+ 	ret = b53_arl_rw_op(dev, 1);
+@@ -2906,6 +2907,9 @@ static int b53_switch_init(struct b53_de
+ 		}
+ 	}
+ 
++	if (is5325e(dev))
++		dev->num_arl_buckets = 512;
++
+ 	dev->num_ports = fls(dev->enabled_ports);
+ 
+ 	dev->ds->num_ports = min_t(unsigned int, dev->num_ports, DSA_MAX_PORTS);
+@@ -3007,10 +3011,24 @@ int b53_switch_detect(struct b53_device
+ 		b53_write16(dev, B53_VLAN_PAGE, B53_VLAN_TABLE_ACCESS_25, 0xf);
+ 		b53_read16(dev, B53_VLAN_PAGE, B53_VLAN_TABLE_ACCESS_25, &tmp);
+ 
+-		if (tmp == 0xf)
++		if (tmp == 0xf) {
++			u32 phy_id;
++			int val;
++
+ 			dev->chip_id = BCM5325_DEVICE_ID;
+-		else
++
++			val = b53_phy_read16(dev->ds, 0, MII_PHYSID1);
++			phy_id = (val & 0xffff) << 16;
++			val = b53_phy_read16(dev->ds, 0, MII_PHYSID2);
++			phy_id |= (val & 0xfff0);
++
++			if (phy_id == 0x00406330)
++				dev->variant_id = B53_VARIANT_5325M;
++			else if (phy_id == 0x0143bc30)
++				dev->variant_id = B53_VARIANT_5325E;
++		} else {
+ 			dev->chip_id = BCM5365_DEVICE_ID;
++		}
+ 		break;
+ 	case BCM5389_DEVICE_ID:
+ 	case BCM5395_DEVICE_ID:
+--- a/drivers/net/dsa/b53/b53_priv.h
++++ b/drivers/net/dsa/b53/b53_priv.h
+@@ -84,6 +84,12 @@ enum {
+ 	BCM53134_DEVICE_ID = 0x5075,
+ };
+ 
++enum b53_variant_id {
++	B53_VARIANT_NONE = 0,
++	B53_VARIANT_5325E,
++	B53_VARIANT_5325M,
++};
++
+ struct b53_pcs {
+ 	struct phylink_pcs pcs;
+ 	struct b53_device *dev;
+@@ -118,6 +124,7 @@ struct b53_device {
+ 
+ 	/* chip specific data */
+ 	u32 chip_id;
++	enum b53_variant_id variant_id;
+ 	u8 core_rev;
+ 	u8 vta_regs[3];
+ 	u8 duplex_reg;
+@@ -165,6 +172,18 @@ static inline int is5325(struct b53_devi
+ 	return dev->chip_id == BCM5325_DEVICE_ID;
+ }
+ 
++static inline int is5325e(struct b53_device *dev)
++{
++	return is5325(dev) &&
++		dev->variant_id == B53_VARIANT_5325E;
++}
++
++static inline int is5325m(struct b53_device *dev)
++{
++	return is5325(dev) &&
++		dev->variant_id == B53_VARIANT_5325M;
++}
++
+ static inline int is5365(struct b53_device *dev)
+ {
+ #ifdef CONFIG_BCM47XX

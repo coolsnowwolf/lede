@@ -1,3 +1,43 @@
+From: Mark Mentovai <mark@moxienet.com>
+Date: Tue, 23 Nov 2021 12:28:55 -0500
+Subject: [PATCH] hostapd: allow hostapd under ujail to communicate with
+ hostapd_cli
+
+When procd-ujail is available, 1f78538 runs hostapd as user
+"network", with only limited additional capabilities (CAP_NET_ADMIN and
+CAP_NET_RAW).
+
+hostapd_cli (CONFIG_PACKAGE_hostapd-utils) communicates with hostapd
+over a named UNIX-domain socket. hostapd_cli is responsible for creating
+this socket at /tmp/wpa_ctrl_$pid_$counter. Since it typically runs as
+root, this endpoint is normally created with uid root, gid root, mode
+0755. As a result, hostapd running as uid network is able to receive
+control messages sent through this interface, but is not able to respond
+to them. If debug-level logging is enabled (CONFIG_WPA_MSG_MIN_PRIORITY
+<= 2 at build, and log_level <= 2 in /etc/config/wireless wifi-device),
+this message will appear from hostapd:
+
+CTRL: sendto failed: Permission denied
+
+As a fix, hostapd_cli should create the socket node in the filesystem
+with uid network, gid network, mode 0770. This borrows the presently
+Android-only strategy already in hostapd intended to solve the same
+problem on Android.
+
+If procd-ujail is not available and hostapd falls back to running as
+root, it will still be able to read from and write to the socket even if
+the node in the filesystem has been restricted to the network user and
+group. This matches the logic in
+package/network/services/hostapd/files/wpad.init, which sets the uid and
+gid of /var/run/hostapd to network regardless of whether procd-ujail is
+available.
+
+As it appears that the "network" user and group are statically allocated
+uid 101 and gid 101, respectively, per
+package/base-files/files/etc/passwd and USERID in
+package/network/services/hostapd/Makefile, this patch also uses a
+constant 101 for the uid and gid.
+
 --- a/src/common/wpa_ctrl.c
 +++ b/src/common/wpa_ctrl.c
 @@ -135,7 +135,7 @@ try_again:

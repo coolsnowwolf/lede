@@ -15,6 +15,7 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/ead
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0
+PKG_FIXUP:=autoreconf
 
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/kernel.mk
@@ -36,7 +37,8 @@ CONFIGURE_PATH = tinysrp
 TARGET_CFLAGS += \
 	-I$(PKG_BUILD_DIR) \
 	-I$(PKG_BUILD_DIR)/tinysrp \
-	$(TARGET_CPPFLAGS)
+	$(TARGET_CPPFLAGS) \
+	-Wno-error=implicit-function-declaration
 
 MAKE_FLAGS += \
 	CONFIGURE_ARGS="$(CONFIGURE_ARGS)" \

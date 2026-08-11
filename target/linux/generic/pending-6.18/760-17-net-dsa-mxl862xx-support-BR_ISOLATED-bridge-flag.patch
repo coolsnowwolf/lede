@@ -1,0 +1,89 @@
+From d8f20ba50ce0f93f34a41a9b833be76a5d1d2714 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 25 Mar 2026 01:51:33 +0000
+Subject: [PATCH 17/19] net: dsa: mxl862xx: support BR_ISOLATED bridge flag
+
+Implement port isolation by excluding isolated ports from each other's
+forwarding portmaps in sync_bridge_members. Non-isolated ports can
+still reach isolated ports and vice versa -- only isolated-to-isolated
+forwarding is blocked.
+
+When the isolation state changes, all bridge members' portmaps are
+rebuilt via sync_bridge_members since multiple ports are affected.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx.c | 20 +++++++++++++++++++-
+ drivers/net/dsa/mxl862xx/mxl862xx.h |  4 ++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -752,6 +752,8 @@ static int __mxl862xx_set_bridge_port(st
+ 				continue;
+ 			if (!mxl862xx_is_lag_master(priv, member_dp->index))
+ 				continue;
++			if (p->isolated && priv->ports[member_dp->index].isolated)
++				continue;
+ 			mxl862xx_fw_portmap_set_bit(
+ 				br_port_cfg.bridge_port_map,
+ 				mxl862xx_lag_bridge_port(priv,
+@@ -3899,7 +3901,7 @@ static int mxl862xx_port_pre_bridge_flag
+ 					  struct netlink_ext_ack *extack)
+ {
+ 	if (flags.mask & ~(BR_FLOOD | BR_MCAST_FLOOD | BR_BCAST_FLOOD |
+-			   BR_LEARNING | BR_HAIRPIN_MODE))
++			   BR_LEARNING | BR_HAIRPIN_MODE | BR_ISOLATED))
+ 		return -EINVAL;
+ 
+ 	return 0;
+@@ -3912,6 +3914,7 @@ static int mxl862xx_port_bridge_flags(st
+ 	struct mxl862xx_priv *priv = ds->priv;
+ 	unsigned long old_block = priv->ports[port].flood_block;
+ 	unsigned long block = old_block;
++	struct dsa_port *dp;
+ 	int ret;
+ 
+ 	if (flags.mask & BR_FLOOD) {
+@@ -3952,6 +3955,21 @@ static int mxl862xx_port_bridge_flags(st
+ 			return ret;
+ 	}
+ 
++	if (flags.mask & BR_ISOLATED) {
++		dp = dsa_to_port(ds, port);
++		priv->ports[port].isolated = !!(flags.val & BR_ISOLATED);
++
++		/* Isolation affects all bridge members' portmaps:
++		 * isolated ports must be removed from each other's
++		 * portmaps. Rebuild all portmaps for this bridge.
++		 */
++		if (dp->bridge) {
++			ret = mxl862xx_sync_bridge_members(ds, dp->bridge);
++			if (ret)
++				return ret;
++		}
++	}
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.h
+@@ -213,6 +213,9 @@ struct mxl862xx_port_stats {
+  * @flood_block:         bitmask of firmware meter indices that are currently
+  *                       rate-limiting flood traffic on this port (zero-rate
+  *                       meters used to block flooding)
++ * @isolated:            true when port isolation is active (BR_ISOLATED);
++ *                       isolated ports are excluded from each other's
++ *                       forwarding portmaps
+  * @learning:            true when address learning is enabled on this port
+  * @setup_done:          set at end of port_setup, cleared at start of
+  *                       port_teardown; guards deferred work against
+@@ -259,6 +262,7 @@ struct mxl862xx_port {
+ 	struct mxl862xx_priv *priv;
+ 	u16 fid;
+ 	unsigned long flood_block;
++	bool isolated;
+ 	bool learning;
+ 	bool setup_done;
+ 	u16 pvid;

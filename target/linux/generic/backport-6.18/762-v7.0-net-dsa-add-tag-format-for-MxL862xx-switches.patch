@@ -1,0 +1,191 @@
+From 1ecc2ebd1298d5c0eaa238e71b7d2109d7d77538 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 7 Feb 2026 03:07:11 +0000
+Subject: [PATCH 01/35] net: dsa: add tag format for MxL862xx switches
+
+Add proprietary special tag format for the MaxLinear MXL862xx family of
+switches. While using the same Ethertype as MaxLinear's GSW1xx switches,
+the actual tag format differs significantly, hence we need a dedicated
+tag driver for that.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Link: https://patch.msgid.link/c64e6ddb6c93a4fac39f9ab9b2d8bf551a2b118d.1770433307.git.daniel@makrotopia.org
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ include/net/dsa.h      |   2 +
+ net/dsa/Kconfig        |   7 +++
+ net/dsa/Makefile       |   1 +
+ net/dsa/tag_mxl862xx.c | 110 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 120 insertions(+)
+ create mode 100644 net/dsa/tag_mxl862xx.c
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -55,6 +55,7 @@ struct tc_action;
+ #define DSA_TAG_PROTO_LAN937X_VALUE		27
+ #define DSA_TAG_PROTO_VSC73XX_8021Q_VALUE	28
+ #define DSA_TAG_PROTO_BRCM_LEGACY_FCS_VALUE	29
++#define DSA_TAG_PROTO_MXL862_VALUE		30
+ 
+ enum dsa_tag_protocol {
+ 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
+@@ -87,6 +88,7 @@ enum dsa_tag_protocol {
+ 	DSA_TAG_PROTO_RZN1_A5PSW	= DSA_TAG_PROTO_RZN1_A5PSW_VALUE,
+ 	DSA_TAG_PROTO_LAN937X		= DSA_TAG_PROTO_LAN937X_VALUE,
+ 	DSA_TAG_PROTO_VSC73XX_8021Q	= DSA_TAG_PROTO_VSC73XX_8021Q_VALUE,
++	DSA_TAG_PROTO_MXL862		= DSA_TAG_PROTO_MXL862_VALUE,
+ };
+ 
+ struct dsa_switch;
+--- a/net/dsa/Kconfig
++++ b/net/dsa/Kconfig
+@@ -104,6 +104,13 @@ config NET_DSA_TAG_MTK
+ 	  Say Y or M if you want to enable support for tagging frames for
+ 	  Mediatek switches.
+ 
++config NET_DSA_TAG_MXL_862XX
++	tristate "Tag driver for MaxLinear MxL862xx switches"
++	help
++	  Say Y or M if you want to enable support for tagging frames for the
++	  MaxLinear MxL86252 and MxL86282 switches using their native 8-byte
++	  tagging protocol.
++
+ config NET_DSA_TAG_KSZ
+ 	tristate "Tag driver for Microchip 8795/937x/9477/9893 families of switches"
+ 	help
+--- a/net/dsa/Makefile
++++ b/net/dsa/Makefile
+@@ -28,6 +28,7 @@ obj-$(CONFIG_NET_DSA_TAG_HELLCREEK) += t
+ obj-$(CONFIG_NET_DSA_TAG_KSZ) += tag_ksz.o
+ obj-$(CONFIG_NET_DSA_TAG_LAN9303) += tag_lan9303.o
+ obj-$(CONFIG_NET_DSA_TAG_MTK) += tag_mtk.o
++obj-$(CONFIG_NET_DSA_TAG_MXL_862XX) += tag_mxl862xx.o
+ obj-$(CONFIG_NET_DSA_TAG_NONE) += tag_none.o
+ obj-$(CONFIG_NET_DSA_TAG_OCELOT) += tag_ocelot.o
+ obj-$(CONFIG_NET_DSA_TAG_OCELOT_8021Q) += tag_ocelot_8021q.o
+--- /dev/null
++++ b/net/dsa/tag_mxl862xx.c
+@@ -0,0 +1,110 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DSA Special Tag for MaxLinear 862xx switch chips
++ *
++ * Copyright (C) 2025 Daniel Golle <daniel@makrotopia.org>
++ * Copyright (C) 2024 MaxLinear Inc.
++ */
++
++#include <linux/bitops.h>
++#include <linux/etherdevice.h>
++#include <linux/skbuff.h>
++#include <net/dsa.h>
++#include "tag.h"
++
++#define MXL862_NAME	"mxl862xx"
++
++#define MXL862_HEADER_LEN	8
++
++/* Word 0 -> EtherType */
++
++/* Word 2 */
++#define MXL862_SUBIF_ID		GENMASK(4, 0)
++
++/* Word 3 */
++#define MXL862_IGP_EGP		GENMASK(3, 0)
++
++static struct sk_buff *mxl862_tag_xmit(struct sk_buff *skb,
++				       struct net_device *dev)
++{
++	struct dsa_port *dp = dsa_user_to_port(dev);
++	struct dsa_port *cpu_dp = dp->cpu_dp;
++	unsigned int cpu_port, sub_interface;
++	__be16 *mxl862_tag;
++
++	cpu_port = cpu_dp->index;
++
++	/* target port sub-interface ID relative to the CPU port */
++	sub_interface = dp->index + 16 - cpu_port;
++
++	/* provide additional space 'MXL862_HEADER_LEN' bytes */
++	skb_push(skb, MXL862_HEADER_LEN);
++
++	/* shift MAC address to the beginning of the enlarged buffer,
++	 * releasing the space required for DSA tag (between MAC address and
++	 * Ethertype)
++	 */
++	dsa_alloc_etype_header(skb, MXL862_HEADER_LEN);
++
++	/* special tag ingress (from the perspective of the switch) */
++	mxl862_tag = dsa_etype_header_pos_tx(skb);
++	mxl862_tag[0] = htons(ETH_P_MXLGSW);
++	mxl862_tag[1] = 0;
++	mxl862_tag[2] = htons(FIELD_PREP(MXL862_SUBIF_ID, sub_interface));
++	mxl862_tag[3] = htons(FIELD_PREP(MXL862_IGP_EGP, cpu_port));
++
++	return skb;
++}
++
++static struct sk_buff *mxl862_tag_rcv(struct sk_buff *skb,
++				      struct net_device *dev)
++{
++	__be16 *mxl862_tag;
++	int port;
++
++	if (unlikely(!pskb_may_pull(skb, MXL862_HEADER_LEN))) {
++		dev_warn_ratelimited(&dev->dev, "Cannot pull SKB, packet dropped\n");
++		return NULL;
++	}
++
++	mxl862_tag = dsa_etype_header_pos_rx(skb);
++
++	if (unlikely(mxl862_tag[0] != htons(ETH_P_MXLGSW))) {
++		dev_warn_ratelimited(&dev->dev,
++				     "Invalid special tag marker, packet dropped, tag: %8ph\n",
++				     mxl862_tag);
++		return NULL;
++	}
++
++	/* Get source port information */
++	port = FIELD_GET(MXL862_IGP_EGP, ntohs(mxl862_tag[3]));
++	skb->dev = dsa_conduit_find_user(dev, 0, port);
++	if (unlikely(!skb->dev)) {
++		dev_warn_ratelimited(&dev->dev,
++				     "Invalid source port, packet dropped, tag: %8ph\n",
++				     mxl862_tag);
++		return NULL;
++	}
++
++	/* remove the MxL862xx special tag between the MAC addresses and the
++	 * current ethertype field.
++	 */
++	skb_pull_rcsum(skb, MXL862_HEADER_LEN);
++	dsa_strip_etype_header(skb, MXL862_HEADER_LEN);
++
++	return skb;
++}
++
++static const struct dsa_device_ops mxl862_netdev_ops = {
++	.name = MXL862_NAME,
++	.proto = DSA_TAG_PROTO_MXL862,
++	.xmit = mxl862_tag_xmit,
++	.rcv = mxl862_tag_rcv,
++	.needed_headroom = MXL862_HEADER_LEN,
++};
++
++MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_MXL862, MXL862_NAME);
++MODULE_DESCRIPTION("DSA tag driver for MaxLinear MxL862xx switches");
++MODULE_LICENSE("GPL");
++
++module_dsa_tag_driver(mxl862_netdev_ops);
+--- a/include/uapi/linux/if_ether.h
++++ b/include/uapi/linux/if_ether.h
+@@ -92,6 +92,9 @@
+ #define ETH_P_ETHERCAT	0x88A4		/* EtherCAT			*/
+ #define ETH_P_8021AD	0x88A8          /* 802.1ad Service VLAN		*/
+ #define ETH_P_802_EX1	0x88B5		/* 802.1 Local Experimental 1.  */
++#define ETH_P_MXLGSW	0x88C3		/* Infineon Technologies Corporate Research ST
++					 * Used by MaxLinear GSW DSA
++					 */
+ #define ETH_P_PREAUTH	0x88C7		/* 802.11 Preauthentication */
+ #define ETH_P_TIPC	0x88CA		/* TIPC 			*/
+ #define ETH_P_LLDP	0x88CC		/* Link Layer Discovery Protocol */

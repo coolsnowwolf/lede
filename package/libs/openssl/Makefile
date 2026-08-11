@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openssl
-PKG_VERSION:=3.6.0
+PKG_VERSION:=3.6.3
 PKG_RELEASE:=1
 PKG_USE_MIPS16:=0
 PKG_BUILD_FLAGS:=gc-sections no-lto
@@ -22,7 +22,7 @@ PKG_SOURCE_URL:= \
 	https://www.openssl.org/source/old/$(PKG_BASE)/ \
 	https://github.com/openssl/openssl/releases/download/$(PKG_NAME)-$(PKG_VERSION)/
 
-PKG_HASH:=b6a5f44b7eb69e3fa35dbf15524405b44837a481d43d81daddde3ff21fcbb8e9
+PKG_HASH:=243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE.txt

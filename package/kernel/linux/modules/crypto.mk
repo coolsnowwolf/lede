@@ -11,7 +11,7 @@ CRYPTO_MODULES = \
 	ALGAPI2=crypto_algapi \
 	BLKCIPHER2=crypto_blkcipher
 
-CRYPTO_TARGET = $(BOARD)/$(if $(SUBTARGET),$(SUBTARGET),generic)
+CRYPTO_TARGET = $(BOARD)/$(SUBTARGET)
 
 crypto_confvar=CONFIG_CRYPTO_$(word 1,$(subst =,$(space),$(1)))
 crypto_file=$(LINUX_DIR)/crypto/$(word 2,$(subst =,$(space),$(1))).ko
@@ -40,9 +40,10 @@ define KernelPackage/crypto-aead
   KCONFIG:= \
 	CONFIG_CRYPTO_AEAD \
 	CONFIG_CRYPTO_AEAD2 \
-	CONFIG_CRYPTO_GENIV=y@lt6.6
+	CONFIG_CRYPTO_GENIV@lt6.6
   FILES:= \
-	  $(LINUX_DIR)/crypto/aead.ko
+	  $(LINUX_DIR)/crypto/aead.ko \
+	  $(LINUX_DIR)/crypto/geniv.ko@lt6.6
   AUTOLOAD:=$(call AutoLoad,09,aead,1)
   $(call AddDepends/crypto, +kmod-crypto-null)
 endef
@@ -80,6 +81,18 @@ endef
 $(eval $(call KernelPackage,crypto-authenc))
 
 
+define KernelPackage/crypto-blake2b
+  TITLE:=Support for BLAKE2b cryptographic hash function (RFC 7693)
+  DEPENDS:=+kmod-crypto-hash
+  KCONFIG:=CONFIG_CRYPTO_BLAKE2B
+  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko
+  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-blake2b))
+
+
 define KernelPackage/crypto-cbc
   TITLE:=Cipher Block Chaining CryptoAPI module
   DEPENDS:=+kmod-crypto-manager
@@ -106,7 +119,7 @@ $(eval $(call KernelPackage,crypto-ccm))
 
 define KernelPackage/crypto-chacha20poly1305
   TITLE:=ChaCha20-Poly1305 AEAD support, RFC7539 (used by strongSwan IPsec VPN)
-  DEPENDS:=+kmod-crypto-aead +kmod-crypto-manager
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-manager +LINUX_6_18:kmod-crypto-lib-poly1305
   KCONFIG:=CONFIG_CRYPTO_CHACHA20POLY1305
   FILES:=$(LINUX_DIR)/crypto/chacha20poly1305.ko
   AUTOLOAD:=$(call AutoLoad,09,chacha20poly1305)
@@ -133,8 +146,9 @@ define KernelPackage/crypto-crc32
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:=CONFIG_CRYPTO_CRC32
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko
-  AUTOLOAD:=$(call AutoLoad,04,crc32_generic,1)
+  FILES:=$(LINUX_DIR)/crypto/crc32_generic.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/crc32-cryptoapi.ko@ge6.18
+  AUTOLOAD:=$(call AutoLoad,04,crc32_generic@lt6.18 crc32-cryptoapi@ge6.18,1)
   $(call AddDepends/crypto)
 endef
 
@@ -145,8 +159,9 @@ define KernelPackage/crypto-crc32c
   TITLE:=CRC32c CRC module
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:=CONFIG_CRYPTO_CRC32C
-  FILES:=$(LINUX_DIR)/crypto/crc32c_generic.ko
-  AUTOLOAD:=$(call AutoLoad,04,crc32c_generic,1)
+  FILES:=$(LINUX_DIR)/crypto/crc32c_generic.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/crc32c-cryptoapi.ko@ge6.18
+  AUTOLOAD:=$(call AutoLoad,04,crc32c_generic@lt6.18 crc32c-cryptoapi@ge6.18,1)
   $(call AddDepends/crypto)
 endef
 
@@ -230,7 +245,7 @@ $(eval $(call KernelPackage,crypto-ecdh))
 
 define KernelPackage/crypto-echainiv
   TITLE:=Encrypted Chain IV Generator
-  DEPENDS:=+kmod-crypto-aead +(LINUX_6_6||LINUX_6_12):kmod-crypto-geniv
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-geniv
   KCONFIG:=CONFIG_CRYPTO_ECHAINIV
   FILES:=$(LINUX_DIR)/crypto/echainiv.ko
   AUTOLOAD:=$(call AutoLoad,09,echainiv)
@@ -239,9 +254,9 @@ endef
 
 $(eval $(call KernelPackage,crypto-echainiv))
 
-
 define KernelPackage/crypto-engine
   TITLE:=Crypto engine
+  HIDDEN:=1
   KCONFIG:=CONFIG_CRYPTO_ENGINE
   FILES:=$(LINUX_DIR)/crypto/crypto_engine.ko
   AUTOLOAD:=$(call AutoLoad,09,crypto_engine)
@@ -440,7 +455,7 @@ define KernelPackage/crypto-hw-ixp4xx
   KCONFIG:= \
 	CONFIG_CRYPTO_HW=y \
 	CONFIG_CRYPTO_DEV_IXP4XX
-  FILES:=$(LINUX_DIR)/drivers/crypto/ixp4xx_crypto.ko
+  FILES:=$(LINUX_DIR)/drivers/crypto/intel/ixp4xx/ixp4xx_crypto.ko
   AUTOLOAD:=$(call AutoProbe,ixp4xx_crypto)
   $(call AddDepends/crypto)
 endef
@@ -524,7 +539,7 @@ $(eval $(call KernelPackage,crypto-kpp))
 
 define KernelPackage/crypto-lib-aescfb
   TITLE:=AES cipher operations feedback mode library
-  DEPENDS:=@LINUX_6_12
+  DEPENDS:=@LINUX_6_12||LINUX_6_18
   KCONFIG:=CONFIG_CRYPTO_LIB_AESCFB
   FILES:=$(LINUX_DIR)/lib/crypto/libaescfb.ko
   AUTOLOAD:=$(call AutoLoad,09,libaescfb)
@@ -541,10 +556,13 @@ define KernelPackage/crypto-lib-chacha20
   $(call AddDepends/crypto)
 endef
 
+ifneq ($(KERNEL_PATCHVER),6.18)
+ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-chacha20/x86_64
   KCONFIG+=CONFIG_CRYPTO_CHACHA20_X86_64
   FILES+=$(LINUX_DIR)/arch/x86/crypto/chacha-x86_64.ko
 endef
+endif
 
 # Note that a non-neon fallback implementation is available on arm32 when
 # NEON is not supported, hence all arm targets can utilize lib-chacha20/arm
@@ -574,6 +592,7 @@ ifdef KernelPackage/crypto-lib-chacha20/$(ARCH)
   KernelPackage/crypto-lib-chacha20/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-lib-chacha20/$(ARCH))
 endif
+endif
 
 $(eval $(call KernelPackage,crypto-lib-chacha20))
 
@@ -595,18 +614,17 @@ define KernelPackage/crypto-lib-curve25519
   HIDDEN:=1
   FILES:= \
 	$(LINUX_DIR)/lib/crypto/libcurve25519.ko \
-	$(LINUX_DIR)/lib/crypto/libcurve25519-generic.ko
-  $(call AddDepends/crypto,+PACKAGE_kmod-crypto-kpp:kmod-crypto-kpp)
+	$(LINUX_DIR)/lib/crypto/libcurve25519-generic.ko@lt6.18
+  $(call AddDepends/crypto,+kmod-crypto-kpp)
 endef
 
-define KernelPackage/crypto-lib-curve25519/config
-  imply PACKAGE_kmod-crypto-kpp
-endef
-
+ifneq ($(KERNEL_PATCHVER),6.18)
+ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-curve25519/x86_64
   KCONFIG+=CONFIG_CRYPTO_CURVE25519_X86
   FILES+=$(LINUX_DIR)/arch/x86/crypto/curve25519-x86_64.ko
 endef
+endif
 
 define KernelPackage/crypto-lib-curve25519/arm-neon
   KCONFIG+=CONFIG_CRYPTO_CURVE25519_NEON
@@ -622,6 +640,7 @@ ifdef KernelPackage/crypto-lib-curve25519/$(ARCH)
   KernelPackage/crypto-lib-curve25519/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-lib-curve25519/$(ARCH))
 endif
+endif
 
 $(eval $(call KernelPackage,crypto-lib-curve25519))
 
@@ -631,17 +650,16 @@ define KernelPackage/crypto-lib-poly1305
   KCONFIG:=CONFIG_CRYPTO_LIB_POLY1305
   HIDDEN:=1
   FILES:=$(LINUX_DIR)/lib/crypto/libpoly1305.ko
-  $(call AddDepends/crypto,+PACKAGE_kmod-crypto-hash:kmod-crypto-hash)
+  $(call AddDepends/crypto,+kmod-crypto-hash)
 endef
 
-define KernelPackage/crypto-lib-poly1305/config
-  imply PACKAGE_kmod-crypto-hash
-endef
-
+ifneq ($(KERNEL_PATCHVER),6.18)
+ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-poly1305/x86_64
   KCONFIG+=CONFIG_CRYPTO_POLY1305_X86_64
   FILES+=$(LINUX_DIR)/arch/x86/crypto/poly1305-x86_64.ko
 endef
+endif
 
 define KernelPackage/crypto-lib-poly1305/arm
   KCONFIG+=CONFIG_CRYPTO_POLY1305_ARM
@@ -667,6 +685,7 @@ KernelPackage/crypto-lib-poly1305/mips64el=$(KernelPackage/crypto-lib-poly1305/m
 ifdef KernelPackage/crypto-lib-poly1305/$(ARCH)
   KernelPackage/crypto-lib-poly1305/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-lib-poly1305/$(ARCH))
+endif
 endif
 
 $(eval $(call KernelPackage,crypto-lib-poly1305))
@@ -703,20 +722,21 @@ define KernelPackage/crypto-md5
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_MD5 \
-	CONFIG_CRYPTO_MD5_OCTEON \
-	CONFIG_CRYPTO_MD5_PPC
-  FILES:=$(LINUX_DIR)/crypto/md5.ko
-  AUTOLOAD:=$(call AutoLoad,09,md5)
+	CONFIG_CRYPTO_MD5_OCTEON@lt6.18 \
+	CONFIG_CRYPTO_MD5_PPC@lt6.18
+  FILES:=$(LINUX_DIR)/crypto/md5.ko \
+	$(LINUX_DIR)/lib/crypto/libmd5.ko@ge6.18
+  AUTOLOAD:=$(call AutoLoad,09,md5 libmd5@ge6.18)
   $(call AddDepends/crypto)
 endef
 
 define KernelPackage/crypto-md5/octeon
-  FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-md5.ko
+  FILES+=$(LINUX_DIR)/arch/mips/cavium-octeon/crypto/octeon-md5.ko@lt6.18
   AUTOLOAD+=$(call AutoLoad,09,octeon-md5)
 endef
 
 define KernelPackage/crypto-md5/powerpc
-  FILES+=$(LINUX_DIR)/arch/powerpc/crypto/md5-ppc.ko
+  FILES+=$(LINUX_DIR)/arch/powerpc/crypto/md5-ppc.ko@lt6.18
   AUTOLOAD+=$(call AutoLoad,09,md5-ppc)
 endef
 
@@ -802,9 +822,9 @@ ifndef CONFIG_TARGET_x86_64
 	$(LINUX_DIR)/arch/x86/crypto/twofish-i586.ko \
 	$(LINUX_DIR)/arch/x86/crypto/serpent-sse2-i586.ko \
 	$(LINUX_DIR)/arch/x86/crypto/glue_helper.ko@lt5.12 \
-	$(LINUX_DIR)/crypto/cryptd.ko \
-	$(LINUX_DIR)/crypto/crypto_simd.ko
-    AUTOLOAD+= $(call AutoLoad,10,cryptd glue_helper@lt5.12 \
+	$(LINUX_DIR)/crypto/cryptd.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/crypto_simd.ko@lt6.18
+    AUTOLOAD+= $(call AutoLoad,10,cryptd@lt6.18 glue_helper@lt5.12 \
 	serpent-sse2-i586 twofish-i586 blowfish_generic)
   endef
 endif
@@ -916,9 +936,9 @@ $(eval $(call KernelPackage,crypto-rng))
 define KernelPackage/crypto-geniv
   TITLE:=CryptoAPI Shared IV generator
   HIDDEN:=1
-  DEPENDS:=+kmod-crypto-rng +kmod-crypto-aead @(LINUX_6_6||LINUX_6_12)
+  DEPENDS:=+kmod-crypto-rng +kmod-crypto-aead
   KCONFIG:=CONFIG_CRYPTO_GENIV
-  FILES:=$(LINUX_DIR)/crypto/geniv.ko
+  FILES:=$(LINUX_DIR)/crypto/geniv.ko@ge6.5
   AUTOLOAD:=$(call AutoLoad,09,geniv)
   $(call AddDepends/crypto)
 endef
@@ -928,7 +948,7 @@ $(eval $(call KernelPackage,crypto-geniv))
 
 define KernelPackage/crypto-seqiv
   TITLE:=CryptoAPI Sequence Number IV Generator
-  DEPENDS:=+kmod-crypto-aead +kmod-crypto-rng +(LINUX_6_6||LINUX_6_12):kmod-crypto-geniv
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-rng +kmod-crypto-geniv
   KCONFIG:=CONFIG_CRYPTO_SEQIV
   FILES:=$(LINUX_DIR)/crypto/seqiv.ko
   AUTOLOAD:=$(call AutoLoad,09,seqiv)
@@ -943,17 +963,19 @@ define KernelPackage/crypto-sha1
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_SHA1 \
-	CONFIG_CRYPTO_SHA1_ARM \
-	CONFIG_CRYPTO_SHA1_ARM_NEON \
-	CONFIG_CRYPTO_SHA1_ARM64_CE \
-	CONFIG_CRYPTO_SHA1_OCTEON \
-	CONFIG_CRYPTO_SHA1_PPC_SPE \
-	CONFIG_CRYPTO_SHA1_SSSE3
-  FILES:=$(LINUX_DIR)/crypto/sha1_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha1_generic)
+	CONFIG_CRYPTO_SHA1_ARM@lt6.18 \
+	CONFIG_CRYPTO_SHA1_ARM_NEON@lt6.18 \
+	CONFIG_CRYPTO_SHA1_ARM64_CE@lt6.18 \
+	CONFIG_CRYPTO_SHA1_OCTEON@lt6.18 \
+	CONFIG_CRYPTO_SHA1_PPC_SPE@lt6.18 \
+	CONFIG_CRYPTO_SHA1_SSSE3@lt6.18
+  FILES:=$(LINUX_DIR)/crypto/sha1_generic.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/sha1.ko@ge6.18
+  AUTOLOAD:=$(call AutoLoad,09,sha1_generic@lt6.18 sha1@ge6.18)
   $(call AddDepends/crypto)
 endef
 
+ifneq ($(KERNEL_PATCHVER),6.18)
 define KernelPackage/crypto-sha1/arm
   FILES+=$(LINUX_DIR)/arch/arm/crypto/sha1-arm.ko
   AUTOLOAD+=$(call AutoLoad,09,sha1-arm)
@@ -1004,6 +1026,7 @@ ifdef KernelPackage/crypto-sha1/$(ARCH)
   KernelPackage/crypto-sha1/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-sha1/$(ARCH))
 endif
+endif
 
 $(eval $(call KernelPackage,crypto-sha1))
 
@@ -1025,18 +1048,20 @@ define KernelPackage/crypto-sha256
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_SHA256 \
-	CONFIG_CRYPTO_SHA256_OCTEON \
-	CONFIG_CRYPTO_SHA256_PPC_SPE \
-	CONFIG_CRYPTO_SHA256_ARM64 \
-	CONFIG_CRYPTO_SHA2_ARM64_CE \
-	CONFIG_CRYPTO_SHA256_SSSE3
+	CONFIG_CRYPTO_SHA256_OCTEON@lt6.18 \
+	CONFIG_CRYPTO_SHA256_PPC_SPE@lt6.18 \
+	CONFIG_CRYPTO_SHA256_ARM64@lt6.18 \
+	CONFIG_CRYPTO_SHA2_ARM64_CE@lt6.18 \
+	CONFIG_CRYPTO_SHA256_SSSE3@lt6.18
   FILES:= \
-	$(LINUX_DIR)/crypto/sha256_generic.ko \
+	$(LINUX_DIR)/crypto/sha256_generic.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/sha256.ko@ge6.18 \
 	$(LINUX_DIR)/lib/crypto/libsha256.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha256_generic)
+  AUTOLOAD:=$(call AutoLoad,09,sha256_generic@lt6.18 sha256@ge6.18)
   $(call AddDepends/crypto)
 endef
 
+ifneq ($(KERNEL_PATCHVER),6.18)
 define KernelPackage/crypto-sha256/aarch64
   FILES+=$(LINUX_DIR)/arch/arm64/crypto/sha256-arm64.ko
   AUTOLOAD+=$(call AutoLoad,09,sha256-arm64)
@@ -1076,6 +1101,7 @@ ifdef KernelPackage/crypto-sha256/$(ARCH)
   KernelPackage/crypto-sha256/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-sha256/$(ARCH))
 endif
+endif
 
 $(eval $(call KernelPackage,crypto-sha256))
 
@@ -1085,15 +1111,18 @@ define KernelPackage/crypto-sha512
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= \
 	CONFIG_CRYPTO_SHA512 \
-	CONFIG_CRYPTO_SHA512_ARM \
-	CONFIG_CRYPTO_SHA512_ARM64 \
-	CONFIG_CRYPTO_SHA512_OCTEON \
-	CONFIG_CRYPTO_SHA512_SSSE3
-  FILES:=$(LINUX_DIR)/crypto/sha512_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha512_generic)
+	CONFIG_CRYPTO_SHA512_ARM@lt6.18 \
+	CONFIG_CRYPTO_SHA512_ARM64@lt6.18 \
+	CONFIG_CRYPTO_SHA512_OCTEON@lt6.18 \
+	CONFIG_CRYPTO_SHA512_SSSE3@lt6.18
+  FILES:=$(LINUX_DIR)/crypto/sha512_generic.ko@lt6.18 \
+	$(LINUX_DIR)/crypto/sha512.ko@ge6.18 \
+	$(LINUX_DIR)/lib/crypto/libsha512.ko@ge6.18
+  AUTOLOAD:=$(call AutoLoad,09,sha512_generic@lt6.18 sha512@ge6.18)
   $(call AddDepends/crypto)
 endef
 
+ifneq ($(KERNEL_PATCHVER),6.18)
 define KernelPackage/crypto-sha512/arm
   FILES+=$(LINUX_DIR)/arch/arm/crypto/sha512-arm.ko
   AUTOLOAD+=$(call AutoLoad,09,sha512-arm)
@@ -1127,6 +1156,7 @@ ifdef KernelPackage/crypto-sha512/$(ARCH)
   KernelPackage/crypto-sha512/$(CRYPTO_TARGET)=\
 	  $(KernelPackage/crypto-sha512/$(ARCH))
 endif
+endif
 
 $(eval $(call KernelPackage,crypto-sha512))
 
@@ -1143,7 +1173,7 @@ $(eval $(call KernelPackage,crypto-test))
 
 define KernelPackage/crypto-user
   TITLE:=CryptoAPI userspace interface
-  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager +(LINUX_6_6||LINUX_6_12):kmod-crypto-rng
+  DEPENDS:=+kmod-crypto-hash +kmod-crypto-manager +kmod-crypto-rng
   KCONFIG:= \
 	CONFIG_CRYPTO_USER \
 	CONFIG_CRYPTO_USER_API \
@@ -1175,4 +1205,16 @@ define KernelPackage/crypto-xts
 endef
 
 $(eval $(call KernelPackage,crypto-xts))
+
+
+define KernelPackage/crypto-xxhash
+  TITLE:=xxHash non-cryptographic hash algorithm
+  DEPENDS:=+kmod-crypto-hash +kmod-lib-xxhash
+  KCONFIG:=CONFIG_CRYPTO_XXHASH
+  FILES:=$(LINUX_DIR)/crypto/xxhash_generic.ko
+  AUTOLOAD:=$(call AutoLoad,09,xxhash_generic)
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-xxhash))
 

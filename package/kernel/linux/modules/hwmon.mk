@@ -9,6 +9,7 @@ HWMON_MENU:=Hardware Monitoring Support
 
 define KernelPackage/hwmon-core
   SUBMENU:=$(HWMON_MENU)
+  DEPENDS:=+kmod-i2c-core
   TITLE:=Hardware monitoring support
   KCONFIG:= \
 	CONFIG_HWMON \
@@ -34,7 +35,7 @@ define KernelPackage/hwmon-ad7418
   KCONFIG:=CONFIG_SENSORS_AD7418
   FILES:=$(LINUX_DIR)/drivers/hwmon/ad7418.ko
   AUTOLOAD:=$(call AutoLoad,60,ad7418 ad7418)
-  $(call AddDepends/hwmon,+kmod-i2c-core +LINUX_6_6:kmod-regmap-core)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-core)
 endef
 
 define KernelPackage/hwmon-ad7418/description
@@ -52,7 +53,7 @@ define KernelPackage/hwmon-adt7410
 	$(LINUX_DIR)/drivers/hwmon/adt7x10.ko \
 	$(LINUX_DIR)/drivers/hwmon/adt7410.ko
   AUTOLOAD:=$(call AutoLoad,60,adt7x10 adt7410)
-  $(call AddDepends/hwmon,+kmod-i2c-core +!LINUX_5_15:kmod-regmap-core)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-core)
 endef
 
 define KernelPackage/hwmon-adt7410/description
@@ -60,6 +61,21 @@ define KernelPackage/hwmon-adt7410/description
 endef
 
 $(eval $(call KernelPackage,hwmon-adt7410))
+
+
+define KernelPackage/hwmon-adt7470
+  TITLE:=ADT7470 monitoring support
+  KCONFIG:=CONFIG_SENSORS_ADT7470
+  FILES:=$(LINUX_DIR)/drivers/hwmon/adt7470.ko
+  AUTOLOAD:=$(call AutoProbe,adt7470)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
+endef
+
+define KernelPackage/hwmon-adt7470/description
+ Kernel module for ADT7470 thermal monitor chip
+endef
+
+$(eval $(call KernelPackage,hwmon-adt7470))
 
 
 define KernelPackage/hwmon-adt7475
@@ -92,6 +108,21 @@ define KernelPackage/hwmon-coretemp/description
 endef
 
 $(eval $(call KernelPackage,hwmon-coretemp))
+
+
+define KernelPackage/hwmon-corsair-cpro
+  TITLE:=Corsair Commander Pro controller
+  KCONFIG:=CONFIG_SENSORS_CORSAIR_CPRO
+  FILES:=$(LINUX_DIR)/drivers/hwmon/corsair-cpro.ko
+  AUTOLOAD:=$(call AutoProbe,corsair-cpro)
+  $(call AddDepends/hwmon,+kmod-usb-hid)
+endef
+
+define KernelPackage/hwmon-corsair-cpro/description
+ Kernel module for the Corsair Commander Pro controller and Corsair 1000D
+endef
+
+$(eval $(call KernelPackage,hwmon-corsair-cpro))
 
 
 define KernelPackage/hwmon-dme1737
@@ -183,7 +214,7 @@ define KernelPackage/hwmon-g762
 endef
 
 define KernelPackage/hwmon-g762/description
- Kernel module for Global Mixed-mode Technology Inc G762 and G763 fan speed PWM controller chips.
+ Kernel module for Global Mixed-mode Technology Inc G761/G762/G763 fan speed PWM controller chips.
 endef
 
 $(eval $(call KernelPackage,hwmon-g762))
@@ -346,7 +377,7 @@ define KernelPackage/hwmon-lm92
   KCONFIG:=CONFIG_SENSORS_LM92
   FILES:=$(LINUX_DIR)/drivers/hwmon/lm92.ko
   AUTOLOAD:=$(call AutoProbe,lm92)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-core)
 endef
 
 define KernelPackage/hwmon-lm92/description
@@ -406,7 +437,7 @@ define KernelPackage/hwmon-max6697
   KCONFIG:=CONFIG_SENSORS_MAX6697
   FILES:=$(LINUX_DIR)/drivers/hwmon/max6697.ko
   AUTOLOAD:=$(call AutoProbe,max6697)
-  $(call AddDepends/hwmon,+kmod-i2c-core +!LINUX_6_6:kmod-regmap-i2c)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-i2c)
 endef
 
 define KernelPackage/hwmon-max6697/description
@@ -492,6 +523,25 @@ endef
 $(eval $(call KernelPackage,pmbus-core))
 
 
+define KernelPackage/pmbus-sensors
+  TITLE:=Generic PMBus devices monitoring support
+  KCONFIG:=CONFIG_SENSORS_PMBUS
+  FILES:=$(LINUX_DIR)/drivers/hwmon/pmbus/pmbus.ko
+  AUTOLOAD:=$(call AutoProbe,pmbus)
+  $(call AddDepends/hwmon,+kmod-pmbus-core)
+endef
+
+define KernelPackage/pmbus-sensors/description
+ Kernel modules for generic PMBus devices,
+including but not limited to ADP4000, BMR310, BMR453,
+BMR454, BMR456, BMR457, BMR458, BMR480, BMR490, BMR491, BMR492,
+MAX20796, MDT040, NCP4200, NCP4208, PDT003, PDT006, PDT012,
+TPS40400, TPS544B20, TPS544B25, TPS544C20, TPS544C25, and UDT020.
+endef
+
+$(eval $(call KernelPackage,pmbus-sensors))
+
+
 define KernelPackage/pmbus-zl6100
   TITLE:=Intersil / Zilker Labs ZL6100 hardware monitoring
   KCONFIG:=CONFIG_SENSORS_ZL6100
@@ -513,7 +563,7 @@ define KernelPackage/hwmon-pwmfan
   KCONFIG:=CONFIG_SENSORS_PWM_FAN
   FILES:=$(LINUX_DIR)/drivers/hwmon/pwm-fan.ko
   AUTOLOAD:=$(call AutoLoad,60,pwm-fan)
-  $(call AddDepends/hwmon, +PACKAGE_kmod-thermal:kmod-thermal)
+  $(call AddDepends/hwmon,@PWM_SUPPORT +PACKAGE_kmod-thermal:kmod-thermal)
 endef
 
 define KernelPackage/hwmon-pwmfan/description
@@ -532,7 +582,7 @@ define KernelPackage/hwmon-sch5627
 	$(LINUX_DIR)/drivers/hwmon/sch5627.ko \
 	$(LINUX_DIR)/drivers/hwmon/sch56xx-common.ko
   AUTOLOAD:=$(call AutoProbe,sch5627)
-  $(call AddDepends/hwmon,+kmod-i2c-core)
+  $(call AddDepends/hwmon,+kmod-i2c-core +kmod-regmap-core)
 endef
 
 define KernelPackage/hwmon-sch5627/description
@@ -730,3 +780,12 @@ endef
 $(eval $(call KernelPackage,hwmon-adcxx))
 
 
+define KernelPackage/polynomial
+  TITLE:=polynomial support
+  KCONFIG:=CONFIG_POLYNOMIAL
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/lib/polynomial.ko
+  AUTOLOAD:=$(call AutoProbe, polynomial)
+endef
+
+$(eval $(call KernelPackage,polynomial))

@@ -10,15 +10,24 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mac80211
 
+ifneq ($(filter y,$(CONFIG_LINUX_6_12) $(CONFIG_LINUX_6_18)),)
+PKG_VERSION:=6.18.7
+PKG_HASH:=623e5cf46ca8e81fd413f4f465e2580a0143e24929f9c22ce1ba7c34f2872989
+PKG_SOURCE_URL:=https://github.com/openwrt/backports/releases/download/backports-v$(PKG_VERSION)
+PKG_SOURCE:=backports-$(PKG_VERSION).tar.zst
+PATCH_DIR:=./patches-6.18
+else
 PKG_VERSION:=6.6.15
-PKG_RELEASE:=1
+PKG_HASH:=3bbc461121134fda9089c084a5eed577d05e7837a157edf9a3797937172a3ece
+PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
+PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
+PATCH_DIR:=./patches
+endif
+
+PKG_RELEASE:=3
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=COPYING
 
-PKG_SOURCE_URL:=http://mirror2.openwrt.org/sources/
-PKG_HASH:=3bbc461121134fda9089c084a5eed577d05e7837a157edf9a3797937172a3ece
-
-PKG_SOURCE:=backports-$(PKG_VERSION).tar.xz
 PKG_BUILD_DIR:=$(KERNEL_BUILD_DIR)/$(if $(BUILD_VARIANT),$(PKG_NAME)-$(BUILD_VARIANT)/)backports-$(PKG_VERSION)
 PKG_BUILD_PARALLEL:=1
 
@@ -36,6 +45,8 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_PACKAGE_MAC80211_DEBUGFS \
 	CONFIG_PACKAGE_MAC80211_MESH \
 	CONFIG_PACKAGE_MAC80211_TRACING \
+	CONFIG_PACKAGE_MAC80211_NSS_SUPPORT \
+	CONFIG_PACKAGE_MAC80211_NSS_REDIRECT \
 	CONFIG_PACKAGE_IWLWIFI_DEBUG \
 	CONFIG_PACKAGE_IWLWIFI_DEBUGFS \
 	CONFIG_PACKAGE_RTLWIFI_DEBUG \
@@ -43,6 +54,8 @@ PKG_CONFIG_DEPENDS:= \
 include $(INCLUDE_DIR)/package.mk
 
 WMENU:=Wireless Drivers
+
+NSS_PATCH:=subsys ath10k ath11k
 
 define KernelPackage/mac80211/Default
   SUBMENU:=$(WMENU)
@@ -129,15 +142,38 @@ define KernelPackage/mac80211
   $(call KernelPackage/mac80211/Default)
   TITLE:=Linux 802.11 Wireless Networking Stack
   # +kmod-crypto-cmac is a runtime only dependency of net/mac80211/aes_cmac.c
-  DEPENDS+= +kmod-cfg80211 +kmod-crypto-cmac +kmod-crypto-ccm +kmod-crypto-gcm +hostapd-common
+  DEPENDS+= +kmod-cfg80211 +kmod-crypto-cmac +kmod-crypto-ccm +kmod-crypto-gcm +hostapd-common \
+	+PACKAGE_MAC80211_NSS_SUPPORT:kmod-qca-nss-drv
   KCONFIG:=\
 	CONFIG_AVERAGE=y
   FILES:= $(PKG_BUILD_DIR)/net/mac80211/mac80211.ko
+ifdef CONFIG_PACKAGE_MAC80211_NSS_REDIRECT
+  AUTOLOAD:=$(call AutoProbe,mac80211)
+  MODPARAMS.mac80211:=nss_redirect=1
+endif
   ABI_VERSION:=$(PKG_VERSION)-$(PKG_RELEASE)
   MENU:=1
 endef
 
 define KernelPackage/mac80211/config
+	config PACKAGE_MAC80211_NSS_SUPPORT
+		bool "Enable NSS support"
+		depends on TARGET_qualcommax_ipq60xx || TARGET_qualcommax_ipq807x
+		select PACKAGE_kmod-qca-nss-drv
+		select NSS_DRV_WIFI_ENABLE
+		select NSS_DRV_WIFI_EXT_VDEV_ENABLE
+		default y
+		help
+		  This option enables NSS support on Qualcomm IPQ60xx/IPQ807x boards.
+
+	config PACKAGE_MAC80211_NSS_REDIRECT
+		bool "Enable autoloading with 'nss_redirect=1'"
+		depends on PACKAGE_MAC80211_NSS_SUPPORT
+		default n
+		help
+		  This option enables autoloading mac80211 with nss_redirect=1.
+		  It is not required for ath11k Wi-Fi offload.
+
   if PACKAGE_kmod-mac80211
 
 	config PACKAGE_MAC80211_DEBUGFS
@@ -281,6 +317,12 @@ ifeq ($(BUILD_VARIANT),smallbuffers)
 	C_DEFINES+= -DCONFIG_ATH10K_SMALLBUFFERS
 endif
 
+ifdef CONFIG_ATH11K_NSS_SUPPORT
+	IREMAP_CFLAGS+= -I$(STAGING_DIR)/usr/include/qca-nss-drv -I$(STAGING_DIR)/usr/include/qca-nss-clients
+endif
+
+config-$(CONFIG_PACKAGE_MAC80211_NSS_SUPPORT) += MAC80211_NSS_SUPPORT
+
 MAKE_OPTS:= \
 	$(subst -C $(LINUX_DIR),-C "$(PKG_BUILD_DIR)",$(KERNEL_MAKEOPTS)) \
 	EXTRA_CFLAGS="-I$(PKG_BUILD_DIR)/include $(IREMAP_CFLAGS) $(C_DEFINES)" \
@@ -333,9 +375,7 @@ endif
 ifeq ($(strip $(CONFIG_EXTERNAL_KERNEL_TREE)),"")
   ifeq ($(strip $(CONFIG_KERNEL_GIT_CLONE_URI)),"")
     define Build/Configure
-	  cmp $(PKG_BUILD_DIR)/include/linux/ath9k_platform.h $(LINUX_DIR)/include/linux/ath9k_platform.h
 	  cmp $(PKG_BUILD_DIR)/include/linux/ath5k_platform.h $(LINUX_DIR)/include/linux/ath5k_platform.h
-	  cmp $(PKG_BUILD_DIR)/include/linux/rt2x00_platform.h $(LINUX_DIR)/include/linux/rt2x00_platform.h
     endef
   endif
 endif
@@ -355,6 +395,11 @@ define Build/Patch
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call PatchDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
+ifdef CONFIG_ATH11K_NSS_SUPPORT
+	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/subsys,nss/subsys/)
+	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/ath10k,nss/ath10k/)
+	$(call PatchDir,$(PKG_BUILD_DIR),./patches/nss/ath11k,nss/ath11k/)
+endif
 	$(if $(QUILT),touch $(PKG_BUILD_DIR)/.quilt_used)
 endef
 
@@ -372,6 +417,11 @@ define Quilt/Refresh/Package
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/mwl,mwl/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/brcm,brcm/)
 	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),$(PATCH_DIR)/rtl,rtl/)
+ifdef CONFIG_ATH11K_NSS_SUPPORT
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/subsys,nss/subsys/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/ath10k,nss/ath10k/)
+	$(call Quilt/RefreshDir,$(PKG_BUILD_DIR),./patches/nss/ath11k,nss/ath11k/)
+endif
 endef
 
 define Build/Compile

@@ -29,7 +29,7 @@ define Device/ariaboard_photonicat2
   DEVICE_DTS := rk3576-photonicat2
   UBOOT_DEVICE_NAME := generic-rk3576
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-aic8800u wpad-openssl
+  DEVICE_PACKAGES := kmod-aic8800-usb wpad-openssl
 endef
 TARGET_DEVICES += ariaboard_photonicat2
 
@@ -74,6 +74,17 @@ define Device/armsom_sige7
   DEVICE_PACKAGES := kmod-brcmfmac kmod-r8125-rss wpad
 endef
 TARGET_DEVICES += armsom_sige7
+
+define Device/armsom_w3
+  DEVICE_VENDOR := ArmSoM
+  DEVICE_MODEL := W3
+  SOC := rk3588
+  DEVICE_DTS := rk3588-armsom-w3
+  UBOOT_DEVICE_NAME := sige7-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss
+endef
+TARGET_DEVICES += armsom_w3
 
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
@@ -175,6 +186,16 @@ define Device/friendlyarm_nanopi-neo3
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
 endef
 TARGET_DEVICES += friendlyarm_nanopi-neo3
+
+define Device/friendlyarm_nanopi-r28s
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R28S
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := nanopi-zero2-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800-sdio kmod-gpio-button-hotplug kmod-r8169 wpad-openssl
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r28s
 
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
@@ -330,7 +351,7 @@ define Device/hinlink_opc-h29k
   SOC := rk3528
   UBOOT_DEVICE_NAME := generic-rk3528
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-aic8800s kmod-fb-tft-st7789v wpad-openssl -urngd
+  DEVICE_PACKAGES := kmod-aic8800-sdio kmod-fb-tft-st7789v wpad-openssl -urngd
 endef
 TARGET_DEVICES += hinlink_opc-h29k
 
@@ -362,7 +383,7 @@ define Device/hinlink_opc-ht2
   SOC := rk3528
   UBOOT_DEVICE_NAME := generic-rk3528
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-aic8800s wpad-openssl -urngd
+  DEVICE_PACKAGES := kmod-aic8800-sdio wpad-openssl -urngd
 endef
 TARGET_DEVICES += hinlink_opc-ht2
 
@@ -509,9 +530,18 @@ define Device/radxa_rock-3c
   SOC := rk3566
   UBOOT_DEVICE_NAME := rock-3c-rk3566
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-aic8800s wpad-openssl
+  DEVICE_PACKAGES := kmod-aic8800-sdio wpad-openssl
 endef
 TARGET_DEVICES += radxa_rock-3c
+
+define Device/radxa_rock-4c-plus
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 4C+
+  SOC := rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  UBOOT_DEVICE_NAME := rock-4c-plus-rk3399
+endef
+TARGET_DEVICES += radxa_rock-4c-plus
 
 define Device/radxa_rock-pi-4a
   DEVICE_VENDOR := Radxa
@@ -521,6 +551,25 @@ define Device/radxa_rock-pi-4a
   UBOOT_DEVICE_NAME := rock-pi-4-rk3399
 endef
 TARGET_DEVICES += radxa_rock-pi-4a
+
+define Device/radxa_rock-4d
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 4D
+  SOC := rk3576
+  UBOOT_DEVICE_NAME := rock-4d-rk3576
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-aic8800-usb wpad-openssl
+endef
+TARGET_DEVICES += radxa_rock-4d
+
+define Device/radxa_rock-4se
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 4SE
+  SOC := rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  UBOOT_DEVICE_NAME := rock-4se-rk3399
+endef
+TARGET_DEVICES += radxa_rock-4se
 
 define Device/radxa_rock-5a
   DEVICE_VENDOR := Radxa
@@ -547,7 +596,7 @@ define Device/radxa_rock-5c
   DEVICE_MODEL := ROCK 5C/5C Lite
   SOC := rk3588s
   UBOOT_DEVICE_NAME := rock-5c-rk3588s
-  DEVICE_PACKAGES := kmod-aic8800u wpad-openssl
+  DEVICE_PACKAGES := kmod-aic8800-usb wpad-openssl
 endef
 TARGET_DEVICES += radxa_rock-5c
 
@@ -563,7 +612,7 @@ define Device/radxa_zero-3w
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ZERO 3W
   DEVICE_DTS := rk3566-radxa-zero-3w
-  DEVICE_PACKAGES := kmod-aic8800s wpad-openssl
+  DEVICE_PACKAGES := kmod-aic8800-sdio wpad-openssl
   UBOOT_DEVICE_NAME := radxa-zero-3-rk3566
 endef
 TARGET_DEVICES += radxa_zero-3w
@@ -722,7 +771,7 @@ define Device/widora_mangopi-m28
   SOC := rk3528
   UBOOT_DEVICE_NAME := generic-rk3528
   IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
-  DEVICE_PACKAGES := kmod-aic8800s wpad-openssl -urngd
+  DEVICE_PACKAGES := kmod-aic8800-sdio wpad-openssl -urngd
 endef
 
 define Device/widora_mangopi-m28c

@@ -1,0 +1,177 @@
+From fceb17ac05e772ffc82f1f008e876bf7752f0576 Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Sun, 11 Jan 2026 11:39:33 +0200
+Subject: [PATCH 4/5] dt-bindings: phy-common-props: RX and TX lane polarity
+ inversion
+
+Differential signaling is a technique for high-speed protocols to be
+more resilient to noise. At the transmit side we have a positive and a
+negative signal which are mirror images of each other. At the receiver,
+if we subtract the negative signal (say of amplitude -A) from the
+positive signal (say +A), we recover the original single-ended signal at
+twice its original amplitude. But any noise, like one coming from EMI
+from outside sources, is supposed to have an almost equal impact upon
+the positive (A + E, E being for "error") and negative signal (-A + E).
+So (A + E) - (-A + E) eliminates this noise, and this is what makes
+differential signaling useful.
+
+Except that in order to work, there must be strict requirements observed
+during PCB design and layout, like the signal traces needing to have the
+same length and be physically close to each other, and many others.
+
+Sometimes it is not easy to fulfill all these requirements, a simple
+case to understand is when on chip A's pins, the positive pin is on the
+left and the negative is on the right, but on the chip B's pins (with
+which A tries to communicate), positive is on the right and negative on
+the left. The signals would need to cross, using vias and other ugly
+stuff that affects signal integrity (introduces impedance
+discontinuities which cause reflections, etc).
+
+So sometimes, board designers intentionally connect differential lanes
+the wrong way, and expect somebody else to invert that signal to recover
+useful data. This is where RX and TX polarity inversion comes in as a
+generic concept that applies to any high-speed serial protocol as long
+as it uses differential signaling.
+
+I've stopped two attempts to introduce more vendor-specific descriptions
+of this only in the past month:
+https://lore.kernel.org/linux-phy/20251110110536.2596490-1-horatiu.vultur@microchip.com/
+https://lore.kernel.org/netdev/20251028000959.3kiac5kwo5pcl4ft@skbuf/
+
+and in the kernel we already have merged:
+- "st,px_rx_pol_inv"
+- "st,pcie-tx-pol-inv"
+- "st,sata-tx-pol-inv"
+- "mediatek,pnswap"
+- "airoha,pnswap-rx"
+- "airoha,pnswap-tx"
+
+and maybe more. So it is pretty general.
+
+One additional element of complexity is introduced by the fact that for
+some protocols, receivers can automatically detect and correct for an
+inverted lane polarity (example: the PCIe LTSSM does this in the
+Polling.Configuration state; the USB 3.1 Link Layer Test Specification
+says that the detection and correction of the lane polarity inversion in
+SuperSpeed operation shall be enabled in Polling.RxEQ.). Whereas for
+other protocols (SGMII, SATA, 10GBase-R, etc etc), the polarity is all
+manual and there is no detection mechanism mandated by their respective
+standards.
+
+So why would one even describe rx-polarity and tx-polarity for protocols
+like PCIe, if it had to always be PHY_POL_AUTO?
+
+Related question: why would we define the polarity as an array per
+protocol? Isn't the physical PCB layout protocol-agnostic, and aren't we
+describing the same physical reality from the lens of different protocols?
+
+The answer to both questions is because multi-protocol PHYs exist
+(supporting e.g. USB2 and USB3, or SATA and PCIe, or PCIe and Ethernet
+over the same lane), one would need to manually set the polarity for
+SATA/Ethernet, while leaving it at auto for PCIe/USB 3.0+.
+
+I also investigated from another angle: what if polarity inversion in
+the PHY is one layer, and then the PCIe/USB3 LTSSM polarity detection is
+another layer on top? Then rx-polarity = <PHY_POL_AUTO> doesn't make
+sense, it can still be rx-polarity = <PHY_POL_NORMAL> or <PHY_POL_INVERT>,
+and the link training state machine figures things out on top of that.
+This would radically simplify the design, as the elimination of
+PHY_POL_AUTO inherently means that the need for a property array per
+protocol also goes away.
+
+I don't know how things are in the general case, but at least in the 10G
+and 28G Lynx SerDes blocks from NXP Layerscape devices, this isn't the
+case, and there's only a single level of RX polarity inversion: in the
+SerDes lane. In the case of PCIe, the controller is in charge of driving
+the RDAT_INV bit autonomously, and it is read-only to software.
+
+So the existence of this kind of SerDes lane proves the need for
+PHY_POL_AUTO to be a third state.
+
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Reviewed-by: Rob Herring (Arm) <robh@kernel.org>
+Link: https://patch.msgid.link/20260111093940.975359-5-vladimir.oltean@nxp.com
+Signed-off-by: Vinod Koul <vkoul@kernel.org>
+---
+ .../bindings/phy/phy-common-props.yaml        | 49 +++++++++++++++++++
+ include/dt-bindings/phy/phy.h                 |  4 ++
+ 2 files changed, 53 insertions(+)
+
+--- a/Documentation/devicetree/bindings/phy/phy-common-props.yaml
++++ b/Documentation/devicetree/bindings/phy/phy-common-props.yaml
+@@ -94,15 +94,64 @@ properties:
+       property. Required only if multiple voltages are provided.
+     $ref: "#/$defs/protocol-names"
+ 
++  rx-polarity:
++    description:
++      An array of values indicating whether the differential receiver's
++      polarity is inverted. Each value can be one of
++      PHY_POL_NORMAL (0) which means the negative signal is decoded from the
++      RXN input, and the positive signal from the RXP input;
++      PHY_POL_INVERT (1) which means the negative signal is decoded from the
++      RXP input, and the positive signal from the RXN input;
++      PHY_POL_AUTO (2) which means the receiver performs automatic polarity
++      detection and correction, which is a mandatory part of link training for
++      some protocols (PCIe, USB SS).
++
++      The values are defined in <dt-bindings/phy/phy.h>. If the property is
++      absent, the default value is undefined.
++
++      Note that the RXP and RXN inputs refer to the block that this property is
++      under, and do not necessarily directly translate to external pins.
++
++      If this property contains multiple values for various protocols, the
++      'rx-polarity-names' property must be provided.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 1
++    maxItems: 16
++    items:
++      enum: [0, 1, 2]
++
++  rx-polarity-names:
++    $ref: '#/$defs/protocol-names'
++
++  tx-polarity:
++    description:
++      Like 'rx-polarity', except it applies to differential transmitters,
++      and only the values of PHY_POL_NORMAL and PHY_POL_INVERT are possible.
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    minItems: 1
++    maxItems: 16
++    items:
++      enum: [0, 1]
++
++  tx-polarity-names:
++    $ref: '#/$defs/protocol-names'
++
+ dependencies:
+   tx-p2p-microvolt-names: [ tx-p2p-microvolt ]
++  rx-polarity-names: [ rx-polarity ]
++  tx-polarity-names: [ tx-polarity ]
+ 
+ additionalProperties: true
+ 
+ examples:
+   - |
++    #include <dt-bindings/phy/phy.h>
++
+     phy: phy {
+       #phy-cells = <1>;
+       tx-p2p-microvolt = <915000>, <1100000>, <1200000>;
+       tx-p2p-microvolt-names = "2500base-x", "usb-hs", "usb-ss";
++      rx-polarity = <PHY_POL_AUTO>, <PHY_POL_NORMAL>;
++      rx-polarity-names = "usb-ss", "default";
++      tx-polarity = <PHY_POL_INVERT>;
+     };
+--- a/include/dt-bindings/phy/phy.h
++++ b/include/dt-bindings/phy/phy.h
+@@ -24,4 +24,8 @@
+ #define PHY_TYPE_CPHY		11
+ #define PHY_TYPE_USXGMII	12
+ 
++#define PHY_POL_NORMAL		0
++#define PHY_POL_INVERT		1
++#define PHY_POL_AUTO		2
++
+ #endif /* _DT_BINDINGS_PHY */

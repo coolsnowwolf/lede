@@ -1,0 +1,59 @@
+From 762e7e174da91cf4babfe77e45bc6b67334b1503 Mon Sep 17 00:00:00 2001
+From: Jonas Gorski <jonas.gorski@gmail.com>
+Date: Sun, 9 Nov 2025 14:46:35 +0100
+Subject: [PATCH] net: dsa: tag_brcm: do not mark link local traffic as
+ offloaded
+
+Broadcom switches locally terminate link local traffic and do not
+forward it, so we should not mark it as offloaded.
+
+In some situations we still want/need to flood this traffic, e.g. if STP
+is disabled, or it is explicitly enabled via the group_fwd_mask. But if
+the skb is marked as offloaded, the kernel will assume this was already
+done in hardware, and the packets never reach other bridge ports.
+
+So ensure that link local traffic is never marked as offloaded, so that
+the kernel can forward/flood these packets in software if needed.
+
+Since the local termination in not configurable, check the destination
+MAC, and never mark packets as offloaded if it is a link local ether
+address.
+
+While modern switches set the tag reason code to BRCM_EG_RC_PROT_TERM
+for trapped link local traffic, they also set it for link local traffic
+that is flooded (01:80:c2:00:00:10 to 01:80:c2:00:00:2f), so we cannot
+use it and need to look at the destination address for them as well.
+
+Fixes: 964dbf186eaa ("net: dsa: tag_brcm: add support for legacy tags")
+Fixes: 0e62f543bed0 ("net: dsa: Fix duplicate frames flooded by learning")
+Signed-off-by: Jonas Gorski <jonas.gorski@gmail.com>
+Reviewed-by: Vladimir Oltean <olteanv@gmail.com>
+Reviewed-by: Florian Fainelli <florian.fainelli@broadcom.com>
+Link: https://patch.msgid.link/20251109134635.243951-1-jonas.gorski@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ net/dsa/tag_brcm.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+--- a/net/dsa/tag_brcm.c
++++ b/net/dsa/tag_brcm.c
+@@ -176,7 +176,8 @@ static struct sk_buff *brcm_tag_rcv_ll(s
+ 	/* Remove Broadcom tag and update checksum */
+ 	skb_pull_rcsum(skb, BRCM_TAG_LEN);
+ 
+-	dsa_default_offload_fwd_mark(skb);
++	if (likely(!is_link_local_ether_addr(eth_hdr(skb)->h_dest)))
++		dsa_default_offload_fwd_mark(skb);
+ 
+ 	return skb;
+ }
+@@ -250,7 +251,8 @@ static struct sk_buff *brcm_leg_tag_rcv(
+ 	/* Remove Broadcom tag and update checksum */
+ 	skb_pull_rcsum(skb, len);
+ 
+-	dsa_default_offload_fwd_mark(skb);
++	if (likely(!is_link_local_ether_addr(eth_hdr(skb)->h_dest)))
++		dsa_default_offload_fwd_mark(skb);
+ 
+ 	dsa_strip_etype_header(skb, len);
+ 

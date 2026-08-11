@@ -1,0 +1,40 @@
+From 210b20357989ace8bb5c861b37e25b6c986c816d Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Thu, 1 Jul 2021 13:08:54 +0530
+Subject: [PATCH] ath11k: fix double free of peer rx_tid during reo cmd failure
+
+Peer rx_tid is locally copied thrice during peer_rx_tid_cleanup to send
+REO_CMD_UPDATE_RX_QUEUE followed by REO_CMD_FLUSH_CACHE to flush all
+aged REO descriptors from HW cache.
+
+When sending REO_CMD_FLUSH_CACHE fails, we do dma unmap of already
+mapped rx_tid->vaddr and free it. This is not checked during
+reo_cmd_list_cleanup() and dp_reo_cmd_free() before trying to free and
+unmap again.
+
+Fix this by setting rx_tid->vaddr NULL in rx tid delete and also wherever
+freeing it to check in reo_cmd_list_cleanup() and reo_cmd_free() before
+trying to free again.
+
+Prevent REO cmd failures causing double free by increasing REO cmd
+ring size and moving REO status ring mask to IRQ group 3 from group
+0 to separate from tx completion ring on IRQ group 0 which may delay
+reo status processing.
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/dp.h    |  2 +-
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 66 ++++++++++++++++++-------
+ drivers/net/wireless/ath/ath11k/hw.c    |  1 +
+ 3 files changed, 49 insertions(+), 20 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -1335,6 +1335,7 @@ const struct ath11k_hw_ring_mask ath11k_
+ 		ATH11K_RX_WBM_REL_RING_MASK_0,
+ 	},
+ 	.reo_status = {
++		0, 0, 0,
+ 		ATH11K_REO_STATUS_RING_MASK_0,
+ 	},
+ 	.rxdma2host = {

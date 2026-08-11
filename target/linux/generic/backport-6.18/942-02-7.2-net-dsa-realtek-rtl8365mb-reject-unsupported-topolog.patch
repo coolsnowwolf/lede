@@ -1,0 +1,59 @@
+From 36c572fd60d6bf2f9631088833c162203907c9ca Mon Sep 17 00:00:00 2001
+From: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Date: Sat, 6 Jun 2026 05:29:26 -0300
+Subject: net: dsa: realtek: rtl8365mb: reject unsupported topologies
+
+Explicitly enforce the presence of a CPU port (-EINVAL) and reject DSA
+cascade links (-EOPNOTSUPP) during setup to prevent silent failures.
+
+These topologies were already non-functional. Without a CPU port, the
+driver does not activate CPU tagging. Additionally, the switch hardware
+was not designed to be cascaded, and DSA links never worked because
+CPU tagging is not enabled for them.
+
+Reviewed-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Reviewed-by: Linus Walleij <linusw@kernel.org>
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Link: https://patch.msgid.link/20260606-realtek_forward-v13-2-b9e409687cbe@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/realtek/rtl8365mb.c | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+--- a/drivers/net/dsa/realtek/rtl8365mb.c
++++ b/drivers/net/dsa/realtek/rtl8365mb.c
+@@ -1991,6 +1991,20 @@ static int rtl8365mb_setup(struct dsa_sw
+ 	else if (ret)
+ 		dev_info(priv->dev, "no interrupt support\n");
+ 
++	for (i = 0; i < priv->num_ports; i++) {
++		/* Cascading (DSA links) is not supported yet.
++		 * Historically, the driver has always been broken
++		 * without a dedicated CPU port because CPU tagging
++		 * would be disabled, rendering the switch entirely
++		 * non-functional for DSA operations.
++		 */
++		if (dsa_is_dsa_port(ds, i)) {
++			dev_err(priv->dev, "Cascading (DSA link) not supported\n");
++			ret = -EOPNOTSUPP;
++			goto out_teardown_irq;
++		}
++	}
++
+ 	/* Configure CPU tagging */
+ 	dsa_switch_for_each_cpu_port(cpu_dp, ds) {
+ 		cpu->mask |= BIT(cpu_dp->index);
+@@ -1999,6 +2013,13 @@ static int rtl8365mb_setup(struct dsa_sw
+ 			cpu->trap_port = cpu_dp->index;
+ 	}
+ 	cpu->enable = cpu->mask > 0;
++
++	if (!cpu->enable) {
++		dev_err(priv->dev, "no CPU port defined\n");
++		ret = -EINVAL;
++		goto out_teardown_irq;
++	}
++
+ 	ret = rtl8365mb_cpu_config(priv);
+ 	if (ret)
+ 		goto out_teardown_irq;

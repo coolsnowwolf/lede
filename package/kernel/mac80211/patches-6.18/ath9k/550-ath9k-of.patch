@@ -1,0 +1,166 @@
+--- a/drivers/net/wireless/ath/ath9k/init.c
++++ b/drivers/net/wireless/ath/ath9k/init.c
+@@ -28,6 +28,11 @@
+ 
+ #include "ath9k.h"
+ 
++#ifdef CONFIG_ATH79
++#include <asm/mach-ath79/ath79.h>
++#include <asm/mach-ath79/ar71xx_regs.h>
++#endif
++ 
+ struct ath9k_eeprom_ctx {
+ 	struct completion complete;
+ 	struct ath_hw *ah;
+@@ -242,6 +247,81 @@ static unsigned int ath9k_reg_rmw(void *
+ 	return val;
+ }
+ 
++#ifdef CONFIG_ATH79
++#define QCA955X_DDR_CTL_CONFIG          0x108
++#define QCA955X_DDR_CTL_CONFIG_ACT_WMAC BIT(23)
++
++static int ar913x_wmac_reset(void)
++{
++	ath79_device_reset_set(AR913X_RESET_AMBA2WMAC);
++	mdelay(10);
++
++	ath79_device_reset_clear(AR913X_RESET_AMBA2WMAC);
++	mdelay(10);
++
++	return 0;
++}
++
++static int ar933x_wmac_reset(void)
++{
++	int retries = 20;
++
++	ath79_device_reset_set(AR933X_RESET_WMAC);
++	ath79_device_reset_clear(AR933X_RESET_WMAC);
++
++	while (1) {
++		u32 bootstrap;
++
++		bootstrap = ath79_reset_rr(AR933X_RESET_REG_BOOTSTRAP);
++		if ((bootstrap & AR933X_BOOTSTRAP_EEPBUSY) == 0)
++			return 0;
++
++		if (retries-- == 0)
++			break;
++
++		udelay(10000);
++	}
++
++	pr_err("ar933x: WMAC reset timed out");
++	return -ETIMEDOUT;
++}
++
++static int qca955x_wmac_reset(void)
++{
++	int i;
++
++	/* Try to wait for WMAC DDR activity to stop */
++	for (i = 0; i < 10; i++) {
++		if (!(__raw_readl(ath79_ddr_base + QCA955X_DDR_CTL_CONFIG) &
++		    QCA955X_DDR_CTL_CONFIG_ACT_WMAC))
++			break;
++
++		udelay(10);
++	}
++
++	ath79_device_reset_set(QCA955X_RESET_RTC);
++	udelay(10);
++	ath79_device_reset_clear(QCA955X_RESET_RTC);
++	udelay(10);
++
++	return 0;
++}
++
++
++static int ar9330_get_soc_revision(void)
++{
++	if (ath79_soc_rev == 1)
++		return ath79_soc_rev;
++
++	return 0;
++}
++
++static int ath79_get_soc_revision(void)
++{
++	return ath79_soc_rev;
++}
++#endif
++
+ /**************************/
+ /*     Initialization     */
+ /**************************/
+@@ -626,6 +706,7 @@ static int ath9k_of_init(struct ath_soft
+ 	struct ath_common *common = ath9k_hw_common(ah);
+ 	enum ath_bus_type bus_type = common->bus_ops->ath_bus_type;
+ 	char eeprom_name[100];
++	u32 mask;
+ 	int ret;
+ 
+ 	if (!of_device_is_available(np))
+@@ -633,6 +714,43 @@ static int ath9k_of_init(struct ath_soft
+ 
+ 	ath_dbg(common, CONFIG, "parsing configuration from OF node\n");
+ 
++	if (!of_property_read_u32(np, "qca,gpio-mask", &mask))
++		ah->caps.gpio_mask = mask;
++
++	if (of_property_read_bool(np, "qca,tx-gain-buffalo"))
++		ah->config.tx_gain_buffalo = true;
++
++#ifdef CONFIG_ATH79
++	if (ah->hw_version.devid == AR5416_AR9100_DEVID) {
++		ah->external_reset = ar913x_wmac_reset;
++	} else if (ah->hw_version.devid == AR9300_DEVID_AR9330) {
++		ah->get_mac_revision = ar9330_get_soc_revision;
++		u32 t = ath79_reset_rr(AR933X_RESET_REG_BOOTSTRAP);
++		ah->is_clk_25mhz = !(t & AR933X_BOOTSTRAP_REF_CLK_40);
++		ah->external_reset = ar933x_wmac_reset;
++	} else if (ah->hw_version.devid == AR9300_DEVID_AR9340) {
++		ah->get_mac_revision = ath79_get_soc_revision;
++		u32 t = ath79_reset_rr(AR934X_RESET_REG_BOOTSTRAP);
++		ah->is_clk_25mhz = !(t & AR934X_BOOTSTRAP_REF_CLK_40);
++	} else if (ah->hw_version.devid == AR9300_DEVID_AR953X) {
++		ah->get_mac_revision = ath79_get_soc_revision;
++		/*
++		 * QCA953x only supports 25MHz refclk.
++		 * Some vendors have an invalid bootstrap option
++		 * set, which would break the WMAC here.
++		 */
++		ah->is_clk_25mhz = true;
++	} else if (ah->hw_version.devid == AR9300_DEVID_QCA955X) {
++		u32 t = ath79_reset_rr(QCA955X_RESET_REG_BOOTSTRAP);
++		ah->is_clk_25mhz = !(t & QCA955X_BOOTSTRAP_REF_CLK_40);
++		ah->external_reset = qca955x_wmac_reset;
++	} else if (ah->hw_version.devid == AR9300_DEVID_QCA956X) {
++		ah->get_mac_revision = ath79_get_soc_revision;
++		u32 t = ath79_reset_rr(QCA956X_RESET_REG_BOOTSTRAP);
++		ah->is_clk_25mhz = !(t & QCA956X_BOOTSTRAP_REF_CLK_40);
++	}
++#endif
++
+ 	if (of_property_read_bool(np, "qca,no-eeprom")) {
+ 		/* ath9k-eeprom-<bus>-<id>.bin */
+ 		scnprintf(eeprom_name, sizeof(eeprom_name),
+@@ -651,6 +769,17 @@ static int ath9k_of_init(struct ath_soft
+ 	if (ret == -EPROBE_DEFER)
+ 		return ret;
+ 
++	np = of_get_child_by_name(np, "led");
++	if (np && of_device_is_available(np)) {
++		u32 led_pin;
++
++		if (!of_property_read_u32(np, "led-sources", &led_pin))
++			ah->led_pin = led_pin;
++
++		ah->config.led_active_high = !of_property_read_bool(np, "led-active-low");
++		of_node_put(np);
++	}
++
+ 	return 0;
+ }
+ 

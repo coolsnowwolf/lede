@@ -1,0 +1,228 @@
+From d919c2f8da9dbd4dda57ceebb5c8b103805b58d1 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 24 Mar 2026 12:05:29 +0000
+Subject: [PATCH 11/19] net: dsa: mxl862xx: add support for mirror port
+
+The MxL862xx hardware supports a single monitor port which can be
+configured to mirror any other port's ingress and/or egress traffic.
+
+Implement support for .port_mirror_add/.port_mirror_del using this
+feature.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-api.h |  12 +++
+ drivers/net/dsa/mxl862xx/mxl862xx-cmd.h |   1 +
+ drivers/net/dsa/mxl862xx/mxl862xx.c     | 118 ++++++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx.h     |   7 ++
+ 4 files changed, 138 insertions(+)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-api.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-api.h
+@@ -729,6 +729,18 @@ struct mxl862xx_bridge_port_config {
+ } __packed;
+ 
+ /**
++ * struct mxl862xx_monitor_port_cfg - Monitor port configuration
++ * @port_id: Destination port for mirrored traffic (zero-based)
++ * @sub_if_id: Monitoring sub-interface ID
++ * @monitor_port: Reserved
++ */
++struct mxl862xx_monitor_port_cfg {
++	u8 port_id;
++	__le16 sub_if_id;
++	u8 monitor_port;
++} __packed;
++
++/**
+  * struct mxl862xx_cfg -  Global Switch configuration Attributes
+  * @mac_table_age_timer: See &enum mxl862xx_age_timer
+  * @age_timer: Custom MAC table aging timer in seconds
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
+@@ -30,6 +30,7 @@
+ #define MXL862XX_COMMON_PORTCFGGET	(MXL862XX_COMMON_MAGIC + 0x7)
+ #define MXL862XX_COMMON_CFGGET		(MXL862XX_COMMON_MAGIC + 0x9)
+ #define MXL862XX_COMMON_CFGSET		(MXL862XX_COMMON_MAGIC + 0xa)
++#define MXL862XX_COMMON_MONITORPORTCFGSET (MXL862XX_COMMON_MAGIC + 0xe)
+ #define MXL862XX_COMMON_REGISTERMOD	(MXL862XX_COMMON_MAGIC + 0x11)
+ 
+ #define MXL862XX_TFLOW_PCERULEWRITE	(MXL862XX_TFLOW_MAGIC + 0x2)
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -1100,6 +1100,8 @@ static int mxl862xx_setup(struct dsa_swi
+ 				      (n_user_ports + n_cpu_ports);
+ 	}
+ 
++	priv->mirror_dest = -1;
++
+ 	ret = mxl862xx_setup_drop_meter(ds);
+ 	if (ret)
+ 		return ret;
+@@ -3167,6 +3169,120 @@ static int mxl862xx_fdb_del_per_fid(stru
+ 	return MXL862XX_API_WRITE(priv, MXL862XX_MAC_TABLEENTRYREMOVE, param);
+ }
+ 
++static int mxl862xx_port_mirror_add(struct dsa_switch *ds, int port,
++				    struct dsa_mall_mirror_tc_entry *mirror,
++				    bool ingress,
++				    struct netlink_ext_ack *extack)
++{
++	struct mxl862xx_priv *priv = ds->priv;
++	struct mxl862xx_port *p = &priv->ports[port];
++	struct mxl862xx_monitor_port_cfg mon = {
++		.port_id = mirror->to_local_port,
++	};
++	struct mxl862xx_ctp_port_config ctp = {
++		.logical_port_id = port,
++		.mask = cpu_to_le32(
++			MXL862XX_CTP_PORT_CONFIG_MASK_LOOPBACK_AND_MIRROR),
++		.ingress_mirror_enable = p->ingress_mirror,
++		.egress_mirror_enable = p->egress_mirror,
++	};
++	int ret;
++
++	/* The hardware has a single global monitor port. Reject if an
++	 * existing mirror session targets a different destination.
++	 */
++	if (priv->mirror_dest >= 0 &&
++	    priv->mirror_dest != mirror->to_local_port) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "Only one mirror destination port is supported");
++		return -EBUSY;
++	}
++
++	if (ingress)
++		ctp.ingress_mirror_enable = 1;
++	else
++		ctp.egress_mirror_enable = 1;
++
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_CTP_PORTCONFIGSET, ctp);
++	if (ret) {
++		dev_err(ds->dev, "mirror: CTP write failed for port %d: %pe\n",
++			port, ERR_PTR(ret));
++		return ret;
++	}
++
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_COMMON_MONITORPORTCFGSET, mon);
++	if (ret) {
++		dev_err(ds->dev,
++			"mirror: failed to set monitor port %d: %pe\n",
++			mirror->to_local_port, ERR_PTR(ret));
++		/* Roll back CTP change */
++		ctp.ingress_mirror_enable = p->ingress_mirror;
++		ctp.egress_mirror_enable = p->egress_mirror;
++		MXL862XX_API_WRITE(priv, MXL862XX_CTP_PORTCONFIGSET, ctp);
++		return ret;
++	}
++
++	if (ingress)
++		p->ingress_mirror = true;
++	else
++		p->egress_mirror = true;
++
++	priv->mirror_dest = mirror->to_local_port;
++
++	return 0;
++}
++
++static void mxl862xx_port_mirror_del(struct dsa_switch *ds, int port,
++				     struct dsa_mall_mirror_tc_entry *mirror)
++{
++	struct mxl862xx_priv *priv = ds->priv;
++	struct mxl862xx_port *p = &priv->ports[port];
++	struct mxl862xx_ctp_port_config ctp = {
++		.logical_port_id = port,
++		.mask = cpu_to_le32(
++			MXL862XX_CTP_PORT_CONFIG_MASK_LOOPBACK_AND_MIRROR),
++		.ingress_mirror_enable = p->ingress_mirror,
++		.egress_mirror_enable = p->egress_mirror,
++	};
++	struct mxl862xx_monitor_port_cfg mon = {};
++	bool active = false;
++	int i, ret;
++
++	if (mirror->ingress)
++		ctp.ingress_mirror_enable = 0;
++	else
++		ctp.egress_mirror_enable = 0;
++
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_CTP_PORTCONFIGSET, ctp);
++	if (ret)
++		dev_err(ds->dev, "mirror: CTP write failed for port %d: %pe\n",
++			port, ERR_PTR(ret));
++
++	if (mirror->ingress)
++		p->ingress_mirror = false;
++	else
++		p->egress_mirror = false;
++
++	/* If no ports have any mirrors active, clear the monitor port */
++	for (i = 0; i < ds->num_ports; i++) {
++		if (priv->ports[i].ingress_mirror ||
++		    priv->ports[i].egress_mirror) {
++			active = true;
++			break;
++		}
++	}
++
++	if (active)
++		return;
++
++	ret = MXL862XX_API_WRITE(priv, MXL862XX_COMMON_MONITORPORTCFGSET, mon);
++	if (ret)
++		dev_err(ds->dev, "mirror: failed to clear monitor port: %pe\n",
++			ERR_PTR(ret));
++
++	priv->mirror_dest = -1;
++}
++
+ /**
+  * mxl862xx_mac_portmap_add - Set port bits in a MAC table entry's portmap
+  * @priv: driver private data
+@@ -4096,6 +4212,8 @@ static const struct dsa_switch_ops mxl86
+ 	.port_fdb_dump = mxl862xx_port_fdb_dump,
+ 	.port_mdb_add = mxl862xx_port_mdb_add,
+ 	.port_mdb_del = mxl862xx_port_mdb_del,
++	.port_mirror_add = mxl862xx_port_mirror_add,
++	.port_mirror_del = mxl862xx_port_mirror_del,
+ 	.port_lag_join = mxl862xx_port_lag_join,
+ 	.port_lag_leave = mxl862xx_port_lag_leave,
+ 	.port_lag_change = mxl862xx_port_lag_change,
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.h
+@@ -240,6 +240,8 @@ struct mxl862xx_port_stats {
+  * @stats_lock:          protects accumulator reads in .get_stats64 against
+  *                       concurrent updates from the polling work
+  * @tag_8021q_vid:       currently assigned tag_8021q management VID
++ * @ingress_mirror:      true when ingress mirroring is active on this port
++ * @egress_mirror:       true when egress mirroring is active on this port
+  * @lag:                 non-NULL when port is member of a LAG group;
+  *                       points to the DSA LAG structure
+  * @lag_tx_enabled:      true when this port is active for TX in its LAG
+@@ -265,6 +267,8 @@ struct mxl862xx_port {
+ 	struct work_struct host_flood_work;
+ 	u16 tag_8021q_vid;
+ 	struct mxl862xx_evlan_block cpu_egress_evlan;
++	bool ingress_mirror;
++	bool egress_mirror;
+ 	struct dsa_lag *lag;
+ 	bool lag_tx_enabled;
+ 	u8 lag_hash_bits;
+@@ -367,6 +371,8 @@ union mxl862xx_fw_version {
+  * @trunk_hash:         current global hash field bitmask (6 bits,
+  *                      MXL862XX_TRUNK_HASH_*); union of all active LAGs'
+  *                      hash requirements
++ * @mirror_dest:        current mirror destination port, or -1 if no mirror
++ *                      session is active; used to detect monitor port conflicts
+  * @stats_work:         periodic work item that polls RMON hardware counters
+  *                      and accumulates them into 64-bit per-port stats
+  */
+@@ -388,6 +394,7 @@ struct mxl862xx_priv {
+ 	u16 cpu_trap_fid;
+ 	u16 lag_bridge_ports[MXL862XX_MAX_LAG_IDS + 1];
+ 	u8 trunk_hash;
++	int mirror_dest;
+ 	struct delayed_work stats_work;
+ };
+ 

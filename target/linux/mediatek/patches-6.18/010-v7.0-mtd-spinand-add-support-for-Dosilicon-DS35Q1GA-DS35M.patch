@@ -1,0 +1,158 @@
+From a75a1dec037ff3de863375fa3a74569619667184 Mon Sep 17 00:00:00 2001
+From: Ahmed Naseef <naseefkm@gmail.com>
+Date: Tue, 9 Dec 2025 11:16:02 +0400
+Subject: [PATCH] mtd: spinand: add support for Dosilicon DS35Q1GA/DS35M1GA
+
+Add support for Dosilicon DS35Q1GA (3.3V) and DS35M1GA (1.8V) SPI NAND.
+
+These are 1Gbit (128MB) devices with:
+  - 2048 byte pages + 64 byte OOB
+  - 64 pages per block, 1024 blocks
+  - On-die 4-bit ECC per 512 byte sector
+
+The 64-byte OOB area is divided into 4 segments of 16 bytes, with each
+segment containing 8 bytes of user data (M2+M1) and 8 bytes of ECC
+parity (R1). This provides 30 bytes of usable OOB space after reserving
+2 bytes for the bad block marker.
+
+Tested on Genexis Platinum 4410 (EcoNet EN751221) by writing known
+patterns to OOB and verifying ECC parity placement in R1 regions.
+
+Datasheet:
+  https://www.dosilicon.com/resources/SPI%20NAND/DS35X1GAXXX_rev08.pdf
+
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+---
+ drivers/mtd/nand/spi/Makefile    |  4 +-
+ drivers/mtd/nand/spi/core.c      |  1 +
+ drivers/mtd/nand/spi/dosilicon.c | 91 ++++++++++++++++++++++++++++++++
+ include/linux/mtd/spinand.h      |  1 +
+ 4 files changed, 95 insertions(+), 2 deletions(-)
+ create mode 100644 drivers/mtd/nand/spi/dosilicon.c
+
+--- a/drivers/mtd/nand/spi/Makefile
++++ b/drivers/mtd/nand/spi/Makefile
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
+ spinand-objs := core.o otp.o
+-spinand-objs += alliancememory.o ato.o esmt.o etron.o fmsh.o foresee.o gigadevice.o
+-spinand-objs += macronix.o micron.o paragon.o skyhigh.o toshiba.o winbond.o xtx.o
++spinand-objs += alliancememory.o ato.o dosilicon.o esmt.o etron.o fmsh.o foresee.o
++spinand-objs += gigadevice.o macronix.o micron.o paragon.o skyhigh.o toshiba.o
++spinand-objs += winbond.o xtx.o
+ obj-$(CONFIG_MTD_SPI_NAND) += spinand.o
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -1226,6 +1226,7 @@ static const struct nand_ops spinand_ops
+ static const struct spinand_manufacturer *spinand_manufacturers[] = {
+ 	&alliancememory_spinand_manufacturer,
+ 	&ato_spinand_manufacturer,
++	&dosilicon_spinand_manufacturer,
+ 	&esmt_8c_spinand_manufacturer,
+ 	&esmt_c8_spinand_manufacturer,
+ 	&etron_spinand_manufacturer,
+--- /dev/null
++++ b/drivers/mtd/nand/spi/dosilicon.c
+@@ -0,0 +1,91 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Author: Ahmed Naseef <naseefkm@gmail.com>
++ */
++
++#include <linux/device.h>
++#include <linux/kernel.h>
++#include <linux/mtd/spinand.h>
++
++#define SPINAND_MFR_DOSILICON        0xE5
++
++static SPINAND_OP_VARIANTS(read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_4S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_2S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_FAST_1S_1S_1S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_1S_OP(0, 1, NULL, 0, 0));
++
++static SPINAND_OP_VARIANTS(write_cache_variants,
++		SPINAND_PROG_LOAD_1S_1S_4S_OP(true, 0, NULL, 0),
++		SPINAND_PROG_LOAD_1S_1S_1S_OP(true, 0, NULL, 0));
++
++static SPINAND_OP_VARIANTS(update_cache_variants,
++		SPINAND_PROG_LOAD_1S_1S_4S_OP(false, 0, NULL, 0),
++		SPINAND_PROG_LOAD_1S_1S_1S_OP(false, 0, NULL, 0));
++
++static int ds35xx_ooblayout_ecc(struct mtd_info *mtd, int section,
++				struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	region->offset = 8 + (section * 16);
++	region->length = 8;
++
++	return 0;
++}
++
++static int ds35xx_ooblayout_free(struct mtd_info *mtd, int section,
++				 struct mtd_oob_region *region)
++{
++	if (section > 3)
++		return -ERANGE;
++
++	if (section == 0) {
++		/* reserve 2 bytes for the BBM */
++		region->offset = 2;
++		region->length = 6;
++	} else {
++		region->offset = section * 16;
++		region->length = 8;
++	}
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops ds35xx_ooblayout = {
++	.ecc = ds35xx_ooblayout_ecc,
++	.free = ds35xx_ooblayout_free,
++};
++
++static const struct spinand_info dosilicon_spinand_table[] = {
++	SPINAND_INFO("DS35Q1GA",
++		SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x71),
++		NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++		NAND_ECCREQ(4, 512),
++		SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					 &write_cache_variants,
++					 &update_cache_variants),
++		SPINAND_HAS_QE_BIT,
++		SPINAND_ECCINFO(&ds35xx_ooblayout, NULL)),
++	SPINAND_INFO("DS35M1GA",
++		SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x21),
++		NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),
++		NAND_ECCREQ(4, 512),
++		SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					 &write_cache_variants,
++					 &update_cache_variants),
++		SPINAND_HAS_QE_BIT,
++		SPINAND_ECCINFO(&ds35xx_ooblayout, NULL)),
++};
++
++static const struct spinand_manufacturer_ops dosilicon_spinand_manuf_ops = {
++};
++
++const struct spinand_manufacturer dosilicon_spinand_manufacturer = {
++	.id = SPINAND_MFR_DOSILICON,
++	.name = "Dosilicon",
++	.chips = dosilicon_spinand_table,
++	.nchips = ARRAY_SIZE(dosilicon_spinand_table),
++	.ops = &dosilicon_spinand_manuf_ops,
++};
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -360,6 +360,7 @@ struct spinand_manufacturer {
+ /* SPI NAND manufacturers */
+ extern const struct spinand_manufacturer alliancememory_spinand_manufacturer;
+ extern const struct spinand_manufacturer ato_spinand_manufacturer;
++extern const struct spinand_manufacturer dosilicon_spinand_manufacturer;
+ extern const struct spinand_manufacturer esmt_8c_spinand_manufacturer;
+ extern const struct spinand_manufacturer esmt_c8_spinand_manufacturer;
+ extern const struct spinand_manufacturer etron_spinand_manufacturer;

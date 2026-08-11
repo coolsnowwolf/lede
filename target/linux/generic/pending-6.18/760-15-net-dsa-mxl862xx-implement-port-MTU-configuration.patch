@@ -1,0 +1,109 @@
+From 05bc981690d6ef03143a094f28714aa0171ab571 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 1 Apr 2026 13:43:08 +0100
+Subject: [PATCH 15/19] net: dsa: mxl862xx: implement port MTU configuration
+
+The firmware exposes a global max_packet_len register via
+MXL862XX_COMMON_CFGSET. Since this is switch-wide rather than
+per-port, cache each port's requested MTU and program the register
+with the maximum across all ports. The firmware call is skipped when
+the effective maximum does not change.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx.c | 50 +++++++++++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx.h |  3 ++
+ 2 files changed, 53 insertions(+)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -12,6 +12,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/icmpv6.h>
+ #include <linux/if_bridge.h>
++#include <linux/if_vlan.h>
+ #include <linux/module.h>
+ #include <linux/of_device.h>
+ #include <linux/of_mdio.h>
+@@ -3727,6 +3728,53 @@ static int mxl862xx_set_ageing_time(stru
+ 	return ret;
+ }
+ 
++static int mxl862xx_port_change_mtu(struct dsa_switch *ds, int port,
++				    int new_mtu)
++{
++	struct mxl862xx_priv *priv = ds->priv;
++	struct mxl862xx_cfg param = {};
++	int i, old_max = 0, new_max = 0;
++	int ret;
++
++	for (i = 0; i < ds->num_ports; i++) {
++		if (priv->ports[i].mtu > old_max)
++			old_max = priv->ports[i].mtu;
++	}
++
++	priv->ports[port].mtu = new_mtu;
++
++	for (i = 0; i < ds->num_ports; i++) {
++		if (priv->ports[i].mtu > new_max)
++			new_max = priv->ports[i].mtu;
++	}
++
++	if (new_max != old_max) {
++		ret = MXL862XX_API_READ(priv, MXL862XX_COMMON_CFGGET,
++					param);
++		if (ret)
++			return ret;
++
++		param.max_packet_len = cpu_to_le16(new_max +
++						   VLAN_ETH_HLEN +
++						   ETH_FCS_LEN);
++		ret = MXL862XX_API_WRITE(priv, MXL862XX_COMMON_CFGSET,
++					 param);
++		if (ret) {
++			dev_err(ds->dev,
++				"failed to set MTU to %d: %pe\n",
++				new_mtu, ERR_PTR(ret));
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int mxl862xx_port_max_mtu(struct dsa_switch *ds, int port)
++{
++	return U16_MAX - VLAN_ETH_HLEN - ETH_FCS_LEN;
++}
++
+ static void mxl862xx_port_stp_state_set(struct dsa_switch *ds, int port,
+ 					u8 state)
+ {
+@@ -4202,6 +4250,8 @@ static const struct dsa_switch_ops mxl86
+ 	.port_disable = mxl862xx_port_disable,
+ 	.port_fast_age = mxl862xx_port_fast_age,
+ 	.set_ageing_time = mxl862xx_set_ageing_time,
++	.port_change_mtu = mxl862xx_port_change_mtu,
++	.port_max_mtu = mxl862xx_port_max_mtu,
+ 	.port_bridge_join = mxl862xx_port_bridge_join,
+ 	.port_bridge_leave = mxl862xx_port_bridge_leave,
+ 	.port_pre_bridge_flags = mxl862xx_port_pre_bridge_flags,
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.h
+@@ -248,6 +248,8 @@ struct mxl862xx_port_stats {
+  * @lag_hash_bits:       hash field bitmask (MXL862XX_TRUNK_HASH_*) requested
+  *                       when this port joined its LAG; used to recompute the
+  *                       global trunk_hash when a LAG is destroyed
++ * @mtu:                 per-port requested MTU; the global switch register
++ *                       is set to the maximum across all ports
+  */
+ struct mxl862xx_port {
+ 	struct mxl862xx_priv *priv;
+@@ -272,6 +274,7 @@ struct mxl862xx_port {
+ 	struct dsa_lag *lag;
+ 	bool lag_tx_enabled;
+ 	u8 lag_hash_bits;
++	int mtu;
+ 	struct mxl862xx_port_stats stats;
+ 	spinlock_t stats_lock; /* protects stats accumulators */
+ };

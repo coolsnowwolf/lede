@@ -1,0 +1,204 @@
+From f2c96599c02eb0d47602d000fe0f40358c10c892 Mon Sep 17 00:00:00 2001
+From: Aaradhana Sahu <quic_aarasahu@quicinc.com>
+Date: Fri, 26 Aug 2022 17:54:37 +0530
+Subject: [PATCH] mac80211: Avoid encapsulation of EAPOL frames if OFFLOAD_ENCAP is enabled
+
+EAP Frames over NL80211 Control port are 802.11 Native WiFi
+encapsulated by default, but for a vdev operating in 802.3, when FW doesn’t
+advertise WMI_SERVICE_EAPOL_OVER_NWIFI, it cannot accept an 802.11
+Native WiFi frame.
+
+Allow EAP Frames over NL80211 Control port to be passed as 802.3
+if vif has IEEE80211_OFFLOAD_ENCAP_ENABLED set.
+
+Signed-off-by: Rameshkumar Sundaram <quic_ramess@quicinc.com>
+Signed-off-by: Aaradhana Sahu <quic_aarasahu@quicinc.com>
+---
+ net/mac80211/ieee80211_i.h |  5 ++++
+ net/mac80211/tx.c          | 58 ++++++++++++++++++++++++++------------
+ 2 files changed, 45 insertions(+), 18 deletions(-)
+
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -2165,6 +2165,11 @@ netdev_tx_t ieee80211_subif_start_xmit(s
+ 				       struct net_device *dev);
+ netdev_tx_t ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
+ 					    struct net_device *dev);
++netdev_tx_t __ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
++					      struct net_device *dev,
++					      u32 info_flags,
++					      u32 ctrl_flags,
++					      u64 *cookie);
+ void __ieee80211_subif_start_xmit(struct sk_buff *skb,
+ 				  struct net_device *dev,
+ 				  u32 info_flags,
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -40,7 +40,8 @@
+ 
+ static void ieee80211_8023_xmit(struct ieee80211_sub_if_data *sdata,
+ 				struct net_device *dev, struct sta_info *sta,
+-				struct ieee80211_key *key, struct sk_buff *skb);
++				struct ieee80211_key *key, struct sk_buff *skb,
++				u32 info_flags, u32 ctrl_flags, u64 *cookie);
+ /* misc utils */
+ 
+ static __le16 ieee80211_duration(struct ieee80211_tx_data *tx,
+@@ -4366,7 +4367,7 @@ void __ieee80211_subif_start_xmit(struct
+ 		    !is_multicast_ether_addr(skb->data)) {
+ 			if (sta)
+ 				key = rcu_dereference(sta->ptk[sta->ptk_idx]);
+-			ieee80211_8023_xmit(sdata, dev, sta, key, skb);
++			ieee80211_8023_xmit(sdata, dev, sta, key, skb, info_flags, ctrl_flags, cookie);
+ 			rcu_read_unlock();
+ 			return;
+ 		}
+@@ -4412,7 +4413,7 @@ void __ieee80211_subif_start_xmit(struct
+ 		if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) {
+ 			if (sta)
+ 				key = rcu_dereference(sta->ptk[sta->ptk_idx]);
+-			ieee80211_8023_xmit(sdata, dev, sta, key, skb);
++			ieee80211_8023_xmit(sdata, dev, sta, key, skb, info_flags, ctrl_flags, cookie);
+ 		} else {
+ 			dev_sw_netstats_tx_add(dev, 1, skb->len);
+ 			ieee80211_xmit(sdata, sta, skb);
+@@ -4714,7 +4715,8 @@ static bool ieee80211_tx_8023(struct iee
+ 
+ static void ieee80211_8023_xmit(struct ieee80211_sub_if_data *sdata,
+ 				struct net_device *dev, struct sta_info *sta,
+-				struct ieee80211_key *key, struct sk_buff *skb)
++				struct ieee80211_key *key, struct sk_buff *skb,
++				u32 info_flags, u32 ctrl_flags, u64 *cookie)
+ {
+ 	struct ieee80211_tx_info *info;
+ 	struct ethhdr *ehdr = (struct ethhdr *)skb->data;
+@@ -4770,6 +4772,7 @@ static void ieee80211_8023_xmit(struct i
+ 	info = IEEE80211_SKB_CB(skb);
+ 	memset(info, 0, sizeof(*info));
+ 
++	info->flags |= info_flags;
+ 	info->hw_queue = sdata->vif.hw_queue[queue];
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP_VLAN &&
+@@ -4790,10 +4793,11 @@ static void ieee80211_8023_xmit(struct i
+ 			memcpy(IEEE80211_SKB_CB(seg), info, sizeof(*info));
+ 	}
+ 
+-	if (unlikely(sk_requests_wifi_status(skb->sk) &&
+-		     !ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD))) {
++	if (unlikely((sk_requests_wifi_status(skb->sk) ||
++		  ((ctrl_flags & IEEE80211_TX_CTL_REQ_TX_STATUS) && !multicast)) &&
++		  !ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD))) {
+ 		info->status_data = ieee80211_store_ack_skb(local, skb,
+-							    &info->flags, NULL);
++							    &info->flags, cookie);
+ 		if (info->status_data)
+ 			info->status_data_idr = 1;
+ 	}
+@@ -4816,7 +4820,8 @@ out_free:
+ 
+ void ieee80211_8023_xmit_ap(struct ieee80211_sub_if_data *sdata,
+ 			    struct net_device *dev, struct sta_info *sta,
+-			    struct ieee80211_key *key, struct sk_buff *skb)
++			    struct ieee80211_key *key, struct sk_buff *skb,
++			    u32 info_flags, u32 ctrl_flags, u64 *cookie)
+ {
+ 	struct ieee80211_tx_info *info;
+ 	struct ieee80211_local *local = sdata->local;
+@@ -4825,6 +4830,9 @@ void ieee80211_8023_xmit_ap(struct ieee8
+ 	unsigned long flags;
+ 	int q;
+ 	u16 q_map;
++	struct ethhdr *ehdr = (struct ethhdr *)skb->data;
++	unsigned char *ra = ehdr->h_dest;
++	bool multicast = is_multicast_ether_addr(ra);
+ 
+ 	/*
+ 	 * If the skb is shared we need to obtain our own copy.
+@@ -4836,11 +4844,12 @@ void ieee80211_8023_xmit_ap(struct ieee8
+ 
+ 	info = IEEE80211_SKB_CB(skb);
+ 	memset(info, 0, sizeof(*info));
++	info->flags |= info_flags;
+ 
+-	if (unlikely(skb->sk &&
+-		     skb_shinfo(skb)->tx_flags & SKBTX_WIFI_STATUS))
++	if (unlikely(sk_requests_wifi_status(skb->sk) ||
++		  ((ctrl_flags & IEEE80211_TX_CTL_REQ_TX_STATUS) && !multicast)))
+ 		info->status_data = ieee80211_store_ack_skb(local, skb,
+-							     &info->flags, NULL);
++							     &info->flags, cookie);
+ 
+ 	info->flags |= IEEE80211_TX_CTL_HW_80211_ENCAP;
+ 	info->control.vif = &sdata->vif;
+@@ -4874,14 +4883,23 @@ void ieee80211_8023_xmit_ap(struct ieee8
+ 	drv_tx(local, &control, skb);
+ 
+ }
+-
+ netdev_tx_t ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
+ 					    struct net_device *dev)
+ {
++	return __ieee80211_subif_start_xmit_8023(skb, dev, 0, 0, NULL);
++}
++
++netdev_tx_t __ieee80211_subif_start_xmit_8023(struct sk_buff *skb,
++					      struct net_device *dev,
++					      u32 info_flags,
++					      u32 ctrl_flags,
++					      u64 *cookie)
++{
+ 	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+ 	struct ethhdr *ehdr = (struct ethhdr *)skb->data;
+ 	struct ieee80211_key *key = NULL;
+ 	struct sta_info *sta;
++	bool is_eapol;
+ 
+ #ifdef CPTCFG_MAC80211_NSS_SUPPORT
+ 	ieee80211_xmit_nss_fixup(skb, dev);
+@@ -4897,14 +4915,15 @@ netdev_tx_t ieee80211_subif_start_xmit_8
+ 		kfree_skb(skb);
+ 		goto out;
+ 	}
++	is_eapol = (sdata->control_port_protocol == ehdr->h_proto);
+ 
+ 	if (ieee80211_hw_check(&sdata->local->hw, SUPPORTS_NSS_OFFLOAD)) {
+ 		if (unlikely(IS_ERR_OR_NULL(sta) || !sta->uploaded))
+ 			sta = NULL;
+ 		goto tx_offload;
+ 	} else if (unlikely(IS_ERR_OR_NULL(sta) || !sta->uploaded ||
+-		   !test_sta_flag(sta, WLAN_STA_AUTHORIZED) ||
+-		   sdata->control_port_protocol == ehdr->h_proto))
++		(!test_sta_flag(sta, WLAN_STA_AUTHORIZED) && !is_eapol) ||
++		(is_eapol && !(sdata->vif.offload_flags & IEEE80211_OFFLOAD_ENCAP_ENABLED))))
+ 		goto skip_offload;
+ 
+ 	key = rcu_dereference(sta->ptk[sta->ptk_idx]);
+@@ -4915,13 +4934,13 @@ netdev_tx_t ieee80211_subif_start_xmit_8
+ 		goto skip_offload;
+ 
+ 	if (sdata->vif.type == NL80211_IFTYPE_AP) {
+-		ieee80211_8023_xmit_ap(sdata, dev, sta, key, skb);
++		ieee80211_8023_xmit_ap(sdata, dev, sta, key, skb, info_flags, ctrl_flags, cookie);
+ 		goto out;
+ 	}
+ 
+ 	sk_pacing_shift_update(skb->sk, sdata->local->hw.tx_sk_pacing_shift);
+ tx_offload:
+-	ieee80211_8023_xmit(sdata, dev, sta, key, skb);
++	ieee80211_8023_xmit(sdata, dev, sta, key, skb, info_flags, ctrl_flags, cookie);
+ 	goto out;
+ 
+ skip_offload:
+@@ -6621,7 +6640,10 @@ int ieee80211_tx_control_port(struct wip
+ 
+ start_xmit:
+ 	local_bh_disable();
+-	__ieee80211_subif_start_xmit(skb, skb->dev, flags, ctrl_flags, cookie);
++	if (sdata->vif.offload_flags & IEEE80211_OFFLOAD_ENCAP_ENABLED)
++		__ieee80211_subif_start_xmit_8023(skb, skb->dev, flags, ctrl_flags, cookie);
++	else
++		__ieee80211_subif_start_xmit(skb, skb->dev, flags, ctrl_flags, cookie);
+ 	local_bh_enable();
+ 
+ 	return 0;

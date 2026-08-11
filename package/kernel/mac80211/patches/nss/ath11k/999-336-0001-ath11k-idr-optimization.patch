@@ -1,0 +1,132 @@
+From 58c0d08408e58f0f496127a59465726457dc72c8 Mon Sep 17 00:00:00 2001
+From: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+Date: Mon, 15 Nov 2021 17:51:43 +0530
+Subject: [PATCH] ath11k: idr optimization
+
+Replace idr_find and idr_remove with idr_remove. As idr_remove
+itself will do idr_find. And use dma low level api.
+
+Signed-off-by: Tamizh Chelvam <quic_tamizhr@quicinc.com>
+---
+ backport-include/linux/idr.h            |  4 +++
+ drivers/net/wireless/ath/ath11k/dp_rx.c | 52 +++++++++++----------------------
+ drivers/net/wireless/ath/ath11k/dp_tx.c |  2 +-
+ 3 files changed, 22 insertions(+), 36 deletions(-)
+
+--- a/backport-include/linux/idr.h
++++ b/backport-include/linux/idr.h
+@@ -8,6 +8,10 @@
+ static inline void *backport_idr_remove(struct idr *idr, int id)
+ {
+ 	void *item = idr_find(idr, id);
++
++	if (!item)
++		return NULL;
++
+ 	idr_remove(idr, id);
+ 	return item;
+ }
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -3365,18 +3365,16 @@ try_again:
+ 		ar = ab->pdevs[mac_id].ar;
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
+ 		spin_lock_bh(&rx_ring->idr_lock);
+-		msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++		msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		spin_unlock_bh(&rx_ring->idr_lock);
+ 		if (unlikely(!msdu)) {
+ 			ath11k_warn(ab, "frame rx with invalid buf_id %d\n",
+ 				    buf_id);
+-			spin_unlock_bh(&rx_ring->idr_lock);
+ 			continue;
+ 		}
+ 
+-		idr_remove(&rx_ring->bufs_idr, buf_id);
+-		spin_unlock_bh(&rx_ring->idr_lock);
+-
+ 		rxcb = ATH11K_SKB_RXCB(msdu);
++
+ 		dma_unmap_single(ab->dev, rxcb->paddr,
+ 				 msdu->len + skb_tailroom(msdu),
+ 				 DMA_FROM_DEVICE);
+@@ -4650,17 +4648,14 @@ ath11k_dp_process_rx_err_buf(struct ath1
+ 	u32 hal_rx_desc_sz = ar->ab->hw_params.hal_desc_sz;
+ 
+ 	spin_lock_bh(&rx_ring->idr_lock);
+-	msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++	msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++	spin_unlock_bh(&rx_ring->idr_lock);
+ 	if (!msdu) {
+ 		ath11k_warn(ar->ab, "rx err buf with invalid buf_id %d\n",
+ 			    buf_id);
+-		spin_unlock_bh(&rx_ring->idr_lock);
+ 		return -EINVAL;
+ 	}
+ 
+-	idr_remove(&rx_ring->bufs_idr, buf_id);
+-	spin_unlock_bh(&rx_ring->idr_lock);
+-
+ 	rxcb = ATH11K_SKB_RXCB(msdu);
+ 	dma_unmap_single(ar->ab->dev, rxcb->paddr,
+ 			 msdu->len + skb_tailroom(msdu),
+@@ -5067,18 +5062,16 @@ int ath11k_dp_rx_process_wbm_err(struct
+ 		rx_ring = &ar->dp.rx_refill_buf_ring;
+ 
+ 		spin_lock_bh(&rx_ring->idr_lock);
+-		msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++		msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++		spin_unlock_bh(&rx_ring->idr_lock);
+ 		if (!msdu) {
+ 			ath11k_warn(ab, "frame rx with invalid buf_id %d pdev %d\n",
+ 				    buf_id, mac_id);
+-			spin_unlock_bh(&rx_ring->idr_lock);
+ 			continue;
+ 		}
+ 
+-		idr_remove(&rx_ring->bufs_idr, buf_id);
+-		spin_unlock_bh(&rx_ring->idr_lock);
+-
+ 		rxcb = ATH11K_SKB_RXCB(msdu);
++
+ 		dma_unmap_single(ab->dev, rxcb->paddr,
+ 				 msdu->len + skb_tailroom(msdu),
+ 				 DMA_FROM_DEVICE);
+@@ -5193,16 +5186,14 @@ int ath11k_dp_process_rxdma_err(struct a
+ 					   msdu_cookies[i]);
+ 
+ 			spin_lock_bh(&rx_ring->idr_lock);
+-			skb = idr_find(&rx_ring->bufs_idr, buf_id);
++			skb = idr_remove(&rx_ring->bufs_idr, buf_id);
++			spin_unlock_bh(&rx_ring->idr_lock);
+ 			if (!skb) {
+ 				ath11k_warn(ab, "rxdma error with invalid buf_id %d\n",
+ 					    buf_id);
+-				spin_unlock_bh(&rx_ring->idr_lock);
+ 				continue;
+ 			}
+ 
+-			idr_remove(&rx_ring->bufs_idr, buf_id);
+-			spin_unlock_bh(&rx_ring->idr_lock);
+ 
+ 			rxcb = ATH11K_SKB_RXCB(skb);
+ 			dma_unmap_single(ab->dev, rxcb->paddr,
+@@ -6436,16 +6427,14 @@ ath11k_dp_rx_full_mon_mpdu_pop(struct at
+ 					   msdu_list.sw_cookie[i]);
+ 
+ 			spin_lock_bh(&rx_ring->idr_lock);
+-			msdu = idr_find(&rx_ring->bufs_idr, buf_id);
++			msdu = idr_remove(&rx_ring->bufs_idr, buf_id);
++			spin_unlock_bh(&rx_ring->idr_lock);
+ 			if (!msdu) {
+ 				ath11k_dbg(ar->ab, ATH11K_DBG_DATA,
+ 					   "full mon msdu_pop: invalid buf_id %d\n",
+ 					    buf_id);
+-				spin_unlock_bh(&rx_ring->idr_lock);
+ 				goto next_msdu;
+ 			}
+-			idr_remove(&rx_ring->bufs_idr, buf_id);
+-			spin_unlock_bh(&rx_ring->idr_lock);
+ 
+ 			rxcb = ATH11K_SKB_RXCB(msdu);
+ 			if (!rxcb->unmapped) {

@@ -1,0 +1,64 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Fri, 6 May 2022 12:43:58 +0200
+Subject: [PATCH] netfilter: nft_flow_offload: skip dst neigh lookup for
+ ppp devices
+
+The dst entry does not contain a valid hardware address, so skip the lookup
+in order to avoid running into errors here.
+The proper hardware address is filled in from nft_dev_path_info
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/netfilter/nft_flow_offload.c
++++ b/net/netfilter/nft_flow_offload.c
+@@ -36,6 +36,15 @@ static void nft_default_forward_path(str
+ 	route->tuple[dir].xmit_type	= nft_xmit_type(dst_cache);
+ }
+ 
++static bool nft_is_valid_ether_device(const struct net_device *dev)
++{
++	if (!dev || (dev->flags & IFF_LOOPBACK) || dev->type != ARPHRD_ETHER ||
++	    dev->addr_len != ETH_ALEN || !is_valid_ether_addr(dev->dev_addr))
++		return false;
++
++	return true;
++}
++
+ static int nft_dev_fill_forward_path(const struct nf_flow_route *route,
+ 				     const struct dst_entry *dst_cache,
+ 				     const struct nf_conn *ct,
+@@ -47,6 +56,9 @@ static int nft_dev_fill_forward_path(con
+ 	struct neighbour *n;
+ 	u8 nud_state;
+ 
++	if (!nft_is_valid_ether_device(dev))
++		goto out;
++
+ 	n = dst_neigh_lookup(dst_cache, daddr);
+ 	if (!n)
+ 		return -1;
+@@ -60,6 +72,7 @@ static int nft_dev_fill_forward_path(con
+ 	if (!(nud_state & NUD_VALID))
+ 		return -1;
+ 
++out:
+ 	return dev_fill_forward_path(dev, ha, stack);
+ }
+ 
+@@ -78,15 +91,6 @@ struct nft_forward_info {
+ 	enum flow_offload_xmit_type xmit_type;
+ };
+ 
+-static bool nft_is_valid_ether_device(const struct net_device *dev)
+-{
+-	if (!dev || (dev->flags & IFF_LOOPBACK) || dev->type != ARPHRD_ETHER ||
+-	    dev->addr_len != ETH_ALEN || !is_valid_ether_addr(dev->dev_addr))
+-		return false;
+-
+-	return true;
+-}
+-
+ static void nft_dev_path_info(const struct net_device_path_stack *stack,
+ 			      struct nft_forward_info *info,
+ 			      unsigned char *ha, struct nf_flowtable *flowtable)

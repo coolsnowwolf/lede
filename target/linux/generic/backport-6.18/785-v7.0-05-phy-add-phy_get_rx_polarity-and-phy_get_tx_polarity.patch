@@ -1,0 +1,758 @@
+From e7556b59ba65179612bce3fa56bb53d1b4fb20db Mon Sep 17 00:00:00 2001
+From: Vladimir Oltean <vladimir.oltean@nxp.com>
+Date: Sun, 11 Jan 2026 11:39:34 +0200
+Subject: [PATCH 5/5] phy: add phy_get_rx_polarity() and phy_get_tx_polarity()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add helpers in the generic PHY folder which can be used using 'select
+PHY_COMMON_PROPS' from Kconfig, without otherwise needing to
+enable GENERIC_PHY.
+
+These helpers need to deal with the slight messiness of the fact that
+the polarity properties are arrays per protocol, and with the fact that
+there is no default value mandated by the standard properties, all
+default values depend on driver and protocol (PHY_POL_NORMAL may be a
+good default for SGMII, whereas PHY_POL_AUTO may be a good default for
+PCIe).
+
+Push the supported mask of polarities to these helpers, to simplify
+drivers such that they don't need to validate what's in the device tree
+(or other firmware description).
+
+Add a KUnit test suite to make sure that the API produces the expected
+results. The fact that we use fwnode structures means we can validate
+with software nodes, and as opposed to the device_property API, we can
+bypass the need to have a device structure.
+
+Co-developed-by: Bjørn Mork <bjorn@mork.no>
+Signed-off-by: Bjørn Mork <bjorn@mork.no>
+Signed-off-by: Vladimir Oltean <vladimir.oltean@nxp.com>
+Link: https://patch.msgid.link/20260111093940.975359-6-vladimir.oltean@nxp.com
+Signed-off-by: Vinod Koul <vkoul@kernel.org>
+---
+ drivers/phy/Kconfig                  |  22 ++
+ drivers/phy/Makefile                 |   2 +
+ drivers/phy/phy-common-props-test.c  | 422 +++++++++++++++++++++++++++
+ drivers/phy/phy-common-props.c       | 209 +++++++++++++
+ include/linux/phy/phy-common-props.h |  32 ++
+ 6 files changed, 697 insertions(+)
+ create mode 100644 drivers/phy/phy-common-props-test.c
+ create mode 100644 drivers/phy/phy-common-props.c
+ create mode 100644 include/linux/phy/phy-common-props.h
+
+--- a/drivers/phy/Kconfig
++++ b/drivers/phy/Kconfig
+@@ -5,6 +5,28 @@
+ 
+ menu "PHY Subsystem"
+ 
++config PHY_COMMON_PROPS
++	bool
++	help
++	  This parses properties common between generic PHYs and Ethernet PHYs.
++
++	  Select this from consumer drivers to gain access to helpers for
++	  parsing properties from the
++	  Documentation/devicetree/bindings/phy/phy-common-props.yaml schema.
++
++config PHY_COMMON_PROPS_TEST
++	tristate "KUnit tests for PHY common props" if !KUNIT_ALL_TESTS
++	select PHY_COMMON_PROPS
++	depends on KUNIT
++	default KUNIT_ALL_TESTS
++	help
++	  This builds KUnit tests for the PHY common property API.
++
++	  For more information on KUnit and unit tests in general,
++	  please refer to the KUnit documentation in Documentation/dev-tools/kunit/.
++
++	  When in doubt, say N.
++
+ config GENERIC_PHY
+ 	bool "PHY Core"
+ 	help
+--- a/drivers/phy/Makefile
++++ b/drivers/phy/Makefile
+@@ -3,6 +3,8 @@
+ # Makefile for the phy drivers.
+ #
+ 
++obj-$(CONFIG_PHY_COMMON_PROPS)		+= phy-common-props.o
++obj-$(CONFIG_PHY_COMMON_PROPS_TEST)	+= phy-common-props-test.o
+ obj-$(CONFIG_GENERIC_PHY)		+= phy-core.o
+ obj-$(CONFIG_GENERIC_PHY_MIPI_DPHY)	+= phy-core-mipi-dphy.o
+ obj-$(CONFIG_PHY_CAN_TRANSCEIVER)	+= phy-can-transceiver.o
+--- /dev/null
++++ b/drivers/phy/phy-common-props-test.c
+@@ -0,0 +1,422 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * phy-common-props-test.c  --  Unit tests for PHY common properties API
++ *
++ * Copyright 2025-2026 NXP
++ */
++#include <kunit/test.h>
++#include <linux/property.h>
++#include <linux/phy/phy-common-props.h>
++#include <dt-bindings/phy/phy.h>
++
++/* Test: rx-polarity property is missing */
++static void phy_test_rx_polarity_is_missing(struct kunit *test)
++{
++	static const struct property_entry entries[] = {
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_NORMAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: rx-polarity has more values than rx-polarity-names */
++static void phy_test_rx_polarity_more_values_than_names(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT, PHY_POL_NORMAL };
++	static const char * const rx_pol_names[] = { "sgmii", "2500base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: rx-polarity has 1 value and rx-polarity-names does not exist */
++static void phy_test_rx_polarity_single_value_no_names(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_INVERT };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: rx-polarity-names has more values than rx-polarity */
++static void phy_test_rx_polarity_more_names_than_values(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const rx_pol_names[] = { "sgmii", "2500base-x", "1000base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: rx-polarity and rx-polarity-names have same length, find the name */
++static void phy_test_rx_polarity_find_by_name(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT, PHY_POL_AUTO };
++	static const char * const rx_pol_names[] = { "sgmii", "2500base-x", "usb-ss" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_NORMAL);
++
++	ret = phy_get_manual_rx_polarity(node, "2500base-x", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	ret = phy_get_rx_polarity(node, "usb-ss", BIT(PHY_POL_AUTO),
++				  PHY_POL_AUTO, &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_AUTO);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: same length, name not found, no "default" - error */
++static void phy_test_rx_polarity_name_not_found_no_default(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const rx_pol_names[] = { "2500base-x", "1000base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: same length, name not found, but "default" exists */
++static void phy_test_rx_polarity_name_not_found_with_default(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const rx_pol_names[] = { "2500base-x", "default" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: polarity found but value is unsupported */
++static void phy_test_rx_polarity_unsupported_value(struct kunit *test)
++{
++	static const u32 rx_pol[] = { PHY_POL_AUTO };
++	static const char * const rx_pol_names[] = { "sgmii" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("rx-polarity", rx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("rx-polarity-names", rx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_rx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: tx-polarity property is missing */
++static void phy_test_tx_polarity_is_missing(struct kunit *test)
++{
++	static const struct property_entry entries[] = {
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_NORMAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: tx-polarity has more values than tx-polarity-names */
++static void phy_test_tx_polarity_more_values_than_names(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT, PHY_POL_NORMAL };
++	static const char * const tx_pol_names[] = { "sgmii", "2500base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: tx-polarity has 1 value and tx-polarity-names does not exist */
++static void phy_test_tx_polarity_single_value_no_names(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_INVERT };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: tx-polarity-names has more values than tx-polarity */
++static void phy_test_tx_polarity_more_names_than_values(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const tx_pol_names[] = { "sgmii", "2500base-x", "1000base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: tx-polarity and tx-polarity-names have same length, find the name */
++static void phy_test_tx_polarity_find_by_name(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT, PHY_POL_NORMAL };
++	static const char * const tx_pol_names[] = { "sgmii", "2500base-x", "1000base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_NORMAL);
++
++	ret = phy_get_manual_tx_polarity(node, "2500base-x", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	ret = phy_get_manual_tx_polarity(node, "1000base-x", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_NORMAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: same length, name not found, no "default" - error */
++static void phy_test_tx_polarity_name_not_found_no_default(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const tx_pol_names[] = { "2500base-x", "1000base-x" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EINVAL);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: same length, name not found, but "default" exists */
++static void phy_test_tx_polarity_name_not_found_with_default(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_NORMAL, PHY_POL_INVERT };
++	static const char * const tx_pol_names[] = { "2500base-x", "default" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, val, PHY_POL_INVERT);
++
++	fwnode_remove_software_node(node);
++}
++
++/* Test: polarity found but value is unsupported (AUTO for TX) */
++static void phy_test_tx_polarity_unsupported_value(struct kunit *test)
++{
++	static const u32 tx_pol[] = { PHY_POL_AUTO };
++	static const char * const tx_pol_names[] = { "sgmii" };
++	static const struct property_entry entries[] = {
++		PROPERTY_ENTRY_U32_ARRAY("tx-polarity", tx_pol),
++		PROPERTY_ENTRY_STRING_ARRAY("tx-polarity-names", tx_pol_names),
++		{}
++	};
++	struct fwnode_handle *node;
++	unsigned int val;
++	int ret;
++
++	node = fwnode_create_software_node(entries, NULL);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, node);
++
++	ret = phy_get_manual_tx_polarity(node, "sgmii", &val);
++	KUNIT_EXPECT_EQ(test, ret, -EOPNOTSUPP);
++
++	fwnode_remove_software_node(node);
++}
++
++static struct kunit_case phy_common_props_test_cases[] = {
++	KUNIT_CASE(phy_test_rx_polarity_is_missing),
++	KUNIT_CASE(phy_test_rx_polarity_more_values_than_names),
++	KUNIT_CASE(phy_test_rx_polarity_single_value_no_names),
++	KUNIT_CASE(phy_test_rx_polarity_more_names_than_values),
++	KUNIT_CASE(phy_test_rx_polarity_find_by_name),
++	KUNIT_CASE(phy_test_rx_polarity_name_not_found_no_default),
++	KUNIT_CASE(phy_test_rx_polarity_name_not_found_with_default),
++	KUNIT_CASE(phy_test_rx_polarity_unsupported_value),
++	KUNIT_CASE(phy_test_tx_polarity_is_missing),
++	KUNIT_CASE(phy_test_tx_polarity_more_values_than_names),
++	KUNIT_CASE(phy_test_tx_polarity_single_value_no_names),
++	KUNIT_CASE(phy_test_tx_polarity_more_names_than_values),
++	KUNIT_CASE(phy_test_tx_polarity_find_by_name),
++	KUNIT_CASE(phy_test_tx_polarity_name_not_found_no_default),
++	KUNIT_CASE(phy_test_tx_polarity_name_not_found_with_default),
++	KUNIT_CASE(phy_test_tx_polarity_unsupported_value),
++	{}
++};
++
++static struct kunit_suite phy_common_props_test_suite = {
++	.name = "phy-common-props",
++	.test_cases = phy_common_props_test_cases,
++};
++
++kunit_test_suite(phy_common_props_test_suite);
++
++MODULE_DESCRIPTION("Test module for PHY common properties API");
++MODULE_AUTHOR("Vladimir Oltean <vladimir.oltean@nxp.com>");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/phy/phy-common-props.c
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * phy-common-props.c  --  Common PHY properties
++ *
++ * Copyright 2025-2026 NXP
++ */
++#include <linux/export.h>
++#include <linux/fwnode.h>
++#include <linux/phy/phy-common-props.h>
++#include <linux/printk.h>
++#include <linux/property.h>
++#include <linux/slab.h>
++
++/**
++ * fwnode_get_u32_prop_for_name - Find u32 property by name, or default value
++ * @fwnode: Pointer to firmware node, or NULL to use @default_val
++ * @name: Property name used as lookup key in @names_title (must not be NULL)
++ * @props_title: Name of u32 array property holding values
++ * @names_title: Name of string array property holding lookup keys
++ * @default_val: Default value if @fwnode is NULL or @props_title is empty
++ * @val: Pointer to store the returned value
++ *
++ * This function retrieves a u32 value from @props_title based on a name lookup
++ * in @names_title. The value stored in @val is determined as follows:
++ *
++ * - If @fwnode is NULL or @props_title is empty: @default_val is used
++ * - If @props_title has exactly one element and @names_title is empty:
++ *   that element is used
++ * - Otherwise: @val is set to the element at the same index where @name is
++ *   found in @names_title.
++ * - If @name is not found, the function looks for a "default" entry in
++ *   @names_title and uses the corresponding value from @props_title
++ *
++ * When both @props_title and @names_title are present, they must have the
++ * same number of elements (except when @props_title has exactly one element).
++ *
++ * Return: zero on success, negative error on failure.
++ */
++static int fwnode_get_u32_prop_for_name(struct fwnode_handle *fwnode,
++					const char *name,
++					const char *props_title,
++					const char *names_title,
++					unsigned int default_val,
++					unsigned int *val)
++{
++	int err, n_props, n_names, idx;
++	u32 *props;
++
++	if (!name) {
++		pr_err("Lookup key inside \"%s\" is mandatory\n", names_title);
++		return -EINVAL;
++	}
++
++	n_props = fwnode_property_count_u32(fwnode, props_title);
++	if (n_props <= 0) {
++		/* fwnode is NULL, or is missing requested property */
++		*val = default_val;
++		return 0;
++	}
++
++	n_names = fwnode_property_string_array_count(fwnode, names_title);
++	if (n_names >= 0 && n_props != n_names) {
++		pr_err("%pfw mismatch between \"%s\" and \"%s\" property count (%d vs %d)\n",
++		       fwnode, props_title, names_title, n_props, n_names);
++		return -EINVAL;
++	}
++
++	idx = fwnode_property_match_string(fwnode, names_title, name);
++	if (idx < 0)
++		idx = fwnode_property_match_string(fwnode, names_title, "default");
++	/*
++	 * If the mode name is missing, it can only mean the specified property
++	 * is the default one for all modes, so reject any other property count
++	 * than 1.
++	 */
++	if (idx < 0 && n_props != 1) {
++		pr_err("%pfw \"%s \" property has %d elements, but cannot find \"%s\" in \"%s\" and there is no default value\n",
++		       fwnode, props_title, n_props, name, names_title);
++		return -EINVAL;
++	}
++
++	if (n_props == 1) {
++		err = fwnode_property_read_u32(fwnode, props_title, val);
++		if (err)
++			return err;
++
++		return 0;
++	}
++
++	/* We implicitly know idx >= 0 here */
++	props = kcalloc(n_props, sizeof(*props), GFP_KERNEL);
++	if (!props)
++		return -ENOMEM;
++
++	err = fwnode_property_read_u32_array(fwnode, props_title, props, n_props);
++	if (err >= 0)
++		*val = props[idx];
++
++	kfree(props);
++
++	return err;
++}
++
++static int phy_get_polarity_for_mode(struct fwnode_handle *fwnode,
++				     const char *mode_name,
++				     unsigned int supported,
++				     unsigned int default_val,
++				     const char *polarity_prop,
++				     const char *names_prop,
++				     unsigned int *val)
++{
++	int err;
++
++	err = fwnode_get_u32_prop_for_name(fwnode, mode_name, polarity_prop,
++					   names_prop, default_val, val);
++	if (err)
++		return err;
++
++	if (!(supported & BIT(*val))) {
++		pr_err("%d is not a supported value for %pfw '%s' element '%s'\n",
++		       *val, fwnode, polarity_prop, mode_name);
++		err = -EOPNOTSUPP;
++	}
++
++	return err;
++}
++
++/**
++ * phy_get_rx_polarity - Get RX polarity for PHY differential lane
++ * @fwnode: Pointer to the PHY's firmware node.
++ * @mode_name: The name of the PHY mode to look up.
++ * @supported: Bit mask of PHY_POL_NORMAL, PHY_POL_INVERT and PHY_POL_AUTO
++ * @default_val: Default polarity value if property is missing
++ * @val: Pointer to returned polarity.
++ *
++ * Return: zero on success, negative error on failure.
++ */
++int __must_check phy_get_rx_polarity(struct fwnode_handle *fwnode,
++				     const char *mode_name,
++				     unsigned int supported,
++				     unsigned int default_val,
++				     unsigned int *val)
++{
++	return phy_get_polarity_for_mode(fwnode, mode_name, supported,
++					 default_val, "rx-polarity",
++					 "rx-polarity-names", val);
++}
++EXPORT_SYMBOL_GPL(phy_get_rx_polarity);
++
++/**
++ * phy_get_tx_polarity - Get TX polarity for PHY differential lane
++ * @fwnode: Pointer to the PHY's firmware node.
++ * @mode_name: The name of the PHY mode to look up.
++ * @supported: Bit mask of PHY_POL_NORMAL and PHY_POL_INVERT
++ * @default_val: Default polarity value if property is missing
++ * @val: Pointer to returned polarity.
++ *
++ * Return: zero on success, negative error on failure.
++ */
++int __must_check phy_get_tx_polarity(struct fwnode_handle *fwnode,
++				     const char *mode_name, unsigned int supported,
++				     unsigned int default_val, unsigned int *val)
++{
++	return phy_get_polarity_for_mode(fwnode, mode_name, supported,
++					 default_val, "tx-polarity",
++					 "tx-polarity-names", val);
++}
++EXPORT_SYMBOL_GPL(phy_get_tx_polarity);
++
++/**
++ * phy_get_manual_rx_polarity - Get manual RX polarity for PHY differential lane
++ * @fwnode: Pointer to the PHY's firmware node.
++ * @mode_name: The name of the PHY mode to look up.
++ * @val: Pointer to returned polarity.
++ *
++ * Helper for PHYs which do not support protocols with automatic RX polarity
++ * detection and correction.
++ *
++ * Return: zero on success, negative error on failure.
++ */
++int __must_check phy_get_manual_rx_polarity(struct fwnode_handle *fwnode,
++					    const char *mode_name,
++					    unsigned int *val)
++{
++	return phy_get_rx_polarity(fwnode, mode_name,
++				   BIT(PHY_POL_NORMAL) | BIT(PHY_POL_INVERT),
++				   PHY_POL_NORMAL, val);
++}
++EXPORT_SYMBOL_GPL(phy_get_manual_rx_polarity);
++
++/**
++ * phy_get_manual_tx_polarity - Get manual TX polarity for PHY differential lane
++ * @fwnode: Pointer to the PHY's firmware node.
++ * @mode_name: The name of the PHY mode to look up.
++ * @val: Pointer to returned polarity.
++ *
++ * Helper for PHYs without any custom default value for the TX polarity.
++ *
++ * Return: zero on success, negative error on failure.
++ */
++int __must_check phy_get_manual_tx_polarity(struct fwnode_handle *fwnode,
++					    const char *mode_name,
++					    unsigned int *val)
++{
++	return phy_get_tx_polarity(fwnode, mode_name,
++				   BIT(PHY_POL_NORMAL) | BIT(PHY_POL_INVERT),
++				   PHY_POL_NORMAL, val);
++}
++EXPORT_SYMBOL_GPL(phy_get_manual_tx_polarity);
+--- /dev/null
++++ b/include/linux/phy/phy-common-props.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * phy-common-props.h -- Common properties for generic PHYs
++ *
++ * Copyright 2025 NXP
++ */
++
++#ifndef __PHY_COMMON_PROPS_H
++#define __PHY_COMMON_PROPS_H
++
++#include <dt-bindings/phy/phy.h>
++
++struct fwnode_handle;
++
++int __must_check phy_get_rx_polarity(struct fwnode_handle *fwnode,
++				     const char *mode_name,
++				     unsigned int supported,
++				     unsigned int default_val,
++				     unsigned int *val);
++int __must_check phy_get_tx_polarity(struct fwnode_handle *fwnode,
++				     const char *mode_name,
++				     unsigned int supported,
++				     unsigned int default_val,
++				     unsigned int *val);
++int __must_check phy_get_manual_rx_polarity(struct fwnode_handle *fwnode,
++					    const char *mode_name,
++					    unsigned int *val);
++int __must_check phy_get_manual_tx_polarity(struct fwnode_handle *fwnode,
++					    const char *mode_name,
++					    unsigned int *val);
++
++#endif /* __PHY_COMMON_PROPS_H */

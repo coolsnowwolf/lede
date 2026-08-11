@@ -19,18 +19,10 @@ endef
 
 define Host/Install
 	+$(GCC_MAKE) $(HOST_JOBS) -C $(GCC_BUILD_DIR) \
-		prefix="$(TOOLCHAIN_DIR)/initial" \
 		install-gcc \
 		install-target-libgcc
 
-	# XXX: glibc insists on linking against libgcc_eh
-	( cd $(TOOLCHAIN_DIR)/initial/lib/gcc/$(REAL_GNU_TARGET_NAME)/$(PKG_VERSION) ; \
-		[ -e libgcc_eh.a ] || ln -sf libgcc.a libgcc_eh.a ; \
-		cp libgcc.a libgcc_initial.a; \
-	)
-
-	$(call FixupLibdir,$(TOOLCHAIN_DIR)/initial)
-	$$(call file_copy,$(TOOLCHAIN_DIR)/initial/.,$(TOOLCHAIN_DIR)/)
+	$(call FixupLibdir,$(TOOLCHAIN_DIR))
 endef
 
 $(eval $(call HostBuild))

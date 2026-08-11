@@ -1,0 +1,688 @@
+From d4c3b17e66243a2d6d8845192453ef7da568bac2 Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Thu, 10 Sep 2020 15:58:53 +0530
+Subject: [PATCH 1/2] ath11k: add WDS offload changes to NSS driver interface
+
+add WDS and MEC AST handling to NSS
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/nss.c | 465 ++++++++++++++++++++++++++++++++--
+ drivers/net/wireless/ath/ath11k/nss.h |  36 ++-
+ 2 files changed, 473 insertions(+), 28 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -307,6 +307,22 @@ void ath11k_nss_wifili_event_receive(str
+ 	case NSS_WIFILI_TID_REOQ_SETUP_MSG:
+ 		/* TODO setup tidq */
+ 		break;
++	case NSS_WIFILI_WDS_PEER_ADD_MSG:
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili wds peer add event received %d response %d error %d\n",
++			   msg_type, response, error);
++		break;
++	case NSS_WIFILI_WDS_PEER_UPDATE_MSG:
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili wds peer update event received %d response %d error %d\n",
++			   msg_type, response, error);
++		break;
++	case NSS_WIFILI_WDS_PEER_MAP_MSG:
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili wds peer map event received %d response %d error %d\n",
++			   msg_type, response, error);
++		break;
++	case NSS_WIFILI_WDS_PEER_DEL_MSG:
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili wds peer del event received %d response %d error %d\n",
++			   msg_type, response, error);
++		break;
+ 	default:
+ 		ath11k_dbg(ab, ATH11K_DBG_NSS, "unhandled event %d\n", msg_type);
+ 		break;
+@@ -417,13 +433,6 @@ static void ath11k_nss_vdev_event_receiv
+ 	/*TODO*/
+ }
+ 
+-static void
+-ath11k_nss_vdev_special_data_receive(struct net_device *dev, struct sk_buff *skb,
+-				     __attribute__((unused)) struct napi_struct *napi)
+-{
+-	/* TODO */
+-}
+-
+ /* TODO: move to mac80211 after cleanups/refactoring required after feature completion */
+ static int ath11k_nss_deliver_rx(struct ieee80211_vif *vif, struct sk_buff *skb,
+ 				 bool eth,  int data_offs, struct napi_struct *napi)
+@@ -547,11 +556,239 @@ static int ath11k_nss_undecap_nwifi(stru
+ 	return 0;
+ }
+ 
++static void ath11k_nss_wds_type_rx(struct ath11k *ar, u8* src_mac, u8 is_sa_valid,
++				   u8 addr4_valid, u16 peer_id)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct ath11k_ast_entry *ast_entry = NULL;
++	struct ath11k_peer *ta_peer = NULL;
++
++	spin_lock_bh(&ab->base_lock);
++	ta_peer = ath11k_peer_find_by_id(ab, peer_id);
++
++	if (!ta_peer) {
++		spin_unlock_bh(&ab->base_lock);
++		return;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,"ath11k_nss_wds_type_rx ta_peer %pM\n",
++		   ta_peer->addr);
++
++	if (addr4_valid) {
++		ast_entry = ath11k_peer_ast_find_by_addr(ab, src_mac);
++		if (!is_sa_valid) {
++			ath11k_peer_add_ast(ar, ta_peer, src_mac,
++					    ATH11K_AST_TYPE_WDS);
++			ath11k_nss_add_wds_peer(ar, ta_peer,
++						src_mac, ATH11K_AST_TYPE_WDS);
++		} else {
++			if (!ast_entry) {
++				ath11k_peer_add_ast(ar, ta_peer, src_mac,
++						    ATH11K_AST_TYPE_WDS);
++				ath11k_nss_add_wds_peer(ar, ta_peer, src_mac,
++							ATH11K_AST_TYPE_WDS);
++			} else {
++				ath11k_peer_update_ast(ar, ta_peer, ast_entry);
++				ath11k_nss_update_wds_peer(ar, ta_peer, src_mac);
++			}
++		}
++	}
++
++	spin_unlock_bh(&ab->base_lock);
++}
++
++static void ath11k_nss_mec_handler(struct ath11k *ar, u8* mec_mac_addr)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct ath11k_peer *peer = ar->bss_peer;
++	u8 mac_addr[ETH_ALEN];
++	u32 *mac_addr_l32;
++	u16 *mac_addr_h16;
++
++	if (!peer)
++		return;
++
++	/* mec_mac_addr has the swapped mac_addr after 4 bytes (sizeof(u32))
++	 * mec_mac_addr[0]
++	 * |
++	 * 03:0a:00:00:2d:15:22:f0:fd:8c
++	 *		^
++	 * 		Swapped MAC address present after 4 bytes
++	 * MAC address after swapping is 8c:fd:f0:22:15:2d */
++
++	mac_addr_l32 = (u32 *) (mec_mac_addr + sizeof(u32));
++	mac_addr_h16 = (u16 *) (mec_mac_addr + sizeof(u32) + sizeof(u32));
++
++	*mac_addr_l32 = swab32(*mac_addr_l32);
++	*mac_addr_h16 = swab16(*mac_addr_h16);
++
++	memcpy(mac_addr, mac_addr_h16, ETH_ALEN - 4);
++	memcpy(mac_addr + 2, mac_addr_l32, 4);
++
++	if (!ether_addr_equal(ar->mac_addr, mac_addr)) {
++		spin_lock_bh(&ab->base_lock);
++		ath11k_peer_add_ast(ar, peer, mac_addr,
++				    ATH11K_AST_TYPE_MEC);
++		spin_unlock_bh(&ab->base_lock);
++	}
++}
++
++static void ath11k_nss_vdev_spl_receive_ext_wdsdata(struct ath11k_vif *arvif,
++						    struct sk_buff *skb,
++						    struct nss_wifi_vdev_wds_per_packet_metadata *wds_metadata)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ath11k_base *ab = ar->ab;
++	enum wifi_vdev_ext_wds_info_type wds_type;
++	u8 is_sa_valid = 0, addr4_valid = 0;
++	u16 peer_id;
++	u8 src_mac[ETH_ALEN];
++
++	is_sa_valid = wds_metadata->is_sa_valid;
++	addr4_valid = wds_metadata->addr4_valid;
++	wds_type = wds_metadata->wds_type;
++	peer_id = wds_metadata->peer_id;
++
++	memcpy(src_mac, ((struct ethhdr *)skb->data)->h_source, ETH_ALEN);
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,"receive_ext_wdsdata wds_type %d peer id %u sa_valid %d addr4_valid %d src_mac %pM\n",
++		   wds_type, peer_id, is_sa_valid, addr4_valid, src_mac);
++
++	switch (wds_type) {
++		case NSS_WIFI_VDEV_WDS_TYPE_RX:
++			ath11k_nss_wds_type_rx(ar, src_mac, is_sa_valid,
++					       addr4_valid, peer_id);
++			break;
++		case NSS_WIFI_VDEV_WDS_TYPE_MEC:
++			ath11k_nss_mec_handler(ar, (u8 *)(skb->data));
++			break;
++		default:
++			ath11k_warn(ab, "unsupported wds_type %d\n", wds_type);
++			break;
++	}
++}
++
++static bool ath11k_nss_vdev_data_receive_mec_check(struct ath11k *ar,
++						   struct sk_buff *skb)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct ath11k_ast_entry *ast_entry = NULL;
++	u8 src_mac[ETH_ALEN];
++
++	memcpy(src_mac, ((struct ethhdr *)skb->data)->h_source, ETH_ALEN);
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "ath11k_nss_vdev_data_receive_mec_check src mac %pM\n",
++		   src_mac);
++
++	spin_lock_bh(&ab->base_lock);
++	ast_entry = ath11k_peer_ast_find_by_addr(ab, src_mac);
++
++	if (ast_entry && ast_entry->type == ATH11K_AST_TYPE_MEC) {
++		spin_unlock_bh(&ab->base_lock);
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++			   "dropping mec traffic from %pM\n", ast_entry->addr);
++		return true;
++	}
++
++	spin_unlock_bh(&ab->base_lock);
++	return false;
++}
++
++static int ath11k_nss_undecap(struct ath11k_vif *arvif, struct sk_buff *skb,
++			      int *data_offs, bool *eth_decap)
++{
++	enum ath11k_hw_txrx_mode decap_type;
++
++	decap_type = arvif->nss.decap;
++
++	switch (decap_type) {
++	case ATH11K_HW_TXRX_RAW:
++		return ath11k_nss_undecap_raw(arvif, skb, data_offs);
++	case ATH11K_HW_TXRX_NATIVE_WIFI:
++		return ath11k_nss_undecap_nwifi(arvif, skb, data_offs);
++	case ATH11K_HW_TXRX_ETHERNET:
++		*eth_decap = true;
++		return 0;
++	default:
++		return -EINVAL;
++	}
++}
++
++static void
++ath11k_nss_vdev_special_data_receive(struct net_device *dev, struct sk_buff *skb,
++				     __attribute__((unused)) struct napi_struct *napi)
++{
++	struct nss_wifi_vdev_per_packet_metadata *wifi_metadata = NULL;
++	struct nss_wifi_vdev_wds_per_packet_metadata *wds_metadata = NULL;
++	struct wireless_dev *wdev;
++	struct ieee80211_vif *vif;
++	struct ath11k_vif *arvif;
++	struct ath11k_base *ab;
++	bool eth_decap = false;
++	int data_offs = 0;
++	int ret = 0;
++
++	if (!dev) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	wdev = dev->ieee80211_ptr;
++	if (!wdev) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	vif = wdev_to_ieee80211_vif(wdev);
++	if (!vif) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	arvif = (struct ath11k_vif *)vif->drv_priv;
++	if (!arvif) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	ab = arvif->ar->ab;
++
++	skb->dev = dev;
++
++	dma_unmap_single(ab->dev, virt_to_phys(skb->head),
++			 NSS_WIFI_VDEV_PER_PACKET_METADATA_OFFSET +
++			 sizeof(struct nss_wifi_vdev_per_packet_metadata),
++			 DMA_FROM_DEVICE);
++
++	wifi_metadata = (struct nss_wifi_vdev_per_packet_metadata *)(skb->head +
++			 NSS_WIFI_VDEV_PER_PACKET_METADATA_OFFSET);
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "dp special data from nss: wifi_metadata->pkt_type %d",
++		   wifi_metadata->pkt_type);
++
++	ret = ath11k_nss_undecap(arvif, skb, &data_offs, &eth_decap);
++	if (ret) {
++		ath11k_warn(ab, "error in nss rx undecap, type %d err %d\n",
++			    arvif->nss.decap, ret);
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	if (eth_decap && wifi_metadata->pkt_type ==
++	    NSS_WIFI_VDEV_EXT_DATA_PKT_TYPE_WDS_LEARN) {
++		wds_metadata = &wifi_metadata->metadata.wds_metadata;
++		ath11k_nss_vdev_spl_receive_ext_wdsdata(arvif, skb,
++							wds_metadata);
++	}
++
++	ath11k_nss_deliver_rx(arvif->vif, skb, eth_decap, data_offs, napi);
++}
++
+ static void
+ ath11k_nss_vdev_data_receive(struct net_device *dev, struct sk_buff *skb,
+ 			     __attribute__((unused)) struct napi_struct *napi)
+ {
+-	enum ath11k_hw_txrx_mode decap_type;
+ 	struct wireless_dev *wdev = NULL;
+ 	struct ieee80211_vif *vif = NULL;
+ 	struct ath11k_vif *arvif;
+@@ -591,28 +828,16 @@ ath11k_nss_vdev_data_receive(struct net_
+ 	ath11k_dbg_dump(ab, ATH11K_DBG_DP_RX, "", "dp rx msdu from nss: ",
+ 			skb->data, skb->len);
+ 
+-	decap_type = arvif->nss.decap;
+-
+-	switch (decap_type) {
+-	case ATH11K_HW_TXRX_RAW:
+-		ret = ath11k_nss_undecap_raw(arvif, skb, &data_offs);
+-		break;
+-	case ATH11K_HW_TXRX_NATIVE_WIFI:
+-		ret = ath11k_nss_undecap_nwifi(arvif, skb, &data_offs);
+-		break;
+-	case ATH11K_HW_TXRX_ETHERNET:
+-		/* no changes required for ethernet decap */
+-		ret = 0;
+-		eth_decap = true;
+-		break;
+-	default:
+-		ret = -EINVAL;
+-		break;
++	if ((vif->type == NL80211_IFTYPE_STATION && wdev->use_4addr) &&
++	     ath11k_nss_vdev_data_receive_mec_check(arvif->ar, skb)) {
++		dev_kfree_skb_any(skb);
++		return;
+ 	}
+ 
++	ret = ath11k_nss_undecap(arvif, skb, &data_offs, &eth_decap);
+ 	if (ret) {
+-		ath11k_warn(ab, "error in nss rx undecap, type %d err %d\n", decap_type,
+-			    ret);
++		ath11k_warn(ab, "error in nss rx undecap, type %d err %d\n",
++			    arvif->nss.decap, ret);
+ 		dev_kfree_skb_any(skb);
+ 		return;
+ 	}
+@@ -1324,7 +1549,7 @@ void ath11k_nss_update_sta_rxrate(struct
+ 	peer->nss.nss_stats->rxrate.bw = ath11k_mac_bw_to_mac80211_bw(ppdu_info->bw);
+ }
+ 
+-int ath11k_nss_peer_delete(struct ath11k_base *ab, const u8 *addr)
++int ath11k_nss_peer_delete(struct ath11k_base *ab, u32 vdev_id, const u8 *addr)
+ {
+ 	struct nss_wifili_peer_msg *peer_msg;
+ 	struct nss_wifili_msg *wlmsg = NULL;
+@@ -1338,9 +1563,10 @@ int ath11k_nss_peer_delete(struct ath11k
+ 
+ 	spin_lock_bh(&ab->base_lock);
+ 
+-	peer = ath11k_peer_find_by_addr(ab, addr);
++	peer = ath11k_peer_find(ab, vdev_id, addr);
+ 	if (!peer) {
+-		ath11k_warn(ab, "peer (%pM) not found for nss peer delete\n", addr);
++		ath11k_warn(ab, "peer (%pM) not found on vdev_id %d for nss peer delete\n",
++			    addr, vdev_id);
+ 		spin_unlock_bh(&ab->base_lock);
+ 		return -EINVAL;
+ 	}
+@@ -1413,8 +1639,9 @@ free_peer:
+ 	return ret;
+ }
+ 
+-int ath11k_nss_peer_create(struct ath11k_base *ab, struct ath11k_peer *peer)
++int ath11k_nss_peer_create(struct ath11k *ar, struct ath11k_peer *peer)
+ {
++	struct ath11k_base *ab = ar->ab;
+ 	struct nss_wifili_peer_msg *peer_msg;
+ 	struct nss_wifili_msg *wlmsg = NULL;
+ 	nss_wifili_msg_callback_t msg_cb;
+@@ -1471,17 +1698,23 @@ int ath11k_nss_peer_create(struct ath11k
+ 	status = nss_wifili_tx_msg(ab->nss.ctx, wlmsg);
+ 	if (status != NSS_TX_SUCCESS) {
+ 		ret = -EINVAL;
+-		ath11k_warn(ab, "nss send peer (%pM) create msg tx error\n",
+-			    peer->addr);
++		ath11k_warn(ab, "nss send peer (%pM) create msg tx error: %d\n",
++			    peer->addr, status);
+ 		goto peer_mem_free;
+ 	}
+ 
+-	ret = 0;
+ 	ath11k_dbg(ab, ATH11K_DBG_NSS,
+ 		   "nss peer_create msg success mac:%pM vdev:%d peer_id:%d hw_ast_idx:%d ast_hash:%d\n",
+ 		   peer_msg->peer_mac_addr, peer_msg->vdev_id, peer_msg->peer_id,
+ 		   peer_msg->hw_ast_idx, peer_msg->tx_ast_hash);
+ 
++	ret = ath11k_peer_add_ast(ar, peer, peer->addr,
++				  ATH11K_AST_TYPE_STATIC);
++	if (ret) {
++		ath11k_warn(ab, "failed to add STATIC ast: %d\n", ret);
++		goto peer_mem_free;
++	}
++
+ 	peer->nss.nss_stats = kzalloc(sizeof(*peer->nss.nss_stats), GFP_ATOMIC);
+ 	if (!peer->nss.nss_stats) {
+ 		ret = -ENOMEM;
+@@ -1500,6 +1733,199 @@ msg_free:
+ 	return ret;
+ }
+ 
++int ath11k_nss_add_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac, enum ath11k_ast_entry_type type)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct nss_wifili_wds_peer_msg *wds_peer_msg;
++	struct nss_wifili_msg *wlmsg = NULL;
++	nss_wifili_msg_callback_t msg_cb;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
++	if (wlmsg == NULL)
++		return -ENOMEM;
++
++	wds_peer_msg = &wlmsg->msg.wdspeermsg;
++
++	wds_peer_msg->pdev_id = ar->pdev->pdev_id;
++	wds_peer_msg->ast_type = type;
++	wds_peer_msg->peer_id = peer->peer_id;
++
++	if (type == ATH11K_AST_TYPE_MEC)
++		ether_addr_copy(wds_peer_msg->peer_mac, ar->mac_addr);
++	else
++		ether_addr_copy(wds_peer_msg->peer_mac, peer->addr);
++
++	ether_addr_copy(wds_peer_msg->dest_mac, dest_mac);
++
++	msg_cb = (nss_wifili_msg_callback_t)ath11k_nss_wifili_event_receive;
++
++	nss_cmn_msg_init(&wlmsg->cm, ab->nss.if_num,
++			 NSS_WIFILI_WDS_PEER_ADD_MSG,
++			 sizeof(struct nss_wifili_wds_peer_msg),
++			 msg_cb, NULL);
++
++	status = nss_wifili_tx_msg(ab->nss.ctx, wlmsg);
++	if (status != NSS_TX_SUCCESS) {
++		ret = -EINVAL;
++		ath11k_warn(ab, "nss send wds add peer msg tx error: %d\n",
++			    status);
++		goto msg_free;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss add wds peer success peer mac:%pM dest mac:%pM peer_id:%d\n",
++		   wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
++
++msg_free:
++	kfree(wlmsg);
++	return ret;
++}
++
++int ath11k_nss_update_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			       u8 *dest_mac)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct nss_wifili_wds_peer_msg *wds_peer_msg;
++	struct nss_wifili_msg *wlmsg = NULL;
++	nss_wifili_msg_callback_t msg_cb;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
++	if (wlmsg == NULL)
++		return -ENOMEM;
++
++	wds_peer_msg = &wlmsg->msg.wdspeermsg;
++
++	wds_peer_msg->pdev_id = ar->pdev->pdev_id;
++	wds_peer_msg->ast_type = ATH11K_AST_TYPE_WDS;
++	wds_peer_msg->peer_id = peer->peer_id;
++	ether_addr_copy(wds_peer_msg->peer_mac, peer->addr);
++	ether_addr_copy(wds_peer_msg->dest_mac, dest_mac);
++
++	msg_cb = (nss_wifili_msg_callback_t)ath11k_nss_wifili_event_receive;
++
++	nss_cmn_msg_init(&wlmsg->cm, ab->nss.if_num,
++			 NSS_WIFILI_WDS_PEER_UPDATE_MSG,
++			 sizeof(struct nss_wifili_wds_peer_msg),
++			 msg_cb, NULL);
++
++	status = nss_wifili_tx_msg(ab->nss.ctx, wlmsg);
++	if (status != NSS_TX_SUCCESS) {
++		ret = -EINVAL;
++		ath11k_warn(ab, "nss send wds update peer msg tx error: %d\n",
++			    status);
++		goto msg_free;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss update wds peer success peer mac:%pM dest mac:%pM peer_id:%d\n",
++		   wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
++
++msg_free:
++	kfree(wlmsg);
++	return ret;
++}
++
++int ath11k_nss_map_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac, enum ath11k_ast_entry_type type)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct nss_wifili_wds_peer_map_msg *wds_peer_map_msg;
++	struct nss_wifili_msg *wlmsg = NULL;
++	nss_wifili_msg_callback_t msg_cb;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
++	if (wlmsg == NULL)
++		return -ENOMEM;
++
++	wds_peer_map_msg = &wlmsg->msg.wdspeermapmsg;
++
++	wds_peer_map_msg->vdev_id = peer->vdev_id;
++	wds_peer_map_msg->ast_idx = peer->hw_peer_id;
++
++	if (type == ATH11K_AST_TYPE_MEC)
++		wds_peer_map_msg->peer_id = NSS_WIFILI_MEC_PEER_ID;
++	else
++		wds_peer_map_msg->peer_id = peer->peer_id;
++
++	ether_addr_copy(wds_peer_map_msg->dest_mac, dest_mac);
++
++	msg_cb = (nss_wifili_msg_callback_t)ath11k_nss_wifili_event_receive;
++
++	nss_cmn_msg_init(&wlmsg->cm, ab->nss.if_num,
++			 NSS_WIFILI_WDS_PEER_MAP_MSG,
++			 sizeof(struct nss_wifili_wds_peer_map_msg),
++			 msg_cb, NULL);
++
++	status = nss_wifili_tx_msg(ab->nss.ctx, wlmsg);
++	if (status != NSS_TX_SUCCESS) {
++		ret = -EINVAL;
++		ath11k_warn(ab, "nss send wds peer map msg tx error: %d\n",
++			    status);
++		goto msg_free;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss wds peer map success mac:%pM hw_ast_idx:%d peer_id:%d\n",
++		   wds_peer_map_msg->dest_mac, wds_peer_map_msg->ast_idx, wds_peer_map_msg->peer_id);
++
++msg_free:
++	kfree(wlmsg);
++	return ret;
++}
++
++int ath11k_nss_del_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac)
++{
++	struct ath11k_base *ab = ar->ab;
++	struct nss_wifili_wds_peer_msg *wds_peer_msg;
++	struct nss_wifili_msg *wlmsg = NULL;
++	nss_wifili_msg_callback_t msg_cb;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
++	if (wlmsg == NULL)
++		return -ENOMEM;
++
++	wds_peer_msg = &wlmsg->msg.wdspeermsg;
++
++	wds_peer_msg->pdev_id = ar->pdev->pdev_id;
++	wds_peer_msg->ast_type = ATH11K_AST_TYPE_NONE;
++	wds_peer_msg->peer_id = peer->peer_id;
++	ether_addr_copy(wds_peer_msg->peer_mac, peer->addr);
++	ether_addr_copy(wds_peer_msg->dest_mac, dest_mac);
++
++	msg_cb = (nss_wifili_msg_callback_t)ath11k_nss_wifili_event_receive;
++
++	nss_cmn_msg_init(&wlmsg->cm, ab->nss.if_num,
++			 NSS_WIFILI_WDS_PEER_DEL_MSG,
++			 sizeof(struct nss_wifili_wds_peer_msg),
++			 msg_cb, NULL);
++
++	status = nss_wifili_tx_msg(ab->nss.ctx, wlmsg);
++	if (status != NSS_TX_SUCCESS) {
++		ret = -EINVAL;
++		ath11k_warn(ab, "nss send wds del peer msg tx error: %d\n",
++			    status);
++		goto msg_free;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss del wds peer success peer mac:%pM dest mac:%pM peer_id:%d\n",
++		   wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
++
++msg_free:
++	kfree(wlmsg);
++	return ret;
++}
++
+ /*-------------------------------INIT/DEINIT---------------------------------*/
+ 
+ static int ath11k_nss_radio_buf_cfg(struct ath11k *ar, int range, int buf_sz)
+@@ -1893,7 +2319,7 @@ static int ath11k_nss_init(struct ath11k
+ 
+ 	status = nss_wifili_tx_msg(nss_contex, wlmsg);
+ 	if (status != NSS_TX_SUCCESS) {
+-		ath11k_warn(ab, "failure to send nss init msg\n");
++		ath11k_warn(ab, "failure to send nss init msg: %d \n", status);
+ 		goto unregister;
+ 	}
+ 
+@@ -1947,7 +2373,8 @@ static int ath11k_nss_stats_cfg(struct a
+ 
+ 	status = nss_wifili_tx_msg(ar->nss.ctx, wlmsg);
+ 	if (status != NSS_TX_SUCCESS) {
+-		ath11k_warn(ab, "nss stats cfg %d msg tx failure\n", nss_msg);
++		ath11k_warn(ab, "nss stats cfg %d msg tx failure: %d\n",
++			    nss_msg, status);
+ 		ret = -EINVAL;
+ 		goto free;
+ 	}
+--- a/drivers/net/wireless/ath/ath11k/nss.h
++++ b/drivers/net/wireless/ath/ath11k/nss.h
+@@ -17,12 +17,14 @@ struct ath11k_base;
+ struct ath11k_vif;
+ struct ath11k_peer;
+ struct ath11k_sta;
++enum ath11k_ast_entry_type;
+ struct hal_rx_mon_ppdu_info;
+ struct hal_rx_user_status;
+ 
+ /* NSS DBG macro is not included as part of debug enum to avoid
+  * frequent changes during upgrade*/
+-#define ATH11K_DBG_NSS	0x80000000
++#define ATH11K_DBG_NSS	0x40000000
++#define ATH11K_DBG_NSS_WDS	0x80000000
+ 
+ /* WIFILI Supported Target Types */
+ #define ATH11K_WIFILI_TARGET_TYPE_UNKNOWN   0xFF
+@@ -205,11 +207,19 @@ int ath11k_nss_vdev_create(struct ath11k
+ void ath11k_nss_vdev_delete(struct ath11k_vif *arvif);
+ int ath11k_nss_vdev_up(struct ath11k_vif *arvif);
+ int ath11k_nss_vdev_down(struct ath11k_vif *arvif);
+-int ath11k_nss_peer_delete(struct ath11k_base *ab, const u8 *addr);
++int ath11k_nss_peer_delete(struct ath11k_base *ab, u32 vdev_id, const u8 *addr);
+ int ath11k_nss_set_peer_authorize(struct ath11k *ar, u16 peer_id);
+-int ath11k_nss_peer_create(struct ath11k_base *ab, struct ath11k_peer *peer);
++int ath11k_nss_peer_create(struct ath11k *ar, struct ath11k_peer *peer);
+ void ath11k_nss_peer_stats_enable(struct ath11k *ar);
+ void ath11k_nss_peer_stats_disable(struct ath11k *ar);
++int ath11k_nss_add_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac, enum ath11k_ast_entry_type type);
++int ath11k_nss_update_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			       u8 *dest_mac);
++int ath11k_nss_map_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac, enum ath11k_ast_entry_type type);
++int ath11k_nss_del_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++			    u8 *dest_mac);
+ int ath11k_nss_set_peer_sec_type(struct ath11k *ar, struct ath11k_peer *peer,
+ 				 struct ieee80211_key_conf *key_conf);
+ void ath11k_nss_update_sta_stats(struct station_info *sinfo,
+@@ -271,12 +281,37 @@ static inline int ath11k_nss_vdev_down(s
+ 	return 0;
+ }
+ 
+-static inline int ath11k_nss_peer_delete(struct ath11k_base *ab, const u8 *addr)
++static inline int ath11k_nss_peer_delete(struct ath11k_base *ab, u32 vdev_id,
++					 const u8 *addr)
+ {
+ 	return 0;
+ }
+ 
+-static inline int ath11k_nss_peer_create(struct ath11k_base *ab, struct ath11k_peer *peer)
++static inline int ath11k_nss_add_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++					  u8 *dest_mac, int type)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_update_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++					     u8 *dest_mac)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_map_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
++					  u8 *dest_mac, int type)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_del_wds_peer(struct ath11k_vif *arvif, struct ath11k_peer *peer,
++			    u8 *dest_mac)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_peer_create(struct ath11k *ar, struct ath11k_peer *peer)
+ {
+ 	return 0;
+ }

@@ -1,0 +1,94 @@
+From 035efe8d5a0b5247f0d570968503260984ad9d38 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Fri, 25 Apr 2025 18:22:47 +0100
+Subject: [PATCH] net: ethernet: mtk_eth_soc: improve probe deferal
+
+In case an NVMEM provider for a MAC address returns -EPROBE_DEFER the
+driver currently bails out only after already generating random addresses
+for preceding netdevs and loudly warns about that.
+This results in the warning being displayed multiple times, each time
+with a different random MAC addresses.
+Improve this by first checking if all MAC address providing NVMEM devices
+are ready before resorting to random addresses.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 53 ++++++++++++++++-----
+ 1 file changed, 42 insertions(+), 11 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -5025,17 +5025,6 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	mac->hw = eth;
+ 	mac->of_node = np;
+ 
+-	err = of_get_ethdev_address(mac->of_node, eth->netdev[id]);
+-	if (err == -EPROBE_DEFER)
+-		return err;
+-
+-	if (err) {
+-		/* If the mac address is invalid, use random mac address */
+-		eth_hw_addr_random(eth->netdev[id]);
+-		dev_err(eth->dev, "generated random MAC address %pM\n",
+-			eth->netdev[id]->dev_addr);
+-	}
+-
+ 	memset(mac->hwlro_ip, 0, sizeof(mac->hwlro_ip));
+ 	mac->hwlro_ip_cnt = 0;
+ 
+@@ -5176,6 +5165,26 @@ free_netdev:
+ 	return err;
+ }
+ 
++static int mtk_mac_assign_address(struct mtk_eth *eth, int i, bool test_defer_only)
++{
++	int err = of_get_ethdev_address(eth->mac[i]->of_node, eth->netdev[i]);
++
++	if (err == -EPROBE_DEFER)
++		return err;
++
++	if (test_defer_only)
++		return 0;
++
++	if (err) {
++		/* If the mac address is invalid, use random mac address */
++		eth_hw_addr_random(eth->netdev[i]);
++		dev_err(eth->dev, "generated random MAC address %pM\n",
++			eth->netdev[i]);
++	}
++
++	return 0;
++}
++
+ void mtk_eth_set_dma_device(struct mtk_eth *eth, struct device *dma_dev)
+ {
+ 	struct net_device *dev, *tmp;
+@@ -5435,6 +5444,28 @@ static int mtk_probe(struct platform_dev
+ 		}
+ 	}
+ 
++	/* check if all MAC address providers are available and return
++	 * -EPROBE_DEFER in case at least one of them is not ready
++	 */
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i])
++			continue;
++
++		err = mtk_mac_assign_address(eth, i, true);
++		if (err)
++			goto err_deinit_hw;
++	}
++
++	/* now actually assign MAC addresses to netdevs */
++	for (i = 0; i < MTK_MAX_DEVS; i++) {
++		if (!eth->netdev[i])
++			continue;
++
++		err = mtk_mac_assign_address(eth, i, false);
++		if (err)
++			goto err_deinit_hw;
++	}
++
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_SHARED_INT)) {
+ 		err = devm_request_irq(eth->dev, eth->irq[MTK_FE_IRQ_SHARED],
+ 				       mtk_handle_irq, 0,

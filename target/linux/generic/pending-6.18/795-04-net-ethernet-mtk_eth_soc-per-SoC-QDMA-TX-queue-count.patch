@@ -1,0 +1,192 @@
+From 629c7910dade8866807358e245af808d9a282cd7 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 23 Apr 2026 14:03:20 +0100
+Subject: [PATCH 4/9] net: ethernet: mtk_eth_soc: per-SoC QDMA TX queue count with
+ register paging
+
+MT7988 (netsys_v3) has 32 QDMA TX queues but the register window only
+exposes 16 at a time; accessing the upper 16 requires selecting the
+register page via the qdma.page register first. On netsys_v1 and
+netsys_v2 the hardware still has 16 queues and the page register,
+though present at a fixed offset in the reg_map, is effectively only
+ever written to with page 0.
+
+Replace the global MTK_QDMA_NUM_QUEUES define with a per-SoC
+num_tx_queues field in struct mtk_soc_data. Keep the count at 16 for
+V1 and V2, bump it to 32 only for MT7988 (V3). This matches the
+current behavior for every SoC that was already working -- including
+the ramips MT7621 that shares the driver -- while allowing V3 to use
+the full queue count.
+
+Add a qdma.page field to struct mtk_reg_map. Populate it for all
+three QDMA reg maps:
+
+        mtk_reg_map  (V1)     = 0x19f0
+        mt7986_reg_map (V2)   = 0x45f0
+        mt7988_reg_map (V3)   = 0x45f0
+
+Add MTK_QTX_PER_PAGE (= 16), the number of queues whose config
+registers fit in one register page window. In mtk_set_queue_speed()
+and the queue init loop in mtk_tx_alloc(), write the page register
+before touching qtx_cfg / qtx_sch, using idx / MTK_QTX_PER_PAGE as
+page and idx % MTK_QTX_PER_PAGE as in-page offset. Other call sites
+(mtk_dma_free(), DSA user-port bound check, alloc_etherdev_mqs())
+switch to eth->soc->num_tx_queues.
+
+MT7628 / RT5350 predate QDMA and are guarded by the existing
+MTK_HAS_CAPS(MTK_QDMA) checks; num_tx_queues stays 0 for them and
+those paths remain unreachable.
+
+Based on work by Bo-Cun Chen for MediaTek's downstream tree
+("net: ethernet: mtk_eth_soc: change qdma txq num to 32"), reshaped
+to avoid bumping the global define for older SoCs.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 26 +++++++++++++++------
+ drivers/net/ethernet/mediatek/mtk_eth_soc.h |  5 ++--
+ 2 files changed, 22 insertions(+), 9 deletions(-)
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -846,7 +846,8 @@ static void mtk_set_queue_speed(struct m
+ 		}
+ 	}
+ 
+-	ofs = MTK_QTX_OFFSET * idx;
++	mtk_w32(eth, idx / MTK_QTX_PER_PAGE, soc->reg_map->qdma.page);
++	ofs = MTK_QTX_OFFSET * (idx % MTK_QTX_PER_PAGE);
+ 	mtk_w32(eth, val, soc->reg_map->qdma.qtx_sch + ofs);
+ }
+ 
+@@ -2929,7 +2930,11 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 			soc->reg_map->qdma.crx_ptr);
+ 		mtk_w32(eth, ring->last_free_ptr, soc->reg_map->qdma.drx_ptr);
+ 
+-		for (i = 0, ofs = 0; i < MTK_QDMA_NUM_QUEUES; i++) {
++		for (i = 0; i < soc->num_tx_queues; i++) {
++			mtk_w32(eth, i / MTK_QTX_PER_PAGE,
++				soc->reg_map->qdma.page);
++			ofs = MTK_QTX_OFFSET * (i % MTK_QTX_PER_PAGE);
++
+ 			val = (QDMA_RES_THRES << 8) | QDMA_RES_THRES;
+ 			mtk_w32(eth, val, soc->reg_map->qdma.qtx_cfg + ofs);
+ 
+@@ -2941,7 +2946,6 @@ static int mtk_tx_alloc(struct mtk_eth *
+ 			if (mtk_is_netsys_v1(eth))
+ 				val |= MTK_QTX_SCH_LEAKY_BUCKET_EN;
+ 			mtk_w32(eth, val, soc->reg_map->qdma.qtx_sch + ofs);
+-			ofs += MTK_QTX_OFFSET;
+ 		}
+ 		val = MTK_QDMA_TX_SCH_MAX_WFQ | (MTK_QDMA_TX_SCH_MAX_WFQ << 16);
+ 		mtk_w32(eth, val, soc->reg_map->qdma.tx_sch_rate);
+@@ -3506,7 +3510,7 @@ static void mtk_dma_free(struct mtk_eth
+ 	int i, j, txqs = 1;
+ 
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+-		txqs = MTK_QDMA_NUM_QUEUES;
++		txqs = soc->num_tx_queues;
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+@@ -3778,7 +3782,7 @@ found:
+ 		return NOTIFY_DONE;
+ 
+ 	dp = dsa_port_from_netdev(dev);
+-	if (dp->index >= MTK_QDMA_NUM_QUEUES)
++	if (dp->index >= eth->soc->num_tx_queues)
+ 		return NOTIFY_DONE;
+ 
+ 	if (mac->speed > 0 && mac->speed <= s.base.speed)
+@@ -5048,7 +5052,7 @@ static int mtk_add_mac(struct mtk_eth *e
+ 	}
+ 
+ 	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+-		txqs = MTK_QDMA_NUM_QUEUES;
++		txqs = eth->soc->num_tx_queues;
+ 
+ 	eth->netdev[id] = alloc_etherdev_mqs(sizeof(*mac), txqs, 1);
+ 	if (!eth->netdev[id]) {
+@@ -5693,6 +5697,7 @@ static const struct mtk_soc_data mt2701_
+ 	.required_clks = MT7623_CLKS_BITMAP,
+ 	.required_pctl = true,
+ 	.version = 1,
++	.num_tx_queues = 16,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+@@ -5720,6 +5725,7 @@ static const struct mtk_soc_data mt7621_
+ 	.offload_version = 1,
+ 	.ppe_num = 1,
+ 	.hash_offset = 2,
++	.num_tx_queues = 16,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma),
+@@ -5750,6 +5756,7 @@ static const struct mtk_soc_data mt7622_
+ 	.ppe_num = 1,
+ 	.hash_offset = 2,
+ 	.has_accounting = true,
++	.num_tx_queues = 16,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma),
+@@ -5778,6 +5785,7 @@ static const struct mtk_soc_data mt7623_
+ 	.offload_version = 1,
+ 	.ppe_num = 1,
+ 	.hash_offset = 2,
++	.num_tx_queues = 16,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.disable_pll_modes = true,
+ 	.tx = {
+@@ -5806,6 +5814,7 @@ static const struct mtk_soc_data mt7629_
+ 	.required_pctl = false,
+ 	.has_accounting = true,
+ 	.version = 1,
++	.num_tx_queues = 16,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+@@ -5835,6 +5844,7 @@ static const struct mtk_soc_data mt7981_
+ 	.ppe_num = 2,
+ 	.hash_offset = 4,
+ 	.has_accounting = true,
++	.num_tx_queues = 16,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V2_SIZE,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma_v2),
+@@ -5865,6 +5875,7 @@ static const struct mtk_soc_data mt7986_
+ 	.ppe_num = 2,
+ 	.hash_offset = 4,
+ 	.has_accounting = true,
++	.num_tx_queues = 16,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V2_SIZE,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma_v2),
+@@ -5895,6 +5906,7 @@ static const struct mtk_soc_data mt7988_
+ 	.ppe_num = 3,
+ 	.hash_offset = 4,
+ 	.has_accounting = true,
++	.num_tx_queues = 32,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V3_SIZE,
+ 	.tx = {
+ 		DESC_SIZE(struct mtk_tx_dma_v2),
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -25,7 +25,7 @@
+ #define MTK_MAX_DSA_PORTS	7
+ #define MTK_DSA_PORT_MASK	GENMASK(2, 0)
+ 
+-#define MTK_QDMA_NUM_QUEUES	16
++#define MTK_QTX_PER_PAGE	16
+ #define MTK_QDMA_PAGE_SIZE	2048
+ #define MTK_MAX_RX_LENGTH	1536
+ #define MTK_MAX_RX_LENGTH_2K	2048
+@@ -1248,6 +1248,7 @@ struct mtk_soc_data {
+ 	u8		hash_offset;
+ 	u8		version;
+ 	u8		ppe_num;
++	u16		num_tx_queues;
+ 	u16		foe_entry_size;
+ 	netdev_features_t hw_features;
+ 	bool		has_accounting;

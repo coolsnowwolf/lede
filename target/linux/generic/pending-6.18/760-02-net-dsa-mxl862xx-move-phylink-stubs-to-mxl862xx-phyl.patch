@@ -1,0 +1,163 @@
+From cefa0447dc95a4ddd5093f7b8cf35e654870283f Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 25 Mar 2026 21:39:30 +0000
+Subject: [PATCH 02/19] net: dsa: mxl862xx: move phylink stubs to
+ mxl862xx-phylink.c
+
+Move the phylink MAC operations and get_caps callback from mxl862xx.c
+into a dedicated mxl862xx-phylink.c file. This prepares for the SerDes
+PCS implementation which adds substantial phylink/PCS code -- keeping
+it in a separate file avoids function-position churn in the main
+driver file.
+
+No functional change.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/dsa/mxl862xx/Makefile           |  2 +-
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c | 51 +++++++++++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.h | 14 ++++++
+ drivers/net/dsa/mxl862xx/mxl862xx.c         | 38 +--------------
+ 4 files changed, 67 insertions(+), 38 deletions(-)
+ create mode 100644 drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+ create mode 100644 drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
+
+--- a/drivers/net/dsa/mxl862xx/Makefile
++++ b/drivers/net/dsa/mxl862xx/Makefile
+@@ -1,3 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0
+ obj-$(CONFIG_NET_DSA_MXL862) += mxl862xx_dsa.o
+-mxl862xx_dsa-y := mxl862xx.o mxl862xx-host.o
++mxl862xx_dsa-y := mxl862xx.o mxl862xx-host.o mxl862xx-phylink.o
+--- /dev/null
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * Phylink and PCS support for MaxLinear MxL862xx switch family
++ *
++ * Copyright (C) 2024 MaxLinear Inc.
++ * Copyright (C) 2025 John Crispin <john@phrozen.org>
++ * Copyright (C) 2025 Daniel Golle <daniel@makrotopia.org>
++ */
++
++#include <linux/phylink.h>
++#include <net/dsa.h>
++
++#include "mxl862xx.h"
++#include "mxl862xx-phylink.h"
++
++void mxl862xx_phylink_get_caps(struct dsa_switch *ds, int port,
++			       struct phylink_config *config)
++{
++	config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE | MAC_10 |
++				   MAC_100 | MAC_1000 | MAC_2500FD;
++
++	__set_bit(PHY_INTERFACE_MODE_INTERNAL,
++		  config->supported_interfaces);
++}
++
++static void mxl862xx_phylink_mac_config(struct phylink_config *config,
++					unsigned int mode,
++					const struct phylink_link_state *state)
++{
++}
++
++static void mxl862xx_phylink_mac_link_down(struct phylink_config *config,
++					   unsigned int mode,
++					   phy_interface_t interface)
++{
++}
++
++static void mxl862xx_phylink_mac_link_up(struct phylink_config *config,
++					 struct phy_device *phydev,
++					 unsigned int mode,
++					 phy_interface_t interface,
++					 int speed, int duplex,
++					 bool tx_pause, bool rx_pause)
++{
++}
++
++const struct phylink_mac_ops mxl862xx_phylink_mac_ops = {
++	.mac_config = mxl862xx_phylink_mac_config,
++	.mac_link_down = mxl862xx_phylink_mac_link_down,
++	.mac_link_up = mxl862xx_phylink_mac_link_up,
++};
+--- /dev/null
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.h
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#ifndef __MXL862XX_PHYLINK_H
++#define __MXL862XX_PHYLINK_H
++
++#include <linux/phylink.h>
++
++#include "mxl862xx.h"
++
++extern const struct phylink_mac_ops mxl862xx_phylink_mac_ops;
++void mxl862xx_phylink_get_caps(struct dsa_switch *ds, int port,
++			       struct phylink_config *config);
++
++#endif /* __MXL862XX_PHYLINK_H */
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -22,6 +22,7 @@
+ #include "mxl862xx-api.h"
+ #include "mxl862xx-cmd.h"
+ #include "mxl862xx-host.h"
++#include "mxl862xx-phylink.h"
+ 
+ #define MXL862XX_API_WRITE(dev, cmd, data) \
+ 	mxl862xx_api_wrap(dev, cmd, &(data), sizeof((data)), false, false)
+@@ -1424,16 +1425,6 @@ static void mxl862xx_port_teardown(struc
+ 	priv->ports[port].setup_done = false;
+ }
+ 
+-static void mxl862xx_phylink_get_caps(struct dsa_switch *ds, int port,
+-				      struct phylink_config *config)
+-{
+-	config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE | MAC_10 |
+-				   MAC_100 | MAC_1000 | MAC_2500FD;
+-
+-	__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+-		  config->supported_interfaces);
+-}
+-
+ static int mxl862xx_get_fid(struct dsa_switch *ds, struct dsa_db db)
+ {
+ 	struct mxl862xx_priv *priv = ds->priv;
+@@ -2099,33 +2090,6 @@ static const struct dsa_switch_ops mxl86
+ 	.get_stats64 = mxl862xx_get_stats64,
+ };
+ 
+-static void mxl862xx_phylink_mac_config(struct phylink_config *config,
+-					unsigned int mode,
+-					const struct phylink_link_state *state)
+-{
+-}
+-
+-static void mxl862xx_phylink_mac_link_down(struct phylink_config *config,
+-					   unsigned int mode,
+-					   phy_interface_t interface)
+-{
+-}
+-
+-static void mxl862xx_phylink_mac_link_up(struct phylink_config *config,
+-					 struct phy_device *phydev,
+-					 unsigned int mode,
+-					 phy_interface_t interface,
+-					 int speed, int duplex,
+-					 bool tx_pause, bool rx_pause)
+-{
+-}
+-
+-static const struct phylink_mac_ops mxl862xx_phylink_mac_ops = {
+-	.mac_config = mxl862xx_phylink_mac_config,
+-	.mac_link_down = mxl862xx_phylink_mac_link_down,
+-	.mac_link_up = mxl862xx_phylink_mac_link_up,
+-};
+-
+ static int mxl862xx_probe(struct mdio_device *mdiodev)
+ {
+ 	struct device *dev = &mdiodev->dev;

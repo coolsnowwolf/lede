@@ -72,7 +72,7 @@ extern u64 uevent_next_seqnum(void);
 		.name = (_name),	\
 	}
 
-static struct bh_map button_map[] = {
+static const struct bh_map button_map[] = {
 	BH_MAP(BTN_0,			"BTN_0"),
 	BH_MAP(BTN_1,			"BTN_1"),
 	BH_MAP(BTN_2,			"BTN_2"),
@@ -416,13 +416,13 @@ gpio_keys_get_devtree_pdata(struct device *dev)
 	return pdata;
 }
 
-static struct of_device_id gpio_keys_of_match[] = {
+static const struct of_device_id gpio_keys_of_match[] = {
 	{ .compatible = "gpio-keys", },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, gpio_keys_of_match);
 
-static struct of_device_id gpio_keys_polled_of_match[] = {
+static const struct of_device_id gpio_keys_polled_of_match[] = {
 	{ .compatible = "gpio-keys-polled", },
 	{ },
 };
@@ -520,10 +520,15 @@ static int gpio_keys_button_probe(struct platform_device *pdev,
 							    GPIOD_IN);
 			if (IS_ERR(bdata->gpiod)) {
 				/* or the legacy (button->gpio is good) way? */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0)
 				error = devm_gpio_request_one(dev,
 					button->gpio, GPIOF_IN | (
 					button->active_low ? GPIOF_ACTIVE_LOW :
 					0), desc);
+#else
+				error = devm_gpio_request_one(dev,
+					button->gpio, GPIOF_IN, desc);
+#endif
 				if (error) {
 					dev_err_probe(dev, error,
 						      "unable to claim gpio %d",
@@ -532,6 +537,10 @@ static int gpio_keys_button_probe(struct platform_device *pdev,
 				}
 
 				bdata->gpiod = gpio_to_desc(button->gpio);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,18,0)
+				if (button->active_low ^ gpiod_is_active_low(bdata->gpiod))
+					gpiod_toggle_active_low(bdata->gpiod);
+#endif
 			}
 		} else {
 			/* Device-tree */

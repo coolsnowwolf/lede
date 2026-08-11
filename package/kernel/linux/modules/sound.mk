@@ -314,6 +314,17 @@ endef
 $(eval $(call KernelPackage,sound-soc-spdif))
 
 
+define KernelPackage/sound-soc-dmic
+  TITLE:=Generic Digital Microphone CODEC
+  KCONFIG:=CONFIG_SND_SOC_DMIC
+  FILES:=$(LINUX_DIR)/sound/soc/codecs/snd-soc-dmic.ko
+  AUTOLOAD:=$(call AutoProbe,snd-soc-dmic)
+  $(call AddDepends/sound,+kmod-sound-soc-core)
+endef
+
+$(eval $(call KernelPackage,sound-soc-dmic))
+
+
 define KernelPackage/pcspkr
   DEPENDS:=@TARGET_x86 +kmod-input-core
   TITLE:=PC speaker support
@@ -350,20 +361,21 @@ $(eval $(call KernelPackage,sound-dummy))
 define KernelPackage/sound-hda-core
   SUBMENU:=$(SOUND_MENU)
   TITLE:=HD Audio Sound Core Support
-  DEPENDS:=+kmod-ledtrig-audio
   KCONFIG:= \
 	CONFIG_SND_HDA_CORE \
+	CONFIG_SND_HDA \
 	CONFIG_SND_HDA_HWDEP=y \
 	CONFIG_SND_HDA_RECONFIG=n \
-	CONFIG_SND_HDA_SCODEC_COMPONENT=y \
 	CONFIG_SND_HDA_INPUT_BEEP=n \
 	CONFIG_SND_HDA_PATCH_LOADER=n \
 	CONFIG_SND_HDA_GENERIC
   FILES:= \
-	$(LINUX_DIR)/sound/hda/snd-hda-core.ko \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec.ko \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-scodec-component.ko@ge6.12
+	$(LINUX_DIR)/sound/hda/snd-hda-core.ko@lt6.18 \
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec.ko@lt6.18 \
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-generic.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/core/snd-hda-core.ko@ge6.18 \
+	$(LINUX_DIR)/sound/hda/common/snd-hda-codec.ko@ge6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-generic.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-core snd-hda-codec snd-hda-codec-generic)
   $(call AddDepends/sound,+kmod-regmap-core)
 endef
@@ -374,15 +386,30 @@ endef
 
 $(eval $(call KernelPackage,sound-hda-core))
 
+define KernelPackage/snd-hda-scodec-component
+  SUBMENU:=$(SOUND_MENU)
+  TITLE:= HD Audio Codec Component
+  KCONFIG:= \
+	CONFIG_SND_HDA_SCODEC_COMPONENT
+  FILES:= \
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-scodec-component.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/side-codecs/snd-hda-scodec-component.ko@ge6.18
+  AUTOLOAD:=$(call AutoProbe,snd-hda-scodec-component)
+  $(call AddDepends/sound,kmod-sound-hda-core)
+endef
+
+$(eval $(call KernelPackage,snd-hda-scodec-component))
+
 define KernelPackage/sound-hda-codec-realtek
   SUBMENU:=$(SOUND_MENU)
   TITLE:= HD Audio Realtek Codec
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_REALTEK
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-realtek.ko
-  AUTOLOAD:=$(call AutoProbe,snd-hda-codec-realtek)
-  $(call AddDepends/sound,kmod-sound-hda-core)
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-realtek.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/realtek/snd-hda-codec-realtek-lib.ko@ge6.18
+  AUTOLOAD:=$(call AutoProbe,snd-hda-codec-realtek LINUX_6_18:snd-hda-codec-realtek-lib)
+  $(call AddDepends/sound,kmod-sound-hda-core +kmod-snd-hda-scodec-component)
 endef
 
 define KernelPackage/sound-hda-codec-realtek/description
@@ -397,7 +424,8 @@ define KernelPackage/sound-hda-codec-cmedia
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_CMEDIA
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-cmedia.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-cmedia.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-cmedia.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-cmedia)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -414,7 +442,8 @@ define KernelPackage/sound-hda-codec-analog
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_ANALOG
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-analog.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-analog.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-analog.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-analog)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -431,7 +460,8 @@ define KernelPackage/sound-hda-codec-idt
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_SIGMATEL
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-idt.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-idt.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-idt.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-idt)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -448,7 +478,8 @@ define KernelPackage/sound-hda-codec-si3054
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_SI3054
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-si3054.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-si3054.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-si3054.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-si3054)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -465,7 +496,7 @@ define KernelPackage/sound-hda-codec-cirrus
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_CIRRUS
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-cirrus.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-cirrus.ko@lt6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-cirrus)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -482,7 +513,8 @@ define KernelPackage/sound-hda-codec-ca0110
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_CA0110
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-ca0110.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-ca0110.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-ca0110.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-ca0110)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -500,7 +532,8 @@ define KernelPackage/sound-hda-codec-ca0132
 	CONFIG_SND_HDA_CODEC_CA0132 \
 	CONFIG_SND_HDA_CODEC_CA0132_DSP=n
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-ca0132.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-ca0132.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-ca0132.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-ca0132)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -517,7 +550,8 @@ define KernelPackage/sound-hda-codec-conexant
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_CONEXANT
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-conexant.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-conexant.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-conexant.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-conexant)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -534,7 +568,8 @@ define KernelPackage/sound-hda-codec-via
   KCONFIG:= \
 	CONFIG_SND_HDA_CODEC_VIA
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-via.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-via.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/snd-hda-codec-via.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-via)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -549,9 +584,11 @@ define KernelPackage/sound-hda-codec-hdmi
   SUBMENU:=$(SOUND_MENU)
   TITLE:=HD Audio HDMI/DisplayPort Codec
   KCONFIG:= \
-	CONFIG_SND_HDA_CODEC_HDMI
+	CONFIG_SND_HDA_CODEC_HDMI \
+	CONFIG_SND_HDA_CODEC_HDMI_GENERIC
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-hdmi.ko
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-codec-hdmi.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/codecs/hdmi/snd-hda-codec-hdmi.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-codec-hdmi)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -570,9 +607,10 @@ define KernelPackage/sound-hda-intel
 	CONFIG_SOUND_PCI \
 	CONFIG_SND_HDA_INTEL
   FILES:= \
-	$(LINUX_DIR)/sound/pci/hda/snd-hda-intel.ko \
-	$(LINUX_DIR)/sound/hda/snd-intel-nhlt.ko@lt5.5 \
-	$(LINUX_DIR)/sound/hda/snd-intel-dspcfg.ko@ge5.5
+	$(LINUX_DIR)/sound/pci/hda/snd-hda-intel.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/snd-intel-dspcfg.ko@lt6.18 \
+	$(LINUX_DIR)/sound/hda/controllers/snd-hda-intel.ko@ge6.18 \
+	$(LINUX_DIR)/sound/hda/core/snd-intel-dspcfg.ko@ge6.18
   AUTOLOAD:=$(call AutoProbe,snd-hda-intel)
   $(call AddDepends/sound,kmod-sound-hda-core)
 endef
@@ -582,3 +620,55 @@ define KernelPackage/sound-hda-intel/description
 endef
 
 $(eval $(call KernelPackage,sound-hda-intel))
+
+
+define KernelPackage/sound-midi2
+  TITLE:=MIDI 2.0 and UMP Support
+  KCONFIG:= \
+	CONFIG_SND_UMP \
+	CONFIG_SND_UMP_LEGACY_RAWMIDI=y
+  FILES:=$(LINUX_DIR)/sound/core/snd-ump.ko
+  AUTOLOAD:=$(call AutoProbe,snd-ump)
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-midi2/description
+ Kernel module for MIDI 2.0: sequencer, rawmidi, and USB-MIDI 2.0 support.
+endef
+
+$(eval $(call KernelPackage,sound-midi2))
+
+define KernelPackage/sound-midi2-seq
+  TITLE:=MIDI 2.0 and UMP Support for Sequencer
+  KCONFIG:= \
+	CONFIG_SND_SEQ_UMP=y \
+	CONFIG_SND_SEQ_UMP_CLIENT=y
+  DEPENDS:=+kmod-sound-midi2 +kmod-sound-seq
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-midi2-seq))
+
+
+define KernelPackage/sound-midi2-usb
+  TITLE:=MIDI 2.0 and UMP Support for USB-MIDI
+  KCONFIG:=CONFIG_SND_USB_AUDIO_MIDI_V2=y
+  DEPENDS:=+kmod-sound-midi2 +kmod-usb-audio
+  $(call AddDepends/sound)
+endef
+
+$(eval $(call KernelPackage,sound-midi2-usb))
+
+
+define KernelPackage/sound-dynamic-minors
+  TITLE:=Support more than 8 audio and MIDI devices
+  KCONFIG:=CONFIG_SND_DYNAMIC_MINORS=y
+  $(call AddDepends/sound)
+endef
+
+define KernelPackage/sound-dynamic-minors/description
+ Kernel module for dynamic minor device support.
+ Required for using more than 8 audio and MIDI devices.
+endef
+
+$(eval $(call KernelPackage,sound-dynamic-minors))

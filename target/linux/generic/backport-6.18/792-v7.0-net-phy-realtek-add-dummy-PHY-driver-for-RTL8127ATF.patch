@@ -1,0 +1,123 @@
+From c4277d21ab694c7964a48759a5452e5bbbe12965 Mon Sep 17 00:00:00 2001
+From: Heiner Kallweit <hkallweit1@gmail.com>
+Date: Sat, 10 Jan 2026 16:14:05 +0100
+Subject: [PATCH] net: phy: realtek: add dummy PHY driver for RTL8127ATF
+
+RTL8127ATF supports a SFP+ port for fiber modules (10GBASE-SR/LR/ER/ZR and
+DAC). The list of supported modes was provided by Realtek. According to the
+r8127 vendor driver also 1G modules are supported, but this needs some more
+complexity in the driver, and only 10G mode has been tested so far.
+Therefore mainline support will be limited to 10G for now.
+The SFP port signals are hidden in the chip IP and driven by firmware.
+Therefore mainline SFP support can't be used here.
+This PHY driver is used by the RTL8127ATF support in r8169.
+RTL8127ATF reports the same PHY ID as the TP version. Therefore use a dummy
+PHY ID.  This PHY driver is used by the RTL8127ATF support in r8169.
+
+Signed-off-by: Heiner Kallweit <hkallweit1@gmail.com>
+Link: https://patch.msgid.link/e3d55162-210a-4fab-9abf-99c6954eee10@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ MAINTAINERS                            |  1 +
+ drivers/net/phy/realtek/realtek_main.c | 54 ++++++++++++++++++++++++++
+ include/net/phy/realtek_phy.h          |  7 ++++
+ 3 files changed, 62 insertions(+)
+ create mode 100644 include/net/phy/realtek_phy.h
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -9300,6 +9300,7 @@ F:	include/linux/phy_link_topology.h
+ F:	include/linux/phylib_stubs.h
+ F:	include/linux/platform_data/mdio-bcm-unimac.h
+ F:	include/linux/platform_data/mdio-gpio.h
++F:	include/net/phy/
+ F:	include/trace/events/mdio.h
+ F:	include/uapi/linux/mdio.h
+ F:	include/uapi/linux/mii.h
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -17,6 +17,7 @@
+ #include <linux/delay.h>
+ #include <linux/clk.h>
+ #include <linux/string_choices.h>
++#include <net/phy/realtek_phy.h>
+ 
+ #include "realtek.h"
+ 
+@@ -2099,6 +2100,45 @@ static irqreturn_t rtl8221b_handle_inter
+ 	return IRQ_HANDLED;
+ }
+ 
++static int rtlgen_sfp_get_features(struct phy_device *phydev)
++{
++	linkmode_set_bit(ETHTOOL_LINK_MODE_10000baseT_Full_BIT,
++			 phydev->supported);
++
++	/* set default mode */
++	phydev->speed = SPEED_10000;
++	phydev->duplex = DUPLEX_FULL;
++
++	phydev->port = PORT_FIBRE;
++
++	return 0;
++}
++
++static int rtlgen_sfp_read_status(struct phy_device *phydev)
++{
++	int val, err;
++
++	err = genphy_update_link(phydev);
++	if (err)
++		return err;
++
++	if (!phydev->link)
++		return 0;
++
++	val = rtlgen_read_vend2(phydev, RTL_VND2_PHYSR);
++	if (val < 0)
++		return val;
++
++	rtlgen_decode_physr(phydev, val);
++
++	return 0;
++}
++
++static int rtlgen_sfp_config_aneg(struct phy_device *phydev)
++{
++	return 0;
++}
++
+ static struct phy_driver realtek_drvs[] = {
+ 	{
+ 		PHY_ID_MATCH_EXACT(0x00008201),
+@@ -2357,6 +2397,20 @@ static struct phy_driver realtek_drvs[]
+ 		.suspend	= genphy_suspend,
+ 		.resume		= rtlgen_resume,
+ 		.read_page	= rtl821x_read_page,
++		.write_page	= rtl821x_write_page,
++		.read_mmd	= rtl822x_read_mmd,
++		.write_mmd	= rtl822x_write_mmd,
++	}, {
++		PHY_ID_MATCH_EXACT(PHY_ID_RTL_DUMMY_SFP),
++		.name		= "Realtek SFP PHY Mode",
++		.flags		= PHY_IS_INTERNAL,
++		.probe		= rtl822x_probe,
++		.get_features	= rtlgen_sfp_get_features,
++		.config_aneg	= rtlgen_sfp_config_aneg,
++		.read_status	= rtlgen_sfp_read_status,
++		.suspend	= genphy_suspend,
++		.resume		= rtlgen_resume,
++		.read_page	= rtl821x_read_page,
+ 		.write_page	= rtl821x_write_page,
+ 		.read_mmd	= rtl822x_read_mmd,
+ 		.write_mmd	= rtl822x_write_mmd,
+--- /dev/null
++++ b/include/net/phy/realtek_phy.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _REALTEK_PHY_H
++#define _REALTEK_PHY_H
++
++#define	PHY_ID_RTL_DUMMY_SFP	0x001ccbff
++
++#endif /* _REALTEK_PHY_H */

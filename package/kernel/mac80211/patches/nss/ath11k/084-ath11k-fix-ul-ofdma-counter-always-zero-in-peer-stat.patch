@@ -1,0 +1,82 @@
+From 3827a38706dcf081992fccf30957b29e81a25e5c Mon Sep 17 00:00:00 2001
+From: Miles Hu <milehu@codeaurora.org>
+Date: Mon, 25 Nov 2019 10:24:41 -0800
+Subject: [PATCH] ath11k: fix ul-ofdma counter always zero in peer stats
+
+The problem is caused by RSSI_LEGACY tlv is not handled properly.
+All ul mu receiption information need to be extracted from the tlv.
+
+Signed-off-by: Miles Hu <milehu@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/debugfs_sta.c |  7 -------
+ drivers/net/wireless/ath/ath11k/hal_rx.c      | 17 +++++++++++++++++
+ drivers/net/wireless/ath/ath11k/hal_rx.h      |  8 ++++++++
+ 3 files changed, 25 insertions(+), 7 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/debugfs_sta.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs_sta.c
+@@ -527,13 +527,6 @@ static ssize_t ath11k_dbg_sta_dump_rx_st
+ 				rx_stats->byte_stats.rx_rate[i],
+ 				(i + 1) % (he_rates_avail ? 12 : 8) ? "\t" : "\n");
+ 
+-	len += scnprintf(buf + len, size - len,
+-			 "\nDCM: %llu\nRU: 26 %llu 52: %llu 106: %llu 242: %llu 484: %llu 996: %llu\n",
+-			 rx_stats->dcm_count, rx_stats->ru_alloc_cnt[0],
+-			 rx_stats->ru_alloc_cnt[1], rx_stats->ru_alloc_cnt[2],
+-			 rx_stats->ru_alloc_cnt[3], rx_stats->ru_alloc_cnt[4],
+-			 rx_stats->ru_alloc_cnt[5]);
+-
+ 	len += scnprintf(buf + len, size - len, "\n");
+ 
+ 	spin_unlock_bh(&ar->ab->base_lock);
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.c
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.c
+@@ -1480,6 +1480,7 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 				       ab->wmi_ab.svc_map);
+ 		struct hal_rx_phyrx_rssi_legacy_info *rssi =
+ 			(struct hal_rx_phyrx_rssi_legacy_info *)tlv_data;
++		u32 reception_type = 0;
+ 
+ 		/* TODO: Please note that the combined rssi will not be accurate
+ 		 * in MU case. Rssi in MU needs to be retrieved from
+@@ -1489,6 +1490,22 @@ ath11k_hal_rx_parse_mon_status_tlv(struc
+ 			FIELD_GET(HAL_RX_PHYRX_RSSI_LEGACY_INFO_INFO0_RSSI_COMB,
+ 				  __le32_to_cpu(rssi->info0));
+ 
++		reception_type =
++			FIELD_GET(HAL_RX_PHYRX_RSSI_LEGACY_INFO_RSVD1_RECEPTION,
++				  __le32_to_cpu(rssi->rsvd[0]));
++
++		switch (reception_type) {
++		case HAL_RECEPTION_TYPE_ULOFMDA:
++			ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_MU_OFDMA;
++			break;
++		case HAL_RECEPTION_TYPE_ULMIMO:
++			ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_MU_MIMO;
++			break;
++		default:
++			ppdu_info->reception_type = HAL_RX_RECEPTION_TYPE_SU;
++			break;
++		}
++
+ 		if (db2dbm) {
+ 			for (i = 0; i < ARRAY_SIZE(rssi->preamble); i++) {
+ 				ppdu_info->rssi_chain_pri20[i] =
+--- a/drivers/net/wireless/ath/ath11k/hal_rx.h
++++ b/drivers/net/wireless/ath/ath11k/hal_rx.h
+@@ -415,6 +415,15 @@ struct hal_rx_he_sig_b2_ofdma_info {
+ 
+ #define HAL_RX_PHYRX_RSSI_LEGACY_INFO_INFO0_RSSI_COMB	GENMASK(15, 8)
+ 
++#define HAL_RX_PHYRX_RSSI_LEGACY_INFO_RSVD1_RECEPTION  GENMASK(3, 0)
++
++enum hal_rx_ul_reception_type {
++	HAL_RECEPTION_TYPE_ULOFMDA,
++	HAL_RECEPTION_TYPE_ULMIMO,
++	HAL_RECEPTION_TYPE_OTHER,
++	HAL_RECEPTION_TYPE_FRAMELESS
++};
++
+ #define HAL_RX_PHYRX_RSSI_PREAMBLE_PRI20	GENMASK(7, 0)
+ 
+ struct hal_rx_phyrx_chain_rssi {

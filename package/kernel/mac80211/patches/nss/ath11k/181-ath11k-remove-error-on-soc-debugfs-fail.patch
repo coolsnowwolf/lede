@@ -1,0 +1,146 @@
+From 41363c3109235a96d90d5946bbc01d1cc8dad47e Mon Sep 17 00:00:00 2001
+From: Anilkumar Kolli <akolli@codeaurora.org>
+Date: Sun, 6 Sep 2020 11:01:38 +0530
+Subject: [PATCH] ath11k: update debugfs support for mupltiple radios in PCI
+bus
+
+debugfs_ath11k struct is moved to ath11k_core, since its common
+for both pci and ahb.
+
+Current ath11k_pci insmod fails if there are multiple PCI rdaios,
+debugfs directory is created with soc_name and bus_id to allow
+creating debugfs directory for second PCI radio.
+
+with this Debugfs entries looks like,
+ # ls -l /sys/kernel/debug/ath11k/
+ ipq8074 hw2.0 qcn9000 hw1.0_0000:01:00.0 qcn9000 hw1.0_0001:01:00.0
+
+ # ls -l /sys/kernel/debug/ath11k/ipq8074 hw2.0/
+   mac0  mac1 simulate_fw_crash soc_dp_stats
+
+ # ls -l /sys/kernel/debug/ath11k/qcn9000 hw1.0_0000:01:00.0
+   mac0 simulate_fw_crash soc_dp_stats
+
+ # /sys/kernel/debug/ath11k/qcn9000 hw1.0_0001:01:00.0:
+   mac0  simulate_fw_crash soc_dp_stats
+
+Signed-off-by: Anilkumar Kolli <akolli@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/core.c     | 12 +++++++
+ drivers/net/wireless/ath/ath11k/core.h     |  1 -
+ drivers/net/wireless/ath/ath11k/debugfs.c  | 57 ++++++++++++++++++++++++------
+ drivers/net/wireless/ath/ath11k/debugfs.h  | 11 ++++++
+ 5 files changed, 72 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -2854,5 +2854,17 @@ err_sc_free:
+ }
+ EXPORT_SYMBOL(ath11k_core_alloc);
+ 
++int ath11k_init(void)
++{
++	return ath11k_debugfs_create();
++}
++module_init(ath11k_init);
++
++void ath11k_exit(void)
++{
++	ath11k_debugfs_destroy();
++}
++module_exit(ath11k_exit);
++
+ MODULE_DESCRIPTION("Core module for Qualcomm Atheros 802.11ax wireless LAN cards.");
+ MODULE_LICENSE("Dual BSD/GPL");
+--- a/drivers/net/wireless/ath/ath11k/debugfs.c
++++ b/drivers/net/wireless/ath/ath11k/debugfs.c
+@@ -19,6 +19,8 @@
+ #include "peer.h"
+ #include "hif.h"
+ 
++struct dentry *debugfs_ath11k;
++
+ static const char *htt_bp_umac_ring[HTT_SW_UMAC_RING_IDX_MAX] = {
+ 	"REO2SW1_RING",
+ 	"REO2SW2_RING",
+@@ -872,8 +874,6 @@ int ath11k_debugfs_pdev_create(struct at
+ 
+ void ath11k_debugfs_pdev_destroy(struct ath11k_base *ab)
+ {
+-	debugfs_remove_recursive(ab->debugfs_soc);
+-	ab->debugfs_soc = NULL;
+ }
+ 
+ int ath11k_debugfs_soc_create(struct ath11k_base *ab)
+@@ -926,6 +926,24 @@ void ath11k_debugfs_soc_destroy(struct a
+ }
+ EXPORT_SYMBOL(ath11k_debugfs_soc_destroy);
+ 
++int ath11k_debugfs_create(void)
++{
++	debugfs_ath11k = debugfs_create_dir("ath11k", NULL);
++	if (IS_ERR_OR_NULL(debugfs_ath11k)) {
++		if (IS_ERR(debugfs_ath11k))
++			return PTR_ERR(debugfs_ath11k);
++		return -ENOMEM;
++	}
++
++	return 0;
++}
++
++void ath11k_debugfs_destroy(void)
++{
++	debugfs_remove_recursive(debugfs_ath11k);
++	debugfs_ath11k = NULL;
++}
++
+ void ath11k_debugfs_fw_stats_init(struct ath11k *ar)
+ {
+ 	struct dentry *fwstats_dir = debugfs_create_dir("fw_stats",
+@@ -1556,6 +1574,9 @@ int ath11k_debugfs_register(struct ath11
+ 	char pdev_name[10];
+ 	char buf[100] = {};
+ 
++	if (!(IS_ERR_OR_NULL(ar->debug.debugfs_pdev)))
++		return 0;
++
+ 	snprintf(pdev_name, sizeof(pdev_name), "%s%u", "mac", ar->pdev_idx);
+ 
+ 	ar->debug.debugfs_pdev = debugfs_create_dir(pdev_name, ab->debugfs_soc);
+@@ -1633,6 +1654,9 @@ void ath11k_debugfs_unregister(struct at
+ 		kfree(dbr_debug);
+ 		ar->debug.dbr_debug[i] = NULL;
+ 	}
++
++	debugfs_remove_recursive(ar->debug.debugfs_pdev);
++	ar->debug.debugfs_pdev = NULL;
+ }
+ 
+ static ssize_t ath11k_write_twt_add_dialog(struct file *file,
+--- a/drivers/net/wireless/ath/ath11k/debugfs.h
++++ b/drivers/net/wireless/ath/ath11k/debugfs.h
+@@ -264,6 +264,8 @@ struct ath11k_fw_dbglog {
+ };
+ 
+ #ifdef CPTCFG_ATH11K_DEBUGFS
++int ath11k_debugfs_create(void);
++void ath11k_debugfs_destroy(void);
+ int ath11k_debugfs_soc_create(struct ath11k_base *ab);
+ void ath11k_debugfs_soc_destroy(struct ath11k_base *ab);
+ int ath11k_debugfs_pdev_create(struct ath11k_base *ab);
+@@ -313,6 +315,15 @@ void ath11k_debugfs_add_dbring_entry(str
+ 				     struct hal_srng *srng);
+ 
+ #else
++static inline int ath11k_debugfs_create(void)
++{
++	return 0;
++}
++
++static inline void ath11k_debugfs_destroy(void)
++{
++}
++
+ static inline int ath11k_debugfs_soc_create(struct ath11k_base *ab)
+ {
+ 	return 0;

@@ -1,0 +1,335 @@
+From 183bd68b1fe1d5ad584355a7449eea32da79334a Mon Sep 17 00:00:00 2001
+From: Alvin Šipraga <alsi@bang-olufsen.dk>
+Date: Sat, 6 Jun 2026 05:29:32 -0300
+Subject: net: dsa: realtek: rtl8365mb: add port_bridge_{join,leave}
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Implement hardware offloading of bridge functionality. This is achieved
+by using the per-port isolation registers, which contain a forwarding
+port mask. The switch will refuse to forward packets ingressed on a
+given port to a port which is not in its forwarding mask.
+
+For each bridge that is offloaded, use the DSA-provided bridge number
+for the Extended Filtering ID (EFID). When using Independent VLAN
+Learning (IVL), the forwarding database is keyed with the tuple
+{VID, MAC, EFID}. There are 8 EFIDs available (0~7), but we reserve the
+default EFID 0 for standalone ports where learning is disabled. This
+fits nicely because DSA indexes the bridge number starting from 1.
+
+Because of the limited number of EFIDs, we have to set the
+max_num_bridges property of our switch to 7: we can't offload more than
+that or we will fail to offer IVL as at least two bridges would end up
+having to share an EFID.
+
+All ports start isolated, forwarding exclusively to CPU ports, and
+with VLAN transparent, ignoring VLAN membership. Once a member in a
+bridge, the port isolation is expanded to include the bridge members.
+When that bridge enables VLAN filtering, the VLAN transparent feature is
+disabled, letting the switch filter based on VLAN setup.
+
+Signed-off-by: Alvin Šipraga <alsi@bang-olufsen.dk>
+Reviewed-by: Linus Walleij <linusw@kernel.org>
+Reviewed-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Co-developed-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Signed-off-by: Luiz Angelo Daros de Luca <luizluca@gmail.com>
+Link: https://patch.msgid.link/20260606-realtek_forward-v13-8-b9e409687cbe@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/realtek/realtek.h        |   7 ++
+ drivers/net/dsa/realtek/rtl8365mb_main.c |  47 ++++++++-
+ drivers/net/dsa/realtek/rtl83xx.c        | 169 +++++++++++++++++++++++++++++++
+ drivers/net/dsa/realtek/rtl83xx.h        |   7 ++
+ 4 files changed, 229 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/dsa/realtek/realtek.h
++++ b/drivers/net/dsa/realtek/realtek.h
+@@ -130,6 +130,13 @@ struct realtek_ops {
+ 	int	(*enable_vlan)(struct realtek_priv *priv, bool enable);
+ 	int	(*enable_vlan4k)(struct realtek_priv *priv, bool enable);
+ 	int	(*enable_port)(struct realtek_priv *priv, int port, bool enable);
++	int	(*port_add_isolation)(struct realtek_priv *priv, int port,
++				      u32 mask);
++	int	(*port_remove_isolation)(struct realtek_priv *priv, int port,
++					 u32 mask);
++	int	(*port_set_efid)(struct realtek_priv *priv, int port, u32 efid);
++	int	(*port_set_learning)(struct realtek_priv *priv, int port,
++				     bool enable);
+ 	int	(*l2_add_uc)(struct realtek_priv *priv, int port,
+ 			     const unsigned char addr[ETH_ALEN],
+ 			     u16 efid, u16 vid);
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -1568,10 +1568,44 @@ static int rtl8365mb_port_set_learning(s
+ 			    enable ? RTL8365MB_LEARN_LIMIT_MAX : 0);
+ }
+ 
++static int rtl8365mb_port_set_efid(struct realtek_priv *priv, int port,
++				   u32 efid)
++{
++	return regmap_update_bits(priv->map, RTL8365MB_PORT_EFID_REG(port),
++				  RTL8365MB_PORT_EFID_MASK(port),
++				  efid << RTL8365MB_PORT_EFID_OFFSET(port));
++}
++
++/* Port isolation manipulation functions.
++ *
++ * The port isolation register controls the forwarding mask of a given
++ * port. The switch will not forward packets ingressed on a given port
++ * to ports which are not enabled in its forwarding mask.
++ *
++ * The port forwarding mask has the highest priority in forwarding
++ * decisions. The only exception to this rule is when the switch
++ * receives a packet on its CPU port with ALLOW=0. In that case the TX
++ * field of the CPU tag will override the forwarding port mask.
++ */
+ static int rtl8365mb_port_set_isolation(struct realtek_priv *priv, int port,
+ 					u32 mask)
+ {
+-	return regmap_write(priv->map, RTL8365MB_PORT_ISOLATION_REG(port), mask);
++	return regmap_write(priv->map, RTL8365MB_PORT_ISOLATION_REG(port),
++			    mask);
++}
++
++static int rtl8365mb_port_add_isolation(struct realtek_priv *priv, int port,
++					u32 mask)
++{
++	return regmap_update_bits(priv->map, RTL8365MB_PORT_ISOLATION_REG(port),
++				  mask, mask);
++}
++
++static int rtl8365mb_port_remove_isolation(struct realtek_priv *priv, int port,
++					   u32 mask)
++{
++	return regmap_update_bits(priv->map, RTL8365MB_PORT_ISOLATION_REG(port),
++				  mask, 0);
+ }
+ 
+ static int rtl8365mb_mib_counter_read(struct realtek_priv *priv, int port,
+@@ -2378,6 +2412,11 @@ static int rtl8365mb_setup(struct dsa_sw
+ 		if (ret)
+ 			goto out_teardown_irq;
+ 
++		/* Set the default EFID 0 for standalone mode */
++		ret = rtl8365mb_port_set_efid(priv, dp->index, 0);
++		if (ret)
++			goto out_teardown_irq;
++
+ 		/* Disable learning */
+ 		ret = rtl8365mb_port_set_learning(priv, dp->index, false);
+ 		if (ret)
+@@ -2567,6 +2606,8 @@ static const struct dsa_switch_ops rtl83
+ 	.setup = rtl8365mb_setup,
+ 	.teardown = rtl8365mb_teardown,
+ 	.phylink_get_caps = rtl8365mb_phylink_get_caps,
++	.port_bridge_join = rtl83xx_port_bridge_join,
++	.port_bridge_leave = rtl83xx_port_bridge_leave,
+ 	.port_stp_state_set = rtl8365mb_port_stp_state_set,
+ 	.port_fast_age = rtl83xx_port_fast_age,
+ 	.port_fdb_add = rtl83xx_port_fdb_add,
+@@ -2590,6 +2631,10 @@ static const struct dsa_switch_ops rtl83
+ 
+ static const struct realtek_ops rtl8365mb_ops = {
+ 	.detect = rtl8365mb_detect,
++	.port_add_isolation = rtl8365mb_port_add_isolation,
++	.port_remove_isolation = rtl8365mb_port_remove_isolation,
++	.port_set_efid = rtl8365mb_port_set_efid,
++	.port_set_learning = rtl8365mb_port_set_learning,
+ 	.l2_add_uc = rtl8365mb_l2_add_uc,
+ 	.l2_del_uc = rtl8365mb_l2_del_uc,
+ 	.l2_get_next_uc = rtl8365mb_l2_get_next_uc,
+--- a/drivers/net/dsa/realtek/rtl83xx.c
++++ b/drivers/net/dsa/realtek/rtl83xx.c
+@@ -329,6 +329,175 @@ void rtl83xx_reset_deassert(struct realt
+ }
+ 
+ /**
++ * rtl83xx_port_bridge_join() - join a port to a bridge
++ * @ds: DSA switch instance
++ * @port: port index
++ * @bridge: bridge being joined
++ * @tx_forward_offload: if the switch can offload TX forwarding
++ * @extack: netlink extended ack for reporting errors
++ *
++ * This function handles joining a port to a bridge. It updates the port
++ * isolation masks and EFID.
++ *
++ * Context: Can sleep.
++ * Return: 0 on success, negative value for failure.
++ */
++int rtl83xx_port_bridge_join(struct dsa_switch *ds, int port,
++			     struct dsa_bridge bridge,
++			     bool *tx_forward_offload,
++			     struct netlink_ext_ack *extack)
++{
++	struct realtek_priv *priv = ds->priv;
++	struct dsa_port *dp;
++	u32 mask = 0;
++	int ret;
++
++	if (!priv->ops->port_add_isolation)
++		return -EOPNOTSUPP;
++
++	if (!priv->ops->port_set_learning)
++		return -EOPNOTSUPP;
++
++	dev_dbg(priv->dev, "bridge %d join port %d\n", bridge.num, port);
++
++	/* Add this port to the isolation group of every other port
++	 * offloading this bridge.
++	 */
++	dsa_switch_for_each_user_port(dp, ds) {
++		/* Handle this port after */
++		if (dp->index == port)
++			continue;
++
++		/* Skip ports that are not in this bridge */
++		if (!dsa_port_offloads_bridge(dp, &bridge))
++			continue;
++
++		ret = priv->ops->port_add_isolation(priv, dp->index, BIT(port));
++		if (ret)
++			goto undo_isolation;
++
++		mask |= BIT(dp->index);
++	}
++
++	/* If we support cascade switches, it should also include the
++	 * downstream DSA ports to the isolation group.
++	 */
++
++	/* Add those ports to the isolation group of this port */
++	ret = priv->ops->port_add_isolation(priv, port, mask);
++	if (ret)
++		goto undo_isolation;
++
++	/* Use the bridge number as the EFID for this port */
++	if (priv->ops->port_set_efid) {
++		ret = priv->ops->port_set_efid(priv, port, bridge.num);
++		if (ret)
++			goto undo_self_isolation;
++	}
++
++	ret = priv->ops->port_set_learning(priv, port, true);
++	if (ret)
++		goto undo_efid;
++
++	return 0;
++
++undo_efid:
++	if (priv->ops->port_set_efid)
++		priv->ops->port_set_efid(priv, port, 0);
++
++undo_self_isolation:
++	priv->ops->port_remove_isolation(priv, port, mask);
++
++undo_isolation:
++	dsa_switch_for_each_port(dp, ds) {
++		if (mask & BIT(dp->index))
++			priv->ops->port_remove_isolation(priv, dp->index,
++							 BIT(port));
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL_NS_GPL(rtl83xx_port_bridge_join, REALTEK_DSA);
++
++/**
++ * rtl83xx_port_bridge_leave() - leave a bridge
++ * @ds: DSA switch instance
++ * @port: port index
++ * @bridge: bridge being left
++ *
++ * This function handles removing a port from a bridge. It updates the port
++ * isolation masks and EFID.
++ *
++ * Context: Can sleep.
++ * Return: nothing
++ */
++void rtl83xx_port_bridge_leave(struct dsa_switch *ds, int port,
++			       struct dsa_bridge bridge)
++{
++	struct realtek_priv *priv = ds->priv;
++	struct dsa_port *dp;
++	u32 mask = 0;
++	int ret;
++
++	if (!priv->ops->port_remove_isolation)
++		return;
++
++	if (!priv->ops->port_set_learning)
++		return;
++
++	dev_dbg(priv->dev, "bridge %d leave port %d\n", bridge.num, port);
++
++	/* Remove this port from the isolation group of every other
++	 * port offloading this bridge.
++	 */
++	dsa_switch_for_each_user_port(dp, ds) {
++		/* Handle this port after */
++		if (dp->index == port)
++			continue;
++
++		/* Skip ports that are not in this bridge */
++		if (!dsa_port_offloads_bridge(dp, &bridge))
++			continue;
++
++		ret = priv->ops->port_remove_isolation(priv, dp->index,
++						       BIT(port));
++		if (ret)
++			dev_err(priv->dev,
++				"failed to isolate port %d from port %d: %pe\n",
++				port, dp->index, ERR_PTR(ret));
++
++		mask |= BIT(dp->index);
++	}
++
++	/* If we support cascade switches, it should also exclude the
++	 * downstream DSA ports from the isolation group.
++	 */
++
++	ret = priv->ops->port_set_learning(priv, port, false);
++	if (ret)
++		dev_err(priv->dev,
++			"failed to disable learning on port %d: %pe\n",
++			port, ERR_PTR(ret));
++
++	/* Remove those ports from the isolation group of this port */
++	ret = priv->ops->port_remove_isolation(priv, port, mask);
++	if (ret)
++		dev_err(priv->dev,
++			"failed to remove isolation mask from port %d: %pe\n",
++			port, ERR_PTR(ret));
++
++	/* Revert to the default EFID 0 for standalone mode */
++	if (priv->ops->port_set_efid) {
++		ret = priv->ops->port_set_efid(priv, port, 0);
++		if (ret)
++			dev_err(priv->dev,
++				"failed to clear EFID on port %d: %pe\n",
++				port, ERR_PTR(ret));
++	}
++}
++EXPORT_SYMBOL_NS_GPL(rtl83xx_port_bridge_leave, REALTEK_DSA);
++
++/**
+  * rtl83xx_port_fast_age() - flush dynamic FDB entries learned on a port
+  * @ds: DSA switch instance
+  * @port: port index
+--- a/drivers/net/dsa/realtek/rtl83xx.h
++++ b/drivers/net/dsa/realtek/rtl83xx.h
+@@ -21,6 +21,13 @@ void rtl83xx_remove(struct realtek_priv
+ void rtl83xx_reset_assert(struct realtek_priv *priv);
+ void rtl83xx_reset_deassert(struct realtek_priv *priv);
+ 
++int rtl83xx_port_bridge_join(struct dsa_switch *ds, int port,
++			     struct dsa_bridge bridge,
++			     bool *tx_forward_offload,
++			     struct netlink_ext_ack *extack);
++void rtl83xx_port_bridge_leave(struct dsa_switch *ds, int port,
++			       struct dsa_bridge bridge);
++
+ void rtl83xx_port_fast_age(struct dsa_switch *ds, int port);
+ int rtl83xx_port_fdb_add(struct dsa_switch *ds, int port,
+ 			 const unsigned char *addr, u16 vid,

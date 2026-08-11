@@ -1,0 +1,787 @@
+From 83c2a029a5300b2aaeaa9855011668b407d142c2 Mon Sep 17 00:00:00 2001
+From: Sathishkumar Muruganandam <murugana@codeaurora.org>
+Date: Fri, 20 Nov 2020 11:41:11 +0530
+Subject: [PATCH 2/3] ath11k: add support for ext vdev in NSS for AP_VLAN vif
+ handling
+
+- add ext vdev NSS API callbacks required for AP_VLAN vif
+- invoke ieee80211_rx_nss_notify_4addr on WDS Rx path for 4addr frames until
+  ext vdev interface is UP
+- do ext vdev down of all AP_VLAN vifs upon vdev down of associated AP vif
+
+Signed-off-by: Sathishkumar Muruganandam <murugana@codeaurora.org>
+---
+ drivers/net/wireless/ath/ath11k/nss.c | 452 ++++++++++++++++++++++++++++++++--
+ drivers/net/wireless/ath/ath11k/nss.h |  57 +++++
+ 2 files changed, 495 insertions(+), 14 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -323,6 +323,10 @@ void ath11k_nss_wifili_event_receive(str
+ 		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili wds peer del event received %d response %d error %d\n",
+ 			   msg_type, response, error);
+ 		break;
++	case NSS_WIFILI_PEER_4ADDR_EVENT_MSG:
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "nss wifili peer 4addr event received %d response %d error %d\n",
++			   msg_type, response, error);
++		break;
+ 	default:
+ 		ath11k_dbg(ab, ATH11K_DBG_NSS, "unhandled event %d\n", msg_type);
+ 		break;
+@@ -556,8 +560,9 @@ static int ath11k_nss_undecap_nwifi(stru
+ 	return 0;
+ }
+ 
+-static void ath11k_nss_wds_type_rx(struct ath11k *ar, u8* src_mac, u8 is_sa_valid,
+-				   u8 addr4_valid, u16 peer_id)
++static void ath11k_nss_wds_type_rx(struct ath11k *ar, struct net_device *dev,
++				   u8* src_mac, u8 is_sa_valid, u8 addr4_valid,
++				   u16 peer_id, bool *drop)
+ {
+ 	struct ath11k_base *ab = ar->ab;
+ 	struct ath11k_ast_entry *ast_entry = NULL;
+@@ -579,19 +584,22 @@ static void ath11k_nss_wds_type_rx(struc
+ 		if (!is_sa_valid) {
+ 			ath11k_peer_add_ast(ar, ta_peer, src_mac,
+ 					    ATH11K_AST_TYPE_WDS);
+-			ath11k_nss_add_wds_peer(ar, ta_peer,
+-						src_mac, ATH11K_AST_TYPE_WDS);
++			if (!ta_peer->nss.ext_vdev_up)
++				ieee80211_rx_nss_notify_4addr(dev, ta_peer->addr);
+ 		} else {
+ 			if (!ast_entry) {
+ 				ath11k_peer_add_ast(ar, ta_peer, src_mac,
+ 						    ATH11K_AST_TYPE_WDS);
+-				ath11k_nss_add_wds_peer(ar, ta_peer, src_mac,
+-							ATH11K_AST_TYPE_WDS);
+-			} else {
++				if (!ta_peer->nss.ext_vdev_up)
++					ieee80211_rx_nss_notify_4addr(dev, ta_peer->addr);
++			} else if (ast_entry->type == ATH11K_AST_TYPE_WDS) {
+ 				ath11k_peer_update_ast(ar, ta_peer, ast_entry);
+ 				ath11k_nss_update_wds_peer(ar, ta_peer, src_mac);
+ 			}
+ 		}
++
++		if (!ta_peer->nss.ext_vdev_up)
++			*drop = true;
+ 	}
+ 
+ 	spin_unlock_bh(&ab->base_lock);
+@@ -635,7 +643,8 @@ static void ath11k_nss_mec_handler(struc
+ 
+ static void ath11k_nss_vdev_spl_receive_ext_wdsdata(struct ath11k_vif *arvif,
+ 						    struct sk_buff *skb,
+-						    struct nss_wifi_vdev_wds_per_packet_metadata *wds_metadata)
++						    struct nss_wifi_vdev_wds_per_packet_metadata *wds_metadata,
++						    bool *drop)
+ {
+ 	struct ath11k *ar = arvif->ar;
+ 	struct ath11k_base *ab = ar->ab;
+@@ -656,8 +665,8 @@ static void ath11k_nss_vdev_spl_receive_
+ 
+ 	switch (wds_type) {
+ 		case NSS_WIFI_VDEV_WDS_TYPE_RX:
+-			ath11k_nss_wds_type_rx(ar, src_mac, is_sa_valid,
+-					       addr4_valid, peer_id);
++			ath11k_nss_wds_type_rx(ar, skb->dev, src_mac, is_sa_valid,
++					       addr4_valid, peer_id, drop);
+ 			break;
+ 		case NSS_WIFI_VDEV_WDS_TYPE_MEC:
+ 			ath11k_nss_mec_handler(ar, (u8 *)(skb->data));
+@@ -724,6 +733,7 @@ ath11k_nss_vdev_special_data_receive(str
+ 	struct ieee80211_vif *vif;
+ 	struct ath11k_vif *arvif;
+ 	struct ath11k_base *ab;
++	bool drop = false;
+ 	bool eth_decap = false;
+ 	int data_offs = 0;
+ 	int ret = 0;
+@@ -779,10 +789,11 @@ ath11k_nss_vdev_special_data_receive(str
+ 	    NSS_WIFI_VDEV_EXT_DATA_PKT_TYPE_WDS_LEARN) {
+ 		wds_metadata = &wifi_metadata->metadata.wds_metadata;
+ 		ath11k_nss_vdev_spl_receive_ext_wdsdata(arvif, skb,
+-							wds_metadata);
++							wds_metadata, &drop);
+ 	}
+ 
+-	ath11k_nss_deliver_rx(arvif->vif, skb, eth_decap, data_offs, napi);
++	if (!drop)
++		ath11k_nss_deliver_rx(arvif->vif, skb, eth_decap, data_offs, napi);
+ }
+ 
+ static void
+@@ -845,6 +856,68 @@ ath11k_nss_vdev_data_receive(struct net_
+ 	ath11k_nss_deliver_rx(arvif->vif, skb, eth_decap, data_offs, napi);
+ }
+ 
++static void
++ath11k_nss_ext_vdev_special_data_receive(struct net_device *dev,
++					 struct sk_buff *skb,
++					 __attribute__((unused)) struct napi_struct *napi)
++{
++	dev_kfree_skb_any(skb);
++}
++
++static void
++ath11k_nss_ext_vdev_data_receive(struct net_device *dev, struct sk_buff *skb,
++				 __attribute__((unused)) struct napi_struct *napi)
++{
++	struct wireless_dev *wdev;
++	struct ieee80211_vif *vif;
++	struct ath11k_vif *arvif;
++	struct ath11k_base *ab;
++	bool eth_decap = false;
++	int data_offs = 0;
++	int ret;
++
++	if (!dev) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	wdev = dev->ieee80211_ptr;
++	if (!wdev) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	vif = wdev_to_ieee80211_vif(wdev);
++	if (!vif) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	arvif = (struct ath11k_vif *)vif->drv_priv;
++	if (!arvif) {
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	ab = arvif->ar->ab;
++
++	skb->dev = dev;
++
++	/* log the original skb received from nss */
++	ath11k_dbg_dump(ab, ATH11K_DBG_DP_RX, "", "dp rx msdu from nss ext : ",
++			skb->data, skb->len);
++
++	ret = ath11k_nss_undecap(arvif, skb, &data_offs, &eth_decap);
++	if (ret) {
++		ath11k_warn(ab, "error in nss ext rx undecap, type %d err %d\n",
++			    arvif->nss.decap, ret);
++		dev_kfree_skb_any(skb);
++		return;
++	}
++
++	ath11k_nss_deliver_rx(arvif->vif, skb, eth_decap, data_offs, napi);
++}
++
+ int ath11k_nss_tx(struct ath11k_vif *arvif, struct sk_buff *skb)
+ {
+ 	struct ath11k *ar = arvif->ar;
+@@ -869,10 +942,16 @@ int ath11k_nss_tx(struct ath11k_vif *arv
+ 		ath11k_nss_tx_encap_nwifi(skb);
+ 
+ send:
+-	ath11k_dbg_dump(ar->ab, ATH11K_DBG_DP_TX, "", "nss tx msdu: ",
+-			skb->data, skb->len);
+-
+-	status = nss_wifi_vdev_tx_buf(arvif->ar->nss.ctx, skb, arvif->nss.if_num);
++	ath11k_dbg_dump(ar->ab, ATH11K_DBG_DP_TX,
++			arvif->vif->type == NL80211_IFTYPE_AP_VLAN ? "ext vdev" : "",
++			"nss tx msdu: ", skb->data, skb->len);
++
++	if (arvif->vif->type == NL80211_IFTYPE_AP_VLAN)
++		status = nss_wifi_ext_vdev_tx_buf(arvif->nss.ctx, skb,
++						  arvif->nss.if_num);
++	else
++		status = nss_wifi_vdev_tx_buf(arvif->ar->nss.ctx, skb,
++					      arvif->nss.if_num);
+ 
+ 	if (status != NSS_TX_SUCCESS) {
+ 		ath11k_dbg(ar->ab, (ATH11K_DBG_NSS | ATH11K_DBG_DP_TX),
+@@ -1214,6 +1293,7 @@ int ath11k_nss_vdev_up(struct ath11k_vif
+ 	struct nss_wifi_vdev_msg *vdev_msg = NULL;
+ 	struct nss_wifi_vdev_enable_msg *vdev_en;
+ 	struct ath11k *ar = arvif->ar;
++	struct ath11k_vif *ap_vlan_arvif, *tmp;
+ 	nss_tx_status_t status;
+ 	int ret = 0;
+ 
+@@ -1245,6 +1325,12 @@ int ath11k_nss_vdev_up(struct ath11k_vif
+ 	}
+ 
+ 	ath11k_dbg(ar->ab, ATH11K_DBG_NSS, "nss vdev up tx msg success\n");
++
++	if (arvif->vif->type == NL80211_IFTYPE_AP)
++		list_for_each_entry_safe(ap_vlan_arvif, tmp,
++					 &arvif->ap_vlan_arvifs, list)
++			if (ap_vlan_arvif->nss.added)
++				ath11k_nss_ext_vdev_up(ap_vlan_arvif);
+ free:
+ 	kfree(vdev_msg);
+ 	return ret;
+@@ -1254,6 +1340,7 @@ int ath11k_nss_vdev_down(struct ath11k_v
+ {
+ 	struct nss_wifi_vdev_msg *vdev_msg = NULL;
+ 	struct ath11k *ar = arvif->ar;
++	struct ath11k_vif *ap_vlan_arvif, *tmp;
+ 	nss_tx_status_t status;
+ 	int ret = 0;
+ 
+@@ -1281,11 +1368,365 @@ int ath11k_nss_vdev_down(struct ath11k_v
+ 	}
+ 
+ 	ath11k_dbg(ar->ab, ATH11K_DBG_NSS, "nss vdev down tx msg success\n");
++
++	if (arvif->vif->type == NL80211_IFTYPE_AP)
++		list_for_each_entry_safe(ap_vlan_arvif, tmp,
++					 &arvif->ap_vlan_arvifs, list)
++			ath11k_nss_ext_vdev_down(ap_vlan_arvif);
+ free:
+ 	kfree(vdev_msg);
+ 	return ret;
+ }
+ 
++int ath11k_nss_ext_vdev_cfg_wds_peer(struct ath11k_vif *arvif,
++				     u8 *wds_addr, u32 wds_peer_id)
++{
++	struct ath11k *ar = arvif->ar;
++	struct nss_wifi_ext_vdev_msg *ext_vdev_msg = NULL;
++	struct nss_wifi_ext_vdev_wds_msg *cfg_wds_msg = NULL;
++	nss_tx_status_t status;
++	int ret;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	ext_vdev_msg = kzalloc(sizeof(struct nss_wifi_ext_vdev_msg), GFP_ATOMIC);
++	if (!ext_vdev_msg)
++		return -ENOMEM;
++
++	cfg_wds_msg = &ext_vdev_msg->msg.wmsg;
++	cfg_wds_msg->wds_peer_id = wds_peer_id;
++	ether_addr_copy((u8 *)cfg_wds_msg->mac_addr, wds_addr);
++
++	nss_wifi_ext_vdev_msg_init(ext_vdev_msg, arvif->nss.if_num,
++				   NSS_WIFI_EXT_VDEV_MSG_CONFIGURE_WDS,
++				   sizeof(struct nss_wifi_ext_vdev_wds_msg),
++				   NULL, arvif);
++
++	status = nss_wifi_ext_vdev_tx_msg_sync(arvif->nss.ctx, ext_vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "failed to configure wds peer nss_err:%d\n",
++			    status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ret = 0;
++free:
++	kfree(ext_vdev_msg);
++
++	return ret;
++}
++
++int ath11k_nss_ext_vdev_wds_4addr_allow(struct ath11k_vif *arvif,
++					u32 wds_peer_id)
++{
++	struct ath11k *ar = arvif->ar;
++	struct nss_wifili_peer_wds_4addr_allow_msg *cfg_4addr_msg = NULL;
++	nss_wifili_msg_callback_t msg_cb;
++	struct nss_wifili_msg *wlmsg;
++	nss_tx_status_t status;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	wlmsg = kzalloc(sizeof(struct nss_wifili_msg), GFP_ATOMIC);
++	if (!wlmsg)
++		return -ENOMEM;
++
++	cfg_4addr_msg = &wlmsg->msg.wpswm;
++	cfg_4addr_msg->peer_id = wds_peer_id;
++	cfg_4addr_msg->if_num = arvif->nss.if_num;
++	cfg_4addr_msg->enable = true;
++
++	msg_cb = (nss_wifili_msg_callback_t)ath11k_nss_wifili_event_receive;
++
++	nss_cmn_msg_init(&wlmsg->cm, ar->ab->nss.if_num,
++			 NSS_WIFILI_PEER_4ADDR_EVENT_MSG,
++			 sizeof(struct nss_wifili_peer_wds_4addr_allow_msg),
++			 msg_cb, NULL);
++
++	status = nss_wifili_tx_msg(ar->nss.ctx, wlmsg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "nss wds 4addr allow if_num %d, peer_id %d cfg fail: %d\n",
++			    arvif->nss.if_num, wds_peer_id, status);
++		goto free;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_NSS_WDS, "nss wds 4addr allow if_num %d, peer_id %d cfg complete\n",
++		   arvif->nss.if_num, wds_peer_id);
++free:
++	kfree(wlmsg);
++	return status;
++}
++
++int ath11k_nss_ext_vdev_configure(struct ath11k_vif *arvif)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ath11k_vif *ap_vif = arvif->nss.ap_vif;
++	struct nss_wifi_ext_vdev_msg *ext_vdev_msg = NULL;
++	struct nss_wifi_ext_vdev_configure_if_msg *ext_vdev_cfg = NULL;
++	nss_tx_status_t status;
++	int ret;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	ext_vdev_msg = kzalloc(sizeof(struct nss_wifi_ext_vdev_msg), GFP_ATOMIC);
++	if (!ext_vdev_msg)
++		return -ENOMEM;
++
++	ext_vdev_cfg = &ext_vdev_msg->msg.cmsg;
++
++	ext_vdev_cfg->radio_ifnum = ar->nss.if_num;
++	ext_vdev_cfg->pvap_ifnum = ap_vif->nss.if_num;
++
++	ether_addr_copy(ext_vdev_cfg->mac_addr, arvif->vif->addr);
++
++	nss_wifi_ext_vdev_msg_init(ext_vdev_msg, arvif->nss.if_num,
++				   NSS_WIFI_EXT_VDEV_MSG_CONFIGURE_IF,
++				   sizeof(struct nss_wifi_ext_vdev_configure_if_msg),
++				   NULL, arvif);
++
++	status = nss_wifi_ext_vdev_tx_msg_sync(arvif->ar->nss.ctx, ext_vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "failed to configure nss ext vdev nss_err:%d\n",
++			    status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ret = 0;
++free:
++	kfree(ext_vdev_msg);
++
++	return ret;
++}
++
++void ath11k_nss_ext_vdev_unregister(struct ath11k_vif *arvif)
++{
++	struct ath11k_base *ab = arvif->ar->ab;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return;
++
++	nss_wifi_ext_vdev_unregister_if(arvif->nss.if_num);
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "unregistered nss vdev %d \n",
++		   arvif->nss.if_num);
++}
++
++static int ath11k_nss_ext_vdev_register(struct ath11k_vif *arvif,
++					struct net_device *netdev)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ath11k_base *ab = ar->ab;
++	nss_tx_status_t status;
++	enum nss_dynamic_interface_type di_type;
++	u32 features = 0;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN || arvif->nss.ctx)
++		return -EINVAL;
++
++	di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS;
++
++	arvif->nss.ctx = nss_wifi_ext_vdev_register_if(arvif->nss.if_num,
++						       ath11k_nss_ext_vdev_data_receive,
++						       ath11k_nss_ext_vdev_special_data_receive,
++						       NULL, netdev, features,
++						       arvif);
++
++	if (!arvif->nss.ctx) {
++		ath11k_warn(ab, "failed to register nss vdev if_num %d nss_err:%d\n",
++			    arvif->nss.if_num, status);
++		return -EINVAL;
++	}
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS, "registered nss ext vdev if_num %d\n",
++		   arvif->nss.if_num);
++	return 0;
++}
++
++static void ath11k_nss_ext_vdev_free(struct ath11k_vif *arvif)
++{
++	struct ath11k_base *ab = arvif->ar->ab;
++	nss_tx_status_t status;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return;
++
++	status = nss_dynamic_interface_dealloc_node(
++					arvif->nss.if_num,
++					NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS);
++	if (status != NSS_TX_SUCCESS)
++		ath11k_warn(ab, "failed to free nss ext vdev err:%d\n",
++			    status);
++	else
++		ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++			   "nss ext vdev interface deallocated\n");
++}
++
++static int ath11k_nss_ext_vdev_alloc(struct ath11k_vif *arvif)
++{
++	struct ath11k_base *ab = arvif->ar->ab;
++	enum nss_dynamic_interface_type di_type;
++	int if_num;
++
++	di_type = NSS_DYNAMIC_INTERFACE_TYPE_WIFI_EXT_VDEV_WDS;
++
++	if_num = nss_dynamic_interface_alloc_node(di_type);
++	if (if_num < 0) {
++		ath11k_warn(ab, "failed to allocate nss ext vdev\n");
++		return -EINVAL;
++	}
++
++	arvif->nss.if_num = if_num;
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss ext vdev interface %pM allocated if_num %d\n",
++		   arvif->vif->addr, if_num);
++
++	return 0;
++}
++
++int ath11k_nss_ext_vdev_create(struct ath11k_vif *arvif)
++{
++	struct ath11k *ar = arvif->ar;
++	struct ath11k_base *ab = ar->ab;
++	struct wireless_dev *wdev;
++	int ret;
++
++	if (!ab->nss.enabled)
++		return 0;
++
++	if (arvif->nss.created)
++		return 0;
++
++	wdev = ieee80211_vif_to_wdev_relaxed(arvif->vif);
++	if (!wdev) {
++		ath11k_warn(ab, "ath11k_nss: ext wdev is null\n");
++		return -EINVAL;
++	}
++
++	if (!wdev->netdev) {
++		ath11k_warn(ab, "ath11k_nss: ext netdev is null\n");
++		return -EINVAL;
++	}
++
++	ret = ath11k_nss_ext_vdev_alloc(arvif);
++	if (ret)
++		return ret;
++
++	ret = ath11k_nss_ext_vdev_register(arvif, wdev->netdev);
++	if (ret)
++		goto free_ext_vdev;
++
++	arvif->nss.created = true;
++
++	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
++		   "nss ext vdev interface created ctx %pK, ifnum %d\n",
++		   arvif->nss.ctx, arvif->nss.if_num);
++
++	return ret;
++
++free_ext_vdev:
++	ath11k_nss_ext_vdev_free(arvif);
++
++	return ret;
++}
++
++void ath11k_nss_ext_vdev_delete(struct ath11k_vif *arvif)
++{
++	if (!arvif->ar->ab->nss.enabled)
++		return;
++
++	if (!arvif->nss.created)
++		return;
++
++	ath11k_dbg(arvif->ar->ab, ATH11K_DBG_NSS_WDS,
++		   "nss ext vdev interface delete ctx %pK, ifnum %d\n",
++		   arvif->nss.ctx, arvif->nss.if_num);
++
++	if (arvif->nss.ext_vdev_up)
++		ath11k_nss_ext_vdev_down(arvif);
++
++	ath11k_nss_ext_vdev_unregister(arvif);
++
++	ath11k_nss_ext_vdev_free(arvif);
++
++	arvif->nss.created = false;
++}
++
++int ath11k_nss_ext_vdev_up(struct ath11k_vif *arvif)
++{
++	struct nss_wifi_ext_vdev_msg *ext_vdev_msg = NULL;
++	struct ath11k *ar = arvif->ar;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	if (!ar->ab->nss.enabled)
++		return 0;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	if (arvif->nss.ext_vdev_up)
++		return 0;
++
++	ext_vdev_msg = kzalloc(sizeof(struct nss_wifi_vdev_msg), GFP_ATOMIC);
++	if (!ext_vdev_msg)
++		return -ENOMEM;
++
++	nss_wifi_ext_vdev_msg_init(ext_vdev_msg, arvif->nss.if_num, NSS_IF_OPEN,
++			           sizeof(struct nss_if_open), NULL, arvif);
++
++	status = nss_wifi_ext_vdev_tx_msg_sync(arvif->nss.ctx, ext_vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "nss ext vdev up tx msg error %d\n", status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_NSS_WDS, "nss ext vdev up tx msg success\n");
++	arvif->nss.ext_vdev_up = true;
++free:
++	kfree(ext_vdev_msg);
++	return ret;
++}
++
++int ath11k_nss_ext_vdev_down(struct ath11k_vif *arvif)
++{
++	struct nss_wifi_ext_vdev_msg *ext_vdev_msg = NULL;
++	struct ath11k *ar = arvif->ar;
++	nss_tx_status_t status;
++	int ret = 0;
++
++	if (!ar->ab->nss.enabled)
++		return 0;
++
++	if (arvif->vif->type != NL80211_IFTYPE_AP_VLAN)
++		return -EINVAL;
++
++	ext_vdev_msg = kzalloc(sizeof(struct nss_wifi_ext_vdev_msg), GFP_ATOMIC);
++	if (!ext_vdev_msg)
++		return -ENOMEM;
++
++	nss_wifi_ext_vdev_msg_init(ext_vdev_msg, arvif->nss.if_num, NSS_IF_CLOSE,
++			           sizeof(struct nss_if_close), NULL, arvif);
++
++	status = nss_wifi_ext_vdev_tx_msg_sync(arvif->nss.ctx, ext_vdev_msg);
++	if (status != NSS_TX_SUCCESS) {
++		ath11k_warn(ar->ab, "nss ext vdev down tx msg error %d\n", status);
++		ret = -EINVAL;
++		goto free;
++	}
++
++	ath11k_dbg(ar->ab, ATH11K_DBG_NSS_WDS, "nss ext vdev down tx msg success\n");
++
++	arvif->nss.ext_vdev_up = false;
++free:
++	kfree(ext_vdev_msg);
++	return ret;
++}
++
+ /*----------------------------Peer Setup/Config -----------------------------*/
+ 
+ int ath11k_nss_set_peer_sec_type(struct ath11k *ar,
+@@ -1379,22 +1820,22 @@ free:
+ 	return status;
+ }
+ 
+-void ath11k_nss_update_sta_stats(struct station_info *sinfo,
+-				 struct ieee80211_sta *sta,
+-				 struct ath11k_sta *arsta)
++void ath11k_nss_update_sta_stats(struct ath11k_vif *arvif,
++				 struct station_info *sinfo,
++				 struct ieee80211_sta *sta)
+ {
+ 	struct sta_info *stainfo;
+ 	struct ath11k_peer *peer;
+-	struct ath11k *ar = arsta->arvif->ar;
++	struct ath11k *ar = arvif->ar;
+ 	struct ath11k_base *ab = ar->ab;
+ 
+-	if (!ab->nss.enabled)
++	if (!ab->nss.stats_enabled)
+ 		return;
+ 
+ 	spin_lock_bh(&ab->base_lock);
+-	peer = ath11k_peer_find_by_addr(arsta->arvif->ar->ab, sta->addr);
++	peer = ath11k_peer_find_by_addr(ab, sta->addr);
+ 	if (!peer) {
+-		ath11k_dbg(ab, ATH11K_DBG_NSS, "unable to find peer %pM\n",
++		ath11k_dbg(ab, ATH11K_DBG_NSS, "sta stats: unable to find peer %pM\n",
+ 					sta->addr);
+ 		goto exit;
+ 	}
+@@ -1466,13 +1907,13 @@ void ath11k_nss_update_sta_rxrate(struct
+ 				  struct ath11k_peer *peer,
+ 				  struct hal_rx_user_status *user_stats)
+ {
+-	struct ath11k_sta *arsta = (struct ath11k_sta *)peer->sta->drv_priv;
+ 	u16 ath11k_hal_rx_legacy_rates[] =
+ 	{ 10, 20, 55, 60, 90, 110, 120, 180, 240, 360, 480, 540 };
+ 	u16 rate = 0;
+ 	u32 preamble_type;
+ 	u8 mcs, nss;
+-	struct ath11k *ar = arsta->arvif->ar;
++	struct ath11k_vif *arvif = ath11k_vif_to_arvif(peer->vif);
++	struct ath11k *ar = arvif->ar;
+ 	struct ath11k_base *ab = ar->ab;
+ 
+ 	if (!ab->nss.enabled)
+@@ -1776,8 +2217,8 @@ int ath11k_nss_add_wds_peer(struct ath11
+ 	}
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
+-		   "nss add wds peer success peer mac:%pM dest mac:%pM peer_id:%d\n",
+-		   wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
++		   "nss add wds peer success pdev:%d peer mac:%pM dest mac:%pM peer_id:%d\n",
++		   wds_peer_msg->pdev_id, wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
+ 
+ msg_free:
+ 	kfree(wlmsg);
+@@ -1822,8 +2263,8 @@ int ath11k_nss_update_wds_peer(struct at
+ 	}
+ 
+ 	ath11k_dbg(ab, ATH11K_DBG_NSS_WDS,
+-		   "nss update wds peer success peer mac:%pM dest mac:%pM peer_id:%d\n",
+-		   wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
++		   "nss update wds peer success pdev:%d peer mac:%pM dest mac:%pM peer_id:%d\n",
++		   wds_peer_msg->pdev_id, wds_peer_msg->peer_mac, wds_peer_msg->dest_mac, wds_peer_msg->peer_id);
+ 
+ msg_free:
+ 	kfree(wlmsg);
+--- a/drivers/net/wireless/ath/ath11k/nss.h
++++ b/drivers/net/wireless/ath/ath11k/nss.h
+@@ -151,6 +151,7 @@ enum ath11k_nss_peer_sec_type {
+ struct ath11k_nss_peer {
+ 	uint32_t *vaddr;
+ 	dma_addr_t paddr;
++	bool ext_vdev_up;
+ 	struct peer_stats *nss_stats;
+ 	struct completion complete;
+ };
+@@ -165,6 +166,16 @@ struct arvif_nss {
+ 	int encap;
+ 	/* Keep the copy of decap type for nss */
+ 	int decap;
++	/* AP_VLAN vif context obtained on ext vdev register */
++	void* ctx;
++	/* Parent AP vif stored in case of AP_VLAN vif */
++	struct ath11k_vif *ap_vif;
++	/* Flag to notify if vlan arvif object is added to arvif list*/
++	bool added;
++	/* Flag to notify if ext vdev is up/down */
++	bool ext_vdev_up;
++	/* WDS cfg should be done only once for ext vdev */
++	bool wds_cfg_done;
+ 	bool created;
+ };
+ 
+@@ -220,11 +231,21 @@ int ath11k_nss_map_wds_peer(struct ath11
+ 			    u8 *dest_mac, enum ath11k_ast_entry_type type);
+ int ath11k_nss_del_wds_peer(struct ath11k *ar, struct ath11k_peer *peer,
+ 			    u8 *dest_mac);
++int ath11k_nss_ext_vdev_cfg_wds_peer(struct ath11k_vif *arvif,
++				     u8 *wds_addr, u32 wds_peer_id);
++int ath11k_nss_ext_vdev_wds_4addr_allow(struct ath11k_vif *arvif,
++					u32 wds_peer_id);
++int ath11k_nss_ext_vdev_create(struct ath11k_vif *arvif);
++int ath11k_nss_ext_vdev_configure(struct ath11k_vif *arvif);
++void ath11k_nss_ext_vdev_unregister(struct ath11k_vif *arvif);
++int ath11k_nss_ext_vdev_up(struct ath11k_vif *arvif);
++int ath11k_nss_ext_vdev_down(struct ath11k_vif *arvif);
++void ath11k_nss_ext_vdev_delete(struct ath11k_vif *arvif);
+ int ath11k_nss_set_peer_sec_type(struct ath11k *ar, struct ath11k_peer *peer,
+ 				 struct ieee80211_key_conf *key_conf);
+-void ath11k_nss_update_sta_stats(struct station_info *sinfo,
+-				 struct ieee80211_sta *sta,
+-				 struct ath11k_sta *arsta);
++void ath11k_nss_update_sta_stats(struct ath11k_vif *arvif,
++				 struct station_info *sinfo,
++				 struct ieee80211_sta *sta);
+ void ath11k_nss_update_sta_rxrate(struct hal_rx_mon_ppdu_info *ppdu_info,
+ 				  struct ath11k_peer *peer,
+ 				  struct hal_rx_user_status *user_stats);
+@@ -257,9 +278,9 @@ static inline void ath11k_nss_vdev_delet
+ {
+ }
+ 
+-static inline void ath11k_nss_update_sta_stats(struct station_info *sinfo,
+-					       struct ieee80211_sta *sta,
+-					       struct ath11k_sta *arsta)
++static inline void ath11k_nss_update_sta_stats(struct ath11k_vif *arvif,
++					       struct station_info *sinfo,
++					       struct ieee80211_sta *sta)
+ {
+ 	return;
+ }
+@@ -316,6 +337,43 @@ static inline int ath11k_nss_peer_create
+ 	return 0;
+ }
+ 
++static inline int ath11k_nss_ext_vdev_cfg_wds_peer(struct ath11k_vif *arvif,
++				     u8 *wds_addr, u32 wds_peer_id)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_ext_vdev_wds_4addr_allow(struct ath11k_vif *arvif,
++					u32 wds_peer_id)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_ext_vdev_create(struct ath11k_vif *arvif)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_ext_vdev_configure(struct ath11k_vif *arvif)
++{
++	return 0;
++}
++
++static inline void ath11k_nss_ext_vdev_unregister(struct ath11k_vif *arvif)
++{
++	return;
++}
++
++static inline int ath11k_nss_ext_vdev_up(struct ath11k_vif *arvif)
++{
++	return 0;
++}
++
++static inline int ath11k_nss_ext_vdev_down(struct ath11k_vif *arvif)
++{
++	return 0;
++}
++
+ static inline void ath11k_nss_peer_stats_enable(struct ath11k *ar)
+ {
+ 	return;
+@@ -337,6 +395,11 @@ static inline int ath11k_nss_setup(struc
+ 	return 0;
+ }
+ 
++static inline void ath11k_nss_ext_vdev_delete(struct ath11k_vif *arvif)
++{
++	return;
++}
++
+ static inline int ath11k_nss_teardown(struct ath11k_base *ab)
+ {
+ 	return 0;

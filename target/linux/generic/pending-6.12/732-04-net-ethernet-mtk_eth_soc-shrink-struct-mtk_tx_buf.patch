@@ -1,0 +1,124 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Mon, 14 Jul 2025 10:52:59 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: shrink struct mtk_tx_buf
+
+There is no need to track the difference between dma_map_page
+and dma_map_single, since they're unmapped in exactly the same way.
+Also reorder fields in order to avoid padding.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -1246,32 +1246,19 @@ static int txd_to_idx(struct mtk_tx_ring
+ static void mtk_tx_unmap(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+ 			 struct xdp_frame_bulk *bq, bool napi)
+ {
+-	if (MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA)) {
+-		if (tx_buf->flags & MTK_TX_FLAGS_SINGLE0) {
+-			dma_unmap_single(eth->dma_dev,
+-					 dma_unmap_addr(tx_buf, dma_addr0),
+-					 dma_unmap_len(tx_buf, dma_len0),
+-					 DMA_TO_DEVICE);
+-		} else if (tx_buf->flags & MTK_TX_FLAGS_PAGE0) {
+-			dma_unmap_page(eth->dma_dev,
+-				       dma_unmap_addr(tx_buf, dma_addr0),
+-				       dma_unmap_len(tx_buf, dma_len0),
+-				       DMA_TO_DEVICE);
+-		}
+-	} else {
+-		if (dma_unmap_len(tx_buf, dma_len0)) {
+-			dma_unmap_page(eth->dma_dev,
+-				       dma_unmap_addr(tx_buf, dma_addr0),
+-				       dma_unmap_len(tx_buf, dma_len0),
+-				       DMA_TO_DEVICE);
+-		}
++	if (dma_unmap_len(tx_buf, dma_len0)) {
++		dma_unmap_page(eth->dma_dev,
++			       dma_unmap_addr(tx_buf, dma_addr0),
++			       dma_unmap_len(tx_buf, dma_len0),
++			       DMA_TO_DEVICE);
++	}
+ 
+-		if (dma_unmap_len(tx_buf, dma_len1)) {
+-			dma_unmap_page(eth->dma_dev,
+-				       dma_unmap_addr(tx_buf, dma_addr1),
+-				       dma_unmap_len(tx_buf, dma_len1),
+-				       DMA_TO_DEVICE);
+-		}
++	if (!MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA) &&
++	    dma_unmap_len(tx_buf, dma_len1)) {
++		dma_unmap_page(eth->dma_dev,
++			       dma_unmap_addr(tx_buf, dma_addr1),
++			       dma_unmap_len(tx_buf, dma_len1),
++			       DMA_TO_DEVICE);
+ 	}
+ 
+ 	if (tx_buf->data && tx_buf->data != (void *)MTK_DMA_DUMMY_DESC) {
+@@ -1293,7 +1280,6 @@ static void mtk_tx_unmap(struct mtk_eth
+ 				xdp_return_frame(xdpf);
+ 		}
+ 	}
+-	tx_buf->flags = 0;
+ 	tx_buf->data = NULL;
+ }
+ 
+@@ -1458,7 +1444,6 @@ static int mtk_tx_map(struct sk_buff *sk
+ 
+ 	mtk_tx_set_dma_desc(dev, itxd, &txd_info);
+ 
+-	itx_buf->flags |= MTK_TX_FLAGS_SINGLE0;
+ 	itx_buf->mac_id = mac->id;
+ 	setup_tx_buf(eth, itx_buf, itxd_pdma, txd_info.addr, txd_info.size,
+ 		     k++);
+@@ -1506,7 +1491,6 @@ static int mtk_tx_map(struct sk_buff *sk
+ 			if (new_desc)
+ 				memset(tx_buf, 0, sizeof(*tx_buf));
+ 			tx_buf->data = (void *)MTK_DMA_DUMMY_DESC;
+-			tx_buf->flags |= MTK_TX_FLAGS_PAGE0;
+ 			tx_buf->mac_id = mac->id;
+ 
+ 			setup_tx_buf(eth, tx_buf, txd_pdma, txd_info.addr,
+@@ -1839,8 +1823,6 @@ static int mtk_xdp_frame_map(struct mtk_
+ 						txd_info->size, DMA_TO_DEVICE);
+ 		if (unlikely(dma_mapping_error(eth->dma_dev, txd_info->addr)))
+ 			return -ENOMEM;
+-
+-		tx_buf->flags |= MTK_TX_FLAGS_SINGLE0;
+ 	} else {
+ 		struct page *page = virt_to_head_page(data);
+ 
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -701,14 +701,6 @@ struct mtk_hw_stats {
+ 	struct u64_stats_sync	syncp;
+ };
+ 
+-enum mtk_tx_flags {
+-	/* PDMA descriptor can point at 1-2 segments. This enum allows us to
+-	 * track how memory was allocated so that it can be freed properly.
+-	 */
+-	MTK_TX_FLAGS_SINGLE0	= 0x01,
+-	MTK_TX_FLAGS_PAGE0	= 0x02,
+-};
+-
+ /* This enum allows us to identify how the clock is defined on the array of the
+  * clock in the order
+  */
+@@ -881,13 +873,12 @@ enum mtk_tx_buf_type {
+  */
+ struct mtk_tx_buf {
+ 	enum mtk_tx_buf_type type;
++	u16 mac_id;
+ 	void *data;
+ 
+-	u16 mac_id;
+-	u16 flags;
+ 	DEFINE_DMA_UNMAP_ADDR(dma_addr0);
+-	DEFINE_DMA_UNMAP_LEN(dma_len0);
+ 	DEFINE_DMA_UNMAP_ADDR(dma_addr1);
++	DEFINE_DMA_UNMAP_LEN(dma_len0);
+ 	DEFINE_DMA_UNMAP_LEN(dma_len1);
+ };
+ 

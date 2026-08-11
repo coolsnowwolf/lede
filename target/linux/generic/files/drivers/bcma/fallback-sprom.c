@@ -16,6 +16,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/of_net.h>
 #include <linux/of_platform.h>
+#include "fallback-sprom.h"
 
 #define BCMA_FBS_MAX_SIZE 468
 
@@ -478,6 +479,7 @@ static int bcma_fbs_probe(struct platform_device *pdev)
 	struct bcma_fbs *priv;
 	unsigned long flags;
 	u8 mac[ETH_ALEN];
+	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -490,7 +492,10 @@ static int bcma_fbs_probe(struct platform_device *pdev)
 	of_property_read_u32(node, "pci-bus", &priv->pci_bus);
 	of_property_read_u32(node, "pci-dev", &priv->pci_dev);
 
-	of_get_mac_address(node, mac);
+	ret = of_get_mac_address(node, mac);
+	if (ret == -EPROBE_DEFER)
+		return ret;
+
 	if (is_valid_ether_addr(mac)) {
 		dev_info(dev, "mtd mac %pM\n", mac);
 	} else {

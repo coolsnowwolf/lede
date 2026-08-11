@@ -1,0 +1,280 @@
+From 6cd8cb301e431860e71b8d3453846a9ed0efea81 Mon Sep 17 00:00:00 2001
+From: Venkateswara Naralasetty <quic_vnaralas@quicinc.com>
+Date: Thu, 11 Nov 2021 10:38:26 +0530
+Subject: [PATCH] ath11k: use DECLARE_BITMAP for idr operations
+
+Use DECLARE_BITMAP for declaring bit map for idrs. And use APIs
+find_first_zero_bit, set_bit and clear bit instead of idr_alloc
+and idr_destroy.
+
+This helps in improving idle CPU and throughput.
+
+Signed-off-by: Venkateswara Naralasetty <quic_vnaralas@quicinc.com>
+---
+ drivers/net/wireless/ath/ath11k/dp.c    | 34 +++++++++++++-----
+ drivers/net/wireless/ath/ath11k/dp.h    | 10 +++++-
+ drivers/net/wireless/ath/ath11k/dp_tx.c | 61 ++++++++++++++++++---------------
+ 3 files changed, 69 insertions(+), 36 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath11k/dp.c
++++ b/drivers/net/wireless/ath/ath11k/dp.c
+@@ -379,6 +379,8 @@ static void ath11k_dp_srng_common_cleanu
+ 	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++) {
+ 		ath11k_dp_srng_cleanup(ab, &dp->tx_ring[i].tcl_data_ring);
+ 		ath11k_dp_srng_cleanup(ab, &dp->tx_ring[i].tcl_comp_ring);
++		kfree(dp->tx_ring[i].idr_pool);
++		dp->tx_ring[i].idr_pool = NULL;
+ 	}
+ 	ath11k_dp_srng_cleanup(ab, &dp->reo_reinject_ring);
+ 	ath11k_dp_srng_cleanup(ab, &dp->rx_rel_ring);
+@@ -391,7 +393,7 @@ static int ath11k_dp_srng_common_setup(s
+ {
+ 	struct ath11k_dp *dp = &ab->dp;
+ 	struct hal_srng *srng;
+-	int i, ret;
++	int i, ret, j;
+ 	u8 tcl_num, wbm_num;
+ 
+ 	ret = ath11k_dp_srng_setup(ab, &dp->wbm_desc_rel_ring,
+@@ -450,6 +452,18 @@ static int ath11k_dp_srng_common_setup(s
+ 		ath11k_dp_shadow_init_timer(ab, &dp->tx_ring_timer[i],
+ 					    ATH11K_SHADOW_DP_TIMER_INTERVAL,
+ 					    dp->tx_ring[i].tcl_data_ring.ring_id);
++
++		dp->tx_ring[i].idr_pool = kcalloc(DP_TX_IDR_SIZE,
++						  sizeof(struct idr_entry), GFP_KERNEL);
++		if (!dp->tx_ring[i].idr_pool) {
++			ath11k_warn(ab, "failed to allocate memory for idr pool ring(%d)\n", i);
++			ret = -ENOMEM;
++			goto err;
++		}
++
++		/* Reset id to default */
++		for (j = 0; j < DP_TX_IDR_SIZE; j++)
++			dp->tx_ring[i].idr_pool[j].id = -1;
+ 	}
+ 
+ 	ret = ath11k_dp_srng_setup(ab, &dp->reo_reinject_ring, HAL_REO_REINJECT,
+@@ -1034,9 +1048,8 @@ void ath11k_dp_vdev_tx_attach(struct ath
+ 	ath11k_dp_update_vdev_search(arvif);
+ }
+ 
+-static int ath11k_dp_tx_pending_cleanup(int buf_id, void *skb, void *ctx)
++static int ath11k_dp_tx_pending_cleanup(struct ath11k_base *ab, void *skb)
+ {
+-	struct ath11k_base *ab = ctx;
+ 	struct sk_buff *msdu = skb;
+ 
+ 	dma_unmap_single(ab->dev, ATH11K_SKB_CB(msdu)->paddr, msdu->len,
+@@ -1050,21 +1063,28 @@ static int ath11k_dp_tx_pending_cleanup(
+ void ath11k_dp_free(struct ath11k_base *ab)
+ {
+ 	struct ath11k_dp *dp = &ab->dp;
+-	int i;
++	int i, j;
+ 
+ 	ath11k_dp_link_desc_cleanup(ab, dp->link_desc_banks,
+ 				    HAL_WBM_IDLE_LINK, &dp->wbm_idle_ring);
+ 
++	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++) {
++		struct dp_tx_ring *tx_ring = &dp->tx_ring[i];
++		spin_lock_bh(&tx_ring->tx_idr_lock);
++		for(j = 0; j < DP_TX_IDR_SIZE; j++) {
++
++			if (test_and_clear_bit(j, tx_ring->idrs))
++				ath11k_dp_tx_pending_cleanup(ab, tx_ring->idr_pool[j].buf);
++		}
++
++		spin_unlock_bh(&tx_ring->tx_idr_lock);
++	}
++
+ 	ath11k_dp_srng_common_cleanup(ab);
+ 
+ 	ath11k_dp_reo_cmd_list_cleanup(ab);
+ 
+ 	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++) {
+-		spin_lock_bh(&dp->tx_ring[i].tx_idr_lock);
+-		idr_for_each(&dp->tx_ring[i].txbuf_idr,
+-			     ath11k_dp_tx_pending_cleanup, ab);
+-		idr_destroy(&dp->tx_ring[i].txbuf_idr);
+-		spin_unlock_bh(&dp->tx_ring[i].tx_idr_lock);
+ 		kfree(dp->tx_ring[i].tx_status);
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath11k/dp.h
++++ b/drivers/net/wireless/ath/ath11k/dp.h
+@@ -8,6 +8,7 @@
+ #define ATH11K_DP_H
+ 
+ #include "hal_rx.h"
++#include "hw.h"
+ 
+ #define MAX_RXDMA_PER_PDEV     2
+ 
+@@ -80,6 +81,13 @@ struct dp_rxdma_ring {
+ 
+ #define ATH11K_TX_COMPL_NEXT(x)	(((x) + 1) % DP_TX_COMP_RING_SIZE)
+ 
++struct idr_entry {
++	int id;
++	void *buf;
++};
++
++#define DP_TX_IDR_SIZE	ATH11K_DP_TX_COMP_RING_SIZE
++
+ struct dp_tx_ring {
+ 	u8 tcl_data_ring_id;
+ 	struct dp_srng tcl_data_ring;
+@@ -90,6 +98,8 @@ struct dp_tx_ring {
+ 	struct hal_wbm_release_ring *tx_status;
+ 	int tx_status_head;
+ 	int tx_status_tail;
++	DECLARE_BITMAP(idrs, DP_TX_IDR_SIZE);
++	struct idr_entry *idr_pool;
+ };
+ 
+ enum dp_mon_status_buf_state {
+@@ -208,7 +218,6 @@ struct ath11k_pdev_dp {
+ #define DP_TCL_DATA_RING_SIZE		512
+ #define DP_TCL_DATA_RING_SIZE_WCN6750	2048
+ #define DP_TX_COMP_RING_SIZE		ATH11K_DP_TX_COMP_RING_SIZE
+-#define DP_TX_IDR_SIZE			DP_TX_COMP_RING_SIZE
+ #define DP_TX_COMP_MAX_ALLOWED         DP_TX_COMP_RING_SIZE
+ #define DP_TCL_CMD_RING_SIZE		32
+ #define DP_TCL_STATUS_RING_SIZE		32
+--- a/drivers/net/wireless/ath/ath11k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_tx.c
+@@ -136,6 +136,7 @@ int ath11k_dp_tx(struct ath11k *ar, stru
+ 	u8 ring_map = 0;
+ 	bool tcl_ring_retry, is_diff_encap = false;
+ 	u8 align_pad, htt_meta_size = 0, max_tx_ring, tcl_ring_id, ring_id;
++	u32 idr;
+ 
+ 	if (unlikely(!(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
+ 		     !ieee80211_is_data(hdr->frame_control)))
+@@ -165,24 +166,28 @@ tcl_ring_sel:
+ 	tx_ring = &dp->tx_ring[tcl_ring_id];
+ 
+ 	spin_lock_bh(&tx_ring->tx_idr_lock);
+-	ret = idr_alloc(&tx_ring->txbuf_idr, skb, 0,
+-			DP_TX_IDR_SIZE - 1, GFP_ATOMIC);
+-	spin_unlock_bh(&tx_ring->tx_idr_lock);
+-
+-	if (unlikely(ret < 0)) {
++	idr = find_first_zero_bit(tx_ring->idrs, DP_TX_IDR_SIZE);
++	if (unlikely(idr >= DP_TX_IDR_SIZE)) {
+ 		if (ring_map == (BIT(max_tx_ring) - 1) ||
+ 		    !ab->hw_params.tcl_ring_retry) {
++			spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 			ab->soc_stats.tx_err.idr_na[tcl_ring_id]++;
+ 			return -ENOSPC;
+ 		}
+ 
+ 		/* Check if the next ring is available */
++		spin_unlock_bh(&tx_ring->tx_idr_lock);
+ 		ring_selector++;
+ 		goto tcl_ring_sel;
+ 	}
+ 
++	set_bit(idr, tx_ring->idrs);
++	tx_ring->idr_pool[idr].id = idr;
++	tx_ring->idr_pool[idr].buf = skb;
++	spin_unlock_bh(&tx_ring->tx_idr_lock);
++
+ 	ti.desc_id = FIELD_PREP(DP_TX_DESC_ID_MAC_ID, ar->pdev_idx) |
+-		     FIELD_PREP(DP_TX_DESC_ID_MSDU_ID, ret) |
++		     FIELD_PREP(DP_TX_DESC_ID_MSDU_ID, idr) |
+ 		     FIELD_PREP(DP_TX_DESC_ID_POOL_ID, pool_id);
+ 	ti.encap_type = ath11k_dp_tx_get_encap_type(arvif, skb);
+ 
+@@ -356,10 +361,9 @@ fail_unmap_dma:
+ fail_remove_idr:
+ 	if (ti.pkt_offset)
+ 		skb_pull(skb, ti.pkt_offset);
+-	spin_lock_bh(&tx_ring->tx_idr_lock);
+-	idr_remove(&tx_ring->txbuf_idr,
+-		   FIELD_GET(DP_TX_DESC_ID_MSDU_ID, ti.desc_id));
+-	spin_unlock_bh(&tx_ring->tx_idr_lock);
++
++	tx_ring->idr_pool[idr].id = -1;
++	clear_bit(idr, tx_ring->idrs);
+ 
+ 	if (tcl_ring_retry)
+ 		goto tcl_ring_sel;
+@@ -368,16 +372,19 @@ fail_remove_idr:
+ }
+ 
+ static void ath11k_dp_tx_free_txbuf(struct ath11k_base *ab, u8 mac_id,
+-				    int msdu_id,
++				    u32 msdu_id,
+ 				    struct dp_tx_ring *tx_ring)
+ {
+ 	struct ath11k *ar;
+-	struct sk_buff *msdu;
++	struct sk_buff *msdu = NULL;
+ 	struct ath11k_skb_cb *skb_cb;
+ 
+-	spin_lock(&tx_ring->tx_idr_lock);
+-	msdu = idr_remove(&tx_ring->txbuf_idr, msdu_id);
+-	spin_unlock(&tx_ring->tx_idr_lock);
++	if (msdu_id < DP_TX_IDR_SIZE &&
++	    tx_ring->idr_pool[msdu_id].id == msdu_id) {
++		msdu = tx_ring->idr_pool[msdu_id].buf;
++		tx_ring->idr_pool[msdu_id].id = -1;
++		clear_bit(msdu_id, tx_ring->idrs);
++	}
+ 
+ 	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",
+@@ -406,11 +413,15 @@ ath11k_dp_tx_htt_tx_complete_buf(struct
+ 	struct ath11k_skb_cb *skb_cb;
+ 	struct ath11k *ar;
+ 	struct ath11k_peer *peer;
++	u32 msdu_id = ts->msdu_id;
+ 	u8 flags;
+ 
+-	spin_lock(&tx_ring->tx_idr_lock);
+-	msdu = idr_remove(&tx_ring->txbuf_idr, ts->msdu_id);
+-	spin_unlock(&tx_ring->tx_idr_lock);
++	if (msdu_id < DP_TX_IDR_SIZE &&
++	    tx_ring->idr_pool[msdu_id].id == msdu_id) {
++		msdu = tx_ring->idr_pool[msdu_id].buf;
++		tx_ring->idr_pool[msdu_id].id = -1;
++		clear_bit(msdu_id, tx_ring->idrs);
++	}
+ 
+ 	if (unlikely(!msdu)) {
+ 		ath11k_warn(ab, "htt tx completion for unknown msdu_id %d\n",
+@@ -873,6 +884,7 @@ void ath11k_dp_tx_completion_handler(str
+ 	}
+ 
+ 	while (count--) {
++		msdu=NULL;
+ 		tx_status = &tx_ring->tx_status[i++];
+ 
+ 		desc_id = FIELD_GET(BUFFER_ADDR_INFO1_SW_COOKIE,
+@@ -891,17 +903,19 @@ void ath11k_dp_tx_completion_handler(str
+ 			continue;
+ 		}
+ 
+-		spin_lock(&tx_ring->tx_idr_lock);
+-		msdu = idr_remove(&tx_ring->txbuf_idr, msdu_id);
++		if (msdu_id < DP_TX_IDR_SIZE &&
++		    tx_ring->idr_pool[msdu_id].id == msdu_id) {
++			msdu = tx_ring->idr_pool[msdu_id].buf;
++			tx_ring->idr_pool[msdu_id].id = -1;
++			clear_bit(msdu_id, tx_ring->idrs);
++		}
++
+ 		if (unlikely(!msdu)) {
+ 			ath11k_warn(ab, "tx completion for unknown msdu_id %d\n",
+ 				    msdu_id);
+-			spin_unlock(&tx_ring->tx_idr_lock);
+ 			continue;
+ 		}
+ 
+-		spin_unlock(&tx_ring->tx_idr_lock);
+-
+ 		ar = ab->pdevs[mac_id].ar;
+ 
+ 		if (atomic_dec_and_test(&ar->dp.num_tx_pending))

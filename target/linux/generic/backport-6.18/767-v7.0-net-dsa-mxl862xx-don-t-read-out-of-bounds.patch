@@ -1,0 +1,54 @@
+From c0402837642625ef13ade862e20e229f4a5810f5 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 18 Mar 2026 03:07:52 +0000
+Subject: [PATCH 06/35] net: dsa: mxl862xx: don't read out-of-bounds
+
+The write loop in mxl862xx_api_wrap() computes the word count as
+(size + 1) / 2, rounding up for odd-sized structs.
+
+On the last iteration of an odd-sized buffer it reads a full __le16
+from data[i], accessing one byte past the end of the caller's struct.
+KASAN catches this as a stack-out-of-bounds read during probe (e.g.
+from mxl862xx_bridge_config_fwd() because of the odd length of
+sizeof(struct mxl862xx_bridge_config) == 49).
+
+The read-back loop already handles this case, it writes only a single
+byte when (i * 2 + 1) == size. The write loop lacked the same guard.
+
+In practice the over-read is harmless: the extra stack byte is sent to
+the firmware which ignores trailing data beyond the command's declared
+payload size.
+
+Apply the same odd-size last-byte handling to the write path: when the
+final word contains only one valid byte, send *(u8 *)&data[i] instead
+of le16_to_cpu(data[i]). This is endian-safe because data is
+__le16-encoded and the low byte is always at the lowest address
+regardless of host byte order.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/83356ad9c9a4470dd49b6b3d661c2a8dd85cc6a1.1773803190.git.daniel@makrotopia.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-host.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-host.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-host.c
+@@ -175,8 +175,14 @@ int mxl862xx_api_wrap(struct mxl862xx_pr
+ 				goto out;
+ 		}
+ 
+-		ret = mxl862xx_reg_write(priv, MXL862XX_MMD_REG_DATA_FIRST + off,
+-					 le16_to_cpu(data[i]));
++		if ((i * 2 + 1) == size)
++			ret = mxl862xx_reg_write(priv,
++						 MXL862XX_MMD_REG_DATA_FIRST + off,
++						 *(u8 *)&data[i]);
++		else
++			ret = mxl862xx_reg_write(priv,
++						 MXL862XX_MMD_REG_DATA_FIRST + off,
++						 le16_to_cpu(data[i]));
+ 		if (ret < 0)
+ 			goto out;
+ 	}

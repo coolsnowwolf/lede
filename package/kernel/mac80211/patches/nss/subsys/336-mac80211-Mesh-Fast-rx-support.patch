@@ -1,0 +1,208 @@
+From 0f024902a8a54c70204f5b2f824c5dc74888c536 Mon Sep 17 00:00:00 2001
+From: Sriram R <quic_srirrama@quicinc.com>
+Date: Wed, 29 Sep 2021 09:30:21 +0530
+Subject: [PATCH] mac80211: Add support for mesh fast Rx path
+
+Add support to process rx frames for the mesh destination
+when driver supports fast Rx by offloading PN, Duplicate,
+reordering to the HW.
+
+Fast Rx from a peer is enabled once the PLINK is established.
+Fast Rx is not supported for the forwarding path currently.
+
+Signed-off-by: Sriram R <quic_srirrama@quicinc.com>
+---
+ net/mac80211/cfg.c         |   5 +
+ net/mac80211/ieee80211_i.h |   1 +
+ net/mac80211/mesh_plink.c  |   5 +
+ net/mac80211/rx.c          | 262 ++++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 269 insertions(+), 4 deletions(-)
+
+--- a/net/mac80211/cfg.c
++++ b/net/mac80211/cfg.c
+@@ -1988,6 +1988,8 @@ static void sta_apply_mesh_params(struct
+ 			/* init at low value */
+ 			ewma_mesh_tx_rate_avg_add(&sta->mesh->tx_rate_avg, 10);
+ 
++			ieee80211_check_fast_rx(sta);
++
+ 			break;
+ 		case NL80211_PLINK_LISTEN:
+ 		case NL80211_PLINK_BLOCKED:
+@@ -2002,6 +2004,7 @@ static void sta_apply_mesh_params(struct
+ 			ieee80211_mps_sta_status_update(sta);
+ 			changed |= ieee80211_mps_set_sta_local_pm(sta,
+ 					NL80211_MESH_POWER_UNKNOWN);
++			ieee80211_check_fast_rx(sta);
+ 			break;
+ 		default:
+ 			/*  nothing  */
+--- a/net/mac80211/mesh_plink.c
++++ b/net/mac80211/mesh_plink.c
+@@ -385,6 +385,8 @@ static u64 __mesh_plink_deactivate(struc
+ 	changed |= ieee80211_mps_set_sta_local_pm(sta,
+ 			NL80211_MESH_POWER_UNKNOWN);
+ 
++	ieee80211_check_fast_rx(sta);
++
+ 	return changed;
+ }
+ 
+@@ -852,6 +854,7 @@ static u64 mesh_plink_establish(struct i
+ 	mpl_dbg(sdata, "Mesh plink with %pM ESTABLISHED\n", sta->sta.addr);
+ 	ieee80211_mps_sta_status_update(sta);
+ 	changed |= ieee80211_mps_set_sta_local_pm(sta, mshcfg->power_mode);
++	ieee80211_check_fast_rx(sta);
+ 	return changed;
+ }
+ 
+@@ -870,7 +873,7 @@ static u64 mesh_plink_fsm(struct ieee802
+ 	struct mesh_config *mshcfg = &sdata->u.mesh.mshcfg;
+ 	enum ieee80211_self_protected_actioncode action = 0;
+ 	u64 changed = 0;
+-	bool flush = false;
++	bool flush = false, check_fast_rx = false;
+ 
+ 	mpl_dbg(sdata, "peer %pM in state %s got event %s\n", sta->sta.addr,
+ 		mplstates[sta->mesh->plink_state], mplevents[event]);
+@@ -930,6 +933,7 @@ static u64 mesh_plink_fsm(struct ieee802
+ 			break;
+ 		case CNF_ACPT:
+ 			changed |= mesh_plink_establish(sdata, sta);
++			check_fast_rx = true;
+ 			break;
+ 		default:
+ 			break;
+@@ -945,6 +949,7 @@ static u64 mesh_plink_fsm(struct ieee802
+ 			break;
+ 		case OPN_ACPT:
+ 			changed |= mesh_plink_establish(sdata, sta);
++			check_fast_rx = true;
+ 			action = WLAN_SP_MESH_PEERING_CONFIRM;
+ 			break;
+ 		default:
+@@ -991,6 +996,10 @@ static u64 mesh_plink_fsm(struct ieee802
+ 		break;
+ 	}
+ 	spin_unlock_bh(&sta->mesh->plink_lock);
++
++	if (check_fast_rx)
++		ieee80211_check_fast_rx(sta);
++
+ 	if (flush)
+ 		mesh_path_flush_by_nexthop(sta);
+ 	if (action) {
+--- a/net/mac80211/rx.c
++++ b/net/mac80211/rx.c
+@@ -4683,10 +4683,15 @@ void ieee80211_check_fast_rx(struct sta_
+ 
+ 		break;
+ 	case NL80211_IFTYPE_MESH_POINT:
++		/* Not required for NSS mode */
++		if (ieee80211_hw_check(&local->hw, SUPPORTS_NSS_OFFLOAD))
++			goto clear;
++		/* Note: da and sa offs are not static, determine in fast rx path */
++
+ 		fastrx.expected_ds_bits = cpu_to_le16(IEEE80211_FCTL_FROMDS |
+ 						      IEEE80211_FCTL_TODS);
+-		fastrx.da_offs = offsetof(struct ieee80211_hdr, addr3);
+-		fastrx.sa_offs = offsetof(struct ieee80211_hdr, addr4);
++
++		fastrx.internal_forward = 0;
+ 		break;
+ 	default:
+ 		goto clear;
+@@ -4727,7 +4732,7 @@ void ieee80211_check_fast_rx(struct sta_
+ 	__release(check_fast_rx);
+ 
+ 	if (assign)
+-		new = kmemdup(&fastrx, sizeof(fastrx), GFP_KERNEL);
++		new = kmemdup(&fastrx, sizeof(fastrx), GFP_ATOMIC);
+ 
+ 	offload_flags = get_bss_sdata(sdata)->vif.offload_flags;
+ 	offload = offload_flags & IEEE80211_OFFLOAD_DECAP_ENABLED;
+@@ -4909,6 +4914,10 @@ static bool ieee80211_invoke_fast_rx(str
+ 		u8 sa[ETH_ALEN];
+ 	} addrs __aligned(2);
+ 	struct ieee80211_sta_rx_stats *stats;
++	struct ieee80211s_hdr *mesh_hdr;
++	struct mesh_path *mppath;
++	u8 da_offs = fast_rx->da_offs, sa_offs = fast_rx->sa_offs;
++	struct ieee80211_sub_if_data *sdata = rx->sdata;
+ 
+ 	/* for parallel-rx, we need to have DUP_VALIDATED, otherwise we write
+ 	 * to a common data structure; drivers can implement that per queue
+@@ -4958,6 +4967,37 @@ static bool ieee80211_invoke_fast_rx(str
+ 		snap_offs += IEEE80211_CCMP_HDR_LEN;
+ 	}
+ 
++	/* Find corresponding offsets for mesh hdr */
++	if (ieee80211_vif_is_mesh(&sdata->vif)) {
++		if (status->rx_flags & IEEE80211_RX_AMSDU)
++			return false;
++
++		/* All mesh data frames needs to be QoS Data */
++		if (unlikely(!ieee80211_is_data_qos(hdr->frame_control)))
++			return false;
++
++		/* TODO forwarding not handled yet in fast rx */
++		if (!ether_addr_equal(fast_rx->vif_addr, hdr->addr3))
++			return false;
++
++		/* Check if Min Mesh hdr is present */
++		if (!pskb_may_pull(skb, hdrlen + 6))
++			goto drop;
++
++		/* Goto mesh hdr, located at snap offs compared to AP/STA */
++		mesh_hdr = (struct ieee80211s_hdr *) (skb->data + snap_offs);
++
++		/* Only Ext Mesh hdr supported in this path now */
++		if ((mesh_hdr->flags & MESH_FLAGS_AE) != MESH_FLAGS_AE_A5_A6)
++			return false;
++
++		/* Point to eaddr1 and eaddr2 */
++		da_offs = snap_offs + ETH_ALEN;
++		sa_offs = da_offs + ETH_ALEN;
++
++		snap_offs += sizeof(struct ieee80211s_hdr);
++	}
++
+ 	if (!ieee80211_vif_is_mesh(&rx->sdata->vif) &&
+ 	    !(status->rx_flags & IEEE80211_RX_AMSDU)) {
+ 		if (!pskb_may_pull(skb, snap_offs + sizeof(*payload)))
+@@ -4995,9 +5035,33 @@ static bool ieee80211_invoke_fast_rx(str
+ 		return true;
+ 	}
+ 
++	/* Update MPP table for the received packet */
++	if (ieee80211_vif_is_mesh(&sdata->vif)) {
++		char *proxied_addr, *mpp_addr;
++
++		mpp_addr = hdr->addr4;
++		proxied_addr = mesh_hdr->eaddr2;
++
++		/* Update mpp for the SA */
++		rcu_read_lock();
++		mppath = mpp_path_lookup(sdata, proxied_addr);
++		if (!mppath) {
++			mpp_path_add(sdata, proxied_addr, mpp_addr);
++		} else {
++			spin_lock_bh(&mppath->state_lock);
++
++			if (!ether_addr_equal(mppath->mpp, mpp_addr))
++				ether_addr_copy(mppath->mpp, mpp_addr);
++
++			mppath->exp_time = jiffies;
++			spin_unlock_bh(&mppath->state_lock);
++		}
++		rcu_read_unlock();
++	}
++
+ 	/* do the header conversion - first grab the addresses */
+-	ether_addr_copy(addrs.da, skb->data + fast_rx->da_offs);
+-	ether_addr_copy(addrs.sa, skb->data + fast_rx->sa_offs);
++	ether_addr_copy(addrs.da, skb->data + da_offs);
++	ether_addr_copy(addrs.sa, skb->data + sa_offs);
+ 	if (ieee80211_vif_is_mesh(&rx->sdata->vif)) {
+ 	    skb_pull(skb, snap_offs - 2);
+ 	    put_unaligned_be16(skb->len - 2, skb->data);

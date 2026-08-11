@@ -1,0 +1,159 @@
+From 105ce7ad57e492b75ab40f2dc591db645fadbaa2 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 24 Sep 2025 23:14:53 +0200
+Subject: [PATCH] net: airoha: npu: Add a NPU callback to initialize flow stats
+
+Introduce a NPU callback to initialize flow stats and remove NPU stats
+initialization from airoha_npu_get routine. Add num_stats_entries to
+airoha_npu_ppe_stats_setup routine.
+This patch makes the code more readable since NPU statistic are now
+initialized on demand by the NPU consumer (at the moment NPU statistic
+are configured just by the airoha_eth driver).
+Moreover this patch allows the NPU consumer (PPE module) to explicitly
+enable/disable NPU flow stats.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20250924-airoha-npu-init-stats-callback-v1-1-88bdf3c941b2@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_npu.c  | 24 ++++++-----------------
+ drivers/net/ethernet/airoha/airoha_ppe.c  | 19 ++++++++++++------
+ include/linux/soc/airoha/airoha_offload.h |  7 ++++---
+ 3 files changed, 23 insertions(+), 27 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -379,15 +379,13 @@ out:
+ 	return err;
+ }
+ 
+-static int airoha_npu_stats_setup(struct airoha_npu *npu,
+-				  dma_addr_t foe_stats_addr)
++static int airoha_npu_ppe_stats_setup(struct airoha_npu *npu,
++				      dma_addr_t foe_stats_addr,
++				      u32 num_stats_entries)
+ {
+-	int err, size = PPE_STATS_NUM_ENTRIES * sizeof(*npu->stats);
++	int err, size = num_stats_entries * sizeof(*npu->stats);
+ 	struct ppe_mbox_data *ppe_data;
+ 
+-	if (!size) /* flow stats are disabled */
+-		return 0;
+-
+ 	ppe_data = kzalloc(sizeof(*ppe_data), GFP_ATOMIC);
+ 	if (!ppe_data)
+ 		return -ENOMEM;
+@@ -542,7 +540,7 @@ static void airoha_npu_wlan_irq_disable(
+ 	regmap_clear_bits(npu->regmap, REG_IRQ_RXDONE(q), NPU_IRQ_RX_MASK(q));
+ }
+ 
+-struct airoha_npu *airoha_npu_get(struct device *dev, dma_addr_t *stats_addr)
++struct airoha_npu *airoha_npu_get(struct device *dev)
+ {
+ 	struct platform_device *pdev;
+ 	struct device_node *np;
+@@ -580,17 +578,6 @@ struct airoha_npu *airoha_npu_get(struct
+ 		goto error_module_put;
+ 	}
+ 
+-	if (stats_addr) {
+-		int err;
+-
+-		err = airoha_npu_stats_setup(npu, *stats_addr);
+-		if (err) {
+-			dev_err(dev, "failed to allocate npu stats buffer\n");
+-			npu = ERR_PTR(err);
+-			goto error_module_put;
+-		}
+-	}
+-
+ 	return npu;
+ 
+ error_module_put:
+@@ -643,6 +630,7 @@ static int airoha_npu_probe(struct platf
+ 	npu->dev = dev;
+ 	npu->ops.ppe_init = airoha_npu_ppe_init;
+ 	npu->ops.ppe_deinit = airoha_npu_ppe_deinit;
++	npu->ops.ppe_init_stats = airoha_npu_ppe_stats_setup;
+ 	npu->ops.ppe_flush_sram_entries = airoha_npu_ppe_flush_sram_entries;
+ 	npu->ops.ppe_foe_commit_entry = airoha_npu_foe_commit_entry;
+ 	npu->ops.wlan_init_reserved_memory = airoha_npu_wlan_init_memory;
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -1243,12 +1243,11 @@ static int airoha_ppe_flush_sram_entries
+ 
+ static struct airoha_npu *airoha_ppe_npu_get(struct airoha_eth *eth)
+ {
+-	struct airoha_npu *npu = airoha_npu_get(eth->dev,
+-						&eth->ppe->foe_stats_dma);
++	struct airoha_npu *npu = airoha_npu_get(eth->dev);
+ 
+ 	if (IS_ERR(npu)) {
+ 		request_module("airoha-npu");
+-		npu = airoha_npu_get(eth->dev, &eth->ppe->foe_stats_dma);
++		npu = airoha_npu_get(eth->dev);
+ 	}
+ 
+ 	return npu;
+@@ -1257,6 +1256,7 @@ static struct airoha_npu *airoha_ppe_npu
+ static int airoha_ppe_offload_setup(struct airoha_eth *eth)
+ {
+ 	struct airoha_npu *npu = airoha_ppe_npu_get(eth);
++	struct airoha_ppe *ppe = eth->ppe;
+ 	int err;
+ 
+ 	if (IS_ERR(npu))
+@@ -1266,12 +1266,19 @@ static int airoha_ppe_offload_setup(stru
+ 	if (err)
+ 		goto error_npu_put;
+ 
+-	airoha_ppe_hw_init(eth->ppe);
+-	err = airoha_ppe_flush_sram_entries(eth->ppe, npu);
++	if (PPE_STATS_NUM_ENTRIES) {
++		err = npu->ops.ppe_init_stats(npu, ppe->foe_stats_dma,
++					      PPE_STATS_NUM_ENTRIES);
++		if (err)
++			goto error_npu_put;
++	}
++
++	airoha_ppe_hw_init(ppe);
++	err = airoha_ppe_flush_sram_entries(ppe, npu);
+ 	if (err)
+ 		goto error_npu_put;
+ 
+-	airoha_ppe_foe_flow_stats_reset(eth->ppe, npu);
++	airoha_ppe_foe_flow_stats_reset(ppe, npu);
+ 
+ 	rcu_assign_pointer(eth->npu, npu);
+ 	synchronize_rcu();
+--- a/include/linux/soc/airoha/airoha_offload.h
++++ b/include/linux/soc/airoha/airoha_offload.h
+@@ -181,6 +181,8 @@ struct airoha_npu {
+ 	struct {
+ 		int (*ppe_init)(struct airoha_npu *npu);
+ 		int (*ppe_deinit)(struct airoha_npu *npu);
++		int (*ppe_init_stats)(struct airoha_npu *npu,
++				      dma_addr_t addr, u32 num_stats_entries);
+ 		int (*ppe_flush_sram_entries)(struct airoha_npu *npu,
+ 					      dma_addr_t foe_addr,
+ 					      int sram_num_entries);
+@@ -206,7 +208,7 @@ struct airoha_npu {
+ };
+ 
+ #if (IS_BUILTIN(CONFIG_NET_AIROHA_NPU) || IS_MODULE(CONFIG_NET_AIROHA_NPU))
+-struct airoha_npu *airoha_npu_get(struct device *dev, dma_addr_t *stats_addr);
++struct airoha_npu *airoha_npu_get(struct device *dev);
+ void airoha_npu_put(struct airoha_npu *npu);
+ 
+ static inline int airoha_npu_wlan_init_reserved_memory(struct airoha_npu *npu)
+@@ -256,8 +258,7 @@ static inline void airoha_npu_wlan_disab
+ 	npu->ops.wlan_disable_irq(npu, q);
+ }
+ #else
+-static inline struct airoha_npu *airoha_npu_get(struct device *dev,
+-						dma_addr_t *foe_stats_addr)
++static inline struct airoha_npu *airoha_npu_get(struct device *dev)
+ {
+ 	return NULL;
+ }

@@ -1,0 +1,93 @@
+From 9155098547fb1172d4fa536f3f6bc9d42f59d08c Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Sat, 22 Apr 2023 03:26:01 +0100
+Subject: [PATCH] net: phy: realtek: setup ALDPS on RTL822x
+
+Setup Link Down Power Saving Mode according the DTS property
+just like for RTL821x 1GE PHYs.
+
+Signed-off-by: Daniel Golle <daniel@makrotopia.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -170,6 +170,10 @@
+ 
+ #define RTL8224_SRAM_RTCT_LEN(pair)		(0x8028 + (pair) * 4)
+ 
++#define RTL8221B_PHYCR1				0xa430
++#define RTL8221B_PHYCR1_ALDPS_EN		BIT(2)
++#define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
++
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+ 
+@@ -216,6 +220,10 @@ struct rtl821x_priv {
+ 	u16 iner;
+ };
+ 
++struct rtl822x_priv {
++	bool enable_aldps;
++};
++
+ static int rtl821x_read_page(struct phy_device *phydev)
+ {
+ 	return __phy_read(phydev, RTL821x_PAGE_SELECT);
+@@ -1238,6 +1246,18 @@ static int rtl822x_write_mmd(struct phy_
+ 
+ static int rtl822x_probe(struct phy_device *phydev)
+ {
++	struct device *dev = &phydev->mdio.dev;
++	struct rtl822x_priv *priv;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->enable_aldps = of_property_read_bool(dev->of_node,
++						   "realtek,aldps-enable");
++
++	phydev->priv = priv;
++
+ 	if (IS_ENABLED(CONFIG_REALTEK_PHY_HWMON) &&
+ 	    phydev->phy_id != RTL_GENERIC_PHYID)
+ 		return rtl822x_hwmon_init(phydev);
+@@ -1328,6 +1348,19 @@ static int rtl822xb_write_mmd(struct phy
+ 	return write_ret;
+ }
+ 
++static int rtl822x_init_phycr1(struct phy_device *phydev, bool no_aldps)
++{
++	struct rtl822x_priv *priv = phydev->priv;
++	u16 val = 0;
++
++	if (priv->enable_aldps && !no_aldps)
++		val = RTL8221B_PHYCR1_ALDPS_EN | RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN;
++
++	return phy_modify_mmd_changed(phydev, MDIO_MMD_VEND2, RTL8221B_PHYCR1,
++				      RTL8221B_PHYCR1_ALDPS_EN |
++				      RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN, val);
++}
++
+ static int rtl822x_set_serdes_option_mode(struct phy_device *phydev, bool gen1)
+ {
+ 	bool has_2500, has_sgmii;
+@@ -1385,7 +1418,15 @@ static int rtl822x_set_serdes_option_mod
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	return phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6f11, 0x8020);
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, 0x6f11, 0x8020);
++	if (ret < 0)
++		return ret;
++
++	ret = rtl822x_init_phycr1(phydev, false);
++	if (ret < 0)
++		return ret;
++
++	return 0;
+ }
+ 
+ static int rtl822x_config_init(struct phy_device *phydev)

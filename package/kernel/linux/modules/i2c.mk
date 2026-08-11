@@ -162,6 +162,38 @@ endef
 $(eval $(call KernelPackage,i2c-gpio))
 
 
+I2C_HID_MODULES:= \
+  CONFIG_I2C_HID_CORE:drivers/hid/i2c-hid/i2c-hid
+
+define KernelPackage/i2c-hid
+  $(call i2c_defaults,$(I2C_HID_MODULES),60)
+  TITLE:=I2C HID support
+  KCONFIG+= CONFIG_I2C_HID
+  DEPENDS:=+kmod-drm +kmod-hid
+  HIDDEN:=1
+endef
+
+$(eval $(call KernelPackage,i2c-hid))
+
+
+I2C_HID_ACPI_MODULES:= \
+  CONFIG_I2C_HID_ACPI:drivers/hid/i2c-hid/i2c-hid-acpi
+
+define KernelPackage/i2c-hid-acpi
+  $(call i2c_defaults,$(I2C_HID_ACPI_MODULES),61)
+  TITLE:=HID over I2C transport layer ACPI driver
+  DEPENDS:=@TARGET_armsr_armv8||TARGET_loongarch64||TARGET_x86 +kmod-i2c-hid
+endef
+
+define KernelPackage/i2c-hid-acpi/description
+  Support for keyboard, touchpad, touchscreen, or any
+  other HID based devices which is connected to your computer via I2C.
+  This driver supports ACPI-based systems.
+endef
+
+$(eval $(call KernelPackage,i2c-hid-acpi))
+
+
 I2C_I801_MODULES:= \
   CONFIG_I2C_I801:drivers/i2c/busses/i2c-i801
 

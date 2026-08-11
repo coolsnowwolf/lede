@@ -1,0 +1,110 @@
+--- a/drivers/net/wireless/ath/ath11k/core.c
++++ b/drivers/net/wireless/ath/ath11k/core.c
+@@ -46,6 +46,7 @@ module_param_named(ftm_mode, ath11k_ftm_
+ MODULE_PARM_DESC(ftm_mode, "Boots up in factory test mode");
+ 
+ static const struct ath11k_num_vdevs_peers ath11k_vdevs_peers[];
++static const struct ath11k_num_vdevs_peers ath11k_vdevs_peers_ipq5018[];
+ 
+ static struct ath11k_hw_params ath11k_hw_params[] = {
+ 	{
+@@ -744,7 +745,7 @@ static struct ath11k_hw_params ath11k_hw
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+ 		.smp2p_wow_exit = false,
+ 		.support_fw_mac_sequence = false,
+-		.num_vdevs_peers = ath11k_vdevs_peers,
++		.num_vdevs_peers = ath11k_vdevs_peers_ipq5018,
+ 		.support_dual_stations = false,
+ 		.pdev_suspend = false,
+ 	},
+@@ -988,8 +989,23 @@ static struct ath11k_hw_params ath11k_hw
+ 		.support_off_channel_tx = false,
+ 		.tcl_ring_retry = true,
+ 		.tx_ring_size = DP_TCL_DATA_RING_SIZE,
+-		.num_vdevs_peers = ath11k_vdevs_peers,
++		.num_vdevs_peers = ath11k_vdevs_peers_ipq5018,
++	},
++};
++
++static const struct ath11k_num_vdevs_peers ath11k_vdevs_peers_ipq5018[] = {
++	{
++		.num_vdevs = (8 + 1),
++		.num_peers = 128,
+ 	},
++	{
++		.num_vdevs = (8 + 1),
++		.num_peers = 128,
++	},
++	{
++		.num_vdevs = 8,
++		.num_peers = 128,
++	}
+ };
+ 
+ static const struct dmi_system_id ath11k_pm_quirk_table[] = {
+--- a/drivers/net/wireless/ath/ath11k/hw.c
++++ b/drivers/net/wireless/ath/ath11k/hw.c
+@@ -1043,6 +1043,7 @@ static void ath11k_hw_wcn6855_reo_setup(
+ 
+ static void ath11k_hw_ipq5018_reo_setup(struct ath11k_base *ab)
+ {
++	u8 frag_dest_ring = HAL_SRNG_RING_ID_REO2SW1;
+ 	u32 reo_base = HAL_SEQ_WCSS_UMAC_REO_REG;
+ 	u32 val;
+ 
+@@ -1056,11 +1057,14 @@ static void ath11k_hw_ipq5018_reo_setup(
+ 		HAL_HASH_ROUTING_RING_SW3 << 24 |
+ 		HAL_HASH_ROUTING_RING_SW4 << 28;
+ 
++	if (ab->nss.enabled)
++		frag_dest_ring = HAL_SRNG_REO_ALTERNATE_SELECT;
++
+ 	val = ath11k_hif_read32(ab, reo_base + HAL_REO1_GEN_ENABLE);
+ 
+ 	val &= ~HAL_REO1_GEN_ENABLE_FRAG_DST_RING;
+ 	val |= FIELD_PREP(HAL_REO1_GEN_ENABLE_FRAG_DST_RING,
+-			HAL_SRNG_RING_ID_REO2SW1) |
++			frag_dest_ring) |
+ 		FIELD_PREP(HAL_REO1_GEN_ENABLE_AGING_LIST_ENABLE, 1) |
+ 		FIELD_PREP(HAL_REO1_GEN_ENABLE_AGING_FLUSH_ENABLE, 1);
+ 	ath11k_hif_write32(ab, reo_base + HAL_REO1_GEN_ENABLE, val);
+@@ -1074,6 +1078,10 @@ static void ath11k_hw_ipq5018_reo_setup(
+ 	ath11k_hif_write32(ab, reo_base + HAL_REO1_AGING_THRESH_IX_3(ab),
+ 			   HAL_DEFAULT_REO_TIMEOUT_USEC);
+ 
++	/* REO Dest ring setup is not required in NSS offload case */
++	if (ab->nss.enabled)
++		return;
++
+ 	ath11k_hif_write32(ab, reo_base + HAL_REO1_DEST_RING_CTRL_IX_0,
+ 			   ring_hash_map);
+ 	ath11k_hif_write32(ab, reo_base + HAL_REO1_DEST_RING_CTRL_IX_1,
+--- a/drivers/net/wireless/ath/ath11k/nss.c
++++ b/drivers/net/wireless/ath/ath11k/nss.c
+@@ -4256,6 +4256,8 @@ static int ath11k_nss_get_target_type(st
+ 		return ATH11K_WIFILI_TARGET_TYPE_QCN9074;
+ 	case ATH11K_HW_IPQ5018_HW10:
+ 		return ATH11K_WIFILI_TARGET_TYPE_QCA5018;
++	case ATH11K_HW_QCN6122_HW10:
++		return ATH11K_WIFILI_TARGET_TYPE_QCN6122;
+ 	default:
+ 		ath11k_warn(ab, "NSS Offload not supported for this HW\n");
+ 		return ATH11K_WIFILI_TARGET_TYPE_UNKNOWN;
+@@ -4270,6 +4272,7 @@ static int ath11k_nss_get_interface_type
+ 	case ATH11K_HW_IPQ5018_HW10:
+ 		return NSS_WIFILI_INTERNAL_INTERFACE;
+ 	case ATH11K_HW_QCN9074_HW10:
++	case ATH11K_HW_QCN6122_HW10:
+ 		return nss_get_available_wifili_external_if();
+ 	default:
+ 		/* This can't happen since we validated target type earlier */
+--- a/drivers/net/wireless/ath/ath11k/nss.h
++++ b/drivers/net/wireless/ath/ath11k/nss.h
+@@ -39,6 +39,7 @@ struct hal_rx_user_status;
+ #define ATH11K_WIFILI_TARGET_TYPE_QCA6018   25
+ #define ATH11K_WIFILI_TARGET_TYPE_QCN9074   26
+ #define ATH11K_WIFILI_TARGET_TYPE_QCA5018   29
++#define ATH11K_WIFILI_TARGET_TYPE_QCN6122   30
+ 
+ /* Max limit for NSS Queue */
+ #define ATH11K_WIFIILI_MAX_TX_PROCESSQ 1024

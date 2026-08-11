@@ -1,0 +1,95 @@
+From 17ed1911f9c8d4f9af8e13b2c95103ee06dadc0f Mon Sep 17 00:00:00 2001
+From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
+Date: Tue, 3 Dec 2024 15:30:47 +0000
+Subject: [PATCH 01/13] net: phylink: pass phylink and pcs into
+ phylink_pcs_neg_mode()
+
+Move the call to phylink_pcs_neg_mode() in phylink_major_config() after
+we have selected the appropriate PCS to allow the PCS to be passed in.
+
+Add struct phylink and struct phylink_pcs pointers to
+phylink_pcs_neg_mode() and pass in the appropriate structures. Set
+pl->pcs_neg_mode before returning, and remove the return value.
+
+This will allow the capabilities of the PCS and any PHY to be used when
+deciding which pcs_neg_mode should be used.
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
+Link: https://patch.msgid.link/E1tIUrP-006ITh-6u@rmk-PC.armlinux.org.uk
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/phylink.c | 26 +++++++++++++-------------
+ 1 file changed, 13 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -1102,7 +1102,8 @@ static void phylink_pcs_an_restart(struc
+ 
+ /**
+  * phylink_pcs_neg_mode() - helper to determine PCS inband mode
+- * @mode: one of %MLO_AN_FIXED, %MLO_AN_PHY, %MLO_AN_INBAND.
++ * @pl: a pointer to a &struct phylink returned from phylink_create()
++ * @pcs: a pointer to &struct phylink_pcs
+  * @interface: interface mode to be used
+  * @advertising: adertisement ethtool link mode mask
+  *
+@@ -1119,11 +1120,13 @@ static void phylink_pcs_an_restart(struc
+  * Note: this is for cases where the PCS itself is involved in negotiation
+  * (e.g. Clause 37, SGMII and similar) not Clause 73.
+  */
+-static unsigned int phylink_pcs_neg_mode(unsigned int mode,
+-					 phy_interface_t interface,
+-					 const unsigned long *advertising)
++static void phylink_pcs_neg_mode(struct phylink *pl, struct phylink_pcs *pcs,
++				 phy_interface_t interface,
++				 const unsigned long *advertising)
+ {
+-	unsigned int neg_mode;
++	unsigned int neg_mode, mode;
++
++	mode = pl->cur_link_an_mode;
+ 
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+@@ -1164,7 +1167,7 @@ static unsigned int phylink_pcs_neg_mode
+ 		break;
+ 	}
+ 
+-	return neg_mode;
++	pl->pcs_neg_mode = neg_mode;
+ }
+ 
+ static void phylink_major_config(struct phylink *pl, bool restart,
+@@ -1178,10 +1181,6 @@ static void phylink_major_config(struct
+ 
+ 	phylink_dbg(pl, "major config %s\n", phy_modes(state->interface));
+ 
+-	pl->pcs_neg_mode = phylink_pcs_neg_mode(pl->cur_link_an_mode,
+-						state->interface,
+-						state->advertising);
+-
+ 	if (pl->using_mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+ 		if (IS_ERR(pcs)) {
+@@ -1194,6 +1193,8 @@ static void phylink_major_config(struct
+ 		pcs_changed = pcs && pl->pcs != pcs;
+ 	}
+ 
++	phylink_pcs_neg_mode(pl, pcs, state->interface, state->advertising);
++
+ 	phylink_pcs_poll_stop(pl);
+ 
+ 	if (pl->mac_ops->mac_prepare) {
+@@ -1284,9 +1285,8 @@ static int phylink_change_inband_advert(
+ 		    pl->link_config.pause);
+ 
+ 	/* Recompute the PCS neg mode */
+-	pl->pcs_neg_mode = phylink_pcs_neg_mode(pl->cur_link_an_mode,
+-					pl->link_config.interface,
+-					pl->link_config.advertising);
++	phylink_pcs_neg_mode(pl, pl->pcs, pl->link_config.interface,
++			     pl->link_config.advertising);
+ 
+ 	neg_mode = pl->cur_link_an_mode;
+ 	if (pl->pcs->neg_mode)
