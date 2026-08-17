@@ -1,0 +1,282 @@
+From d7b52f91ca08479291817c5ac22991d032911e12 Mon Sep 17 00:00:00 2001
+From: Lei Wei <quic_leiwei@quicinc.com>
+Date: Mon, 29 Jan 2024 11:39:36 +0800
+Subject: [PATCH] net: pcs: qcom-ipq9574: Update IPQ9574 PCS driver
+
+Keep the PCS driver synced with the latest version posted to the kernel
+community and add the XPCS reset support.
+
+Signed-off-by: Luo Jie <quic_luoj@quicinc.com>
+Signed-off-by: Alexandru Gagniuc <mr.nuke.me@gmail.com>
+---
+ .../bindings/net/pcs/qcom,ipq9574-pcs.yaml    |  7 ++
+ drivers/net/pcs/pcs-qcom-ipq9574.c            | 68 +++++++++++++++----
+ 2 files changed, 63 insertions(+), 12 deletions(-)
+
+--- a/Documentation/devicetree/bindings/net/pcs/qcom,ipq9574-pcs.yaml
++++ b/Documentation/devicetree/bindings/net/pcs/qcom,ipq9574-pcs.yaml
+@@ -98,6 +98,10 @@ properties:
+       - const: sys
+       - const: ahb
+ 
++  resets:
++    maxItems: 1
++    description: XPCS reset
++
+   '#clock-cells':
+     const: 1
+     description: See include/dt-bindings/net/qcom,ipq9574-pcs.h for constants
+@@ -137,6 +141,7 @@ required:
+   - '#size-cells'
+   - clocks
+   - clock-names
++  - resets
+   - '#clock-cells'
+ 
+ additionalProperties: false
+@@ -144,6 +149,7 @@ additionalProperties: false
+ examples:
+   - |
+     #include <dt-bindings/clock/qcom,ipq9574-gcc.h>
++    #include <dt-bindings/reset/qcom,ipq9574-gcc.h>
+ 
+     ethernet-pcs@7a00000 {
+         compatible = "qcom,ipq9574-pcs";
+@@ -154,6 +160,7 @@ examples:
+                  <&gcc GCC_UNIPHY0_AHB_CLK>;
+         clock-names = "sys",
+                       "ahb";
++        resets = <&gcc GCC_UNIPHY0_XPCS_RESET>;
+         #clock-cells = <1>;
+ 
+         pcs-mii@0 {
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -13,6 +13,7 @@
+ #include <linux/phylink.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
++#include <linux/reset.h>
+ 
+ #include <dt-bindings/net/qcom,ipq9574-pcs.h>
+ 
+@@ -31,9 +32,12 @@
+ #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
+ #define PCS_MODE_SGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x4)
+ #define PCS_MODE_QSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x1)
++#define PCS_MODE_PSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x2)
+ #define PCS_MODE_2500BASEX		FIELD_PREP(PCS_MODE_SEL_MASK, 0x8)
+ #define PCS_MODE_XPCS			FIELD_PREP(PCS_MODE_SEL_MASK, 0x10)
+ #define PCS_MODE_SGMII_MODE_MASK	GENMASK(6, 4)
++#define PCS_MODE_SGMII_MODE_MAC		FIELD_PREP(PCS_MODE_SGMII_MODE_MASK, \
++						   0x2)
+ #define PCS_MODE_SGMII_MODE_1000BASEX	FIELD_PREP(PCS_MODE_SGMII_MODE_MASK, \
+ 						   0x0)
+ 
+@@ -52,6 +56,8 @@
+ #define PCS_MII_STS_SPEED_10		0
+ #define PCS_MII_STS_SPEED_100		1
+ #define PCS_MII_STS_SPEED_1000		2
++#define PCS_MII_STS_PAUSE_TX_EN		BIT(1)
++#define PCS_MII_STS_PAUSE_RX_EN		BIT(0)
+ 
+ #define PCS_QP_USXG_OPTION		0x584
+ #define PCS_QP_USXG_GMII_SRC_XPCS	BIT(0)
+@@ -142,6 +148,7 @@ struct ipq_pcs {
+ 	struct clk_hw tx_hw;
+ 
+ 	struct ipq_pcs_mii *qpcs_mii[PCS_MAX_MII_NRS];
++	struct reset_control *xpcs_rstc;
+ };
+ 
+ #define phylink_pcs_to_qpcs_mii(_pcs)	\
+@@ -184,6 +191,11 @@ static void ipq_pcs_get_state_sgmii(stru
+ 		state->duplex = DUPLEX_FULL;
+ 	else
+ 		state->duplex = DUPLEX_HALF;
++
++	if (val & PCS_MII_STS_PAUSE_TX_EN)
++		state->pause |= MLO_PAUSE_TX;
++	if (val & PCS_MII_STS_PAUSE_RX_EN)
++		state->pause |= MLO_PAUSE_RX;
+ }
+ 
+ static void ipq_pcs_get_state_2500basex(struct ipq_pcs *qpcs,
+@@ -198,7 +210,6 @@ static void ipq_pcs_get_state_2500basex(
+ 		return;
+ 	}
+ 
+-
+ 	state->link = !!(val & PCS_MII_LINK_STS);
+ 
+ 	if (!state->link)
+@@ -281,17 +292,27 @@ static int ipq_pcs_config_mode(struct ip
+ {
+ 	unsigned long rate = 125000000;
+ 	unsigned int val, mask, misc2 = 0;
++	bool xpcs_mode = false;
+ 	int ret;
+ 
++	/* Assert XPCS reset */
++	reset_control_assert(qpcs->xpcs_rstc);
++
+ 	/* Configure PCS interface mode */
+ 	mask = PCS_MODE_SEL_MASK;
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+-		val = PCS_MODE_SGMII;
++		mask |= PCS_MODE_SGMII_MODE_MASK;
++		val = PCS_MODE_SGMII | PCS_MODE_SGMII_MODE_MAC;
+ 		misc2 = PCS_MISC2_MODE_SGMII;
+ 		break;
+ 	case PHY_INTERFACE_MODE_QSGMII:
+-		val = PCS_MODE_QSGMII;
++		mask |= PCS_MODE_SGMII_MODE_MASK;
++		val = PCS_MODE_QSGMII | PCS_MODE_SGMII_MODE_MAC;
++		break;
++	case PHY_INTERFACE_MODE_PSGMII:
++		mask |= PCS_MODE_SGMII_MODE_MASK;
++		val = PCS_MODE_PSGMII | PCS_MODE_SGMII_MODE_MAC;
+ 		break;
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 		mask |= PCS_MODE_SGMII_MODE_MASK;
+@@ -308,6 +329,7 @@ static int ipq_pcs_config_mode(struct ip
+ 	case PHY_INTERFACE_MODE_10GBASER:
+ 		val = PCS_MODE_XPCS;
+ 		rate = 312500000;
++		xpcs_mode = true;
+ 		break;
+ 	default:
+ 		return -EOPNOTSUPP;
+@@ -367,6 +389,10 @@ static int ipq_pcs_config_mode(struct ip
+ 		return ret;
+ 	}
+ 
++	/* Deassert XPCS */
++	if (xpcs_mode)
++		reset_control_deassert(qpcs->xpcs_rstc);
++
+ 	return 0;
+ }
+ 
+@@ -384,15 +410,13 @@ static int ipq_pcs_config_sgmii(struct i
+ 			return ret;
+ 	}
+ 
+-	/* Nothing to do here as in-band autoneg mode is enabled
+-	 * by default for each PCS MII port.
+-	 */
++	/* Set AN mode or force mode */
+ 	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
+-		return 0;
+-
+-	/* Set force speed mode */
+-	return regmap_set_bits(qpcs->regmap,
+-			       PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
++		return regmap_clear_bits(qpcs->regmap,
++					 PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
++	else
++		return regmap_set_bits(qpcs->regmap,
++				       PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
+ }
+ 
+ static int ipq_pcs_config_2500basex(struct ipq_pcs *qpcs)
+@@ -417,6 +441,10 @@ static int ipq_pcs_config_usxgmii(struct
+ 		if (ret)
+ 			return ret;
+ 
++		ret = regmap_set_bits(qpcs->regmap, XPCS_DIG_CTRL, XPCS_USXG_EN);
++		if (ret)
++			return ret;
++
+ 		if (interface == PHY_INTERFACE_MODE_10G_QXGMII) {
+ 			ret = regmap_update_bits(qpcs->regmap, XPCS_KR_CTRL,
+ 						 XPCS_USXG_MODE_MASK, XPCS_10G_QXGMII_MODE);
+@@ -432,6 +460,7 @@ static int ipq_pcs_config_usxgmii(struct
+ 			ret = regmap_set_bits(qpcs->regmap, XPCS_DIG_CTRL, XPCS_SOFT_RESET);
+ 			if (ret)
+ 				return ret;
++		}
+ 	}
+ 
+ 	/* Disable Tx IPG check for 10G_QXGMII */
+@@ -559,7 +588,6 @@ static int ipq_pcs_link_up_config_usxgmi
+ 	reg = (index == 0) ? XPCS_DIG_CTRL : XPCS_MII1_DIG_CTRL(index);
+ 	val = (index == 0) ? XPCS_USXG_ADPT_RESET : XPCS_MII1_USXG_ADPT_RESET;
+ 	return regmap_set_bits(qpcs->regmap, reg, val);
+-
+ }
+ 
+ static int ipq_pcs_validate(struct phylink_pcs *pcs, unsigned long *supported,
+@@ -568,6 +596,7 @@ static int ipq_pcs_validate(struct phyli
+ 	switch (state->interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 	case PHY_INTERFACE_MODE_10GBASER:
+ 		return 0;
+@@ -592,6 +621,7 @@ static unsigned int ipq_pcs_inband_caps(
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 	case PHY_INTERFACE_MODE_10G_QXGMII:
+@@ -648,6 +678,7 @@ static void ipq_pcs_get_state(struct phy
+ 	switch (state->interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 		/* SGMII and 1000BASEX in-band autoneg word format are decoded
+ 		 * by PCS hardware and both placed to the same status register.
+@@ -689,6 +720,7 @@ static int ipq_pcs_config(struct phylink
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 		return ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+@@ -703,6 +735,11 @@ static int ipq_pcs_config(struct phylink
+ 	};
+ }
+ 
++static void ipq_pcs_an_restart(struct phylink_pcs *pcs)
++{
++	/* Currently not used */
++}
++
+ static void ipq_pcs_link_up(struct phylink_pcs *pcs,
+ 			    unsigned int neg_mode,
+ 			    phy_interface_t interface,
+@@ -716,6 +753,7 @@ static void ipq_pcs_link_up(struct phyli
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
++	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 		ret = ipq_pcs_link_up_config_sgmii(qpcs, index,
+ 						   neg_mode, speed);
+@@ -746,6 +784,7 @@ static const struct phylink_pcs_ops ipq_
+ 	.pcs_disable = ipq_pcs_disable,
+ 	.pcs_get_state = ipq_pcs_get_state,
+ 	.pcs_config = ipq_pcs_config,
++	.pcs_an_restart = ipq_pcs_an_restart,
+ 	.pcs_link_up = ipq_pcs_link_up,
+ };
+ 
+@@ -990,6 +1029,11 @@ static int ipq9574_pcs_probe(struct plat
+ 		return dev_err_probe(dev, PTR_ERR(clk),
+ 				     "Failed to enable AHB clock\n");
+ 
++	qpcs->xpcs_rstc = devm_reset_control_get_optional(dev, NULL);
++	if (IS_ERR_OR_NULL(qpcs->xpcs_rstc))
++		return dev_err_probe(dev, PTR_ERR(qpcs->xpcs_rstc),
++				     "Failed to get XPCS reset\n");
++
+ 	ret = ipq_pcs_clk_register(qpcs);
+ 	if (ret)
+ 		return ret;

@@ -1,0 +1,218 @@
+From: Kenneth Kasilag <kenneth@kasilag.me>
+Date: Thu, 02 Jul 2026 00:00:00 +0000
+Subject: [PATCH] net: pcs: qcom-ipq9574: align USXGMII bring-up with vendor SSDK
+
+Align the USXGMII configuration sequence with the SSDK:
+
+- Reset the PCS PLL by programming the whole reset register with the
+  documented assert and release values and 100ms holds, instead of
+  toggling a single bit for 1ms and relying on the power-on state of
+  the remaining analog enables.
+
+- Keep the uniphy port clocks disabled across the reconfiguration and
+  re-enable them after calibration, before releasing the XPCS reset.
+  Restore them on failure as well, so the enable count stays balanced
+  against the pcs_enable/pcs_disable callbacks.
+
+- Select in-band link detection explicitly rather than the SFP
+  loss-of-signal input, which does not exist on non-SFP ports.
+
+- Wait for the 10GBASE-R receiver to link before enabling the USXGMII
+  adaptation layer. Best-effort, since the PHY SerDes may only come
+  up later.
+
+Other interface modes keep the previous behaviour.
+
+Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
+---
+ drivers/net/pcs/pcs-qcom-ipq9574.c | 104 ++++++++++++++++++++++++-----
+ 1 file changed, 91 insertions(+), 13 deletions(-)
+
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -71,6 +71,12 @@
+ 
+ #define PCS_PLL_RESET			0x780
+ #define PCS_ANA_SW_RESET		BIT(6)
++#define PCS_PLL_RESET_ASSERT		0x2bf
++#define PCS_PLL_RESET_RELEASE		0x2ff
++
++/* LOS-from-SFP select; 0x7 on SFP ports, 0 otherwise */
++#define PCS_LINK_DETECT			0x570
++#define PCS_DETECT_LOS_FROM_SFP		GENMASK(8, 6)
+ 
+ #define XPCS_INDIRECT_ADDR		0x8000
+ #define XPCS_INDIRECT_AHB_ADDR		0x83fc
+@@ -299,6 +305,22 @@ static void ipq_pcs_get_state_10gbaser(s
+ 	state->pause |= MLO_PAUSE_TXRX_MASK;
+ }
+ 
++/* Re-enable the port clocks held off across a USXGMII reconfiguration */
++static int ipq_pcs_restore_port_clks(struct ipq_pcs *qpcs,
++				     phy_interface_t interface)
++{
++	int ret;
++
++	if (interface != PHY_INTERFACE_MODE_USXGMII || !qpcs->qpcs_mii[0])
++		return 0;
++
++	ret = clk_prepare_enable(qpcs->qpcs_mii[0]->rx_clk);
++	if (ret)
++		return ret;
++
++	return clk_prepare_enable(qpcs->qpcs_mii[0]->tx_clk);
++}
++
+ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
+ 			       phy_interface_t interface)
+ {
+@@ -307,6 +329,12 @@ static int ipq_pcs_config_mode(struct ip
+ 	bool xpcs_mode = false;
+ 	int ret;
+ 
++	/* The port clocks must be held off across the reconfiguration */
++	if (interface == PHY_INTERFACE_MODE_USXGMII && qpcs->qpcs_mii[0]) {
++		clk_disable_unprepare(qpcs->qpcs_mii[0]->rx_clk);
++		clk_disable_unprepare(qpcs->qpcs_mii[0]->tx_clk);
++	}
++
+ 	/* Assert XPCS reset */
+ 	reset_control_assert(qpcs->xpcs_rstc);
+ 
+@@ -344,18 +372,19 @@ static int ipq_pcs_config_mode(struct ip
+ 		xpcs_mode = true;
+ 		break;
+ 	default:
+-		return -EOPNOTSUPP;
++		ret = -EOPNOTSUPP;
++		goto err_clk;
+ 	}
+ 
+ 	ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
+ 	if (ret)
+-		return ret;
++		goto err_clk;
+ 
+ 	if (interface == PHY_INTERFACE_MODE_10G_QXGMII) {
+ 		ret = regmap_set_bits(qpcs->regmap, PCS_QP_USXG_OPTION,
+ 				      PCS_QP_USXG_GMII_SRC_XPCS);
+ 		if (ret)
+-			return ret;
++			goto err_clk;
+ 	}
+ 
+ 	if (interface == PHY_INTERFACE_MODE_USXGMII)
+@@ -366,7 +395,15 @@ static int ipq_pcs_config_mode(struct ip
+ 					 PCS_MISC2_MODE_MASK |
+ 					 PCS_MISC2_RATE_MASK, misc2);
+ 		if (ret)
+-			return ret;
++			goto err_clk;
++	}
++
++	/* Link detection is in-band; there is no SFP LOS input here */
++	if (interface == PHY_INTERFACE_MODE_USXGMII) {
++		ret = regmap_update_bits(qpcs->regmap, PCS_LINK_DETECT,
++					 PCS_DETECT_LOS_FROM_SFP, 0);
++		if (ret)
++			goto err_clk;
+ 	}
+ 
+ 	/* Pulse the resets as the vendor SSDK does: both held for
+@@ -382,14 +419,34 @@ static int ipq_pcs_config_mode(struct ip
+ 	}
+ 
+ 	/* PCS PLL reset */
+-	ret = regmap_clear_bits(qpcs->regmap, PCS_PLL_RESET, PCS_ANA_SW_RESET);
+-	if (ret)
+-		return ret;
++	if (interface == PHY_INTERFACE_MODE_USXGMII) {
++		/* Program the whole register: the analog enables must not
++		 * be left at their power-on state.
++		 */
++		ret = regmap_write(qpcs->regmap, PCS_PLL_RESET,
++				   PCS_PLL_RESET_ASSERT);
++		if (ret)
++			goto err_clk;
+ 
+-	fsleep(20000);
+-	ret = regmap_set_bits(qpcs->regmap, PCS_PLL_RESET, PCS_ANA_SW_RESET);
+-	if (ret)
+-		return ret;
++		msleep(100);
++		ret = regmap_write(qpcs->regmap, PCS_PLL_RESET,
++				   PCS_PLL_RESET_RELEASE);
++		if (ret)
++			goto err_clk;
++
++		msleep(100);
++	} else {
++		ret = regmap_clear_bits(qpcs->regmap, PCS_PLL_RESET,
++					PCS_ANA_SW_RESET);
++		if (ret)
++			goto err_clk;
++
++		fsleep(20000);
++		ret = regmap_set_bits(qpcs->regmap, PCS_PLL_RESET,
++				      PCS_ANA_SW_RESET);
++		if (ret)
++			goto err_clk;
++	}
+ 
+ 	/* Wait for calibration completion */
+ 	ret = regmap_read_poll_timeout(qpcs->regmap, PCS_CALIBRATION,
+@@ -397,9 +454,14 @@ static int ipq_pcs_config_mode(struct ip
+ 				       1000, 100000);
+ 	if (ret) {
+ 		dev_err(qpcs->dev, "PCS calibration timed-out\n");
+-		return ret;
++		goto err_clk;
+ 	}
+ 
++	/* Re-enable the port clocks disabled at entry */
++	ret = ipq_pcs_restore_port_clks(qpcs, interface);
++	if (ret)
++		return ret;
++
+ 	qpcs->interface = interface;
+ 
+ 	/* The clock output register is only writable after PLL reset
+@@ -434,6 +496,12 @@ static int ipq_pcs_config_mode(struct ip
+ 		reset_control_deassert(qpcs->xpcs_rstc);
+ 
+ 	return 0;
++
++err_clk:
++	/* Best-effort restore of the clocks disabled at entry */
++	ipq_pcs_restore_port_clks(qpcs, interface);
++
++	return ret;
+ }
+ 
+ static int ipq_pcs_config_sgmii(struct ipq_pcs *qpcs,
+@@ -472,7 +540,7 @@ static int ipq_pcs_config_usxgmii(struct
+ 				  int index,
+ 				  phy_interface_t interface)
+ {
+-	unsigned int reg;
++	unsigned int reg, val;
+ 	int ret;
+ 
+ 	/* Configure the XPCS for USXGMII mode if required */
+@@ -481,6 +549,16 @@ static int ipq_pcs_config_usxgmii(struct
+ 		if (ret)
+ 			return ret;
+ 
++		/* Best-effort wait for the receiver to link before enabling
++		 * adaptation; the PHY SerDes may only come up later.
++		 */
++		ret = regmap_read_poll_timeout(qpcs->regmap, XPCS_KR_STS,
++					       val, val & XPCS_KR_LINK_STS,
++					       1000, 100000);
++		if (ret)
++			dev_warn(qpcs->dev,
++				 "10GBASE-R link not up before USXG_EN\n");
++
+ 		ret = regmap_set_bits(qpcs->regmap, XPCS_DIG_CTRL, XPCS_USXG_EN);
+ 		if (ret)
+ 			return ret;
