@@ -109,6 +109,9 @@ define U-Boot/king3399-rk3399
   NAME:=Rongpin King3399
   BUILD_DEVICES:= \
     rongpin_king3399
+  DEPENDS:=+PACKAGE_u-boot-$(1):rkbin-rk3399
+  ATF:=rk3399_bl31_v1.36.elf
+  USE_RKBIN:=1
 endef
 
 define U-Boot/mpc1903-rk3399
