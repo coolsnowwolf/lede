@@ -1,5 +1,19 @@
 DTS_DIR := $(DTS_DIR)/qcom
 
+define Device/8devices_kiwi-dvk
+	$(call Device/FitImage)
+	$(call Device/EmmcImage)
+	DEVICE_VENDOR := 8devices
+	DEVICE_MODEL := Kiwi-DVK
+	DEVICE_DTS_CONFIG := config@8dev-kiwi
+	SOC := ipq9570
+	DEVICE_PACKAGES := kmod-ath12k ath12k-firmware-qcn9274 \
+		ipq-wifi-8devices_kiwi f2fsck mkf2fs kmod-sfp \
+		kmod-phy-maxlinear kmod-phy-realtek rtl826x-firmware
+	IMAGE/factory.bin := qsdk-ipq-factory-nor
+endef
+TARGET_DEVICES += 8devices_kiwi-dvk
+
 define Device/qcom_rdp433
 	$(call Device/FitImageLzma)
 	DEVICE_VENDOR := Qualcomm Technologies, Inc.
