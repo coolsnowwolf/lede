@@ -1,0 +1,258 @@
+From 36a3a919391dea2000f355125f0a161c453fcf78 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Sat, 8 Feb 2025 00:08:08 +0100
+Subject: [PATCH 02/10] clk: en7523: generalize register clocks function
+
+Generalize register clocks function for Airoha EN7523 and EN7581 clocks
+driver. The same logic is applied for both clock hence code can be
+reduced and simplified by putting the base_clocks struct in the soc_data
+and passing that to a generic register clocks function.
+
+While at it rework some function to return error and use devm variant
+for clk_hw_regiser.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/clk/clk-en7523.c | 148 +++++++++++++++++----------------------
+ 1 file changed, 66 insertions(+), 82 deletions(-)
+
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -78,8 +78,10 @@ struct en_rst_data {
+ 
+ struct en_clk_soc_data {
+ 	u32 num_clocks;
++	const struct en_clk_desc *base_clks;
+ 	const struct clk_ops pcie_ops;
+ 	int (*hw_init)(struct platform_device *pdev,
++		       const struct en_clk_soc_data *soc_data,
+ 		       struct clk_hw_onecell_data *clk_data);
+ };
+ 
+@@ -450,10 +452,11 @@ static struct clk_hw *en7523_register_pc
+ 		.ops = &soc_data->pcie_ops,
+ 	};
+ 	struct en_clk_gate *cg;
++	int err;
+ 
+ 	cg = devm_kzalloc(dev, sizeof(*cg), GFP_KERNEL);
+ 	if (!cg)
+-		return NULL;
++		return ERR_PTR(-ENOMEM);
+ 
+ 	cg->map = clk_map;
+ 	cg->hw.init = &init;
+@@ -461,12 +464,62 @@ static struct clk_hw *en7523_register_pc
+ 	if (init.ops->unprepare)
+ 		init.ops->unprepare(&cg->hw);
+ 
+-	if (clk_hw_register(dev, &cg->hw))
+-		return NULL;
++	err = devm_clk_hw_register(dev, &cg->hw);
++	if (err)
++		return ERR_PTR(err);
+ 
+ 	return &cg->hw;
+ }
+ 
++static int en75xx_register_clocks(struct device *dev,
++				  const struct en_clk_soc_data *soc_data,
++				  struct clk_hw_onecell_data *clk_data,
++				  struct regmap *map, struct regmap *clk_map)
++{
++	struct clk_hw *hw;
++	u32 rate;
++	int i;
++
++	for (i = 0; i < soc_data->num_clocks - 1; i++) {
++		const struct en_clk_desc *desc = &soc_data->base_clks[i];
++		u32 val, reg = desc->div_reg ? desc->div_reg : desc->base_reg;
++		int err;
++
++		err = regmap_read(map, desc->base_reg, &val);
++		if (err) {
++			pr_err("Failed reading fixed clk rate %s: %d\n",
++			       desc->name, err);
++			return err;
++		}
++		rate = en7523_get_base_rate(desc, val);
++
++		err = regmap_read(map, reg, &val);
++		if (err) {
++			pr_err("Failed reading fixed clk div %s: %d\n",
++			       desc->name, err);
++			return err;
++		}
++		rate /= en7523_get_div(desc, val);
++
++		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
++		if (IS_ERR(hw)) {
++			pr_err("Failed to register clk %s: %ld\n",
++			       desc->name, PTR_ERR(hw));
++			return PTR_ERR(hw);
++		}
++
++		clk_data->hws[desc->id] = hw;
++	}
++
++	hw = en7523_register_pcie_clk(dev, clk_map);
++	if (IS_ERR(hw))
++		return PTR_ERR(hw);
++
++	clk_data->hws[EN7523_CLK_PCIE] = hw;
++
++	return 0;
++}
++
+ static int en7581_pci_is_enabled(struct clk_hw *hw)
+ {
+ 	struct en_clk_gate *cg = container_of(hw, struct en_clk_gate, hw);
+@@ -504,38 +557,6 @@ static void en7581_pci_disable(struct cl
+ 	usleep_range(1000, 2000);
+ }
+ 
+-static void en7523_register_clocks(struct device *dev, struct clk_hw_onecell_data *clk_data,
+-				   struct regmap *map, struct regmap *clk_map)
+-{
+-	struct clk_hw *hw;
+-	u32 rate;
+-	int i;
+-
+-	for (i = 0; i < ARRAY_SIZE(en7523_base_clks); i++) {
+-		const struct en_clk_desc *desc = &en7523_base_clks[i];
+-		u32 reg = desc->div_reg ? desc->div_reg : desc->base_reg;
+-		u32 val;
+-
+-		regmap_read(map, desc->base_reg, &val);
+-
+-		rate = en7523_get_base_rate(desc, val);
+-		regmap_read(map, reg, &val);
+-		rate /= en7523_get_div(desc, val);
+-
+-		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
+-		if (IS_ERR(hw)) {
+-			pr_err("Failed to register clk %s: %ld\n",
+-			       desc->name, PTR_ERR(hw));
+-			continue;
+-		}
+-
+-		clk_data->hws[desc->id] = hw;
+-	}
+-
+-	hw = en7523_register_pcie_clk(dev, clk_map);
+-	clk_data->hws[EN7523_CLK_PCIE] = hw;
+-}
+-
+ static const struct regmap_config en7523_clk_regmap_config = {
+ 	.reg_bits = 32,
+ 	.val_bits = 32,
+@@ -543,6 +564,7 @@ static const struct regmap_config en7523
+ };
+ 
+ static int en7523_clk_hw_init(struct platform_device *pdev,
++			      const struct en_clk_soc_data *soc_data,
+ 			      struct clk_hw_onecell_data *clk_data)
+ {
+ 	void __iomem *base, *np_base;
+@@ -566,51 +588,7 @@ static int en7523_clk_hw_init(struct pla
+ 	if (IS_ERR(clk_map))
+ 		return PTR_ERR(clk_map);
+ 
+-	en7523_register_clocks(&pdev->dev, clk_data, map, clk_map);
+-
+-	return 0;
+-}
+-
+-static void en7581_register_clocks(struct device *dev, struct clk_hw_onecell_data *clk_data,
+-				   struct regmap *map, struct regmap *clk_map)
+-{
+-	struct clk_hw *hw;
+-	u32 rate;
+-	int i;
+-
+-	for (i = 0; i < ARRAY_SIZE(en7581_base_clks); i++) {
+-		const struct en_clk_desc *desc = &en7581_base_clks[i];
+-		u32 val, reg = desc->div_reg ? desc->div_reg : desc->base_reg;
+-		int err;
+-
+-		err = regmap_read(map, desc->base_reg, &val);
+-		if (err) {
+-			pr_err("Failed reading fixed clk rate %s: %d\n",
+-			       desc->name, err);
+-			continue;
+-		}
+-		rate = en7523_get_base_rate(desc, val);
+-
+-		err = regmap_read(map, reg, &val);
+-		if (err) {
+-			pr_err("Failed reading fixed clk div %s: %d\n",
+-			       desc->name, err);
+-			continue;
+-		}
+-		rate /= en7523_get_div(desc, val);
+-
+-		hw = clk_hw_register_fixed_rate(dev, desc->name, NULL, 0, rate);
+-		if (IS_ERR(hw)) {
+-			pr_err("Failed to register clk %s: %ld\n",
+-			       desc->name, PTR_ERR(hw));
+-			continue;
+-		}
+-
+-		clk_data->hws[desc->id] = hw;
+-	}
+-
+-	hw = en7523_register_pcie_clk(dev, clk_map);
+-	clk_data->hws[EN7523_CLK_PCIE] = hw;
++	return en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
+ }
+ 
+ static int en7523_reset_update(struct reset_controller_dev *rcdev,
+@@ -689,10 +667,12 @@ static int en7581_reset_register(struct
+ }
+ 
+ static int en7581_clk_hw_init(struct platform_device *pdev,
++			      const struct en_clk_soc_data *soc_data,
+ 			      struct clk_hw_onecell_data *clk_data)
+ {
+ 	struct regmap *map, *clk_map;
+ 	void __iomem *base;
++	int ret;
+ 
+ 	map = syscon_regmap_lookup_by_compatible("airoha,en7581-chip-scu");
+ 	if (IS_ERR(map))
+@@ -706,7 +686,9 @@ static int en7581_clk_hw_init(struct pla
+ 	if (IS_ERR(clk_map))
+ 		return PTR_ERR(clk_map);
+ 
+-	en7581_register_clocks(&pdev->dev, clk_data, map, clk_map);
++	ret = en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
++	if (ret)
++		return ret;
+ 
+ 	regmap_clear_bits(clk_map, REG_NP_SCU_SSTR,
+ 			  REG_PCIE_XSI0_SEL_MASK | REG_PCIE_XSI1_SEL_MASK);
+@@ -732,7 +714,7 @@ static int en7523_clk_probe(struct platf
+ 		return -ENOMEM;
+ 
+ 	clk_data->num = soc_data->num_clocks;
+-	r = soc_data->hw_init(pdev, clk_data);
++	r = soc_data->hw_init(pdev, soc_data, clk_data);
+ 	if (r)
+ 		return r;
+ 
+@@ -740,6 +722,7 @@ static int en7523_clk_probe(struct platf
+ }
+ 
+ static const struct en_clk_soc_data en7523_data = {
++	.base_clks = en7523_base_clks,
+ 	.num_clocks = ARRAY_SIZE(en7523_base_clks) + 1,
+ 	.pcie_ops = {
+ 		.is_enabled = en7523_pci_is_enabled,
+@@ -750,6 +733,7 @@ static const struct en_clk_soc_data en75
+ };
+ 
+ static const struct en_clk_soc_data en7581_data = {
++	.base_clks = en7581_base_clks,
+ 	/* We increment num_clocks by 1 to account for additional PCIe clock */
+ 	.num_clocks = ARRAY_SIZE(en7581_base_clks) + 1,
+ 	.pcie_ops = {

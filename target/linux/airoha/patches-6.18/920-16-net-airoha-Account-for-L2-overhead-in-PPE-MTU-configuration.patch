@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Sayantan Nandy <sayantann11@gmail.com>
+Date: Thu, 19 Jun 2026 12:00:00 +0530
+Subject: [PATCH] net: airoha: Account for L2 overhead in PPE MTU configuration
+
+The PPE egress MTU register and WAN MTU register compare against L2
+frame length without FCS, as confirmed by the hardware reset value of
+0x05EA (1514 = ETH_HLEN + 1500).
+
+Account for VLAN_ETH_HLEN when programming these registers to prevent
+valid VLAN-tagged frames from being incorrectly dropped by hardware.
+
+Rename the local variable from 'mtu' to 'len' in airoha_ppe_set_mtu()
+since it now represents a frame length rather than an L3 MTU value.
+
+Fixes: 99e204d255c9 ("net: airoha: Rework MTU configuration")
+
+Signed-off-by: Sayantan Nandy <sayantann11@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 2 +-
+ drivers/net/ethernet/airoha/airoha_ppe.c | 7 ++++---
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -8,6 +8,7 @@
+ #include <linux/of_reserved_mem.h>
+ #include <linux/platform_device.h>
+ #include <linux/tcp.h>
++#include <linux/if_vlan.h>
+ #include <linux/pcs/pcs.h>
+ #include <linux/u64_stats_sync.h>
+ #include <net/dst_metadata.h>
+@@ -2115,7 +2116,7 @@ static void airoha_dev_set_mtu(struct ne
+ 	if (!airoha_is_lan_gdm_dev(dev))
+ 		airoha_fe_rmw(dev->eth, REG_WAN_MTU0,
+ 			      WAN_MTU0_MASK,
+-			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu));
++			      FIELD_PREP(WAN_MTU0_MASK, netdev->mtu + VLAN_ETH_HLEN));
+ }
+ 
+ static int airoha_dev_open(struct net_device *netdev)
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -10,6 +10,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/rhashtable.h>
+ #include <net/ipv6.h>
++#include <linux/if_vlan.h>
+ #include <net/pkt_cls.h>
+ #include <net/route.h>
+ 
+@@ -107,7 +108,7 @@ void airoha_ppe_set_mtu(struct airoha_gd
+ 	struct airoha_eth *eth = dev->eth;
+ 	struct airoha_qdma *qdma;
+ 	int i, ppe_id, index;
+-	u32 mtu = 0;
++	u32 len = 0;
+ 
+ 	qdma = airoha_qdma_deref(dev);
+ 	for (i = 0; i < ARRAY_SIZE(port->devs); i++) {
+@@ -124,14 +125,15 @@ void airoha_ppe_set_mtu(struct airoha_gd
+ 
+ 		netdev = netdev_from_priv(d);
+ 		if (netif_running(netdev))
+-			mtu = max_t(u32, mtu, netdev->mtu);
++			len = max_t(u32, len, netdev->mtu);
+ 	}
+ 
++	len += VLAN_ETH_HLEN;
+ 	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
+ 	index = port->id == AIROHA_GDM4_IDX ? 7 : port->id;
+ 	airoha_fe_rmw(eth, REG_PPE_MTU(ppe_id, index),
+ 		      FP_EGRESS_MTU_MASK(index),
+-		      __field_prep(FP_EGRESS_MTU_MASK(index), mtu));
++		      __field_prep(FP_EGRESS_MTU_MASK(index), len));
+ }
+ 
+ static void airoha_ppe_hw_init(struct airoha_ppe *ppe)

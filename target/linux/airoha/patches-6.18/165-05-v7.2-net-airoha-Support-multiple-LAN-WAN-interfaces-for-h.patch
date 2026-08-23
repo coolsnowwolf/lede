@@ -1,0 +1,167 @@
+From ef2aee987174b51573645b4bdacedf610e89ce1a Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Wed, 3 Jun 2026 08:00:20 +0200
+Subject: [PATCH 5/5] net: airoha: Support multiple LAN/WAN interfaces for hw
+ MAC address configuration
+
+The EN7581 and AN7583 SoCs provide registers to configure hardware LAN/WAN
+MAC addresses. These registers are used during FE hw acceleration to
+determine whether received traffic is destined to this host (L3 traffic)
+or should be switched to another device (L2 traffic).
+The SoC hardware design assumes all interfaces configured as LAN (or WAN)
+share the MAC address MSBs, which are programmed into the
+REG_FE_{LAN,WAN}_MAC_H register. The LSBs of 'local' mac addresses can be
+expressed as a range via the REG_FE_MAC_LMIN and REG_FE_MAC_LMAX
+registers. In order to properly accelerate the traffic, FE module requires
+the user to configure the REG_FE_{LAN,WAN}_MAC_H register respecting this
+limitation. Please note a misconfiguration in REG_FE_{LAN,WAN}_MAC_H
+will still allow the user to log into the device for debugging.
+Previously, only a single interface was considered when programming these
+registers. Extend the logic to derive the correct minimum and maximum
+values for REG_FE_MAC_LMIN/REG_FE_MAC_LMAX when two or more interfaces are
+configured as LAN or WAN. Since this functionality was not available
+before this series, no regression is introduced.
+
+Tested-by: Madhur Agrawal <madhur.agrawal@airoha.com>
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260603-airoha-eth-multi-serdes-v9-6-5d476bc2f426@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 77 +++++++++++++++++++++---
+ drivers/net/ethernet/airoha/airoha_eth.h |  2 +-
+ drivers/net/ethernet/airoha/airoha_ppe.c |  4 +-
+ 3 files changed, 71 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -71,20 +71,76 @@ static void airoha_qdma_irq_disable(stru
+ 	airoha_qdma_set_irqmask(irq_bank, index, mask, 0);
+ }
+ 
+-static void airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
++static int airoha_set_macaddr(struct airoha_gdm_dev *dev, const u8 *addr)
+ {
++	u8 ref_addr[ETH_ALEN] __aligned(2);
+ 	struct airoha_eth *eth = dev->eth;
+-	u32 val, reg;
++	u32 reg, val, lmin, lmax;
++	int i;
++
++	eth_zero_addr(ref_addr);
++	lmin = (addr[3] << 16) | (addr[4] << 8) | addr[5];
++	lmax = lmin;
++
++	for (i = 0; i < ARRAY_SIZE(eth->ports); i++) {
++		struct airoha_gdm_port *port = eth->ports[i];
++		int j;
++
++		if (!port)
++			continue;
++
++		for (j = 0; j < ARRAY_SIZE(port->devs); j++) {
++			struct airoha_gdm_dev *iter_dev;
++			struct net_device *netdev;
++
++			iter_dev = port->devs[j];
++			if (!iter_dev || iter_dev == dev)
++				continue;
++
++			if (airoha_is_lan_gdm_dev(iter_dev) !=
++			    airoha_is_lan_gdm_dev(dev))
++				continue;
++
++			netdev = netdev_from_priv(iter_dev);
++			if (netdev->reg_state != NETREG_REGISTERED)
++				continue;
++
++			ether_addr_copy(ref_addr, netdev->dev_addr);
++			val = (netdev->dev_addr[3] << 16) |
++			      (netdev->dev_addr[4] << 8) | netdev->dev_addr[5];
++			if (val < lmin)
++				lmin = val;
++			if (val > lmax)
++				lmax = val;
++		}
++	}
++
++	if (!is_zero_ether_addr(ref_addr) && memcmp(ref_addr, addr, 3)) {
++		/* According to the HW design, hw mac address MSBs must be
++		 * the same for each net_device with the same LAN/WAN
++		 * configuration.
++		 */
++		struct net_device *netdev = netdev_from_priv(dev);
++
++		dev_warn(eth->dev,
++			 "%s: wrong mac addr, MSBs must be %02x:%02x:%02x\n",
++			 netdev->name, ref_addr[0], ref_addr[1],
++			 ref_addr[2]);
++		dev_warn(eth->dev, "FE hw forwarding won't work properly\n");
++
++		return -EINVAL;
++	}
+ 
+ 	reg = airoha_is_lan_gdm_dev(dev) ? REG_FE_LAN_MAC_H : REG_FE_WAN_MAC_H;
+ 	val = (addr[0] << 16) | (addr[1] << 8) | addr[2];
+ 	airoha_fe_wr(eth, reg, val);
+ 
+-	val = (addr[3] << 16) | (addr[4] << 8) | addr[5];
+-	airoha_fe_wr(eth, REG_FE_MAC_LMIN(reg), val);
+-	airoha_fe_wr(eth, REG_FE_MAC_LMAX(reg), val);
++	airoha_fe_wr(eth, REG_FE_MAC_LMIN(reg), lmin);
++	airoha_fe_wr(eth, REG_FE_MAC_LMAX(reg), lmax);
+ 
+-	airoha_ppe_init_upd_mem(dev);
++	airoha_ppe_init_upd_mem(dev, addr);
++
++	return 0;
+ }
+ 
+ static void airoha_set_gdm_port_fwd_cfg(struct airoha_eth *eth, u32 addr,
+@@ -1829,13 +1885,18 @@ static int airoha_dev_stop(struct net_de
+ static int airoha_dev_set_macaddr(struct net_device *netdev, void *p)
+ {
+ 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
++	struct sockaddr *addr = p;
+ 	int err;
+ 
+-	err = eth_mac_addr(netdev, p);
++	err = eth_prepare_mac_addr_change(netdev, p);
++	if (err)
++		return err;
++
++	err = airoha_set_macaddr(dev, addr->sa_data);
+ 	if (err)
+ 		return err;
+ 
+-	airoha_set_macaddr(dev, netdev->dev_addr);
++	eth_commit_mac_addr_change(netdev, p);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -683,7 +683,7 @@ void airoha_ppe_check_skb(struct airoha_
+ int airoha_ppe_setup_tc_block_cb(struct airoha_ppe_dev *dev, void *type_data);
+ int airoha_ppe_init(struct airoha_eth *eth);
+ void airoha_ppe_deinit(struct airoha_eth *eth);
+-void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev);
++void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr);
+ u32 airoha_ppe_get_total_num_entries(struct airoha_ppe *ppe);
+ struct airoha_foe_entry *airoha_ppe_foe_get_entry(struct airoha_ppe *ppe,
+ 						  u32 hash);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -1487,12 +1487,10 @@ void airoha_ppe_check_skb(struct airoha_
+ 	airoha_ppe_foe_insert_entry(ppe, skb, hash, rx_wlan);
+ }
+ 
+-void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev)
++void airoha_ppe_init_upd_mem(struct airoha_gdm_dev *dev, const u8 *addr)
+ {
+-	struct net_device *netdev = netdev_from_priv(dev);
+ 	struct airoha_gdm_port *port = dev->port;
+ 	struct airoha_eth *eth = dev->eth;
+-	const u8 *addr = netdev->dev_addr;
+ 	u32 val;
+ 
+ 	val = (addr[2] << 24) | (addr[3] << 16) | (addr[4] << 8) | addr[5];
