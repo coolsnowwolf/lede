@@ -1,0 +1,76 @@
+From 81f166ab23dda6cd17b62cbe6d6449c979d3e017 Mon Sep 17 00:00:00 2001
+From: Andrew LaMarche <andrewjlamarche@gmail.com>
+Date: Tue, 30 Jun 2026 00:09:27 +0000
+Subject: [PATCH v2 1/2] wifi: ath12k: support calibration-variant from device
+ tree
+
+ath10k and ath11k support reading calibration variants from the device
+tree to locate the correct Board Description File (BDF). The ath12k-wsi
+binding already describes using qcom,calibration-variant but it is not
+implemented in the driver.
+
+Many ath12k designs expose all the radios under a single phy, each of
+which typically require a separate BDF. Without this, the radios may not
+come up or will not be calibrated correctly.
+
+Fix this by parsing the device tree for the generation-agnostic
+qcom,calibration-variant. This allows the driver to properly select,
+read and apply the correct BDF.
+
+Link: https://lore.kernel.org/linux-wireless/8024a15f-bbab-47ba-bd18-f85eb1fe3dcd@oss.qualcomm.com/T/#mb5c504fb319166fef3df482b0f32afa0efcacc9f
+
+Signed-off-by: Andrew LaMarche <andrewjlamarche@gmail.com>
+---
+Changes in v2:
+- Drop ath12k-specific binding qcom,ath12k-calibration-variant in favor
+  of generation agnostic qcom,calibration-variant.
+- Link to v1: https://lore.kernel.org/all/20260131003222.2011259-1-andrewjlamarche@gmail.com
+---
+ drivers/net/wireless/ath/ath12k/core.c | 22 ++++++++++++++++++++++
+ drivers/net/wireless/ath/ath12k/qmi.c  |  4 ++++
+ 2 files changed, 26 insertions(+)
+
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -806,6 +806,28 @@ int ath12k_core_check_smbios(struct ath1
+ 	return 0;
+ }
+ 
++int ath12k_core_check_dt(struct ath12k_base *ab)
++{
++	size_t max_len = sizeof(ab->qmi.target.bdf_ext);
++	const char *variant = NULL;
++	struct device_node *node;
++
++	node = ab->dev->of_node;
++	if (!node)
++		return -ENOENT;
++
++	of_property_read_string(node, "qcom,calibration-variant",
++			&variant);
++	if (!variant)
++		return -ENODATA;
++
++	if (strscpy(ab->qmi.target.bdf_ext, variant, max_len) < 0)
++		ath12k_dbg(ab, ATH12K_DBG_BOOT,
++				"bdf variant string is longer than the buffer can accommodate (variant: %s)\n", variant);
++
++	return 0;
++}
++
+ static int ath12k_core_soc_create(struct ath12k_base *ab)
+ {
+ 	int ret;
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2903,6 +2903,10 @@ int ath12k_qmi_request_target_cap(struct
+ 	if (r)
+ 		ath12k_dbg(ab, ATH12K_DBG_QMI, "SMBIOS bdf variant name not set.\n");
+ 
++	r = ath12k_core_check_dt(ab);
++	if (r)
++		ath12k_dbg(ab, ATH12K_DBG_QMI, "DT bdf variant name not set.\n");
++
+ 	r = ath12k_acpi_start(ab);
+ 	if (r)
+ 		/* ACPI is optional so continue in case of an error */
