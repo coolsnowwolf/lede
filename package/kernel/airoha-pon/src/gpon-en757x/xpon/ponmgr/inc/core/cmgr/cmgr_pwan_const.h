@@ -1,0 +1,10 @@
+#ifndef _CMGR_PWAN_CONST_H_
+#define _CMGR_PWAN_CONST_H_
+
+#include "common/mgr_sdi.h"
+
+#define	CONST_QUEUE_NUMBER				XPON_QUEUE_NUMBER
+#define CONST_CHANNEL_NUMBER			XPON_CHANNEL_NUMBER
+#define CONST_SHAPING_NUMBER			XPON_SHAPING_NUMBER
+
+#endif /* _CMGR_PWAN_CONST_H_ */
