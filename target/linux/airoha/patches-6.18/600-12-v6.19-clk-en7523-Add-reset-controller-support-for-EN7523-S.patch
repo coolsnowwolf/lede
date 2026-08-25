@@ -1,0 +1,177 @@
+From 37de26f9d2f55cd74af55cb29c2860b5989bb728 Mon Sep 17 00:00:00 2001
+From: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Date: Sat, 20 Sep 2025 03:57:25 +0300
+Subject: [PATCH 2/3] clk: en7523: Add reset-controller support for EN7523 SoC
+
+Introduce reset API support to EN7523 clock driver. EN7523 uses the
+same reset logic as EN7581, so just reuse existing code.
+
+Signed-off-by: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Reviewed-by: AngeloGioacchino Del Regno <angelogioacchino.delregno@collabora.com>
+---
+ drivers/clk/clk-en7523.c | 96 ++++++++++++++++++++++++++++------------
+ 1 file changed, 67 insertions(+), 29 deletions(-)
+
+--- a/drivers/clk/clk-en7523.c
++++ b/drivers/clk/clk-en7523.c
+@@ -11,6 +11,7 @@
+ #include <linux/regmap.h>
+ #include <linux/reset-controller.h>
+ #include <dt-bindings/clock/en7523-clk.h>
++#include <dt-bindings/reset/airoha,en7523-reset.h>
+ #include <dt-bindings/reset/airoha,en7581-reset.h>
+ #include <dt-bindings/reset/airoha,an7583-reset.h>
+ 
+@@ -452,6 +453,53 @@ static const u16 en7581_rst_ofs[] = {
+ 	REG_RST_CTRL1,
+ };
+ 
++static const u16 en7523_rst_map[] = {
++	/* RST_CTRL2 */
++	[EN7523_XPON_PHY_RST]		= 0,
++	[EN7523_XSI_MAC_RST]		= 7,
++	[EN7523_XSI_PHY_RST]		= 8,
++	[EN7523_NPU_RST]		= 9,
++	[EN7523_I2S_RST]		= 10,
++	[EN7523_TRNG_RST]		= 11,
++	[EN7523_TRNG_MSTART_RST]	= 12,
++	[EN7523_DUAL_HSI0_RST]		= 13,
++	[EN7523_DUAL_HSI1_RST]		= 14,
++	[EN7523_HSI_RST]		= 15,
++	[EN7523_DUAL_HSI0_MAC_RST]	= 16,
++	[EN7523_DUAL_HSI1_MAC_RST]	= 17,
++	[EN7523_HSI_MAC_RST]		= 18,
++	[EN7523_WDMA_RST]		= 19,
++	[EN7523_WOE0_RST]		= 20,
++	[EN7523_WOE1_RST]		= 21,
++	[EN7523_HSDMA_RST]		= 22,
++	[EN7523_I2C2RBUS_RST]		= 23,
++	[EN7523_TDMA_RST]		= 24,
++	/* RST_CTRL1 */
++	[EN7523_PCM1_ZSI_ISI_RST]	= RST_NR_PER_BANK + 0,
++	[EN7523_FE_PDMA_RST]		= RST_NR_PER_BANK + 1,
++	[EN7523_FE_QDMA_RST]		= RST_NR_PER_BANK + 2,
++	[EN7523_PCM_SPIWP_RST]		= RST_NR_PER_BANK + 4,
++	[EN7523_CRYPTO_RST]		= RST_NR_PER_BANK + 6,
++	[EN7523_TIMER_RST]		= RST_NR_PER_BANK + 8,
++	[EN7523_PCM1_RST]		= RST_NR_PER_BANK + 11,
++	[EN7523_UART_RST]		= RST_NR_PER_BANK + 12,
++	[EN7523_GPIO_RST]		= RST_NR_PER_BANK + 13,
++	[EN7523_GDMA_RST]		= RST_NR_PER_BANK + 14,
++	[EN7523_I2C_MASTER_RST]		= RST_NR_PER_BANK + 16,
++	[EN7523_PCM2_ZSI_ISI_RST]	= RST_NR_PER_BANK + 17,
++	[EN7523_SFC_RST]		= RST_NR_PER_BANK + 18,
++	[EN7523_UART2_RST]		= RST_NR_PER_BANK + 19,
++	[EN7523_GDMP_RST]		= RST_NR_PER_BANK + 20,
++	[EN7523_FE_RST]			= RST_NR_PER_BANK + 21,
++	[EN7523_USB_HOST_P0_RST]	= RST_NR_PER_BANK + 22,
++	[EN7523_GSW_RST]		= RST_NR_PER_BANK + 23,
++	[EN7523_SFC2_PCM_RST]		= RST_NR_PER_BANK + 25,
++	[EN7523_PCIE0_RST]		= RST_NR_PER_BANK + 26,
++	[EN7523_PCIE1_RST]		= RST_NR_PER_BANK + 27,
++	[EN7523_PCIE_HB_RST]		= RST_NR_PER_BANK + 29,
++	[EN7523_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
++};
++
+ static const u16 en7581_rst_map[] = {
+ 	/* RST_CTRL2 */
+ 	[EN7581_XPON_PHY_RST]		= 0,
+@@ -564,6 +612,9 @@ static const u16 an7583_rst_map[] = {
+ 	[AN7583_XPON_MAC_RST]		= RST_NR_PER_BANK + 31,
+ };
+ 
++static int en7581_reset_register(struct device *dev, struct regmap *map,
++				 const u16 *rst_map, int nr_resets);
++
+ static u32 en7523_get_base_rate(const struct en_clk_desc *desc, u32 val)
+ {
+ 	if (!desc->base_bits)
+@@ -942,6 +993,7 @@ static int en7523_clk_hw_init(struct pla
+ {
+ 	void __iomem *base, *np_base;
+ 	struct regmap *map, *clk_map;
++	int err;
+ 
+ 	base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(base))
+@@ -961,7 +1013,13 @@ static int en7523_clk_hw_init(struct pla
+ 	if (IS_ERR(clk_map))
+ 		return PTR_ERR(clk_map);
+ 
+-	return en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
++
++	err = en75xx_register_clocks(&pdev->dev, soc_data, clk_data, map, clk_map);
++	if (err)
++		return err;
++
++	return en7581_reset_register(&pdev->dev, clk_map, en7523_rst_map,
++				     ARRAY_SIZE(en7523_rst_map));
+ }
+ 
+ static int en7523_reset_update(struct reset_controller_dev *rcdev,
+@@ -1016,7 +1074,8 @@ static const struct reset_control_ops en
+ 	.status = en7523_reset_status,
+ };
+ 
+-static int en7581_reset_register(struct device *dev, struct regmap *map)
++static int en7581_reset_register(struct device *dev, struct regmap *map,
++				 const u16 *rst_map, int nr_resets)
+ {
+ 	struct en_rst_data *rst_data;
+ 
+@@ -1025,10 +1084,10 @@ static int en7581_reset_register(struct
+ 		return -ENOMEM;
+ 
+ 	rst_data->bank_ofs = en7581_rst_ofs;
+-	rst_data->idx_map = en7581_rst_map;
++	rst_data->idx_map = rst_map;
+ 	rst_data->map = map;
+ 
+-	rst_data->rcdev.nr_resets = ARRAY_SIZE(en7581_rst_map);
++	rst_data->rcdev.nr_resets = nr_resets;
+ 	rst_data->rcdev.of_xlate = en7523_reset_xlate;
+ 	rst_data->rcdev.ops = &en7581_reset_ops;
+ 	rst_data->rcdev.of_node = dev->of_node;
+@@ -1073,30 +1132,8 @@ static int en7581_clk_hw_init(struct pla
+ 	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
+ 			   FIELD_PREP(REG_PCIE_CTRL, 3));
+ 
+-	return en7581_reset_register(&pdev->dev, clk_map);
+-}
+-
+-static int an7583_reset_register(struct device *dev, struct regmap *map)
+-{
+-	struct en_rst_data *rst_data;
+-
+-	rst_data = devm_kzalloc(dev, sizeof(*rst_data), GFP_KERNEL);
+-	if (!rst_data)
+-		return -ENOMEM;
+-
+-	rst_data->bank_ofs = en7581_rst_ofs;
+-	rst_data->idx_map = an7583_rst_map;
+-	rst_data->map = map;
+-
+-	rst_data->rcdev.nr_resets = ARRAY_SIZE(an7583_rst_map);
+-	rst_data->rcdev.of_xlate = en7523_reset_xlate;
+-	rst_data->rcdev.ops = &en7581_reset_ops;
+-	rst_data->rcdev.of_node = dev->of_node;
+-	rst_data->rcdev.of_reset_n_cells = 1;
+-	rst_data->rcdev.owner = THIS_MODULE;
+-	rst_data->rcdev.dev = dev;
+-
+-	return devm_reset_controller_register(dev, &rst_data->rcdev);
++	return en7581_reset_register(&pdev->dev, clk_map, en7581_rst_map,
++				     ARRAY_SIZE(en7581_rst_map));
+ }
+ 
+ static int an7583_clk_hw_init(struct platform_device *pdev,
+@@ -1129,7 +1166,8 @@ static int an7583_clk_hw_init(struct pla
+ 	regmap_update_bits(clk_map, REG_NP_SCU_PCIC, REG_PCIE_CTRL,
+ 			   FIELD_PREP(REG_PCIE_CTRL, 3));
+ 
+-	return an7583_reset_register(dev, clk_map);
++	return en7581_reset_register(dev, clk_map, an7583_rst_map,
++				     ARRAY_SIZE(an7583_rst_map));
+ }
+ 
+ static int en7523_clk_probe(struct platform_device *pdev)

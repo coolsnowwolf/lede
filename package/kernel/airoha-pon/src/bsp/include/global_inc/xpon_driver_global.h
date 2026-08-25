@@ -1,0 +1,25 @@
+#ifndef _XPON_DRIVER_GLOBAL_H_
+#define _XPON_DRIVER_GLOBAL_H_
+
+#include "xpon_ioctl_if.h"
+
+struct XMCS_EponLlidCreate_S {
+	uint8_t idx;
+	uint16_t llid;
+};
+
+enum {
+	GPON_IOS_SN_PASSWD = 1,
+	GPON_IOS_SN,
+	GPON_IOS_PASSWD,
+	GPON_IOS_EMERGENCY_STATE,
+	GPON_IOG_GEM_COUNTER,
+	GPON_IOG_TCONT_COUNTER,
+	GPON_IOG_ONU_INFO,
+	GPON_IOG_GPON_TCONT_IDX,
+	GPON_IOS_TOD_CFG,
+	GPON_IOS_MIB_FLAG,
+	GPON_IOG_OLT_DISTANCE,
+};
+
+#endif

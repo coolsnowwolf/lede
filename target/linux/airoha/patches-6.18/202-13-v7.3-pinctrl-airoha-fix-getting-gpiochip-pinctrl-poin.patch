@@ -1,0 +1,95 @@
+From a610e3afa774cfb8dedb6cdf741c78bd43105c50 Mon Sep 17 00:00:00 2001
+From: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Date: Sun, 26 Jul 2026 22:49:35 +0300
+Subject: [PATCH v11 18/37] pinctrl: airoha: fix getting gpiochip/pinctrl
+ pointers in the IRQ handling code
+
+airoha_irq_unmask(), airoha_irq_mask(), airoha_irq_type() functions
+impements brain damaged logic to retrieve gpiochip and pinctrl pointers.
+
+Details:
+
+    gpiochip = irq_data_get_irq_chip_data(data);
+
+will initialize gpiochip variable with data->chip_data value. This value
+initialized inside gpiochip_irq_map() function
+
+    static int gpiochip_irq_map(struct irq_domain *d, unsigned int irq,
+			        irq_hw_number_t hwirq)
+    {
+	struct gpio_chip *gc = d->host_data;
+        ...
+	irq_set_chip_data(irq, gc);
+	...
+    }
+
+Thus gpiochip variable of 'struct airoha_pinctrl_gpiochip *' type will be
+initialized with a pointer to a variable of 'struct gpio_chip' type.
+
+Luckily, gpio_chip is the first element of airoha_pinctrl_gpiochip, so
+gpiochip pointer will get a correct value.
+
+This patch implements correct logic of getting gpiochip and pinctrl
+pointers.
+
+Fixes: 1c8ace2d0725 ("pinctrl: airoha: Add support for EN7581 SoC")
+Signed-off-by: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+---
+ drivers/pinctrl/airoha/pinctrl-airoha.c | 20 +++++++++-----------
+ 1 file changed, 9 insertions(+), 11 deletions(-)
+
+--- a/drivers/pinctrl/airoha/pinctrl-airoha.c
++++ b/drivers/pinctrl/airoha/pinctrl-airoha.c
+@@ -2584,18 +2584,17 @@ static int airoha_gpio_direction_output(
+ /* irq callbacks */
+ static void airoha_irq_unmask(struct irq_data *data)
+ {
++	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
++	struct airoha_pinctrl *pinctrl = gpiochip_get_data(gc);
++	struct airoha_pinctrl_gpiochip *gpiochip = &pinctrl->gpiochip;
+ 	u8 offset = data->hwirq % AIROHA_REG_GPIOCTRL_NUM_PIN;
+ 	u8 index = data->hwirq / AIROHA_REG_GPIOCTRL_NUM_PIN;
+ 	u32 mask = GENMASK(2 * offset + 1, 2 * offset);
+-	struct airoha_pinctrl_gpiochip *gpiochip;
+-	struct airoha_pinctrl *pinctrl;
+ 	u32 val = BIT(2 * offset);
+ 
+-	gpiochip = irq_data_get_irq_chip_data(data);
+ 	if (WARN_ON_ONCE(data->hwirq >= ARRAY_SIZE(gpiochip->irq_type)))
+ 		return;
+ 
+-	pinctrl = container_of(gpiochip, struct airoha_pinctrl, gpiochip);
+ 	switch (gpiochip->irq_type[data->hwirq]) {
+ 	case IRQ_TYPE_LEVEL_LOW:
+ 		val = val << 1;
+@@ -2621,14 +2620,12 @@ static void airoha_irq_unmask(struct irq
+ 
+ static void airoha_irq_mask(struct irq_data *data)
+ {
++	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
++	struct airoha_pinctrl *pinctrl = gpiochip_get_data(gc);
++	struct airoha_pinctrl_gpiochip *gpiochip = &pinctrl->gpiochip;
+ 	u8 offset = data->hwirq % AIROHA_REG_GPIOCTRL_NUM_PIN;
+ 	u8 index = data->hwirq / AIROHA_REG_GPIOCTRL_NUM_PIN;
+ 	u32 mask = GENMASK(2 * offset + 1, 2 * offset);
+-	struct airoha_pinctrl_gpiochip *gpiochip;
+-	struct airoha_pinctrl *pinctrl;
+-
+-	gpiochip = irq_data_get_irq_chip_data(data);
+-	pinctrl = container_of(gpiochip, struct airoha_pinctrl, gpiochip);
+ 
+ 	regmap_clear_bits(pinctrl->regmap, gpiochip->level[index], mask);
+ 	regmap_clear_bits(pinctrl->regmap, gpiochip->edge[index], mask);
+@@ -2636,9 +2633,10 @@ static void airoha_irq_mask(struct irq_d
+ 
+ static int airoha_irq_type(struct irq_data *data, unsigned int type)
+ {
+-	struct airoha_pinctrl_gpiochip *gpiochip;
++	struct gpio_chip *gc = irq_data_get_irq_chip_data(data);
++	struct airoha_pinctrl *pinctrl = gpiochip_get_data(gc);
++	struct airoha_pinctrl_gpiochip *gpiochip = &pinctrl->gpiochip;
+ 
+-	gpiochip = irq_data_get_irq_chip_data(data);
+ 	if (data->hwirq >= ARRAY_SIZE(gpiochip->irq_type))
+ 		return -EINVAL;
+ 

@@ -1,0 +1,59 @@
+From 0509cfb2607a5a084617701f969b4bad0fd0f157 Mon Sep 17 00:00:00 2001
+From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Date: Fri, 7 Aug 2026 03:37:00 +0100
+Subject: [PATCH] net: airoha: npu: load the firmware without the sysfs
+ fallback
+
+airoha_npu_load_firmware() maps a missing firmware file to -EPROBE_DEFER
+so that the NPU can be brought up once the rootfs carrying /lib/firmware
+has been mounted. That mapping holds only as long as request_firmware()
+reports -ENOENT.
+
+It does not when the sysfs fallback is in play. With
+CONFIG_FW_LOADER_USER_HELPER_FALLBACK set, or with the fallback armed at
+runtime through /proc/sys/kernel/firmware_config/force_sysfs_fallback,
+request_firmware() hands the request to a userspace helper, waits out the
+full loading_timeout and returns -ETIMEDOUT. The -ENOENT test no longer
+matches, dev_err_probe() turns the result into a hard failure, and the
+NPU is left unbound after stalling the boot for 60 seconds:
+
+  airoha-npu 1e900000.npu: Direct firmware load for airoha/en7581_npu_rv32.bin failed with error -2
+  airoha-npu 1e900000.npu: Falling back to sysfs fallback for: airoha/en7581_npu_rv32.bin
+  airoha-npu 1e900000.npu: error -ETIMEDOUT: failed to run npu firmware
+  airoha-npu 1e900000.npu: probe with driver airoha-npu failed with error -110
+
+Clearing FW_LOADER_USER_HELPER in the configuration is not a dependable
+guard against this, because unrelated drivers select it. On the affected
+build the symbol was turned back on by LEDS_LP55XX_COMMON, even though
+the platform had explicitly disabled it.
+
+request_firmware_direct() sets FW_OPT_NOFALLBACK_SYSFS, so a missing file
+is reported as -ENOENT whatever the firmware loader is configured to do,
+and the deferred probe path works as it was meant to.
+
+Measured on a Nokia XG-040G-MD with FW_LOADER_USER_HELPER=y and
+FW_LOADER_USER_HELPER_FALLBACK=y, on two images from the same tree
+differing only by this patch: without it the probe fails with
+-ETIMEDOUT after 64.5s and the NPU stays unbound, with it the NPU
+reports its firmware version at 3.7s. The fallback is compiled in and
+forced in both cases; the patch does not disable it, it only keeps the
+driver from falling into it.
+
+Fixes: 23290c7bc190 ("net: airoha: Introduce Airoha NPU support")
+Cc: stable@vger.kernel.org
+Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+---
+ drivers/net/ethernet/airoha/airoha_npu.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_npu.c
++++ b/drivers/net/ethernet/airoha/airoha_npu.c
+@@ -202,7 +202,7 @@ static int airoha_npu_load_firmware(stru
+ 	const struct firmware *fw;
+ 	int ret;
+ 
+-	ret = request_firmware(&fw, fw_name, dev);
++	ret = request_firmware_direct(&fw, fw_name, dev);
+ 	if (ret)
+ 		return ret == -ENOENT ? -EPROBE_DEFER : ret;
+ 

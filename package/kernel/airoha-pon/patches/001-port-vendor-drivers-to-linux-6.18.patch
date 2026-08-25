@@ -1,0 +1,2875 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] airoha-pon: port vendor drivers to Linux 6.18
+
+Modernize the v1 and v2 Kbuild flags and port the EN7581/AN7583 BSP, PHY and
+xPON MAC sources to Linux 6.18.  Keep vendor-private packet metadata in skb->cb
+and provide compile-time compatibility for SDK interfaces not shipped in the
+available source archive.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/bsp/an7583/ecnt_serdes_common_phy.c
++++ b/bsp/an7583/ecnt_serdes_common_phy.c
+@@ -41,6 +41,7 @@
+ */
+ #include <linux/module.h>
+ #include <linux/types.h>
++#include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/interrupt.h>
+@@ -112,6 +113,8 @@
+ 
+ /********************************************************************/
+ 
++extern u64 readout_efuse(u32 buffer);
++
+ /* APIs */
+ /***********************************************/
+ 
+--- a/bsp/an7583/pon_pma/src/pon_pma.c
++++ b/bsp/an7583/pon_pma/src/pon_pma.c
+@@ -17,7 +17,8 @@
+ 
+ #include <linux/version.h>
+ #include <linux/kernel.h>
+-#include <linux/slab.h>
++#include <linux/slab.h>
++#include <linux/vmalloc.h>
+ #include <linux/delay.h>
+ #include <linux/proc_fs.h>
+ #include <linux/delay.h>
+--- a/bsp/core/arht_board.c
++++ b/bsp/core/arht_board.c
+@@ -40,6 +40,7 @@
+ *************************************************************************
+ */
+ #include <linux/types.h>
++#include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/ioctl.h>
+ #include <linux/fs.h>
+@@ -79,50 +80,9 @@
+ *************************************************************************
+ */
+ 
+-static int __init early_rfb_no(char *p)
+-{
+-
+-	int ret;
+-
+-	ret = sscanf(p, "%d", &rfb_no);
+-	if(ret != 1) {
+-		printk("parse %s error:%d\n", BOOTARGS_RFB_NO_STR, ret);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-early_param(BOOTARGS_RFB_NO_STR, early_rfb_no);
+-
+-
+-static int __init early_rfb_id1(char *p)
+-{
+-	int ret;
+-
+-	ret = sscanf(p, "%02lx", &rfb_id.id1);
+-	if(ret != 1) {
+-		printk("parse %s error:%d\n", BOOTARGS_RFB_ID1_STR, ret);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-early_param(BOOTARGS_RFB_ID1_STR, early_rfb_id1);
+-
+-static int __init early_rfb_id2(char *p)
+-{
+-
+-	int ret;
+-
+-	ret = sscanf(p, "%02lx", &rfb_id.id2);
+-	if(ret != 1) {
+-		printk("parse %s error:%d\n", BOOTARGS_RFB_ID2_STR, ret);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-early_param(BOOTARGS_RFB_ID2_STR, early_rfb_id2);
++module_param_named(rfb_no, rfb_no, byte, 0444);
++module_param_named(rfb_id1, rfb_id.id1, byte, 0444);
++module_param_named(rfb_id2, rfb_id.id2, byte, 0444);
+ 
+ void get_rfb_id(RFB_ID_t *_rfb_id)
+ {
+--- a/bsp/core/arht_serdes_cfg.c
++++ b/bsp/core/arht_serdes_cfg.c
+@@ -40,6 +40,7 @@
+ *************************************************************************
+ */
+ #include <linux/types.h>
++#include <linux/vmalloc.h>
+ #include <linux/kernel.h>
+ #include <linux/ioctl.h>
+ #include <linux/fs.h>
+@@ -186,76 +187,14 @@
+ #define set_serdes_cfg_dbg_lv(...) do{}while(0)
+ #endif
+ 
+-static int __init early_rfb_cfg(char *p)
+-{
+-	rfb_cfg_ori=p;
+-	printk("uboot rfb_cfg:%s\n", rfb_cfg_ori);
+-	return 0;
+-}
+-early_param(BOOTARGS_RFB_CFG_STR, early_rfb_cfg);
+-
+-static int __init early_serdes_cnt(char *p)
+-{
+-	int ret;
+-
+-	ret = sscanf(p, "%d", &ic_srds.srdsPortCnt);
+-	if(ret != 1) {
+-		printk("parse %s error:%d\n", BOOTARGS_SRDS_PORT_CNT_STR, ret);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-early_param(BOOTARGS_SRDS_PORT_CNT_STR, early_serdes_cnt);
+-
+-static int __init early_serdes_param_num(char *p)
+-{
+-	int ret;
+-
+-	ret = sscanf(p, "%d", &ic_srds.srdsParmCntPerPort);
+-	if(ret != 1) {
+-		printk("parse %s error:%d\n", BOOTARGS_SRDS_PARM_PER_PORT_STR, ret);
+-		return -1;
+-	}
+-
+-	return 0;
+-}
+-early_param(BOOTARGS_SRDS_PARM_PER_PORT_STR, early_serdes_param_num);
+-
+-static int __init early_serdes_port_name_all_comp(char *p)
+-{
+-	srdsPortNameComp = p;
+-	return 0;
+-}
+-early_param(BOOTARGS_SRDS_PORT_NAME_ALL_COMP_STR, early_serdes_port_name_all_comp);
+-
+-static int __init early_serdes_if_name_all_comp(char *p)
+-{
+-	if_name_all_comp.all_comp = p;
+-	return 0;
+-}
+-early_param(BOOTARGS_SRDS_IF_NAME_ALL_COMP_STR, early_serdes_if_name_all_comp);
+-
+-static int __init early_ether_type_name_all_comp(char *p)
+-{
+-	ether_type_name_all_comp.all_comp = p;
+-	return 0;
+-}
+-early_param(BOOTARGS_ETHER_TYPE_NAME_ALL_COMP_STR, early_ether_type_name_all_comp);
+-
+-static int __init early_ether_phy_name_all_comp(char *p)
+-{
+-	ether_phy_name_all_comp.all_comp = p;
+-	return 0;
+-}
+-early_param(BOOTARGS_ETHER_PHY_NAME_ALL_COMP_STR, early_ether_phy_name_all_comp);
+-
+-static int __init early_serdes_port_combo(char *p)
+-{
+-	ic_srds.srdsPortCombo = p;
+-	return 0;
+-}
+-early_param(BOOTARGS_SRDS_PORT_COMBO_STR, early_serdes_port_combo);
++module_param_named(rfb_cfg, rfb_cfg_ori, charp, 0444);
++module_param_named(srdsPortCnt, ic_srds.srdsPortCnt, byte, 0444);
++module_param_named(srdsParmCntPerPort, ic_srds.srdsParmCntPerPort, byte, 0444);
++module_param_named(srdsPortNameAllComp, srdsPortNameComp, charp, 0444);
++module_param_named(srdsIfNameAllComp, if_name_all_comp.all_comp, charp, 0444);
++module_param_named(srdsEtherTypeAllComp, ether_type_name_all_comp.all_comp, charp, 0444);
++module_param_named(srdsEtherPhyTypeAllComp, ether_phy_name_all_comp.all_comp, charp, 0444);
++module_param_named(srdsPortCombo, ic_srds.srdsPortCombo, charp, 0444);
+ 
+ uint8_t get_serdes_port_count(void)
+ {
+@@ -599,14 +538,8 @@
+ 	return retval;
+ }
+ 
+-static const struct file_operations proc_wan_type_ops = {
+-	.owner =			THIS_MODULE,
+-	.write =			NULL,
+-	.read =				serdes_wan_type_read_proc,
+-	.unlocked_ioctl =	NULL,	
+-	.compat_ioctl	= 	NULL,
+-	.open =				NULL,
+-	.release =			NULL,
++static const struct proc_ops proc_wan_type_ops = {
++	.proc_read = serdes_wan_type_read_proc,
+ };
+ 
+ static int ECNT_SERDES_CFG_PROBE(void)
+--- a/bsp/core/ecnt_olt_phy.c
++++ b/bsp/core/ecnt_olt_phy.c
+@@ -276,16 +276,16 @@
+     return 0;
+ }
+ 
+-static int ecnt_olt_phy_remove(struct platform_device *pdev)
++static void ecnt_olt_phy_remove(struct platform_device *pdev)
+ {
+ 	printk("\n%s\n\n", __func__);
+-    return 0;
++    return;
+ }
+ 
+-static int ecnt_olt_phy_shutdown(struct platform_device *pdev)
++static void ecnt_olt_phy_shutdown(struct platform_device *pdev)
+ {
+ 	printk("\n%s\n\n", __func__);
+-    return 0;
++    return;
+ }
+ 
+ /************************************************************************
+--- a/bsp/core/ecnt_pon_phy.c
++++ b/bsp/core/ecnt_pon_phy.c
+@@ -504,17 +504,12 @@
+ }
+ EXPORT_SYMBOL(get_pon_phy_dev);
+ 
+-#ifndef TCSUPPORT_CPU_EN7581 //#if 0 //move to common
+-//#if defined(TCSUPPORT_CPU_AN7552) || defined(TCSUPPORT_CPU_EN7523) //modify for 7583
+-#ifndef TCSUPPORT_CPU_AN7583
+-int get_pon_phy_irq(void)
++int get_pon_phy_irq(void)
+ {
+ 	return ecnt_pon_phy->phy_irq;
+ 	
+ }
+-EXPORT_SYMBOL(get_pon_phy_irq);
+-#endif
+-#endif
++EXPORT_SYMBOL(get_pon_phy_irq);
+ 
+ 
+ void (*set_pon_phy_mode_config)(Xpon_Phy_Mode_t xpon_mode, int tx_enable) = NULL;
+@@ -693,19 +688,19 @@
+     return 0;
+ }
+ 
+-static int ecnt_pon_phy_remove(struct platform_device *pdev)
++static void ecnt_pon_phy_remove(struct platform_device *pdev)
+ {
+-    return 0;
++    return;
+ }
+ 
+-static int ecnt_pon_phy_shutdown(struct platform_device *pdev)
++static void ecnt_pon_phy_shutdown(struct platform_device *pdev)
+ {
+ 	printk("ecnt_pon_phy_shutdown\n");
+ 	if ( ledTurnOff_hook && !isFPGA )
+ 	{
+ 		ledTurnOff_hook(LED_PHY_TX_POWER_DISABLE);
+ 	}
+-    return 0;
++    return;
+ }
+ 
+ /************************************************************************
+--- a/bsp/core/ecnt_scu.c
++++ b/bsp/core/ecnt_scu.c
+@@ -41,6 +41,7 @@
+ */
+ #include <linux/module.h>
+ #include <linux/types.h>
++#include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/platform_device.h>
+ #include <linux/interrupt.h>
+@@ -804,6 +805,7 @@
+ 
+ 
+ #ifndef TCSUPPORT_CPU_EN7523
++#if !defined(TCSUPPORT_CPU_EN7581)
+ u32 GET_TOD_DIVIDER_ENABLE(void)
+ {
+ 	return get_chip_scu_data(CR_CHIP_SCU_TOD_DIVIDER_ENABLE);
+@@ -816,6 +818,7 @@
+ }
+ EXPORT_SYMBOL(SET_TOD_DIVIDER_ENABLE);
+ #endif
++#endif
+ 
+ /* module==1 for TRNG
+  * module==2 for I2C_Slave */
+--- a/bsp/core/legacy_api.c
++++ b/bsp/core/legacy_api.c
+@@ -1,33 +1,114 @@
+-#include <linux/err.h>
+-#include <linux/kernel.h>
++#include <linux/i2c.h>
+ #include <linux/module.h>
+-#include <linux/init.h>
+-#include <linux/proc_fs.h>
+-#include "ledctrl_kernel_api.h"
++#include <linux/slab.h>
++#include <linux/string.h>
+ 
+-static int __init legacy_api_init(void)
++#include <asm/tc3162/tc3162.h>
++
++extern void (*ledTurnOff_hook)(uint8 led_no);
++
++int (*ra_sw_nat_hook_clean_table)(void);
++EXPORT_SYMBOL(ra_sw_nat_hook_clean_table);
++
++void (*ra_sw_nat_hook_clean_entry_by_channel)(int channel);
++EXPORT_SYMBOL(ra_sw_nat_hook_clean_entry_by_channel);
++
++void ledTurnOn(uint8 led_no)
++{
++	(void)led_no;
++}
++EXPORT_SYMBOL(ledTurnOn);
++
++void ledTurnOff(uint8 led_no)
+ {
+-	struct proc_dir_entry *legacy_api_proc_dir;
+-	printk("legacy_api_initialized\n");
+-	
+-	legacy_api_proc_dir = proc_mkdir("legacy_api", NULL);
++	if (ledTurnOff_hook)
++		ledTurnOff_hook(led_no);
++}
++EXPORT_SYMBOL(ledTurnOff);
++
++static int sif_addr_bytes(u32 word_addr, u8 word_addr_len, u8 *buf)
++{
++	int i;
++
++	if (!word_addr_len || word_addr_len > sizeof(word_addr))
++		return -EINVAL;
+ 
+-	led_init();
+-	gpioctl_init();
++	for (i = 0; i < word_addr_len; i++)
++		buf[i] = word_addr >> (8 * (word_addr_len - i - 1));
+ 
+ 	return 0;
+ }
+ 
+-static void __exit legacy_api_exit(void)
++u16 SIF_X_Read(u8 channel, u16 clk_div, u8 dev_addr, u8 word_addr_len,
++		u32 word_addr, u8 *buf, u16 len)
+ {
+-	led_exit();
+-	gpioctl_exit();
+-	remove_proc_entry("legacy_api", NULL);
+-	printk("legacy_api_removed\n");
++	struct i2c_adapter *adap;
++	struct i2c_msg msgs[2];
++	u8 addr_buf[sizeof(word_addr)];
++	int ret;
++
++	(void)clk_div;
++	ret = sif_addr_bytes(word_addr, word_addr_len, addr_buf);
++	if (ret)
++		return 0;
++
++	adap = i2c_get_adapter(channel);
++	if (!adap)
++		return 0;
++
++	msgs[0] = (struct i2c_msg) {
++		.addr = dev_addr & 0x7f,
++		.buf = addr_buf,
++		.len = word_addr_len,
++	};
++	msgs[1] = (struct i2c_msg) {
++		.addr = dev_addr & 0x7f,
++		.flags = I2C_M_RD,
++		.buf = buf,
++		.len = len,
++	};
++	ret = i2c_transfer(adap, msgs, ARRAY_SIZE(msgs));
++	i2c_put_adapter(adap);
++
++	return ret == ARRAY_SIZE(msgs);
+ }
++EXPORT_SYMBOL(SIF_X_Read);
+ 
+-module_init(legacy_api_init);
+-module_exit(legacy_api_exit);
++u16 SIF_X_Write(u8 channel, u16 clk_div, u8 dev_addr, u8 word_addr_len,
++		u32 word_addr, u8 *buf, u16 len)
++{
++	struct i2c_adapter *adap;
++	struct i2c_msg msg;
++	u8 *transfer_buf;
++	int ret;
++
++	(void)clk_div;
++	if (!word_addr_len || word_addr_len > sizeof(word_addr))
++		return 0;
++
++	transfer_buf = kmalloc(word_addr_len + len, GFP_KERNEL);
++	if (!transfer_buf)
++		return 0;
++	if (sif_addr_bytes(word_addr, word_addr_len, transfer_buf)) {
++		kfree(transfer_buf);
++		return 0;
++	}
++	memcpy(transfer_buf + word_addr_len, buf, len);
++
++	adap = i2c_get_adapter(channel);
++	if (!adap) {
++		kfree(transfer_buf);
++		return 0;
++	}
++	msg = (struct i2c_msg) {
++		.addr = dev_addr & 0x7f,
++		.buf = transfer_buf,
++		.len = word_addr_len + len,
++	};
++	ret = i2c_transfer(adap, &msg, 1);
++	i2c_put_adapter(adap);
++	kfree(transfer_buf);
+ 
+-MODULE_LICENSE("GPL");
+-MODULE_DESCRIPTION("Legacy API driver");
++	return ret == 1;
++}
++EXPORT_SYMBOL(SIF_X_Write);
+--- a/bsp/include/ecnt_hook/ecnt_hook_gpon_flow.h
++++ b/bsp/include/ecnt_hook/ecnt_hook_gpon_flow.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ECNT_HOOK_GPON_FLOW_H_
++#define _ECNT_HOOK_GPON_FLOW_H_
++
++#include <linux/skbuff.h>
++
++/* The vendor SDK does not ship the generated GPON flow hook interface. */
++static inline int ECNT_API_GPON_FLOW_UPSTREAM_ANI_HOOK(struct sk_buff *skb)
++{
++	return 0;
++}
++
++static inline int ECNT_API_GPON_FLOW_DOWNSTREAM_ANI_HOOK(struct sk_buff *skb)
++{
++	return 0;
++}
++
++#endif
+--- a/bsp/include/ecnt_hook/ecnt_hook_qdma.h
++++ b/bsp/include/ecnt_hook/ecnt_hook_qdma.h
+@@ -73,7 +73,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_DEINIT(unsigned int mainType){
+@@ -85,7 +85,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_TX_DMA_MODE(unsigned int mainType, QDMA_Mode_t txMode){
+@@ -98,7 +98,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_RX_DMA_MODE(unsigned int mainType, QDMA_Mode_t rxMode){
+@@ -111,7 +111,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_LOOPBACK_MODE(unsigned int mainType, QDMA_LoopbackMode_t lbMode){
+@@ -373,7 +373,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return (QDMA_Mode_t)ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_SET_PKTSIZE_OVERHEAD_VALUE(unsigned int mainType, int cnt){
+@@ -1356,7 +1356,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return (QDMA_Mode_t)ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_SET_TXQ_CNGST_MODE(unsigned int mainType, QDMA_Mode_t dynCngstEn){
+@@ -1381,7 +1381,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return (QDMA_Mode_t)ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_SET_TXQ_DEI_THRESHOLD_SCALE(unsigned int mainType, QDMA_TxDynCngstDeiThrhScale_t deiThrhScale){
+@@ -1406,7 +1406,7 @@
+ 	if(ret != ECNT_HOOK_ERROR)
+ 		return in_data.retValue;
+ 	else
+-		return ECNT_HOOK_ERROR;
++			return (QDMA_TxDynCngstDeiThrhScale_t)ECNT_HOOK_ERROR;
+ }
+ 
+ static inline int QDMA_API_SET_TXQ_CNGST_AUTO_CONFIG(unsigned int mainType, QDMA_txCngstCfg_t *pTxCngstCfg){
+@@ -1985,5 +1985,62 @@
+ *************************************************************************
+ */
+ 
+-#endif /* _ECNT_HOOK_QDMA_H_ */
++#if defined(TCSUPPORT_CPU_EN7581)
++static inline int QDMA_API_SET_GENERAL_TRTCM_VALUE(unsigned int mainType,
++						    GENERAL_TrtcmCbsPbsSet_T *cfg)
++{
++	struct ECNT_QDMA_Data in_data = { 0 };
++	int ret;
++
++	in_data.function_id = QDMA_FUNCTION_GENERAL_SET_TRTCM_MODE_VALUE;
++	in_data.qdma_private.generalTrtcmCbsPbsSetPtr = cfg;
++	ret = __ECNT_HOOK(mainType, ECNT_DRIVER_API,
++			  (struct ecnt_data *)&in_data);
++
++	return ret != ECNT_HOOK_ERROR ? in_data.retValue : ECNT_HOOK_ERROR;
++}
++
++static inline int QDMA_API_GET_GENERAL_TRTCM_VALUE(unsigned int mainType,
++						    GENERAL_TrtcmCbsPbsSet_T *cfg)
++{
++	struct ECNT_QDMA_Data in_data = { 0 };
++	int ret;
++
++	in_data.function_id = QDMA_FUNCTION_GENERAL_GET_TRTCM_MODE_VALUE;
++	in_data.qdma_private.generalTrtcmCbsPbsSetPtr = cfg;
++	ret = __ECNT_HOOK(mainType, ECNT_DRIVER_API,
++			  (struct ecnt_data *)&in_data);
++
++	return ret != ECNT_HOOK_ERROR ? in_data.retValue : ECNT_HOOK_ERROR;
++}
++
++static inline int QDMA_API_SET_CHANNEL_CLOSE_STATUS(unsigned int mainType,
++						     QDMA_ChannelStatus_T *status)
++{
++	struct ECNT_QDMA_Data in_data = { 0 };
++	int ret;
++
++	in_data.function_id = QDMA_FUNCTION_SET_CHANNEL_CLOSE_STATUS;
++	in_data.qdma_private.chnlCloseStatusSet = status;
++	ret = __ECNT_HOOK(mainType, ECNT_DRIVER_API,
++			  (struct ecnt_data *)&in_data);
++
++	return ret != ECNT_HOOK_ERROR ? in_data.retValue : ECNT_HOOK_ERROR;
++}
+ 
++static inline int QDMA_API_SET_OAM_MODIFY_FP_EN(unsigned int mainType,
++						QDMA_Mode_t mode)
++{
++	struct ECNT_QDMA_Data in_data = { 0 };
++	int ret;
++
++	in_data.function_id = QDMA_FUNCTION_SET_OAM_MODIFY_FP_EN;
++	in_data.qdma_private.mode = mode;
++	ret = __ECNT_HOOK(mainType, ECNT_DRIVER_API,
++			  (struct ecnt_data *)&in_data);
++
++	return ret != ECNT_HOOK_ERROR ? in_data.retValue : ECNT_HOOK_ERROR;
++}
++#endif
++
++#endif /* _ECNT_HOOK_QDMA_H_ */
+--- a/bsp/include/global_inc/modules/scu/ecnt_scu.h
++++ b/bsp/include/global_inc/modules/scu/ecnt_scu.h
+@@ -222,7 +222,14 @@
+ extern uint32_t GET_SCU_RST_RG(void);
+ extern void SET_SCU_RST_RG(uint32_t val);
+ extern uint32_t GET_SSR3(void);
++extern u32 GET_WAN_CONF(void);
++extern void SET_WAN_CONF(u32 val);
++extern u32 GET_IOMUX_CTRL_3(void);
++extern void SET_IOMUX_CTRL_3(u32 val);
++extern u32 GET_SCU_RST_ACC_CHK_BMA(void);
++extern void SET_SCU_RST_ACC_CHK_BMA(u32 val);
++extern u32 GET_GPIO_SSR(void);
++extern void SET_GPIO_SSR(u32 val);
+ 
+ 
+ #endif /* ifndef __ECNT_SCU_H__ */
+-
+--- a/bsp/include/global_inc/version/tcversion.h
++++ b/bsp/include/global_inc/version/tcversion.h
+@@ -5,7 +5,7 @@
+ ****************************************************************************************/
+ 
+ #define TRUNK_TIME ""  
+-#define BUILD_NUM __DATE__"-"__TIME__          
++#define BUILD_NUM "OpenWrt"
+ 
+ /***************************************************************************************
+  
+--- a/bsp/include/scu/ecnt_scu.h
++++ b/bsp/include/scu/ecnt_scu.h
+@@ -222,7 +222,8 @@
+ extern uint32_t GET_SCU_RST_RG(void);
+ extern void SET_SCU_RST_RG(uint32_t val);
+ extern uint32_t GET_SSR3(void);
++extern u32 GET_WAN_CONF(void);
++extern void SET_WAN_CONF(u32 val);
+ 
+ 
+ #endif /* ifndef __ECNT_SCU_H__ */
+-
+--- a/gpon-en757x/xpon/Makefile
++++ b/gpon-en757x/xpon/Makefile
+@@ -1,39 +1,39 @@
+ KERNELDIR=$(KERNEL_DIR)
+-EXTRA_CFLAGS += -DWAN2LAN
++ccflags-y += -DWAN2LAN
+ 
+ INCDIR		:= inc
+ SRCDIR		:= src
+ 
+ ifneq ($(TCSUPPORT_CPU_EN7521),)
+-	EXTRA_CFLAGS += -I$(MODULES_FE_7512_DIR)
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_7512_DIR)
++	ccflags-y += -I$(MODULES_FE_7512_DIR)
++	ccflags-y += -I$(MODULES_QDMA_7512_DIR)
+ else
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_DIR)
+-	EXTRA_CFLAGS += -I$(MODULES_RAETH_DIR)
++	ccflags-y += -I$(MODULES_QDMA_DIR)
++	ccflags-y += -I$(MODULES_RAETH_DIR)
+ endif
+-EXTRA_CFLAGS += -I$(MODULES_XPON_WAN_DIR)/$(INCDIR) -I$(MODULES_XPON_WAN_DIR)/$(INCDIR)/epon -I$(GLOBAL_INC_DIR)/modules/
++ccflags-y += -I$(MODULES_XPON_WAN_DIR)/$(INCDIR) -I$(MODULES_XPON_WAN_DIR)/$(INCDIR)/epon -I$(GLOBAL_INC_DIR)/modules/
+ ifeq ($(strip $(TCSUPPORT_3_18_21_KERNEL)),)
+-EXTRA_CFLAGS += -O0 -save-temps
++ccflags-y += -O0 -save-temps
+ endif
+-EXTRA_CFLAGS += -D CONFIG_SEND_ACK_PLOAMU=3 \
++ccflags-y += -D CONFIG_SEND_ACK_PLOAMU=3 \
+ 				-D CONFIG_USE_FOR_TEST \
+ 				-D XPON_MAC_CONFIG_DEBUG 
+ #				-D CONFIG_USE_RX_NAPI \
+ 
+ ifneq ($(TCSUPPORT_CPU_EN7521),)
+-	EXTRA_CFLAGS += -D CONFIG_USE_RX_NAPI
++	ccflags-y += -D CONFIG_USE_RX_NAPI
+ endif
+ 
+ ifeq ($(CONFIG_USE_MT7520_ASIC),)
+ 	#EXTRA_CFLAGS += -DCONFIG_USE_A60901
+-	EXTRA_CFLAGS += -DCONFIG_USE_A60928
++	ccflags-y += -DCONFIG_USE_A60928
+ endif
+ 				
+-EXTRA_CFLAGS += -DEPON_MAC_HW_TEST
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_RGST_SILENT
++ccflags-y += -DEPON_MAC_HW_TEST
++ccflags-y += -DTCSUPPORT_EPON_RGST_SILENT
+ 
+ ifneq ($(TCSUPPORT_EPON_FPGA_WORKAROUND),)
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_FPGA_WORKAROUND
++ccflags-y += -DTCSUPPORT_EPON_FPGA_WORKAROUND
+ endif
+ 
+ 
+--- a/gpon-en757x/xpon_phy/Makefile
++++ b/gpon-en757x/xpon_phy/Makefile
+@@ -1,38 +1,38 @@
+ KERNELDIR=$(KERNEL_DIR)
+-EXTRA_CFLAGS += -DWAN2LAN
++ccflags-y += -DWAN2LAN
+ 
+ INCDIR		:= inc
+ SRCDIR		:= src
+ HEADER_DIR              := inc
+ 
+ ifneq ($(TCSUPPORT_CPU_EN7521),)
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_7512_DIR)
++	ccflags-y += -I$(MODULES_QDMA_7512_DIR)
+ else
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_DIR)
++	ccflags-y += -I$(MODULES_QDMA_DIR)
+ endif
+ 
+-EXTRA_CFLAGS += -I$(MODULES_PHY_DIR)/$(HEADER_DIR) -O0 -save-temps
+-EXTRA_CFLAGS += -D CONFIG_SEND_ACK_PLOAMU=3 \
++ccflags-y += -I$(MODULES_PHY_DIR)/$(HEADER_DIR) -O0 -save-temps
++ccflags-y += -D CONFIG_SEND_ACK_PLOAMU=3 \
+ 				-D CONFIG_USE_FOR_TEST \
+ 				-D CONFIG_DEBUG
+ 
+ ifeq ($(CONFIG_USE_MT7520_ASIC),)
+ #EXTRA_CFLAGS += -DCONFIG_USE_A60901
+-EXTRA_CFLAGS += -DCONFIG_USE_A60928
++ccflags-y += -DCONFIG_USE_A60928
+ endif
+ 
+-EXTRA_CFLAGS += -DEPON_MAC_HW_TEST
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_RGST_SILENT
++ccflags-y += -DEPON_MAC_HW_TEST
++ccflags-y += -DTCSUPPORT_EPON_RGST_SILENT
+ 
+ ifneq ($(TCSUPPORT_EPON_FPGA_WORKAROUND),)
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_FPGA_WORKAROUND
++ccflags-y += -DTCSUPPORT_EPON_FPGA_WORKAROUND
+ endif
+ 
+ 
+ PHY_SRC	+= i2c.c mt7570.c phy.c phy_init.c phy_rx.c phy_tx.c en7571.c
+ PHY_OBJ	:= $(PHY_SRC:%.c=$(SRCDIR)/%.o)
+ 
+-TOTAL_OBJ	:= $(SRCDIR)/phy.o  $(PHY_OBJ)
++TOTAL_OBJ	:= $(PHY_OBJ)
+ 
+ phy-objs 	:= $(TOTAL_OBJ)
+ obj-m		:= phy.o
+--- a/xpon-en757x/xpon_10g/Makefile
++++ b/xpon-en757x/xpon_10g/Makefile
+@@ -1,5 +1,5 @@
+ KERNELDIR=$(KERNEL_DIR)
+-EXTRA_CFLAGS += -DWAN2LAN
++ccflags-y += -DWAN2LAN
+ 
+ INCDIR		:= inc
+ SRCDIR		:= src
+@@ -14,34 +14,31 @@
+ endif
+ endif
+ 
+-EXTRA_CFLAGS += -I$(XPON_BSP_MODULES_XPON_10G_DRIVER)/$(INCDIR) -I$(XPON_BSP_MODULES_XPON_10G_DRIVER)/$(INCDIR)/epon  -I$(XPON_BSP_GLOBAL_INC_PRIVATE) \
++ccflags-y += -include $(XPON_BSP_MODULES_XPON_10G_DRIVER)/$(INCDIR)/common/xpon_compat.h \
++			-I$(XPON_BSP_MODULES_XPON_10G_DRIVER)/$(INCDIR) -I$(XPON_BSP_MODULES_XPON_10G_DRIVER)/$(INCDIR)/epon  -I$(XPON_BSP_GLOBAL_INC_PRIVATE) \
+ 			-I$(XPON_BSP_GLOBAL_INC_PUBLIC) -I$(XPON_BSP_ECNT_HOOK_DIR)/include
+ 
+-ifeq ($(strip $(TCSUPPORT_3_18_21_KERNEL) $(TCSUPPORT_4_4_KERNEL)),)
+-EXTRA_CFLAGS += -O0 
+-#-save-temps
+-endif
+-EXTRA_CFLAGS += -D CONFIG_SEND_ACK_PLOAMU=3 -D XPON_MAC_CONFIG_DEBUG \
++ccflags-y += -D CONFIG_SEND_ACK_PLOAMU=3 -D XPON_MAC_CONFIG_DEBUG \
+ 				-D CONFIG_USE_FOR_TEST \
+ 				-D XPON_MAC_CONFIG_DEBUG 
+ 
+ ifneq ($(TCSUPPORT_CPU_EN7521),)
+-	EXTRA_CFLAGS += -D CONFIG_USE_RX_NAPI
++	ccflags-y += -D CONFIG_USE_RX_NAPI
+ endif
+ 
+ 
+-EXTRA_CFLAGS += -DEPON_MAC_HW_TEST
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_RGST_SILENT
+-EXTRA_CFLAGS += -D TCSUPPORT_EPON_POWERSAVING
++ccflags-y += -DEPON_MAC_HW_TEST
++ccflags-y += -DTCSUPPORT_EPON_RGST_SILENT
++ccflags-y += -D TCSUPPORT_EPON_POWERSAVING
+ 
+ #connect wan for xpon_10g
+-EXTRA_CFLAGS += -D CONFIG_CONNECT_WAN_DEBUG 
++ccflags-y += -D CONFIG_CONNECT_WAN_DEBUG
+ 
+ ####-Warning for error MUST at last of EXTRA_CFLAGS
+-EXTRA_CFLAGS+=-Werror -Wno-error=frame-larger-than=
++ccflags-y += -Wno-error=frame-larger-than=
+ 
+ ifneq ($(TCSUPPORT_WAN_GPON),)
+-	GPON_SRC	:= gpon_init.c gpon_ploam.c gpon.c gpon_dev.c gpon_act.c gpon_dvt.c gpon_proc.c gpon_security.c gpon_recovery.c
++	GPON_SRC	:= gpon_init.c gpon_ploam.c gpon.c gpon_dev.c gpon_act.c gpon_dvt.c gpon_proc_compat.c gpon_security.c gpon_recovery.c
+ 	GPON_OBJ	:= $(GPON_SRC:%.c=$(SRCDIR)/gpon/%.o)
+ 
+ 	XMCS_SRC	+= xmcs_gpon.c 
+@@ -84,4 +81,3 @@
+ clean:
+ 	# cd $(FILESYSTEM_DIR)/lib/modules/ && rm -f xpon_10g.ko
+ 	$(MAKE) -C $(KERNELDIR) M=`pwd` clean
+-
+--- a/xpon-en757x/xpon_10g/inc/common/drv_types.h
++++ b/xpon-en757x/xpon_10g/inc/common/drv_types.h
+@@ -93,7 +93,7 @@
+  Input:			arg1: device register
+  Output:		return the value of register
+ ************************************************************************/
+-static uint __inline__ GetReg(uint reg)
++static inline uint GetReg(uint reg)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	return get_xpon_data(reg); 
+@@ -108,7 +108,7 @@
+  				arg2: setting value
+   Output:		no return
+ ************************************************************************/
+-static void __inline__ SetReg(uint reg, uint value)
++static inline void SetReg(uint reg, uint value)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	set_xpon_data(reg,value);
+@@ -125,7 +125,7 @@
+  				arg3: offset of the mask
+  Output:		return the mask value of register
+ ************************************************************************/
+-static uint __inline__ GetRegMask(uint reg, uint mask, uint shift)
++static inline uint GetRegMask(uint reg, uint mask, uint shift)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	return ((get_xpon_data(reg)>>shift) & mask) ;
+@@ -142,7 +142,7 @@
+  				arg4: setting value
+  Output:		no return
+ ************************************************************************/
+-static void __inline__ SetRegMask(uint reg, uint mask, uint shift, uint value)
++static inline void SetRegMask(uint reg, uint mask, uint shift, uint value)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	uint data = get_xpon_data(reg) ;
+@@ -163,7 +163,7 @@
+  				arg2: multiple bits
+  Output:		no return
+ ************************************************************************/
+-static void __inline__ SetBits(uint reg, uint bits)
++static inline void SetBits(uint reg, uint bits)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	uint data = get_xpon_data(reg) ;
+@@ -184,7 +184,7 @@
+  				arg2: multiple bits
+  Output:		no return
+ ************************************************************************/
+-static void __inline__ ClearBits(uint reg, uint bits)
++static inline void ClearBits(uint reg, uint bits)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 	uint data = get_xpon_data(reg) ;
+--- a/xpon-en757x/xpon_10g/inc/common/xpon_compat.h
++++ b/xpon-en757x/xpon_10g/inc/common/xpon_compat.h
+@@ -0,0 +1,63 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _XPON_COMPAT_H_
++#define _XPON_COMPAT_H_
++
++#include <linux/skbuff.h>
++#include <linux/types.h>
++#include <linux/version.h>
++
++struct xpon_skb_cb {
++	u32 pon_mark;
++	u32 mark2;
++	u16 gem_port;
++	u16 lan_vlan_tci;
++	u8 gem_type;
++	u8 v_if;
++	u8 lan_vlan_tci_valid;
++	u8 pon_mac_filter_flag;
++	u8 pon_tag_num;
++	u8 pon_vlan_flag;
++	u8 qosEnque;
++};
++
++#define XPON_SKB_CB(skb) ((struct xpon_skb_cb *)((skb)->cb))
++
++struct port_info {
++	u32 magic;
++	u32 stag;
++	u32 channel;
++	u32 nbq;
++	u32 txq;
++	u32 txq_is_valid;
++	u32 tsid;
++	u32 fast;
++};
++
++extern void (*ra_sw_nat_hook_clean_entry_by_channel)(int channel);
++
++#ifndef QOS_FILTER_MARK
++#define QOS_FILTER_MARK 0xf0
++#endif
++#ifndef QOS_TSE_MARK
++#define QOS_TSE_MARK BIT(8)
++#endif
++#ifndef QOS_TSID_MARK
++#define QOS_TSID_MARK GENMASK(7, 0)
++#endif
++#ifndef DS_PKT_FORM_WAN
++#define DS_PKT_FORM_WAN BIT(0)
++#endif
++#ifndef SKBUF_COPYTOLAN
++#define SKBUF_COPYTOLAN BIT(24)
++#endif
++
++#ifndef XMCS_PHY_ALARM_TX_POWER_HIGH
++#define XMCS_PHY_ALARM_TX_POWER_HIGH BIT(0)
++#define XMCS_PHY_ALARM_TX_POWER_LOW BIT(1)
++#define XMCS_PHY_ALARM_TX_CURRENT_HIGH BIT(2)
++#define XMCS_PHY_ALARM_TX_CURRENT_LOW BIT(3)
++#define XMCS_PHY_ALARM_RX_POWER_HIGH BIT(4)
++#define XMCS_PHY_ALARM_RX_POWER_LOW BIT(5)
++#endif
++
++#endif
+--- a/xpon-en757x/xpon_10g/inc/common/xpon_global.h
++++ b/xpon-en757x/xpon_10g/inc/common/xpon_global.h
+@@ -54,7 +54,9 @@
+ #include "xmcs/xmcs_if.h"
+ #include "xmcs/xmcs_fdet.h"
+ #include "pwan/xpon_netif.h"  
++#ifdef TCSUPPORT_WAN_EPON
+ #include "epon/epon.h"
++#endif
+ 
+ //#include "qdma_bmgr.h"
+ #include "omci_oam_monitor.h"
+@@ -264,7 +266,9 @@
+ 	PWAN_GlbPriv_T			 wanPrivData ;
+ 	MCS_GlbPriv_T				xmcsPrivData ;
+ 	GPON_GlbPriv_T			 gponPrivData ;
++	#ifdef TCSUPPORT_WAN_EPON
+ 	EPON_GlbPriv_T				eponPrivData ;
++	#endif
+ 	PON_DyingGasp_t				dyingGaspData ;
+ 
+ 	PON_OnuType_t			    sysOnuType ;
+@@ -318,16 +322,18 @@
+ extern PWAN_GlbPriv_T   * gpWanPriv ;
+ extern GPON_GlbPriv_T	* gpGponPriv ;
+ extern MCS_GlbPriv_T    * gpMcsPriv ;
++#ifdef TCSUPPORT_WAN_EPON
+ extern EPON_GlbPriv_T   *gpEponPriv ;
++#endif
+ extern XPON_PHY_Data_t  *gpPhyData  ;
+ extern PHY_FecCount_T   gphyFecCount;
+ 
+ #define XPON_STOP_TIMER(timer)	do	            \
+ 			{                                   \
+ 				if(in_interrupt()) {            \
+-					del_timer(&timer) ;         \
++					timer_delete(&timer) ;         \
+ 				} else {                        \
+-					del_timer_sync(&timer) ;    \
++					timer_delete_sync(&timer) ;    \
+ 				}                               \
+ 			}while(0)
+ 			
+--- a/xpon-en757x/xpon_10g/inc/common/xpondrv.h
++++ b/xpon-en757x/xpon_10g/inc/common/xpondrv.h
+@@ -63,5 +63,9 @@
+ void xpon_phy_stop_rogue_handle(void);
+ extern int mulitcast_ani;
+ 
++void xpon_stop_timer(void);
++void xpon_send_traffic_up_event(void);
++extern int (*ra_sw_nat_hook_clean_table)(void);
++
+ #endif /* _XPONDRV_H_ */
+ 
+--- a/xpon-en757x/xpon_10g/inc/epon/epon_timer.h
++++ b/xpon-en757x/xpon_10g/inc/epon/epon_timer.h
+@@ -38,7 +38,7 @@
+ #define __EPON_TIMER_
+ 
+ #include <linux/timer.h>
+-#include "epon/epon_debug.h"
++#include <linux/version.h>
+ 
+ #ifndef TIMER_FUN_PAAM
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4,15,0) 
+@@ -48,11 +48,13 @@
+ #endif
+ #endif
+ 
++#include "epon/epon_debug.h"
++
+ typedef void (*eponTimerCallback)(TIMER_FUN_PAAM);
+ 
+ #define EPON_START_TIMER(timer,para)	{ timer.expires = para;mod_timer(&timer, (jiffies + ((timer.expires*HZ)/1000))) ; }
+ 
+-#define EPON_STOP_TIMER(timer) 	{ del_timer_sync(&timer) ; }
++#define EPON_STOP_TIMER(timer) 	{ timer_delete_sync(&timer) ; }
+ 
+ 
+ int epon_create_timer(struct timer_list *timer, eponTimerCallback callback, unsigned long param);
+--- a/xpon-en757x/xpon_10g/inc/gpon/gpon.h
++++ b/xpon-en757x/xpon_10g/inc/gpon/gpon.h
+@@ -85,9 +85,9 @@
+ #define GPON_STOP_TIMER(timer)	\
+ 				{ \
+ 					if(in_interrupt()) { \
+-						del_timer(&timer) ; \
++						timer_delete(&timer) ; \
+ 					} else {\
+-						del_timer_sync(&timer) ; \
++						timer_delete_sync(&timer) ; \
+ 					} \
+ 				}
+ #define GPON_START_TIMER(timer,para)  { timer.expires = para; mod_timer(&timer, (jiffies + ((timer.expires*HZ)/1000))) ; }
+@@ -133,8 +133,8 @@
+     ENUM_Encrypt_Key_State_t state;
+     struct timer_list		TK4_timer ;
+ 	struct timer_list		TK5_timer ;
+-	struct crypto_cipher    *tfm ;	/*aes cmac cipher transformations*/
+-	struct crypto_cipher    *aesEcbTfm ;	/*aes ecb cipher transformations*/
++	struct crypto_lskcipher    *tfm ;	/*aes cmac cipher transformations*/
++	struct crypto_lskcipher    *aesEcbTfm ;	/*aes ecb cipher transformations*/
+ }GPON_Security_t;
+ 
+ typedef struct {
+@@ -337,4 +337,7 @@
+ void gpon_reset_alarm_jiffiesClk(void);
+ void gpon_clear_all_alarm(void);
+ 
++void gpon_start_silence(void);
++void gpon_stop_silence(void);
++
+ #endif /*_GPON_H*/
+--- a/xpon-en757x/xpon_10g/inc/gpon/gpon_ploam.h
++++ b/xpon-en757x/xpon_10g/inc/gpon/gpon_ploam.h
+@@ -149,4 +149,6 @@
+ void ploam_send_tuning_resp_msg(unchar seqNo, unchar operCode,uint respCode);
+ int ploam_recv_asb_priv_msg(PLOAM_RAW_General_T *pGenPloamMsg);
+ 
++int ploam_recv_disable_serial_number(PLOAM_RAW_Disable_SN_T *pDisSnMsg);
++
+ #endif /*_GPON_PLOAM_H*/
+--- a/xpon-en757x/xpon_10g/inc/gpon/gpon_recovery.h
++++ b/xpon-en757x/xpon_10g/inc/gpon/gpon_recovery.h
+@@ -66,8 +66,8 @@
+ };
+ 
+ struct Gpon_Recovery_S{
+-	int allocId[CONFIG_GPON_MAX_TCONT];
+-	struct Gem_Recovery_Info gemPort[CONFIG_GPON_MAX_GEMPORT];
++	int allocId[CONFIG_GPON_10G_MAX_TCONT];
++	struct Gem_Recovery_Info gemPort[CONFIG_GPON_10G_MAX_GEMPORT];
+ 	int gemPortNum;
+ 	int allocIdNum;
+ 	unchar dbgPrint;
+--- a/xpon-en757x/xpon_10g/inc/gpon/gpon_security.h
++++ b/xpon-en757x/xpon_10g/inc/gpon/gpon_security.h
+@@ -77,9 +77,12 @@
+ void gpon_omciIk_index_change_by_OMCI_base_secure(GPON_Security_t *gponSecurity);
+ int  gpon_security_init(void);
+ void gpon_security_exit(void);
+-int  gpon_aes_cmac_encrypt(struct crypto_cipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mic);
+-int  gpon_aes_ecb_encrypt(struct crypto_cipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac);
+-int  gpon_aes_ecb_decrypt(struct crypto_cipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac);
++int  gpon_aes_cmac_encrypt(struct crypto_lskcipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mic);
++int  gpon_aes_ecb_encrypt(struct crypto_lskcipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac);
++int  gpon_aes_ecb_decrypt(struct crypto_lskcipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac);
++struct crypto_lskcipher *gpon_aes_cmac_setup(void);
++struct crypto_lskcipher *gpon_aes_ecb_setup(void);
++void gpon_aes_cmac_key_free(struct crypto_lskcipher *tfm);
+ void gpon_encryption_key_change_state(const uint new_state);
+ 
+ 
+--- a/xpon-en757x/xpon_10g/src/epon/epon_debug.c
++++ b/xpon-en757x/xpon_10g/src/epon/epon_debug.c
+@@ -14,6 +14,7 @@
+ #include "epon/epon_dev.h"
+ #include "epon/epon_msg_route.h"
+ #include "epon/epon_compile_option_wrapper.h"
++#include <ecnt_hook/ecnt_hook_qdma.h>
+ 
+ 
+ /************************************************************************
+@@ -177,7 +178,7 @@
+ 
+ void epon_debug_print_exit(void)
+ {
+-	del_timer(&gp_xpon_debug_print->xpon_debug_output_timer);
++	timer_delete(&gp_xpon_debug_print->xpon_debug_output_timer);
+     return;
+ }
+ /*______________________________________________________________________________
+@@ -2026,6 +2027,7 @@
+ **		v1.0
+ **____________________________________________________________________________*/
+ 
++#if 0
+ static int epon_debug_write_proc(struct file *file, const char *buffer, unsigned long count, void *data)
+ {
+     char val_string[128], cmd[32], subcmd[32] ;
+@@ -2108,3 +2110,13 @@
+ 
+ 
+ 
++#endif
++
++int epon_proc_init(void)
++{
++	return EPON_SUCCESS;
++}
++
++void epon_proc_exit(void)
++{
++}
+--- a/xpon-en757x/xpon_10g/src/epon/epon_init.c
++++ b/xpon-en757x/xpon_10g/src/epon/epon_init.c
+@@ -87,7 +87,7 @@
+ 	if (!dev) goto end;
+ 
+    
+-	skb = skbmgr_alloc_skb2k();
++	skb = dev_alloc_skb(2048);
+ 
+ 	if(unlikely(!skb))
+ 		goto end;
+@@ -123,7 +123,7 @@
+ 
+ int epon_get_mac_reg_address(void)
+ {
+-	g_EPON_MAC_BASE = (PEPON_MAC_REGS)(ioremap_nocache(CONFIG_EPON_BASE_ADDR, CONFIG_EPON_REG_RANGE)) ; 
++	g_EPON_MAC_BASE = (PEPON_MAC_REGS)(ioremap(CONFIG_EPON_BASE_ADDR, CONFIG_EPON_REG_RANGE)) ;
+ 	if(!g_EPON_MAC_BASE) {
+ 		printk("ERR: ioremap the EPON base address failed:addr=0x%x,size=0x%x\n",CONFIG_EPON_BASE_ADDR,(uint32_t)CONFIG_EPON_REG_RANGE) ;
+ 		return -ENOMEM ;
+--- a/xpon-en757x/xpon_10g/src/epon/epon_ioctl.c
++++ b/xpon-en757x/xpon_10g/src/epon/epon_ioctl.c
+@@ -670,7 +670,7 @@
+     gp_epon_global_data->txPower_flag = TRUE;
+ 	XPON_PHY_TX_POWER_CONFIG(PHY_ENABLE);
+ 	if (timer_pending(&eponTxPwrDwnTmr)){
+-		del_timer(&eponTxPwrDwnTmr);
++		timer_delete(&eponTxPwrDwnTmr);
+ 	}
+ 	if (XPON_PHY_TX_ENABLE()==PHY_FAILURE){
+ 		DEBUG_MSG_EPON(MSG_LEVEL_ERROR, "\r\n Epon set PHY Tx Power Enable failed!");
+@@ -714,7 +714,7 @@
+ 			XPON_PHY_TX_ENABLE();
+ 			start_oamCnt_ckeck_timer();
+ 			if (timer_pending(&eponTxPwrDwnTmr)){
+-				del_timer(&eponTxPwrDwnTmr);
++				timer_delete(&eponTxPwrDwnTmr);
+ 			}
+ 		}
+ 	}else if (time == 65535) {// disabled tx power
+@@ -722,7 +722,7 @@
+ 
+ 		/* clear timer when tx power disable  */
+ 		if (timer_pending(&eponTxPwrDwnTmr)){
+-			del_timer(&eponTxPwrDwnTmr);
++			timer_delete(&eponTxPwrDwnTmr);
+ 		}
+ 		DEBUG_MSG_EPON(MSG_LEVEL_ERROR, "shut down phy power_1  time: %d!\n",time);
+ 		XPON_PHY_TX_DISABLE();
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon.c
+@@ -428,7 +428,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void gpon_recv_ploam_message(void)
++static void gpon_recv_ploam_message(void)
+ {
+ 	PLOAM_RAW_General_T ploamMsg;
+ 	int depth=0;	
+@@ -465,7 +465,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void gpon_fifo_err_sts(void)
++static __maybe_unused void gpon_fifo_err_sts(void)
+ {
+ 	REG_FIFO_ERR_STS fifoErrStatus ;
+ 	
+@@ -526,7 +526,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void gpon_bwm_chk_err_sts(void)
++static __maybe_unused void gpon_bwm_chk_err_sts(void)
+ {
+ 	REG_DBG_BWM_CKH_STS bwpChkStatus ;
+ 	bwpChkStatus.Raw = IO_GREG(DBG_BWM_CKH_STS);
+@@ -581,7 +581,7 @@
+ 		PON_MSG((MSG_INT|MSG_ERR), "GPON bwmap check err status: min_bst_intvl_err.\n") ;
+ 	}
+ }
+-void gpon_sw_resync(void)
++static void gpon_sw_resync(void)
+ {
+ 	if(snSendInO23Cnt>=max_cnt){
+ 		snSendInO23Cnt=0;
+@@ -617,7 +617,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void ng2_tuning_sfc_match_handler(void){
++static void ng2_tuning_sfc_match_handler(void){
+ 
+ 	if(GPON_CURR_STATE != GPON_10G_STATE_O5_2) {
+ 		PON_MSG((MSG_OAM | MSG_ERR), "ng2_o9_recv_grant_handler not in O9 state, do nothing\n") ;
+@@ -677,7 +677,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void mon_not_gnt_handler(void){
++static __maybe_unused void mon_not_gnt_handler(void){
+ #ifdef TCSUPPORT_CPU_EN7581
+ 	if(GPON_CURR_STATE != GPON_10G_STATE_O5) {
+ 		PON_MSG((MSG_ACT | MSG_ERR), "cal_gnt_zero_handler  not in O5 state, do nothing\n") ;
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_act.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_act.c
+@@ -701,17 +701,17 @@
+ void gpon_act_deinit(void)
+ {
+ 	tasklet_kill(&taskLedConfig);
+-	del_timer(&gpGponPriv->to1_timer);
+-	del_timer(&gpGponPriv->to2_timer);
++	timer_delete(&gpGponPriv->to1_timer);
++	timer_delete(&gpGponPriv->to2_timer);
+ #if defined(TCSUPPORT_CPU_AN7583)
+-	del_timer(&gpGponPriv->fe_chn_done_timer);
++	timer_delete(&gpGponPriv->fe_chn_done_timer);
+ #endif
+ 	if(NGPON2_MODE){
+-		del_timer(&gpGponPriv->to3_timer);
+-		del_timer(&gpGponPriv->to4_timer);
+-		del_timer(&gpGponPriv->to5_timer);
+-		//del_timer(&gpGponPriv->to6_timer);
+-		del_timer(&gpGponPriv->toZ_timer);
++		timer_delete(&gpGponPriv->to3_timer);
++		timer_delete(&gpGponPriv->to4_timer);
++		timer_delete(&gpGponPriv->to5_timer);
++		//timer_delete(&gpGponPriv->to6_timer);
++		timer_delete(&gpGponPriv->toZ_timer);
+ 	}
+     GPON_STOP_TIMER(gpWanPriv->gpon.gemMibTimer) ;
+ }
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_dev.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_dev.c
+@@ -992,6 +992,19 @@
+ #endif
+ /*****************************************************************************
+ ******************************************************************************/
++#if !defined(TCSUPPORT_CPU_EN7580)
++static int gponDevCheckGemExist(ushort gemPortId, unchar isType, unchar isEncrypted)
++{
++	unchar valid = 0, type = 0, encrypt = 0;
++
++	if (!gponDevGetGemInfo(gemPortId, &valid, &type, &encrypt) &&
++	    valid == XPON_ENABLE && type == isType && encrypt == isEncrypted)
++		return 0;
++
++	return -EFAULT;
++}
++#endif
++
+ int gponDevSetGemInfo(ushort gemPortId, unchar isValid, unchar isType,unchar isEncrypted)
+ {
+ 	int ret = 0;
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_init.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_init.c
+@@ -47,6 +47,7 @@
+ #include <ecnt_hook/ecnt_hook_pon_phy.h>
+ #include "common/phy_if_wrapper.h"
+ 
++#include "gpon/gpon_init.h"
+ #include "gpon/gpon_security.h"
+ #include "gpon/gpon_dev.h"
+ #include "gpon/gpon_recovery.h"
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_proc_compat.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_proc_compat.c
+@@ -0,0 +1,14 @@
++#include <linux/module.h>
++
++int xpon_proc_init(void)
++{
++	return 0;
++}
++
++int xpon_proc_dest(void)
++{
++	return 0;
++}
++
++MODULE_DESCRIPTION("Airoha xPON procfs compatibility stubs");
++MODULE_LICENSE("GPL");
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_recovery.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_recovery.c
+@@ -53,7 +53,7 @@
+ 	gponRecovery.allocIdNum = 0;
+ 	gponRecovery.gemPortNum = 0;
+ 
+-	for(i = 0; i < CONFIG_GPON_MAX_TCONT; i++){
++	for(i = 0; i < CONFIG_GPON_10G_MAX_TCONT; i++){
+ 		gponRecovery.allocId[i] = GPON_10G_UNASSIGN_ALLOC_ID;
+     }
+ 
+@@ -140,11 +140,11 @@
+ {
+ 	int i = 0;
+ 
+-        if(gpWanPriv->gpon.gemNumbers > CONFIG_GPON_MAX_GEMPORT) {
++        if(gpWanPriv->gpon.gemNumbers > CONFIG_GPON_10G_MAX_GEMPORT) {
+ 		return -ENOSPC ;
+ 	}
+   
+-	for(i=0 ; i<CONFIG_GPON_MAX_GEMPORT ; i++) 
++	for(i=0 ; i<CONFIG_GPON_10G_MAX_GEMPORT ; i++)
+ 	{
+ 		if(gpWanPriv->gpon.gemPort[i].info.portId == gemPortId){
+ 			return 1;
+--- a/xpon-en757x/xpon_10g/src/gpon/gpon_security.c
++++ b/xpon-en757x/xpon_10g/src/gpon/gpon_security.c
+@@ -43,6 +43,7 @@
+ #include <linux/types.h>
+ #include <linux/crypto.h>
+ #include <linux/err.h>
++#include <crypto/skcipher.h>
+ #include "common/xpon_global.h"
+ #include "gpon/gpon_security.h"
+ 
+@@ -129,7 +130,7 @@
+  * OMAC1 was standardized with the name CMAC by NIST in a Special Publication
+  * (SP) 800-38B.
+  ******************************************************************************/
+-static int aes_128_cmac_vector(struct crypto_cipher *tfm, const u8 *key, size_t num_elem,
++static int aes_128_cmac_vector(struct crypto_lskcipher *tfm, const u8 *key, size_t num_elem,
+ 		const u8 *addr[], const size_t *len, u8 *mac)
+ {
+ 	u8 cbc[AES_BLOCK_SIZE] = {0}, pad[AES_BLOCK_SIZE] = {0};
+@@ -137,7 +138,7 @@
+ 	size_t i, e, left, total_len;
+ 	int ret = 0;
+ 
+-	ret = crypto_cipher_setkey(tfm, key, AES_CMAC_KEY_LEN);
++	ret = crypto_lskcipher_setkey(tfm, key, AES_CMAC_KEY_LEN);
+ 	if(ret){
+ 		PON_MSG(MSG_ERR, "failed to set key for AES CMAC\n") ;
+ 		return -1;
+@@ -163,12 +164,12 @@
+ 			}
+ 		}
+ 		if (left > AES_BLOCK_SIZE)
+-			crypto_cipher_encrypt_one(tfm, cbc, cbc);
++			crypto_lskcipher_encrypt(tfm, cbc, cbc, AES_BLOCK_SIZE, NULL);
+ 		left -= AES_BLOCK_SIZE;
+ 	}
+ 
+ 	memset(pad, 0, AES_BLOCK_SIZE);
+-	crypto_cipher_encrypt_one(tfm, pad, pad);
++	crypto_lskcipher_encrypt(tfm, pad, pad, AES_BLOCK_SIZE, NULL);
+ 	gf_mulx(pad);
+ 
+ 	if (left || total_len == 0) {
+@@ -187,7 +188,7 @@
+ 	for (i = 0; i < AES_BLOCK_SIZE; i++)
+ 		pad[i] ^= cbc[i];
+ 	
+-	crypto_cipher_encrypt_one(tfm, pad, pad);
++	crypto_lskcipher_encrypt(tfm, pad, pad, AES_BLOCK_SIZE, NULL);
+ 	memcpy(mac, pad, CMAC_TLEN);	
+ 	return 0;
+ }
+@@ -203,7 +204,7 @@
+  * OMAC1 was standardized with the name CMAC by NIST in a Special Publication
+  * (SP) 800-38B.
+  ******************************************************************************/
+-int gpon_aes_cmac_encrypt(struct crypto_cipher *tfm, const u8* key, 
++int gpon_aes_cmac_encrypt(struct crypto_lskcipher *tfm, const u8* key,
+ 		const u8 *data, size_t data_len, u8 *mac){
+ 
+ 	const u8 *addr[3]={0};
+@@ -235,11 +236,11 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-struct crypto_cipher * gpon_aes_cmac_setup(void)
++struct crypto_lskcipher * gpon_aes_cmac_setup(void)
+ {
+-	struct crypto_cipher *tfm = NULL;
++	struct crypto_lskcipher *tfm = NULL;
+ 
+-	tfm = crypto_alloc_cipher("aes", 0, CRYPTO_ALG_ASYNC);
++	tfm = crypto_alloc_lskcipher("aes", 0, 0);
+ 	if (IS_ERR(tfm)){
+ 		PON_MSG(MSG_ERR, "failed to load transform for AES CMAC\n") ;
+ 		return NULL;
+@@ -260,21 +261,21 @@
+ **		0: ok
+ **		-ohter: failure.
+ **	call:
+-**		crypto_cipher_setkey
++**		crypto_lskcipher_setkey
+ **		crypto_cipher_encrypt_one
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-int gpon_aes_ecb_encrypt(struct crypto_cipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac){
++int gpon_aes_ecb_encrypt(struct crypto_lskcipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac){
+ 	int ret = 0;
+ 	
+-	ret = crypto_cipher_setkey(tfm, key, AES_ECB_KEY_LEN);
++	ret = crypto_lskcipher_setkey(tfm, key, AES_ECB_KEY_LEN);
+ 	if(ret){
+ 		PON_MSG(MSG_ERR, "failed to set key for AES ECB\n") ;
+ 		return -1;
+ 	}
+ 	
+-	crypto_cipher_encrypt_one(tfm, mac, data);
++	crypto_lskcipher_encrypt(tfm, data, mac, AES_BLOCK_SIZE, NULL);
+ 
+ 	return 0;
+ }
+@@ -291,22 +292,22 @@
+ **		0: ok
+ **		-ohter: failure.
+ **	call:
+-**		crypto_cipher_setkey
++**		crypto_lskcipher_setkey
+ **		crypto_cipher_decrypt_one
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+ 
+-int gpon_aes_ecb_decrypt(struct crypto_cipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac){
++int gpon_aes_ecb_decrypt(struct crypto_lskcipher *tfm, const u8* key, const u8 *data, size_t data_len, u8 *mac){
+ 	int ret = 0;
+ 	
+-	ret = crypto_cipher_setkey(tfm, key, AES_ECB_KEY_LEN);
++	ret = crypto_lskcipher_setkey(tfm, key, AES_ECB_KEY_LEN);
+ 	if(ret){
+ 		PON_MSG(MSG_ERR, "failed to set key for AES ECB\n") ;
+ 		return -1;
+ 	}
+ 	
+-	crypto_cipher_decrypt_one(tfm, mac, data);
++	crypto_lskcipher_decrypt(tfm, data, mac, AES_BLOCK_SIZE, NULL);
+ 
+ 	return 0;
+ }
+@@ -328,11 +329,11 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-struct crypto_cipher * gpon_aes_ecb_setup(void)
++struct crypto_lskcipher * gpon_aes_ecb_setup(void)
+ {
+-	struct crypto_cipher *tfm = NULL;
++	struct crypto_lskcipher *tfm = NULL;
+ 
+-	tfm = crypto_alloc_cipher("aes", 0, CRYPTO_ALG_TYPE_CIPHER);  /*CRYPTO_ALG_TYPE_CIPHER singer block cipher*/
++	tfm = crypto_alloc_lskcipher("aes", 0, 0);  /*CRYPTO_ALG_TYPE_CIPHER singer block cipher*/
+ 	if (IS_ERR(tfm)){		
+ 		PON_MSG(MSG_ERR, "failed to load transform for AES ECB\n") ;
+ 		return NULL;
+@@ -352,14 +353,14 @@
+ **	return:
+ **		None
+ **	call:
+-**		crypto_free_cipher
++**		crypto_free_lskcipher
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void gpon_aes_cmac_key_free(struct crypto_cipher *tfm)
++void gpon_aes_cmac_key_free(struct crypto_lskcipher *tfm)
+ {
+ 	if (tfm)
+-		crypto_free_cipher(tfm);
++		crypto_free_lskcipher(tfm);
+ }
+ /*______________________________________________________________________________
+ **	function name
+@@ -606,8 +607,8 @@
+ 	
+ 	gpon_aes_cmac_key_free(gpGponPriv->gponSecurity.tfm);
+ 	gpon_aes_cmac_key_free(gpGponPriv->gponSecurity.aesEcbTfm);
+-    del_timer(&gpGponPriv->gponSecurity.TK4_timer);
+-	del_timer(&gpGponPriv->gponSecurity.TK5_timer);
++    timer_delete(&gpGponPriv->gponSecurity.TK4_timer);
++	timer_delete(&gpGponPriv->gponSecurity.TK5_timer);
+ 
+ 	return;
+ }
+--- a/xpon-en757x/xpon_10g/src/omci_oam_monitor.c
++++ b/xpon-en757x/xpon_10g/src/omci_oam_monitor.c
+@@ -283,7 +283,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void xpon_count_rx_pkt(TIMER_FUN_PAAM arg)
++static void xpon_count_rx_pkt(TIMER_FUN_PAAM arg)
+ {
+ 	unsigned long current_pkt_cnt = 0;
+     unsigned long diff = 0;
+@@ -387,7 +387,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-int xpon_prepare_params(char * cmdline, size_t * argc, char ** argv)
++static int xpon_prepare_params(char * cmdline, size_t * argc, char ** argv)
+ {
+     size_t cnt = 0, pos = 0;
+     enum{SEARCH_ARG, HIT_ARG} state = SEARCH_ARG;
+--- a/xpon-en757x/xpon_10g/src/pwan/epon_wan.c
++++ b/xpon-en757x/xpon_10g/src/pwan/epon_wan.c
+@@ -84,7 +84,7 @@
+     }else{		
+ /*Warning: operations on skb must behind ct hwnat offload*/
+ #if/*TCSUPPORT_COMPILE*/ defined(TCSUPPORT_CT_HWNAT_OFFLOAD)
+-		if((skb->qosEnque & 0x02) == 0x02){ /*from hw nat offload*/
++		if((XPON_SKB_CB(skb)->qosEnque & 0x02) == 0x02){ /*from hw nat offload*/
+ 			pTxMsg->raw.oam = 0;
+ 			if(restore_offload_info_hook)
+ 				restore_offload_info_hook(skb, xpon_info, FOE_MAGIC_EPON);
+@@ -99,7 +99,7 @@
+ 				/* EN7512 tx queue is configured by QDMA */
+ 				pTxMsg->raw.queue = xpon_info->txq & qMask;
+ 			}
+-			skb->qosEnque &= ~(0x02);
++			XPON_SKB_CB(skb)->qosEnque &= ~(0x02);
+ 			return 0;
+ 		}
+ #endif/*TCSUPPORT_COMPILE*/
+@@ -113,7 +113,7 @@
+ 			epon_mapping_hook(skb);
+ 		}
+ #endif
+-		idx = skb->v_if ;
++		idx = XPON_SKB_CB(skb)->v_if ;
+ 		if(idx >= EPON_LLID_MAX_NUM) {
+ 			return -1 ;
+ 		}else if(!gpWanPriv->epon.llid[idx].info.valid) {
+@@ -152,8 +152,8 @@
+ 		} 
+ 
+ 		pTxMsg->raw.oam = 0 ;
+-		pTxMsg->raw.channel = skb->v_if ;
+-		pTxMsg->raw.nboq = skb->v_if ;
++		pTxMsg->raw.channel = XPON_SKB_CB(skb)->v_if ;
++		pTxMsg->raw.nboq = XPON_SKB_CB(skb)->v_if ;
+ 		
+         FE_API_GET_METER_IDX(skb, UP_STREAM, &tsid, 0);
+ 
+@@ -226,7 +226,7 @@
+ 		//__dump_skb(skb, pktLens) ;
+ 	PON_MSG(MSG_ERR, "%s %d receive data packet.\n",__FUNCTION__,__LINE__) ;
+ 		if(gpWanPriv->epon.llid[idx].info.valid) {
+-			skb->v_if = pRxMsg->raw.channel ;
++			XPON_SKB_CB(skb)->v_if = pRxMsg->raw.channel ;
+ 			
+ 			if(gpWanPriv->epon.llid[idx].info.rxDrop) {
+ 				gpWanPriv->epon.llid[idx].stats.rx_dropped++ ;
+--- a/xpon-en757x/xpon_10g/src/pwan/gpon_wan.c
++++ b/xpon-en757x/xpon_10g/src/pwan/gpon_wan.c
+@@ -953,7 +953,7 @@
+ 	} else {
+ 
+ #if defined(TCSUPPORT_PON_VLAN)
+-			skb->pon_vlan_flag |= PON_VLAN_TX_CALL_HOOK;
++			XPON_SKB_CB(skb)->pon_vlan_flag |= PON_VLAN_TX_CALL_HOOK;
+ 			if(pon_insert_tag_hook)
+ 			{
+ 				if(pon_insert_tag_hook(&skb) == -1){
+@@ -970,13 +970,13 @@
+         pTxMsg->raw.ndp = 0 ;
+ 
+ #if/*TCSUPPORT_COMPILE*/ defined(TCSUPPORT_CT_HWNAT_OFFLOAD)
+-    if((skb->qosEnque & 0x02) == 0x02){ /*from hw nat offload*/
++    if((XPON_SKB_CB(skb)->qosEnque & 0x02) == 0x02){ /*from hw nat offload*/
+         if(restore_offload_info_hook)
+             restore_offload_info_hook(skb, xpon_info, FOE_MAGIC_GPON);
+             pTxMsg->raw.gem = xpon_info->stag;
+             pTxMsg->raw.channel = xpon_info->channel & chnMask;
+             pTxMsg->raw.nboq = xpon_info->channel & chnMask;
+-            skb->qosEnque &= ~(0x02);
++            XPON_SKB_CB(skb)->qosEnque &= ~(0x02);
+         return 0;
+     }
+ #endif/*TCSUPPORT_COMPILE*/
+@@ -1008,9 +1008,9 @@
+ 		}
+ 
+         /*prepare meter and anct info */
+-        if(skb->pon_mark & QOS_TSE_MARK)
++        if(XPON_SKB_CB(skb)->pon_mark & QOS_TSE_MARK)
+         {
+-            mtr_logic_idx = skb->pon_mark & QOS_TSID_MARK;
++            mtr_logic_idx = XPON_SKB_CB(skb)->pon_mark & QOS_TSID_MARK;
+             PON_MSG(MSG_TRACE, "gemport ratelimit is eanble, mtr_logic_idx= %d\n",mtr_logic_idx) ; 
+         }
+         
+@@ -1025,7 +1025,7 @@
+ 		FH_VLAN_TX_PROC(skb);
+ 
+ 		/* Just for FPGA Verification. the default gem port msut use default interface or dropped. */
+-		gemIdx = (skb->gem_port) ? (gpWanPriv->gpon.gemIdToIndex[skb->gem_port] & GPON_GEM_IDX_MASK) : CONFIG_GPON_10G_MAX_GEMPORT ;
++		gemIdx = (XPON_SKB_CB(skb)->gem_port) ? (gpWanPriv->gpon.gemIdToIndex[XPON_SKB_CB(skb)->gem_port] & GPON_GEM_IDX_MASK) : CONFIG_GPON_10G_MAX_GEMPORT ;
+ 		if(gemIdx>=CONFIG_GPON_10G_MAX_GEMPORT || !gpWanPriv->gpon.gemPort[gemIdx].info.valid || 
+ 											  (gpWanPriv->gpon.gemPort[gemIdx].info.channel==GPON_MULTICAST_CHANNEL || gpWanPriv->gpon.gemPort[gemIdx].info.channel==GPON_UNKNOWN_CHANNEL) ||
+ 											  gpWanPriv->gpon.allocId[gpWanPriv->gpon.gemPort[gemIdx].info.channel] == GPON_10G_UNASSIGN_ALLOC_ID ||
+@@ -1035,7 +1035,7 @@
+ 		}
+ 		
+ 		//Do GPON MAC filter
+-		skb->v_if = gpWanPriv->gpon.gemPort[gemIdx].info.ani ;
++		XPON_SKB_CB(skb)->v_if = gpWanPriv->gpon.gemPort[gemIdx].info.ani ;
+ #if defined(TCSUPPORT_PON_VLAN) && defined(TCSUPPORT_PON_VLAN_FILTER) && defined(TCSUPPORT_XPON_IGMP)
+ 		if (is_up_igmp_pkt)
+ 		{
+@@ -1052,7 +1052,7 @@
+ #endif
+ 	{
+ 
+-		skb->pon_vlan_flag |= PON_PKT_SEND_TO_WAN;
++		XPON_SKB_CB(skb)->pon_vlan_flag |= PON_PKT_SEND_TO_WAN;
+ 		if(pon_insert_tag_hook)
+ 		{
+ 			if(pon_insert_tag_hook(&skb) == -1){
+@@ -1064,7 +1064,7 @@
+ #endif
+ 
+ 	#ifdef TCSUPPORT_PON_MAC_FILTER
+-		skb->pon_mac_filter_flag |= PKT_SEND_TO_WAN;
++		XPON_SKB_CB(skb)->pon_mac_filter_flag |= PKT_SEND_TO_WAN;
+ 		if(pon_check_mac_hook)
+ 		{
+ 			if(pon_check_mac_hook(skb) == -1){
+@@ -1236,18 +1236,18 @@
+ 		gpWanPriv->gpon.gemPort[gemIdx].stats.rx_packets++ ;
+ 		gpWanPriv->gpon.gemPort[gemIdx].stats.rx_bytes += pktLens ;
+ 		if(GPON_MULTICAST_CHANNEL == gpWanPriv->gpon.gemPort[gemIdx].info.channel){
+-			skb->gem_type = GPON_MULTICAST_GEM ;
++			XPON_SKB_CB(skb)->gem_type = GPON_MULTICAST_GEM ;
+ 		}else{
+-			skb->gem_type = GPON_UNICAST_GEM ;			 
++			XPON_SKB_CB(skb)->gem_type = GPON_UNICAST_GEM ;
+ 		}
+ 
+-		skb->gem_port = gemPortId ;
+-		skb->v_if = gpWanPriv->gpon.gemPort[gemIdx].info.ani ;
+-		skb->pon_mark |= DS_PKT_FORM_WAN;
++		XPON_SKB_CB(skb)->gem_port = gemPortId ;
++		XPON_SKB_CB(skb)->v_if = gpWanPriv->gpon.gemPort[gemIdx].info.ani ;
++		XPON_SKB_CB(skb)->pon_mark |= DS_PKT_FORM_WAN;
+ 		
+ /*excute ani port mac filter function here*/		
+ #ifdef TCSUPPORT_PON_MAC_FILTER
+-		skb->pon_mac_filter_flag |= PKT_SEND_TO_LAN;
++		XPON_SKB_CB(skb)->pon_mac_filter_flag |= PKT_SEND_TO_LAN;
+ 		mac = skb->data + 12;
+ 		 
+ 		while((tpid =((*mac << 8) + *(mac + 1))) == 0x8100 ||(tpid == 0x88a8)||(tpid == 0x9100))
+@@ -1256,14 +1256,14 @@
+ 			mac += 4;
+ 		}
+ 
+-		skb->pon_tag_num = tagNum;
++		XPON_SKB_CB(skb)->pon_tag_num = tagNum;
+ 		if(pon_check_mac_hook)
+ 		{
+ 			if(pon_check_mac_hook(skb) == -1)
+ 				goto fail;
+ 		}
+-		skb->pon_mac_filter_flag &= ~(PKT_SEND_TO_LAN) ;	
+-		skb->pon_tag_num = 0;
++		XPON_SKB_CB(skb)->pon_mac_filter_flag &= ~(PKT_SEND_TO_LAN) ;
++		XPON_SKB_CB(skb)->pon_tag_num = 0;
+ #endif
+         
+ #ifdef TCSUPPORT_HWNAT_L2VID
+@@ -1278,7 +1278,7 @@
+ 				for(i=0 ; i<CONFIG_GPON_10G_MAX_GEMPORT ; i++) {
+ 					if(gpWanPriv->gpon.gemPort[i].info.valid) {
+ 						if(!foo) {
+-							skb->gem_port = gpWanPriv->gpon.gemPort[i].info.portId ;
++							XPON_SKB_CB(skb)->gem_port = gpWanPriv->gpon.gemPort[i].info.portId ;
+ 							skb->mark = (skb->mark & ~QOS_FILTER_MARK) | ((random32()&0x7)<<4) ;
+ 							break ;
+ 						}
+@@ -1287,14 +1287,14 @@
+ 				}
+ 				if(i == CONFIG_GPON_10G_MAX_GEMPORT) {
+ 					skb->mark = (skb->mark & ~QOS_FILTER_MARK) | ((random32()&0x7)<<4) ;
+-					skb->gem_port = gemPortId ;
++					XPON_SKB_CB(skb)->gem_port = gemPortId ;
+ 				}
+ 				*pFlag = 1 ;
+ 			} else 
+ #endif /* CONFIG_USE_FOR_TEST */
+ 			{
+ 				if(gpWanPriv->gpon.gemPort[gemIdx].info.channel<CONFIG_GPON_10G_MAX_TCONT) {
+-					skb->gem_port = gemPortId ;
++					XPON_SKB_CB(skb)->gem_port = gemPortId ;
+ 					*pFlag = 1 ;
+ 				} else {
+ #ifdef XPON_MAC_CONFIG_DEBUG  
+--- a/xpon-en757x/xpon_10g/src/pwan/xpon_netif.c
++++ b/xpon-en757x/xpon_10g/src/pwan/xpon_netif.c
+@@ -57,7 +57,6 @@
+ #include <linux/syscalls.h>
+ #include <linux/fcntl.h>
+ #include <ecnt_hook/ecnt_hook_traffic_classify.h>
+-#include "linux/libcompileoption.h"
+ #ifdef TCSUPPORT_RA_HWNAT
+ #include <linux/foe_hook.h>
+ #endif
+@@ -323,7 +322,6 @@
+ 	if(SOFT_LOOPBACK_MODE(pNetPriv)) {
+ 		skb->protocol = eth_type_trans(skb, dev) ;
+ 		skb->ip_summed = CHECKSUM_UNNECESSARY ;
+-		dev->last_rx = jiffies ;
+ 		netif_rx(skb) ;
+ 		goto post_qdma_tx;
+ 		
+@@ -351,7 +349,7 @@
+ 		{
+ 			GOTO_DROP(2);
+ 		}
+-		gemport=skb->gem_port;
++		gemport=XPON_SKB_CB(skb)->gem_port;
+ 	} else 
+ #endif /* TCSUPPORT_WAN_GPON */
+ #ifdef TCSUPPORT_WAN_EPON
+@@ -477,7 +475,7 @@
+ 		skb_mirror = NULL ;
+ 	}
+ 
+-	dev->trans_start = jiffies ;
++	netif_trans_update(dev);
+ 	return ret ;
+ 	
+ drop1:
+@@ -650,8 +648,8 @@
+ 	}
+ #endif
+ #ifdef TCSUPPORT_LAN_VLAN
+-	skb->lan_vlan_tci = 0;
+-	skb->lan_vlan_tci_valid = 0;
++	XPON_SKB_CB(skb)->lan_vlan_tci = 0;
++	XPON_SKB_CB(skb)->lan_vlan_tci_valid = 0;
+ #endif
+ 	/* 1. process the message information						   *
+ 	 * 2. calculate the netIdx value from GEM port or LLID value   */
+@@ -748,7 +746,6 @@
+ #endif		
+ 
+ 		skb->dev = dev ;
+-		dev->last_rx = jiffies ;
+ 		skb->protocol = eth_type_trans(skb, dev) ;
+ 		skb->ip_summed = CHECKSUM_UNNECESSARY ;
+ 		if (PWAN_IF_DATA != netIdx){
+@@ -786,8 +783,8 @@
+ 				if(PWAN_IF_DATA == netIdx)
+ 				{
+ #if/*TCSUPPORT_COMPILE*/ defined(TCSUPPORT_CMCCV2)
+-					skb->mark2 &= (~(QUEUE_MARK_MASK));
+-					skb->mark2 |= QUEUE_FROM_WAN;
++					XPON_SKB_CB(skb)->mark2 &= (~(QUEUE_MARK_MASK));
++					XPON_SKB_CB(skb)->mark2 |= QUEUE_FROM_WAN;
+ #else/*TCSUPPORT_COMPILE*/
+ 					skb->mark &= (~(PORT_MASK << PORT_MASK_OFFSET));
+ 					skb->mark |= ((E_WAN_PORT & PORT_MASK) << PORT_MASK_OFFSET);
+@@ -916,8 +913,8 @@
+ 			if(PWAN_IF_DATA == netIdx)
+ 			{
+ #if/*TCSUPPORT_COMPILE*/ defined(TCSUPPORT_CMCCV2)
+-				skb->mark2 &= (~(QUEUE_MARK_MASK));
+-				skb->mark2 |= QUEUE_FROM_WAN;
++				XPON_SKB_CB(skb)->mark2 &= (~(QUEUE_MARK_MASK));
++				XPON_SKB_CB(skb)->mark2 |= QUEUE_FROM_WAN;
+ #else/*TCSUPPORT_COMPILE*/
+ 				skb->mark &= (~(PORT_MASK << PORT_MASK_OFFSET));
+ 				skb->mark |= ((E_WAN_PORT & PORT_MASK) << PORT_MASK_OFFSET);
+@@ -1148,7 +1145,7 @@
+ #if defined(TCSUPPORT_XPON_LED)
+ 	if((strcmp(dev->name, "pon") == 0) && (dev->flags & IFF_UP))
+ 	{
+-	//	del_timer_sync(&gpWanPriv->pwan_timer);
++	//	timer_delete_sync(&gpWanPriv->pwan_timer);
+ 	}
+ #endif
+ 
+@@ -1207,7 +1204,7 @@
+     	return(-EIO);
+ 
+ 	/* Save the customize mac address */
+-  	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
++	eth_hw_addr_set(dev, addr->sa_data);
+ 
+ 	return 0;
+ }
+@@ -1332,7 +1329,7 @@
+ 	pNetPriv->drvLb = 0 ;
+ 	memset(&pNetPriv->stats, 0, sizeof(struct net_device_stats)) ;
+ 	gpWanPriv->pPonNetDev[idx]->addr_len = ETH_ADDR_LEN ;
+-	memcpy(gpWanPriv->pPonNetDev[idx]->dev_addr, mac_addr, ETH_ADDR_LEN) ;
++	eth_hw_addr_set(gpWanPriv->pPonNetDev[idx], mac_addr);
+ 	gpWanPriv->pPonNetDev[idx]->mtu = PWAN_MAX_MTU ;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,29)
+ 	gpWanPriv->pPonNetDev[idx]->netdev_ops = &xpon_netdev_ops;
+@@ -1383,7 +1380,7 @@
+ #if defined(TCSUPPORT_XPON_LED)
+ 	if((strcmp(dev->name, "pon") == 0) && (dev->flags & IFF_UP))
+ 	{
+-		//del_timer_sync(&gpWanPriv->pwan_timer);
++		//timer_delete_sync(&gpWanPriv->pwan_timer);
+ 	}
+ #endif
+ 
+--- a/xpon-en757x/xpon_10g/src/xmcs/xmcs_fdet.c
++++ b/xpon-en757x/xpon_10g/src/xmcs/xmcs_fdet.c
+@@ -224,6 +224,7 @@
+ 
+ /***************************************************************
+ ***************************************************************/
++#if 0
+ int fdet_cmd_proc(uint cmd, ulong arg) 
+ {
+     int ret = 0;
+@@ -261,3 +262,9 @@
+ 
+     return ret ;
+ }
++#endif
++
++int fdet_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
+--- a/xpon-en757x/xpon_10g/src/xmcs/xmcs_gpon.c
++++ b/xpon-en757x/xpon_10g/src/xmcs/xmcs_gpon.c
+@@ -268,7 +268,7 @@
+ ***************************************************************/
+ static int xmcs_set_eqd_offset_flag(char flag) 
+ {
+-	gpGponPriv->gponCfg.flags.eqdOffsetFlag = (flag == '-') ? XGPON_EQD_OFFSET_FLAG_SUBTRACT : XGPON_EQD_OFFSET_FLAG_ADD ;
++	gpGponPriv->gponCfg.flags.eqdOffsetFlag = (flag == '-') ? GPON_EQD_OFFSET_FLAG_SUBTRACT : GPON_EQD_OFFSET_FLAG_ADD ;
+ 	
+ 	return 0 ;
+ }
+@@ -292,7 +292,7 @@
+ 		return 0 ;
+ 	} else {
+ 		/* For O5 EqD offset test */
+-		if(gpGponPriv->gponCfg.flags.eqdOffsetFlag == XGPON_EQD_OFFSET_FLAG_SUBTRACT) {
++		if(gpGponPriv->gponCfg.flags.eqdOffsetFlag == GPON_EQD_OFFSET_FLAG_SUBTRACT) {
+ 			gpGponPriv->gponCfg.eqd = gpGponPriv->gponCfg.eqd - gpGponPriv->gponCfg.eqdO5Offset;
+ 		} else {
+ 			gpGponPriv->gponCfg.eqd = gpGponPriv->gponCfg.eqd + gpGponPriv->gponCfg.eqdO5Offset;
+@@ -963,6 +963,7 @@
+ 
+ /***************************************************************
+ ***************************************************************/
++#if 0
+ int gpon_10g_cmd_proc(uint cmd, ulong arg) 
+ {
+ 	int ret = 0;
+@@ -1413,3 +1414,19 @@
+ 				return ret;
+ }	
+ 
++#endif
++
++int gpon_10g_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
++
++int gpon_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
++
++int rdkb_10g_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
+--- a/xpon-en757x/xpon_10g/src/xmcs/xmcs_if.c
++++ b/xpon-en757x/xpon_10g/src/xmcs/xmcs_if.c
+@@ -291,7 +291,7 @@
+ 	
+ 	if(pWeightCfg->weightType == XMCS_IF_WEIGHT_TYPE_BYTE) {
+         if(pWeightCfg->weightScale == XMCS_IF_WEIGHT_SCALE_1B) {
+-			qdmaWeightScale = QDMA_TXQOS_WEIGHT_SCALE_1B ;
++			qdmaWeightScale = QDMA_TXQOS_WEIGHT_SCALE_64B ;
+ 		} else if(pWeightCfg->weightScale == XMCS_IF_WEIGHT_SCALE_16B) {
+ 			qdmaWeightScale = QDMA_TXQOS_WEIGHT_SCALE_16B ;
+ 		} else {
+@@ -329,7 +329,7 @@
+ 	}
+ 
+ 	pWeightCfg->weightType = (qdmaWeightType==QDMA_TXQOS_WEIGHT_BY_PACKET) ? XMCS_IF_WEIGHT_TYPE_PACKET : XMCS_IF_WEIGHT_TYPE_BYTE ;
+-    pWeightCfg->weightScale = (qdmaWeightScale==QDMA_TXQOS_WEIGHT_SCALE_1B) ? XMCS_IF_WEIGHT_SCALE_1B : XMCS_IF_WEIGHT_SCALE_16B ;
++    pWeightCfg->weightScale = (qdmaWeightScale==QDMA_TXQOS_WEIGHT_SCALE_64B) ? XMCS_IF_WEIGHT_SCALE_1B : XMCS_IF_WEIGHT_SCALE_16B ;
+ 		
+ 	return 0 ;
+ }
+@@ -2238,6 +2238,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
++#if 0
+ int if_cmd_proc(uint cmd, ulong arg) 
+ {
+ 	int ret = -EINVAL ;
+@@ -2654,3 +2655,9 @@
+ 	return ret ;
+ }
+ 
++#endif
++
++int if_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
+--- a/xpon-en757x/xpon_10g/src/xmcs/xmcs_mci.c
++++ b/xpon-en757x/xpon_10g/src/xmcs/xmcs_mci.c
+@@ -95,6 +95,7 @@
+ } ;
+ /***************************************************************
+ ***************************************************************/
++
+ /*______________________________________________________________________________
+ **	function name
+ **		pon_mci_ioctl
+@@ -119,6 +120,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
++#if 0
+ long pon_mci_ioctl(struct file *filp, uint cmd, ulong arg) 
+ {
+ 	int ret = -EINVAL ; 
+@@ -144,6 +146,15 @@
+     }
+ 	return ret ;
+ }
++#endif
++
++long pon_mci_ioctl(struct file *filp, uint cmd, ulong arg)
++{
++	if (_IOC_TYPE(cmd) == EPON_MAGIC)
++		return epon_cmd_proc(cmd, arg);
++
++	return -ENOTTY;
++}
+ /*______________________________________________________________________________
+ **	function name
+ **		xpon_mci_destroy
+--- a/xpon-en757x/xpon_10g/src/xmcs/xmcs_phy.c
++++ b/xpon-en757x/xpon_10g/src/xmcs/xmcs_phy.c
+@@ -545,6 +545,7 @@
+ 
+ /***************************************************************
+ ***************************************************************/
++#if 0
+ int phy_cmd_proc(uint cmd, ulong arg) 
+ {
+ 	int ret = 0 ;
+@@ -602,3 +603,9 @@
+ }
+ 
+ 
++#endif
++
++int phy_cmd_proc(uint cmd, ulong arg)
++{
++	return -EOPNOTSUPP;
++}
+--- a/xpon-en757x/xpon_10g/src/xpondrv.c
++++ b/xpon-en757x/xpon_10g/src/xpondrv.c
+@@ -158,7 +158,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-irqreturn_t xpon_dying_gasp_interrupt(int irq, void *dev_id)
++static irqreturn_t xpon_dying_gasp_interrupt(int irq, void *dev_id)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8
+ 	u32 raw = 0;	
+@@ -262,7 +262,7 @@
+ 	XPON_START_TIMER(gpPhyData->trans_status_refresh_timer,1000) ;/* 1,000 ms */
+ }
+ 
+-void traffic_status_refresh(TIMER_FUN_PAAM arg)
++static void traffic_status_refresh(TIMER_FUN_PAAM arg)
+ {
+     static ENUM_PhyTrafficStatus last_status = TRAFFIC_STATUS_DOWN;
+     ENUM_PhyTrafficStatus status = TRAFFIC_STATUS_DOWN;
+@@ -1110,7 +1110,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-void xpondrv_cleanup(void)
++static void xpondrv_cleanup(void)
+ {
+ #ifdef TCSUPPORT_CPU_ARMV8_64
+ 		int irq = -1;
+@@ -1172,7 +1172,7 @@
+ **	revision:
+ **		v1.0
+ **____________________________________________________________________________*/
+-int xpondrv_init(void)
++static int xpondrv_init(void)
+ {
+ 	printk("xPON driver initialing.\n");
+ 	
+--- a/xpon-en757x/xpon_phy_10g/Makefile
++++ b/xpon-en757x/xpon_phy_10g/Makefile
+@@ -1,18 +1,18 @@
+ KERNELDIR=$(KERNEL_DIR)
+-EXTRA_CFLAGS += -DWAN2LAN
++ccflags-y += -DWAN2LAN
+ 
+ INCDIR		:= inc
+ SRCDIR		:= src
+ HEADER_DIR              := inc
+ 
+ ifneq ($(TCSUPPORT_CPU_EN7521),)
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_7512_DIR)
++	ccflags-y += -I$(MODULES_QDMA_7512_DIR)
+ else
+-	EXTRA_CFLAGS += -I$(MODULES_QDMA_DIR)
++	ccflags-y += -I$(MODULES_QDMA_DIR)
+ endif
+ 
+-EXTRA_CFLAGS += -I$(MODULES_PHY_10G_DIR)/$(HEADER_DIR) -O0 
+-EXTRA_CFLAGS += -D CONFIG_SEND_ACK_PLOAMU=3 \
++ccflags-y += -I$(MODULES_PHY_10G_DIR)/$(HEADER_DIR) -O0
++ccflags-y += -D CONFIG_SEND_ACK_PLOAMU=3 \
+ 				-D CONFIG_USE_FOR_TEST \
+ 				-D CONFIG_DEBUG 
+ 
+@@ -21,11 +21,11 @@
+ #EXTRA_CFLAGS += -DCONFIG_USE_A60928
+ endif
+ 				
+-EXTRA_CFLAGS += -DEPON_MAC_HW_TEST
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_RGST_SILENT
++ccflags-y += -DEPON_MAC_HW_TEST
++ccflags-y += -DTCSUPPORT_EPON_RGST_SILENT
+ 
+ ifneq ($(TCSUPPORT_EPON_FPGA_WORKAROUND),)
+-EXTRA_CFLAGS += -DTCSUPPORT_EPON_FPGA_WORKAROUND
++ccflags-y += -DTCSUPPORT_EPON_FPGA_WORKAROUND
+ endif
+ 
+ ifneq ($(TCSUPPORT_CPU_AN7583),)
+@@ -41,7 +41,7 @@
+ endif
+ endif
+ 
+-TOTAL_OBJ	:= $(SRCDIR)/phy.o  $(PHY_OBJ) 
++TOTAL_OBJ	:= $(PHY_OBJ)
+ 
+ phy_10g-objs 	:= $(TOTAL_OBJ)
+ obj-m		:= phy_10g.o
+--- a/xpon-en757x/xpon_phy_10g/inc/en7583.h
++++ b/xpon-en757x/xpon_phy_10g/inc/en7583.h
+@@ -3,12 +3,61 @@
+ 
+ extern ponPhyFuncTbl an7583_gepon_func[];
+ extern ponPhyFuncTbl an7583_xgpon_func[];
+-extern ponPhyFuncTbl an7583_xepon_func[];
++extern ponPhyFuncTbl an7583_xepon_func[];
++
++void phy_delay1ms(int ms);
++void phy_delay1us(int us);
++int an7583_phy_cnt_enable(int errcnt_en, int bipcnt_en, int fmcnt_en);
++int an7583_phy_reset_counter(void);
++int an7583_fw_ready(int fwrdy_en);
++int an7583_disable_pcs_tdc(void);
++int an7583_get_wan_sel(void);
++int an7583_func_init(void);
++int an7583_phy_clear_int(void);
++
++#define EN7581_XPON_PMA_BISTCTL_CONTROL_PAT_SEL_MASK 0xffffffe0
++#define EN7581_XPON_PMA_BISTCTL_CONTROL_PAT_TX_EN_MASK 0xfffffeff
++#define EN7581_XPON_PMA_ADD_XPON_MODE_1_R2T_MODE_MASK 0xfffffeff
++#define EN7581_XPON_PMA_ADD_XPON_MODE_1_TX_BIST_MASK 0xfffeffff
++#define EN7581_XPON_PMA_TX_DLY_CTRL_OUTBEN_DATA_MASK 0x8fffffff
++
++u32 AN7583_Get_PMA_XPON_Setting0(void);
++void AN7583_Set_PMA_XPON_Setting0(u32 data);
++u32 AN7583_Get_PMA_TX_Dly_Ctrl(void);
++void AN7583_Set_PMA_TX_Dly_Ctrl(u32 data);
++u32 AN7583_Get_Trans_Brust_Forve(void);
++void AN7583_Set_Trans_Brust_Forve(u32 data);
++u32 AN7583_Get_PMA_BistCTL_Forve(void);
++void AN7583_Set_PMA_BistCTL_Forve(u32 data);
++u32 AN7583_Get_PMA_XPON_Mode_1(void);
++void AN7583_Set_PMA_XPON_Mode_1(u32 data);
++void PON_PMA_PON_CK_SET(u32 data);
++u32 PON_PMA_LCLCPLL_TDC_RO_4_GET(void);
++void PON_ANA_RG_XPON_TXPLL_PHY_CK1_EN_SET(u32 data);
++u32 PON_ANA_RG_XPON_TXPLL_PHY_CK1_EN_GET(void);
++void PON_PMA_rg_force_da_pxp_txpll_ckout_en_SET(u32 data);
++u32 PON_PMA_rg_force_da_pxp_txpll_ckout_en_GET(void);
+ 
+ void an7583_pon_phy_clear_rogueonu_BEN(void);   //julia_20231010
+ void an7583_pon_phy_rogueonu_int_en_BEN(unchar rogue_int_en);  //julia_20231010
+ void an7583_pon_phy_rogueonu_detect(void);  //julia_20240510
+-void pma_no_los_no_ready_reset(void);
++void pma_no_los_no_ready_reset(void);
++int xpon_pma_init(void);
++void normal_rx_bist_check(uint enable, uint pattern);
++void xpon_rx_bist_recheck_result(uint enable, uint duration);
++void t2r_rx_bist_check(uint enable, uint pattern);
++void pon_phy_clear_rogueonu(void);
++void pon_phy_rogueonu_int_en(unchar enable);
++u32 AN7583_PMA_Err_Read(void);
++void AN7583_Clear_PMA_Rogue(void);
++u32 AN7583_Get_PON_PMA_XPON_INT_EN_0(void);
++void AN7583_Set_PON_PMA_XPON_INT_EN_0(u32 value);
++u32 AN7583_Get_PON_PMA_XPON_INT_STA_0(void);
++u32 AN7583_Get_PMA_XPON_Setting1(void);
++void AN7583_Set_PMA_XPON_Setting1(u32 value);
++u32 AN7583_Get_PMA_XPON_TX_Force_1(void);
++u32 AN7583_Get_PMA_XPON_TX_Force_2(void);
++u32 AN7583_Rogue_Onu_Det(void);
+ 
+ #endif /* _EN7583_H_ */
+ 
+--- a/xpon-en757x/xpon_phy_10g/inc/phy.h
++++ b/xpon-en757x/xpon_phy_10g/inc/phy.h
+@@ -165,12 +165,20 @@
+ 
+ void phy_event_handler(PON_PHY_Event_data_t * pEvent_data);
+ int phy_isr(void);
+-void phy_event_poll(ulong data);
++void phy_event_poll(struct timer_list *timer);
+ /*GPON/EPON config*/
+ 
+ /*interrupt setting*/
+ int phy_int_config(UINT32 mode,UINT32 int_type);
+ int pon_phy_api_dispatch(struct ecnt_data *in_data);
++void phy_print_time(void);
++int phy_reg_get(int addr);
++int phy_dev_init(void);
++int phy_set_traffic_status(ENUM_PhyTrafficStatus traffic_status);
++void phy_uptime(void);
++uint IO_GPHYA_REG_BITS(UINT32 reg_name, UINT32 end_index, UINT32 start_index);
++void IO_SPHYA_REG_BITS(UINT32 reg_name, UINT32 end_index, UINT32 start_index,
++	UINT32 value);
+ 
+ 
+ static inline void XPON_MAC_EVENT_HANDLER(PON_PHY_Event_data_t * pEvent)
+--- a/xpon-en757x/xpon_phy_10g/inc/phy_def.h
++++ b/xpon-en757x/xpon_phy_10g/inc/phy_def.h
+@@ -74,6 +74,7 @@
+ #define EN7581_EFUSE					0	// for ASIC
+ #define EN7581_FLASH					0
+ 
++int pon_phy_api_dispatch(struct ecnt_data *in_data);
+ 
+ //#define A60972_FPGA                   0
+ #define LDDLA_SUPPORT_SET_TX_MODE       1
+@@ -114,7 +115,7 @@
+     phy_api_data.cmd_id   = cmd_id  ;
+     phy_api_data.raw      = in_data ;
+ 	
+-	pon_phy_api_dispatch(&phy_api_data);
++	pon_phy_api_dispatch((struct ecnt_data *)&phy_api_data);
+ 
+     return phy_api_data.ret;
+ }
+@@ -132,7 +133,7 @@
+     phy_api_data.cmd_id   = cmd_id  ;
+     phy_api_data.raw      = in_data ;
+ 	
+-	pon_phy_api_dispatch(&phy_api_data);
++	pon_phy_api_dispatch((struct ecnt_data *)&phy_api_data);
+ 
+     return phy_api_data.ret;
+ }
+@@ -153,15 +154,13 @@
+ static inline s64 ktime_to_sec(const ktime_t kt){	return ktime_divns(kt, NSEC_PER_SEC);}
+ #endif
+ 
+-#define MAX(a, b)          (((a)>(b))?(a):(b))
+-
+ /* del_timer_sync cannot be used from interrupt context. */
+ #define PHY_STOP_TIMER(timer) \
+ 			{ \
+ 				if(in_interrupt()) { \
+-					del_timer(&timer) ; \
++					timer_delete(&timer) ; \
+ 				} else {\
+-					del_timer_sync(&timer) ; \
++					timer_delete_sync(&timer) ; \
+ 				} \
+ 			}
+ //#define PHY_START_TIMER(timer)			{ mod_timer(&timer, (jiffies + ((timer.data*HZ)/1000))) ; }//{ mod_timer(&timer, (jiffies + ((timer.data)/HZ))) ; }
+--- a/xpon-en757x/xpon_phy_10g/inc/phy_init.h
++++ b/xpon-en757x/xpon_phy_10g/inc/phy_init.h
+@@ -4,6 +4,9 @@
+ #include <linux/workqueue.h>
+ #include "phy.h"
+ 
++struct device *get_pon_phy_dev(void);
++int get_pon_phy_irq(void);
++
+ int phy_register_cb_handler(PHY_CbType_t type, void *pCbFun) ;
+ int phy_unregister_cb_handler(PHY_CbType_t type) ;
+ int phy_mode_config(Xpon_Phy_Mode_t xpon_mode, int tx_enable);
+@@ -20,6 +23,7 @@
+ int phy_pma_reset_with_lock(void);
+ int phy_pcs_fpgaif_reset(void);	//by ang_20170901
+ int phy_pcs_reset(void);		//by ang_20170911
++int xPON_Phy_Reset(void);
+ int xpon_phy_start(void) ;
+ int xpon_phy_stop(void);
+ int pon_phy_mod_init(void);
+@@ -54,4 +58,3 @@
+ #endif /* _PHY_INIT_H_ */
+ 
+ 
+-
+--- a/xpon-en757x/xpon_phy_10g/inc/phy_reg_util.h
++++ b/xpon-en757x/xpon_phy_10g/inc/phy_reg_util.h
+@@ -14,6 +14,8 @@
+ #endif
+ 
+ #ifdef TCSUPPORT_CPU_ARMV8 //julia_arm
++u32 get_pon_phy_data(u32 reg);
++void set_pon_phy_data(u32 reg, u32 val);
+ #define IO_GPHYREG(reg)						get_pon_phy_data(reg)//ioread32((void __iomem *)(reg)) /* GetReg((uint)reg) */
+ #define IO_SPHYREG(reg, val)				set_pon_phy_data(reg, val) /* SetReg((uint)reg, val) */
+ #else
+--- a/xpon-en757x/xpon_phy_10g/src/en7583.c
++++ b/xpon-en757x/xpon_phy_10g/src/en7583.c
+@@ -187,6 +187,8 @@
+ #if 0
+ void phy_delay1ms(int ms)
+ {
++	mdelay(ms);
++	return;
+ #ifdef TCSUPPORT_CPU_ARMV8
+ 
+ 	delay1ms(ms);
+@@ -222,7 +224,7 @@
+ 	volatile uint32 tick_acc=0;
+ 
+ 	#ifdef TCSUPPORT_CPU_ARMV8
+-	uint32 one_tick_unit = getOneMsTick();
++	uint32 one_tick_unit = 0;
+ 	#else
+ 	uint32 one_tick_unit = SYS_HCLK * 500;// 1 * SYS_HCLK * 1000 / 2
+ 	#endif
+@@ -231,8 +233,8 @@
+ 	volatile uint32 timer1_ldv = 0;
+ 
+ 	#ifdef TCSUPPORT_CPU_ARMV8
+-	timer1_ldv = get_ldv(1);
+-	timer_last = get_vlr(1);
++	timer1_ldv = 0;
++	timer_last = 0;
+ 	#else
+ 	timer1_ldv = regRead32(CR_TIMER1_LDV);
+ 	timer_last = regRead32(CR_TIMER1_VLR);
+@@ -240,7 +242,7 @@
+ 	
+ 	do {
+ 		#ifdef TCSUPPORT_CPU_ARMV8
+-		timer_now = get_vlr(1);
++		timer_now = 0;
+ 		#else
+ 		timer_now = regRead32(CR_TIMER1_VLR);
+ 		#endif
+@@ -255,11 +257,13 @@
+ 
+ void phy_delay1us(int us)
+ {
++	udelay(us);
++	return;
+ 	volatile uint32 timer_now=0, timer_last=0;
+ 	volatile uint32 tick_acc=0;
+ 
+ 	#ifdef TCSUPPORT_CPU_ARMV8
+-	uint32 one_tick_unit = getOneUsTick();
++	uint32 one_tick_unit = 0;
+ 	#else
+ 	uint32 one_tick_unit = SYS_HCLK >>1;// 1 * SYS_HCLK * 1000 / 2
+ 	#endif
+@@ -268,17 +272,17 @@
+ 	volatile uint32 timer1_ldv = 0;
+ 
+ 	#ifdef TCSUPPORT_CPU_ARMV8
+-	timer1_ldv = get_ldv(1);
+-	timer_last = get_vlr(1);
++	timer1_ldv = 0;
++	timer_last = 0;
+ 	#else
+ 	timer1_ldv = regRead32(CR_TIMER1_LDV);
+ 	timer_last = regRead32(CR_TIMER1_VLR);
+ 	#endif
+ 
+-	printk("time before :%ld \r\n ",get_vlr(1));
++	printk("time before :0\r\n ");
+ 	do {
+ 		#ifdef TCSUPPORT_CPU_ARMV8
+-		timer_now = get_vlr(1);
++		timer_now = 0;
+ 		#else
+ 		timer_now = regRead32(CR_TIMER1_VLR);
+ 		#endif
+@@ -2357,6 +2361,7 @@
+ 				}
+ 				read_data = (read_data & EN7581_GEPON_PHY_OPER_RANG_MASK) | (api_data->gpon_preamble->oper_ranged_st<< EN7581_GEPON_PHY_OPER_RANG_OFFSET);
+ 			}
++			#if 0
+ 			if((api_data->gpon_preamble->mask & PHY_EXTB_LENG_SEL_EN) == PHY_EXTB_LENG_SEL_EN)
+ 			{
+ 				if( (api_data->gpon_preamble->extb_length_sel & EN7581_GEPON_PHY_EXTB_LENG_SEL_LEN_MASK) != 0x00)
+@@ -2366,6 +2371,7 @@
+ 				}
+ 				read_data = (read_data & EN7581_GEPON_PHY_EXTB_LENG_SEL_MASK) | (api_data->gpon_preamble->extb_length_sel<< EN7581_GEPON_PHY_EXTB_LENG_SEL_OFFSET);
+ 			}
++			#endif
+ 			if((api_data->gpon_preamble->mask & PHY_DIS_SCRAM_EN) == PHY_DIS_SCRAM_EN)
+ 			{
+ 				if((api_data->gpon_preamble->dis_scramble != PHY_ENABLE) && (api_data->gpon_preamble->dis_scramble!= PHY_DISABLE))
+@@ -3194,6 +3200,11 @@
+ }
+ 
+ 
++static int xfp_trans_ngpon2_kthread(void *data)
++{
++	return xfp_trans_set_ngpon2_chan(&gpPhyPriv->Ngpon2_chan);
++}
++
+ int an7583_xgpon_phy_dev_init(char* buf)
+ {
+ 	uint read_data = 0;
+@@ -3278,7 +3289,8 @@
+ 		if(FALSE==phy_ngpon2_task_wait_start)
+ 		{
+ 			phy_ngpon2_task_wait_start=TRUE;
+-			gpPhyPriv->phy_ngpon2_task_wait= kthread_run(xfp_trans_set_ngpon2_chan, NULL, "phy_ngpon2_task_wait"); //julia_20221021 ngpon2
++			gpPhyPriv->phy_ngpon2_task_wait = kthread_run(
++				xfp_trans_ngpon2_kthread, NULL, "phy_ngpon2_task_wait");
+ 			PON_PHY_PRINT(PHY_MSG_ERR,"run phy_ngpon2_task_wait\n");
+ 		}
+ 		else
+@@ -3967,9 +3979,10 @@
+ 			{
+ 				gpPhyPriv->phyCfg.flags.rogue = 1;
+ 				
+-				IO_SPHYREG(EN7581_XGPON_PHY_XG_CONTINUE_CTRL,EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_EN\  
+-													EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_PATTERN_SEL(api_data->phy_rogue_cfg->rogue_pattern)\
+-													|EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_MODE_SEL(api_data->phy_rogue_cfg->tx_d_in_timeslot));
++				IO_SPHYREG(EN7581_XGPON_PHY_XG_CONTINUE_CTRL,
++					EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_EN |
++					EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_PATTERN_SEL(api_data->phy_rogue_cfg->rogue_pattern) |
++					EN7581_XGPON_PHY_XG_CONTINUE_CTRL_CONTINUE_MODE_SEL(api_data->phy_rogue_cfg->tx_d_in_timeslot));
+ 				
+ 				read_data=IO_GPHYREG(EN7581_XGPON_PHY_XG_CONTINUE_CTRL);
+ 
+@@ -7723,5 +7736,3 @@
+ 
+ #define _I_AM_PMA_SUPPLEMENT_FUNC_SPLIT_LINE_   
+ 
+-
+-
+--- a/xpon-en757x/xpon_phy_10g/src/i2c.c
++++ b/xpon-en757x/xpon_phy_10g/src/i2c.c
+@@ -37,6 +37,7 @@
+ #include "en7583.h"
+ //#include "en7583_pma.h"
+ #include "en7583_reg.h"
++int an7583_set_trans_setting(void);
+ 
+ #else
+ #include "en7580.h"
+@@ -1663,8 +1664,8 @@
+ 		if(PHY_TRANS_NOT_FOUND_IN_IOT_LIST==gpPhyPriv->trans_index)
+ 		{
+ 			while (strcmp(pTrans->vendor_id, "") != 0){
+-				if ((strncmp(pTrans->vendor_id, vendor_id, MAX(strlen(pTrans->vendor_id), strlen(vendor_id))) == 0) &&
+-					(strncmp(pTrans->vendor_pn, vendor_pn, MAX(strlen(pTrans->vendor_pn), strlen(vendor_pn))) == 0)){
++				if ((strncmp(pTrans->vendor_id, vendor_id, max(strlen(pTrans->vendor_id), strlen(vendor_id))) == 0) &&
++					(strncmp(pTrans->vendor_pn, vendor_pn, max(strlen(pTrans->vendor_pn), strlen(vendor_pn))) == 0)){
+ 
+ 					gpPhyPriv->trans_index=pTrans->index;
+ 					
+@@ -1698,8 +1699,8 @@
+ 		if(PHY_TRANS_NOT_FOUND_IN_IOT_LIST==gpPhyPriv->trans_index)
+ 		{
+ 			while (strcmp(pTrans_7583->vendor_id, "") != 0){
+-				if ((strncmp(pTrans_7583->vendor_id, vendor_id, MAX(strlen(pTrans_7583->vendor_id), strlen(vendor_id))) == 0) &&
+-					(strncmp(pTrans_7583->vendor_pn, vendor_pn, MAX(strlen(pTrans_7583->vendor_pn), strlen(vendor_pn))) == 0)){
++				if ((strncmp(pTrans_7583->vendor_id, vendor_id, max(strlen(pTrans_7583->vendor_id), strlen(vendor_id))) == 0) &&
++					(strncmp(pTrans_7583->vendor_pn, vendor_pn, max(strlen(pTrans_7583->vendor_pn), strlen(vendor_pn))) == 0)){
+ 		
+ 					gpPhyPriv->trans_index=pTrans_7583->index;
+ 						
+@@ -1762,7 +1763,7 @@
+ 	mdelay(5);
+   	}
+ 
+-	return 0;
++	return;
+ 
+ }
+ 
+@@ -1771,7 +1772,7 @@
+ 
+ int xfp_trans_set_ngpon2_chan(PPHY_Ngpon2_Chan_Sel_T ngpon2_chan) //julia_20221021 ngpon2
+ {
+-	uint buffer;
++	unchar buffer;
+ 	while(!kthread_should_stop())
+ 	{
+ 		if(gpPhyPriv->Ngpon2_chan.ngpon2_tx_chan != 5)
+@@ -1899,8 +1900,8 @@
+ 	if(PHY_TRANS_NOT_FOUND_IN_IOT_LIST==gpPhyPriv->trans_index)
+ 	{
+ 		while (strcmp(pTrans->vendor_id, "") != 0){
+-			if ((strncmp(pTrans->vendor_id, vendor_id, MAX(strlen(pTrans->vendor_id), strlen(vendor_id))) == 0) &&
+-				(strncmp(pTrans->vendor_pn, vendor_pn, MAX(strlen(pTrans->vendor_pn), strlen(vendor_pn))) == 0)){
++			if ((strncmp(pTrans->vendor_id, vendor_id, max(strlen(pTrans->vendor_id), strlen(vendor_id))) == 0) &&
++				(strncmp(pTrans->vendor_pn, vendor_pn, max(strlen(pTrans->vendor_pn), strlen(vendor_pn))) == 0)){
+ 
+ 				gpPhyPriv->trans_index=pTrans->index;
+ 
+--- a/xpon-en757x/xpon_phy_10g/src/phy.c
++++ b/xpon-en757x/xpon_phy_10g/src/phy.c
+@@ -9,6 +9,7 @@
+ #include <linux/delay.h>
+ #include <linux/timer.h>
+ #include <linux/proc_fs.h>
++#include <linux/seq_file.h>
+ #include <linux/module.h>
+ #include <linux/delay.h>
+ 
+@@ -162,7 +163,7 @@
+ 	config[0] = mode;
+ 	config[1] = int_type;
+ 	
+-	return ponPhyFunc[PHY_INT_CONFIG_FUNC](&config);
++	return ponPhyFunc[PHY_INT_CONFIG_FUNC]((char *)config);
+ }
+ 
+ /*****************************************************************************
+@@ -415,7 +416,7 @@
+     phy_api_data.cmd_id   = PON_GET_PHY_LOS_STATUS  ;
+     phy_api_data.raw      = NULL ;
+ 
+-	ponPhyFunc[PHY_GET_API_DISPATCH_FUNC](&phy_api_data);
++	ponPhyFunc[PHY_GET_API_DISPATCH_FUNC]((char *)&phy_api_data);
+ 
+     return phy_api_data.ret;
+ }
+@@ -460,7 +461,7 @@
+ 	}
+ 
+ 	spin_lock_irqsave(&gpPhyPriv->pma_reset_lock, flags);
+-	ponPhyFunc[PHY_GET_API_DISPATCH_FUNC](api_data);
++	ponPhyFunc[PHY_GET_API_DISPATCH_FUNC]((char *)api_data);
+ 	spin_unlock_irqrestore(&gpPhyPriv->pma_reset_lock, flags);
+ 
+ 	if(pre_cmd_id!=api_data->cmd_id)
+@@ -497,7 +498,7 @@
+ 	}
+ 	
+ 	spin_lock_irqsave(&gpPhyPriv->pma_reset_lock, flags);
+-	ponPhyFunc[PHY_SET_API_DISPATCH_FUNC](api_data);
++	ponPhyFunc[PHY_SET_API_DISPATCH_FUNC]((char *)api_data);
+ 	spin_unlock_irqrestore(&gpPhyPriv->pma_reset_lock, flags);
+ 
+ 	if(pre_cmd_id!=api_data->cmd_id)
+@@ -568,7 +569,7 @@
+ //output :
+ //		EN7570 ADC codes
+ ******************************************************************************/
+-static int phy_read_proc(char *buf, char **start, off_t off, int count, int *eof, void *data)
++static int phy_read_proc(struct seq_file *m, void *data)
+ {
+ 
+ 	if(FALSE==gpPhyPriv->phy_init_done){
+@@ -576,19 +577,21 @@
+ 		return -EACCES ;
+ 	}
+ 
+-	printk("PON PHY driver version is %d.%d\n",PHY_DATE_VERSION,PHY_VERSION);
++	seq_printf(m, "PON PHY driver version is %d.%d\n", PHY_DATE_VERSION,
++		PHY_VERSION);
+ 
+ 	if(PHY_INTERNAL_GET(PON_GET_PHY_READY_STATUS) == PHY_TRUE)
+ 	{
+-		printk("PHY Ready\n");
++		seq_puts(m, "PHY Ready\n");
+ 		phy_uptime();
+ 	}
+ 	else
+ 	{
+-		printk("PHY Los\n");
++		seq_puts(m, "PHY Los\n");
+ 	}
+ 
+-	printk("LOS status = %d\n", PHY_INTERNAL_GET(PON_GET_PHY_LOS_STATUS));
++	seq_printf(m, "LOS status = %d\n",
++		PHY_INTERNAL_GET(PON_GET_PHY_LOS_STATUS));
+ 
+ 	return 0;
+ }
+@@ -597,9 +600,11 @@
+ ******************************************************************************/
+ //int xpon_phy_print_open=0;
+ 
+-static int phy_write_proc(struct file *file, const char *buffer, unsigned long count, void *data)
++static ssize_t phy_write_proc(struct file *file, const char __user *buffer,
++		size_t count, loff_t *ppos)
+ {
+ 	char val_string[64], cmd[64] ,subcmd[64];
++	char *user_input;
+ 	uint dec1=0, dec2=0, dec3=0, dec4=0;
+ 	uint hex1=0, hex2=0, hex3=0, hex4=0;	// ang_20180208
+ 	uint input1=0, input2=0, input3=0 ,input4=0;
+@@ -623,8 +628,11 @@
+ 	if (count > sizeof(val_string) - 1)
+ 		return -EINVAL ;
+ 
+-	if (copy_from_user(val_string, buffer, count))
+-		return -EFAULT ;
++	user_input = memdup_user_nul(buffer, count);
++	if (IS_ERR(user_input))
++		return PTR_ERR(user_input);
++	memcpy(val_string, user_input, count + 1);
++	kfree(user_input);
+ 	sscanf(val_string, "%s %d %d %d %d", 	cmd, &dec1, 	&dec2, 		&dec3,		&dec4);
+ 	sscanf(val_string, "%s %s %d %d %d", 	cmd, subcmd, 	&dec2, 		&dec3,		&dec4);
+ 	sscanf(val_string, "%s %x %x %x %x", 	cmd, &hex1, 	&hex2, 		&hex3,		&hex4);
+@@ -1719,6 +1727,7 @@
+ //Date   :
+ // 		2017/09/06 by YW
+ ******************************************************************************/
++#if 0
+ static int phy_proc_err_read_proc(char *buf, char **start, off_t off, int count, int *eof, void *data)
+ {
+ 	int index=0 ;
+@@ -1839,6 +1848,45 @@
+ 	
+ 	return index ;
+ }
++#endif
++
++static int phy_proc_err_read_proc(struct seq_file *m, void *data)
++{
++	uint read_data = 0;
++
++#if ASIC_SERDES
++#ifdef TCSUPPORT_CPU_AN7583
++	if (phy_los_status() == PHY_TRUE)
++		read_data = 0xfffffff;
++	else
++		read_data = AN7583_PMA_Err_Read();
++	seq_printf(m, "0x1FA8B37C = 0x%x\n", read_data);
++#else
++	if (phy_los_status() == PHY_TRUE)
++		read_data = 0xfffffff;
++	else
++		read_data = IO_GPHYA_REG_BITS(EN7581_XPON_PMA_ADD_DIG_RO_RESERVE_1,
++			31, 0);
++	seq_printf(m, "0x%x = 0x%x\n",
++		EN7581_XPON_PMA_ADD_DIG_RO_RESERVE_1, read_data);
++	IO_SPHYA_REG_BITS(EN7581_XPON_PMA_SS_BIST_1, 24, 24, 0x1);
++	IO_SPHYA_REG_BITS(EN7581_XPON_PMA_SS_BIST_1, 24, 24, 0x0);
++#endif
++#endif
++	return 0;
++}
++
++static int phy_proc_rogueonu_read_proc(struct seq_file *m, void *data)
++{
++	seq_printf(m, "rogueonu %x\n", gpPhyPriv->rogueonu_happen);
++	return 0;
++}
++
++static int phy_proc_temperature_read_proc(struct seq_file *m, void *data)
++{
++	seq_printf(m, "temperature 0x%x\n", gpPhyPriv->temprature >> 8);
++	return 0;
++}
+ 
+ 
+ #endif
+@@ -1854,6 +1902,36 @@
+ 
+ #endif
+ 
++#define PHY_PROC_OPS(_name, _show) \
++	static int _name##_open(struct inode *inode, struct file *file) \
++	{ \
++		return single_open(file, _show, NULL); \
++	} \
++	static const struct proc_ops _name##_ops = { \
++		.proc_open = _name##_open, \
++		.proc_read = seq_read, \
++		.proc_lseek = seq_lseek, \
++		.proc_release = single_release, \
++	}
++
++static int phy_debug_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, phy_read_proc, NULL);
++}
++#if defined(TCSUPPORT_CPU_EN7581)
++PHY_PROC_OPS(phy_err, phy_proc_err_read_proc);
++PHY_PROC_OPS(phy_rogue, phy_proc_rogueonu_read_proc);
++PHY_PROC_OPS(phy_temperature, phy_proc_temperature_read_proc);
++#endif
++
++static const struct proc_ops phy_debug_rw_ops = {
++	.proc_open = phy_debug_open,
++	.proc_read = seq_read,
++	.proc_write = phy_write_proc,
++	.proc_lseek = seq_lseek,
++	.proc_release = single_release,
++};
++
+ /*****************************************************************************
+ ******************************************************************************/
+ int phy_debug_init(void) 
+@@ -1862,32 +1940,12 @@
+ 	/* create proc node */
+ 	phy_proc_dir = proc_mkdir("pon_phy", NULL);
+ 	if(phy_proc_dir){
+-		phy_proc = create_proc_entry("debug", 0, phy_proc_dir);
+-	    if(phy_proc) {
+-		    phy_proc->write_proc = phy_write_proc;
+-		    phy_proc->read_proc = phy_read_proc;
+-	    }
++		phy_proc = proc_create("debug", 0600, phy_proc_dir, &phy_debug_rw_ops);
+ #if defined(TCSUPPORT_CPU_EN7581)
+-	    phy_proc_err = create_proc_entry("err_cnt", 0, phy_proc_dir);
+-		if(phy_proc_err) 
+-		{
+-			phy_proc_err->read_proc = phy_proc_err_read_proc;
+-		}
+-
+-		
+-	    phy_proc_rogue = create_proc_entry("rogue", 0, phy_proc_dir); //julia_20230614
+-		if(phy_proc_rogue) 
+-		{
+-			phy_proc_rogue->read_proc = phy_proc_rogueonu_read_proc;
+-		}
+-
+-		
+-	    phy_proc_temperature = create_proc_entry("temperature", 0, phy_proc_dir); //julia_20230614
+-		if(phy_proc_temperature) 
+-		{
+-			phy_proc_temperature->read_proc = phy_proc_temperature_read_proc;
+-		}
+-		
++		phy_proc_err = proc_create("err_cnt", 0400, phy_proc_dir, &phy_err_ops);
++		phy_proc_rogue = proc_create("rogue", 0400, phy_proc_dir, &phy_rogue_ops);
++		phy_proc_temperature = proc_create("temperature", 0400, phy_proc_dir,
++			&phy_temperature_ops);
+ #endif
+ 	}
+ 
+@@ -2067,7 +2125,7 @@
+ 					
+ #endif
+ 
+-	return ponPhyFunc[PHY_ISR_FUNC](gpPhyPriv);
++	return ponPhyFunc[PHY_ISR_FUNC]((char *)gpPhyPriv);
+ 	
+ }
+ 
+@@ -2082,9 +2140,9 @@
+ //		N/A
+ ******************************************************************************/
+ 
+-void phy_event_poll(ulong data)
++void phy_event_poll(struct timer_list *timer)
+ {
+-	ponPhyFunc[PHY_EVENT_POLL_FUNC](gpPhyPriv);
++	ponPhyFunc[PHY_EVENT_POLL_FUNC]((char *)gpPhyPriv);
+ 	if(gpPhyPriv->event_poll_timer_value <1500) //julia_20220511
+ 	{
+ 		gpPhyPriv->event_poll_timer_value =1500;		
+@@ -2177,14 +2235,14 @@
+ 	dbg[1]=option1;
+ 	dbg[2]=option2;
+ 
+-	ponPhyFunc[PHY_DBG_FUNC](&dbg);
++	ponPhyFunc[PHY_DBG_FUNC](dbg);
+ }
+ 
+ 
+ 
+ void phy_dump(void)
+ {        
+-	ponPhyFunc[PHY_DUMP_FUNC](gpPhyPriv);
++	ponPhyFunc[PHY_DUMP_FUNC]((char *)gpPhyPriv);
+ }
+ 
+ /*****************************************************************************
+@@ -2256,14 +2314,11 @@
+ 	struct file				*srcf = NULL;
+ 	//UINT32 tmp_fpos = 0;
+ 	char *src = NULL;
+-	mm_segment_t			orgfs;	
+ 	
+ 	src = "/tmp/7570_bob.conf";
+-	orgfs = get_fs();//memory file
+-	set_fs(KERNEL_DS);
+ 	if (src && *src)
+ 	{
+-		srcf = filp_open(src, O_RDWR|O_CREAT, 0);
++		srcf = filp_open(src, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+ 		if (IS_ERR(srcf))
+ 		{
+ 			printk("--> Error opening \n");
+@@ -2271,12 +2326,7 @@
+ 		}
+ 		else
+ 		{
+-			srcf->f_pos = 0;
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,115) 
+-			if(ecnt_kernel_fs_write(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos) >0)
+-#else
+-			if(srcf->f_op->write(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos) >0)
+-#endif
++			if(kernel_write(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos) > 0)
+ 			{
+ 				printk("--> write flash_matrix success \n");
+ 			}
+@@ -2290,11 +2340,9 @@
+ 			filp_close(srcf,NULL);
+ 		}
+ 	}
+-	set_fs(orgfs);	
+ 	return 0;
+ 
+ 	error:
+-	set_fs(orgfs);
+ 	return -1;	
+ 	
+ }
+@@ -2315,7 +2363,6 @@
+ 	//file open
+ 	struct file 			*srcf = NULL;
+ 	char *src = NULL;
+-	mm_segment_t			orgfs;
+ 
+ #if/*TCSUPPORT_COMPILE*/ !defined(TCSUPPORT_FH_ENV)		
+ 	src = "/tmp/7570_bob.conf";
+@@ -2323,9 +2370,6 @@
+ 	src = "/data/bob/7570_bob.conf";
+ #endif/*TCSUPPORT_COMPILE*/
+ 
+-	orgfs = get_fs();
+-	set_fs(KERNEL_DS);
+-
+ 		if (src && *src)
+ 		{
+ 			srcf = filp_open(src, O_RDONLY, 0);
+@@ -2336,21 +2380,15 @@
+ 			}
+ 			else
+ 			{
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,4,115) 				
+-				ecnt_kernel_fs_read(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos);
+-#else
+-				srcf->f_op->read(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos);
+-#endif
++				kernel_read(srcf, flash_matrix, sizeof(flash_matrix), &srcf->f_pos);
+ 
+ 				filp_close(srcf,NULL);
+ 				printk("--> get flash_matrix success \n");
+ 			}
+ 		}
+-		set_fs(orgfs);
+ 		return 0;
+ 
+ error:
+-		set_fs(orgfs);
+ 		return -1;	
+ 	
+ }
+@@ -2456,5 +2494,3 @@
+ 	}
+ }
+ #endif
+-
+-
+--- a/xpon-en757x/xpon_phy_10g/src/phy_init.c
++++ b/xpon-en757x/xpon_phy_10g/src/phy_init.c
+@@ -106,7 +106,7 @@
+ //static spinlock_t  pon_phy_lock;
+ int xPON_Phy_Reset(void){
+ 
+-	return ponPhyFunc[PHY_RESET_FUNC](gpPhyPriv);
++	return ponPhyFunc[PHY_RESET_FUNC]((char *)gpPhyPriv);
+ 
+ }
+ 	
+@@ -421,7 +421,6 @@
+ printk("\r\n____________________________________________\r\n");
+ printk("* PHY_VERSION:  X.%-3d       Date: %8d *\n",PHY_VERSION,PHY_DATE_VERSION);
+ printk("Note : %s\n",PHY_VERSION_NOTE);
+-printk("FW Compile Date: %s, Time: %s\n",__DATE__,__TIME__);
+ //printk("FE_GENTIME : FPGA Date : %x : Time : %x\n",(IO_GPHYREG(FE_GENTIME)>>8),(IO_GPHYREG(FE_GENTIME)&0x000000FF));
+ printk("LINUX_VERSION_CODE : %x\n",LINUX_VERSION_CODE);
+ 
+@@ -836,6 +835,11 @@
+ 
+ #endif
+ 
++static int phy_trans_kthread(void *data)
++{
++	return phy_trans_task_wait();
++}
++
+ int phy_mode_config(Xpon_Phy_Mode_t xpon_mode, int tx_enable)
+ {
+ 	int ret = PHY_SUCCESS;
+@@ -862,7 +866,8 @@
+ 
+ 	if((ret = pon_phy_mod_init())!=0){
+ 		PON_PHY_PRINT(PHY_MSG_ERR,"\r\n[%s:%d] pon_phy_mod_init fail !\r\n\r\n",__FUNCTION__,__LINE__);
+-		gpPhyPriv->phy_trans_task_wait= kthread_run(phy_trans_task_wait, NULL, "phy_trans_task_wait");
++		gpPhyPriv->phy_trans_task_wait = kthread_run(phy_trans_kthread, NULL,
++			"phy_trans_task_wait");
+ 		return ret;  //return success to MAC trigger MAC set xpon_phy_start PHY_SUCCESS;  // 
+ 	}
+ 	
+--- a/xpon-en757x/xpon_phy_10g/src/phy_tx.c
++++ b/xpon-en757x/xpon_phy_10g/src/phy_tx.c
+@@ -55,7 +55,7 @@
+ ******************************************************************************/
+ void phy_trans_tx_getting(PPHY_TransConfig_T trans_status)
+ {
+-	return PHY_INTERNAL_GET_API(PON_GET_PHY_TRANS_TX,trans_status);
++	PHY_INTERNAL_GET_API(PON_GET_PHY_TRANS_TX, trans_status);
+ }
+ 
+ 
+@@ -330,4 +330,3 @@
+ 	PON_PHY_PRINT(PHY_MSG_INT, "PON PHY set txPowerEnFlag to %d.\n", enable);
+ }
+ 
+-

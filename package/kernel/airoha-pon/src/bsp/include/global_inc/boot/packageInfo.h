@@ -1,0 +1,131 @@
+/***************************************************************************************
+ *      Copyright(c) 2014 ECONET Incorporation All rights reserved.
+ *
+ *      This is unpublished proprietary source code of ECONET Networks Incorporation
+ *
+ *      The copyright notice above does not evidence any actual or intended
+ *      publication of such source code.
+ ***************************************************************************************
+ */
+
+#ifndef __PACKAGE_INFO_H__
+#define __PACKAGE_INFO_H__
+
+#define PACKAGE_INFO_ADDR			(0xBFA40B00)
+#define PACKAGE_INFO_REMARK_OFFSET	(3)
+
+typedef struct {
+	unsigned short start;
+	unsigned char len;
+	unsigned short data;
+} PACKAGE_ENTRY;
+
+typedef enum {
+	RFU_1 = 0,
+	REMARK,
+	PID,
+	PID_REMARK,
+	RFU_2,
+	/* PCI-E */
+	DA_SSUSB_LN0_TX_IMP_SEL_PCIE_P0,
+	DA_SSUSB_LN0_RX_IMP_SEL_PCIE_P0,
+	RG_SSUB_IEXT_INTR_CTRL_PCIE_P0,
+	DA_SSUSB_LN0_TX_IMP_SEL_PCIE_P1,
+	DA_SSUSB_LN0_RX_IMP_SEL_PCIE_P1,
+	RG_SSUB_IEXT_INTR_CTRL_PCIE_P1,
+	/* SSUSB */
+	DA_SSUSB_LN0_TX_IMP_SEL_SSUSB_P0,
+	DA_SSUSB_LN0_RX_IMP_SEL_SSUSB_P0,
+	RG_SSUB_IEXT_INTR_CTRL_SSUSB_P0,
+	DA_SSUSB_LN0_TX_IMP_SEL_SSUSB_P1,
+	DA_SSUSB_LN0_RX_IMP_SEL_SSUSB_P1,
+	RG_SSUB_IEXT_INTR_CTRL_SSUSB_P1,
+
+	RFU_3,
+
+	/* XPON */
+	RG_XPON_RX_FE_50OHMS_SEL,
+	DA_XPON_TX_TERMP_SEL,
+	DA_XPON_TX_TERMN_SEL,
+	/* XFI */
+	RG_XFI_RX_FE_50OHMS_SEL,
+	DA_XFI_TX_TERMP_SEL,
+	DA_XFI_TX_TERMN_SEL,
+
+	RFU_4,
+
+	/* GBE_P0 */
+	DA_TX_I2MPB_A_P0,
+	DA_TX_I2MPB_B_P0,
+	DA_TX_I2MPB_C_P0,
+	DA_TX_I2MPB_D_P0,
+	DA_TX_AMP_OFFSET_A_P0,
+	DA_TX_AMP_OFFSET_B_P0,
+	DA_TX_AMP_OFFSET_C_P0,
+	DA_TX_AMP_OFFSET_D_P0,
+	DA_R50OHM_RSEL_TX_A_P0,
+	DA_R50OHM_RSEL_TX_B_P0,
+	DA_R50OHM_RSEL_TX_C_P0,
+	DA_R50OHM_RSEL_TX_D_P0,
+	/* GBE_P1 */
+	DA_TX_I2MPB_A_P1,
+	DA_TX_I2MPB_B_P1,
+	DA_TX_I2MPB_C_P1,
+	DA_TX_I2MPB_D_P1,
+	DA_TX_AMP_OFFSET_A_P1,
+	DA_TX_AMP_OFFSET_B_P1,
+	DA_TX_AMP_OFFSET_C_P1,
+	DA_TX_AMP_OFFSET_D_P1,
+	DA_R50OHM_RSEL_TX_A_P1,
+	DA_R50OHM_RSEL_TX_B_P1,
+	DA_R50OHM_RSEL_TX_C_P1,
+	DA_R50OHM_RSEL_TX_D_P1,
+	/* GBE_COMMON */
+	RG_BG_RASEL,
+	RG_REXT_TRIM_P0,
+	/* GBE_P2 */
+	DA_TX_I2MPB_A_P2,
+	DA_TX_I2MPB_B_P2,
+	DA_TX_I2MPB_C_P2,
+	DA_TX_I2MPB_D_P2,
+	DA_TX_AMP_OFFSET_A_P2,
+	DA_TX_AMP_OFFSET_B_P2,
+	DA_TX_AMP_OFFSET_C_P2,
+	DA_TX_AMP_OFFSET_D_P2,
+	DA_R50OHM_RSEL_TX_A_P2,
+	DA_R50OHM_RSEL_TX_B_P2,
+	DA_R50OHM_RSEL_TX_C_P2,
+	DA_R50OHM_RSEL_TX_D_P2,
+	/* GBE_P3 */
+	DA_TX_I2MPB_A_P3,
+	DA_TX_I2MPB_B_P3,
+	DA_TX_I2MPB_C_P3,
+	DA_TX_I2MPB_D_P3,
+	DA_TX_AMP_OFFSET_A_P3,
+	DA_TX_AMP_OFFSET_B_P3,
+	DA_TX_AMP_OFFSET_C_P3,
+	DA_TX_AMP_OFFSET_D_P3,
+	DA_R50OHM_RSEL_TX_A_P3,
+	DA_R50OHM_RSEL_TX_B_P3,
+	DA_R50OHM_RSEL_TX_C_P3,
+	DA_R50OHM_RSEL_TX_D_P3,
+
+	RFU_5,
+
+	/* USB20 */
+	RG_USB20_INTR_CTRL_P0,
+	RG_USB20_INTR_CTRL_P1,
+
+	RFU_6,
+
+	/* TE */
+	WAFER_NUMBER,
+	DIE_COORDINATE,
+	PACKAGE_INFO_IDX_MAX_NO,
+} PACKAGE_INFO_IDX_T;
+
+void parse_package_info(void);
+unsigned short get_efuse_data(PACKAGE_INFO_IDX_T idx);
+
+
+#endif /* __PACKAGE_INFO_H__ */

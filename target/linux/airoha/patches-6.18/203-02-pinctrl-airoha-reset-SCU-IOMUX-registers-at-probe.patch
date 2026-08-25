@@ -1,0 +1,167 @@
+From 7f3f8725907245175ea6ab3b2caccc326dfa4926 Mon Sep 17 00:00:00 2001
+From: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+Date: Fri, 3 Jul 2026 21:36:00 +0200
+Subject: [PATCH 2/4] pinctrl: airoha: reset SCU IOMUX registers at probe
+
+Add a per-variant table of SCU registers to reset at probe time, so
+bootloader modifications to IOMUX configuration don't silently shadow
+Linux GPIO or func_group writes.
+
+On AN7581 all mux registers use positive polarity (0 = GPIO mode), so
+simply write 0 to each. On AN7583 the high bits 15-26 of REG_GPIO_PON_MODE
+(0x021c) have inverted polarity (1 = GPIO mode), so write
+GPIO_MODE_MASK for those bits, leaving bits 23-24 at 0 so the kernel
+console UART stays active without a pinctrl-0 declaration.
+
+Also extend patch on EN7523 SoC case
+
+Signed-off-by: Daniel Schwierzeck <daniel.schwierzeck@gmail.com>
+---
+ drivers/pinctrl/airoha/airoha-common.h  |  7 +++++++
+ drivers/pinctrl/airoha/pinctrl-airoha.c | 13 +++++++++++++
+ drivers/pinctrl/airoha/pinctrl-an7581.c | 10 ++++++++++
+ drivers/pinctrl/airoha/pinctrl-an7583.c | 14 ++++++++++++++
+ drivers/pinctrl/airoha/pinctrl-en7523.c | 10 ++++++++++
+ 5 files changed, 54 insertions(+)
+
+--- a/drivers/pinctrl/airoha/airoha-common.h
++++ b/drivers/pinctrl/airoha/airoha-common.h
+@@ -129,6 +129,11 @@ struct airoha_pinctrl {
+ 	struct airoha_gpiochip_regs *gpio_regs;
+ };
+ 
++struct airoha_pinctrl_hwinit_regs {
++	u32 offset;
++	u32 val;
++};
++
+ struct airoha_pinctrl_match_data {
+ 	const char *chip_scu_compatible;
+ 	const char *pinctrl_name;
+@@ -140,6 +145,8 @@ struct airoha_pinctrl_match_data {
+ 	const struct airoha_pinctrl_func *funcs;
+ 	const unsigned int num_funcs;
+ 	const struct airoha_pinctrl_confs_info confs_info[AIROHA_PINCTRL_CONFS_MAX];
++	const struct airoha_pinctrl_hwinit_regs *hwinit_regs;
++	const unsigned int num_hwinit_regs;
+ };
+ 
+ int airoha_pinctrl_probe(struct platform_device *pdev);
+--- a/drivers/pinctrl/airoha/pinctrl-airoha.c
++++ b/drivers/pinctrl/airoha/pinctrl-airoha.c
+@@ -802,6 +802,19 @@ int airoha_pinctrl_probe(struct platform
+ 
+ 	pinctrl->chip_scu = map;
+ 
++	/*
++	 * Reset all SCU mux register to reset defaults to undo bootloader modifications.
++	 */
++	for (i = 0; i < data->num_hwinit_regs; i++) {
++		err = regmap_write(pinctrl->chip_scu,
++				   data->hwinit_regs[i].offset,
++				   data->hwinit_regs[i].val);
++		if (err)
++			return dev_err_probe(dev, err,
++				"Failed to reset SCU IOMUX register 0x%x\n",
++				data->hwinit_regs[i].offset);
++	}
++
+ 	/* Init pinctrl desc struct */
+ 	pinctrl->desc.name = data->pinctrl_name;
+ 	pinctrl->desc.owner = data->pinctrl_owner;
+--- a/drivers/pinctrl/airoha/pinctrl-an7581.c
++++ b/drivers/pinctrl/airoha/pinctrl-an7581.c
+@@ -1431,6 +1431,14 @@ static const struct airoha_pinctrl_conf
+ 	PINCTRL_CONF_DESC(62, REG_PCIE_RESET_OD, PCIE2_RESET_OD_MASK),
+ };
+ 
++static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
++	{ REG_GPIO_2ND_I2C_MODE, 0 },
++	{ REG_GPIO_SPI_CS1_MODE, 0 },
++	{ REG_GPIO_PON_MODE, 0 },
++	{ REG_NPU_UART_EN, 0 },
++	{ REG_FORCE_GPIO_EN, 0 },
++};
++
+ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
+ 	.chip_scu_compatible = "airoha,en7581-chip-scu",
+ 	.pinctrl_name = KBUILD_MODNAME,
+@@ -1441,6 +1449,8 @@ static const struct airoha_pinctrl_match
+ 	.num_grps = ARRAY_SIZE(pinctrl_groups),
+ 	.funcs = pinctrl_funcs,
+ 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
++	.hwinit_regs = hwinit_regs,
++	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.confs_info = {
+ 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
+ 			.confs = pinctrl_pullup_conf,
+--- a/drivers/pinctrl/airoha/pinctrl-an7583.c
++++ b/drivers/pinctrl/airoha/pinctrl-an7583.c
+@@ -39,6 +39,7 @@
+ 
+ #define REG_GPIO_PON_MODE			0x021c
+ #define GPIO_PON_ALT_MODE_MASK			BIT(27)
++#define GPIO_MODE_MASK				(GENMASK(22, 15) | GENMASK(26, 25))
+ #define MDIO_0_GPIO_MODE_MASK			BIT(26)
+ #define MDC_0_GPIO_MODE_MASK			BIT(25)
+ #define UART_RXD_GPIO_MODE_MASK			BIT(24)
+@@ -75,6 +76,8 @@
+ #define REG_FORCE_GPIO_EN			0x0228
+ #define FORCE_GPIO_EN(n)			BIT(n)
+ 
++#define REG_FORCE_GPIO32_EN			0x022C
++
+ /* LED MAP */
+ #define REG_LAN_LED0_MAPPING			0x027c
+ #define REG_LAN_LED1_MAPPING			0x0280
+@@ -1461,6 +1464,15 @@ static const struct airoha_pinctrl_conf
+ 	PINCTRL_CONF_DESC(52, REG_PCIE_RESET_OD, PCIE1_RESET_OD_MASK),
+ };
+ 
++static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
++	{ REG_SW_TOD_1PPS_MODE, 0 },
++	{ REG_GPIO_SPI_CS1_MODE, 0 },
++	{ REG_GPIO_PON_MODE, GPIO_MODE_MASK },
++	{ REG_NPU_UART_EN, 0 },
++	{ REG_FORCE_GPIO_EN, 0 },
++	{ REG_FORCE_GPIO32_EN, 0 },
++};
++
+ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
+ 	.chip_scu_compatible = "airoha,en7581-chip-scu",
+ 	.pinctrl_name = KBUILD_MODNAME,
+@@ -1471,6 +1483,8 @@ static const struct airoha_pinctrl_match
+ 	.num_grps = ARRAY_SIZE(pinctrl_groups),
+ 	.funcs = pinctrl_funcs,
+ 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
++	.hwinit_regs = hwinit_regs,
++	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.confs_info = {
+ 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
+ 			.confs = pinctrl_pullup_conf,
+--- a/drivers/pinctrl/airoha/pinctrl-en7523.c
++++ b/drivers/pinctrl/airoha/pinctrl-en7523.c
+@@ -1103,6 +1103,14 @@ static const struct airoha_pinctrl_conf
+ 	PINCTRL_CONF_DESC(41, REG_I2C_SDA_E4, PCIE1_RESET_E4_MASK),
+ };
+ 
++static const struct airoha_pinctrl_hwinit_regs hwinit_regs[] = {
++	{ REG_GPIO_2ND_I2C_MODE, 0 },
++	{ REG_GPIO_SPI_CS1_MODE, 0 },
++	{ REG_GPIO_PON_MODE, 0 },
++	{ REG_NPU_UART_EN, 0 },
++	{ REG_FORCE_GPIO_EN, 0 },
++};
++
+ static const struct airoha_pinctrl_match_data pinctrl_match_data = {
+ 	.chip_scu_compatible = "airoha,en7523-chip-scu",
+ 	.pinctrl_name = KBUILD_MODNAME,
+@@ -1113,6 +1121,8 @@ static const struct airoha_pinctrl_match
+ 	.num_grps = ARRAY_SIZE(pinctrl_groups),
+ 	.funcs = pinctrl_funcs,
+ 	.num_funcs = ARRAY_SIZE(pinctrl_funcs),
++	.hwinit_regs = hwinit_regs,
++	.num_hwinit_regs = ARRAY_SIZE(hwinit_regs),
+ 	.confs_info = {
+ 		[AIROHA_PINCTRL_CONFS_PULLUP] = {
+ 			.confs = pinctrl_pullup_conf,

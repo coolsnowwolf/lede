@@ -1,0 +1,39 @@
+#ifndef _ECNT_HOOK_PON_CUSTOMER_H_
+#define _ECNT_HOOK_PON_CUSTOMER_H_
+
+#include <ecnt_hook/ecnt_hook_pon_mac.h>
+
+typedef enum {
+	XPON_CUSTOMER_API_CALLBACK_RESET = 0,
+	XPON_CUSTOMER_API_CALLBACK_REGISTER,
+	XPON_CUSTOMER_API_CALLBACK_PHY_EVENT_HANDLER,
+	XPON_CUSTOMER_API_MAX_NUM,
+} XPON_CUSTOMER_HookFunction_t;
+
+typedef enum {
+	ECNT_XPON_CALLBACK_MULTICAST_RX_DATA = 0,
+	ECNT_XPON_CALLBACK_PHY_EVENT,
+	ECNT_XPON_CALLBACK_XMCS_CHECK_EVENT_VALID,
+	ECNT_XPON_CALLBACK_SET_EMERGENCE_STATE,
+	ECNT_XPON_CALLBACK_FH_TX_POWER_HANDLE,
+	ECNT_XPON_CALLBACK_SET_ONU_ID,
+	ECNT_XPON_CALLBACK_SET_OMCC_ID,
+	ECNT_XPON_CALLBACK_SET_PHY_EVENT_HANDLER,
+} XPON_CALLBACK_ID_t;
+
+typedef struct {
+	XPON_CALLBACK_ID_t callback_id;
+	void *callback_fn;
+} XPON_CALLBACK_Info_t;
+
+typedef struct {
+	XPON_CUSTOMER_HookFunction_t function_id;
+	int retValue;
+	unsigned int cmd_id;
+	int eventtype;
+	union {
+		XPON_CALLBACK_Info_t callback;
+	} xpon_customer_private;
+} ECNT_XPON_CUSTOMER_Data_t;
+
+#endif

@@ -18,7 +18,7 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
 
 --- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
 +++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
-@@ -2527,9 +2527,13 @@ static void stmmac_bump_dma_threshold(st
+@@ -2542,9 +2542,13 @@ static void stmmac_bump_dma_threshold(st
   * @priv: driver private structure
   * @budget: napi budget limiting this functions packet handling
   * @queue: TX queue index
@@ -32,27 +32,25 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
 +			   bool *pending_packets)
  {
  	struct stmmac_tx_queue *tx_q = &priv->dma_conf.tx_queue[queue];
- 	unsigned int bytes_compl = 0, pkts_compl = 0;
-@@ -2692,7 +2696,7 @@ static int stmmac_tx_clean(struct stmmac
+ 	struct stmmac_txq_stats *txq_stats = &priv->xstats.txq_stats[queue];
+@@ -2705,7 +2709,7 @@ static int stmmac_tx_clean(struct stmmac
  
  	/* We still have pending packets, let's call for a new scheduling */
  	if (tx_q->dirty_tx != tx_q->cur_tx)
 -		stmmac_tx_timer_arm(priv, queue);
 +		*pending_packets = true;
  
- 	__netif_tx_unlock_bh(netdev_get_tx_queue(priv->dev, queue));
- 
-@@ -5503,16 +5507,17 @@ static int stmmac_napi_poll_tx(struct na
+ 	flags = u64_stats_update_begin_irqsave(&txq_stats->syncp);
+ 	txq_stats->tx_packets += tx_packets;
+@@ -5542,6 +5546,7 @@ static int stmmac_napi_poll_tx(struct na
  		container_of(napi, struct stmmac_channel, tx_napi);
  	struct stmmac_priv *priv = ch->priv_data;
  	struct stmmac_txq_stats *txq_stats;
 +	bool pending_packets = false;
  	u32 chan = ch->index;
-	unsigned long flags;
+ 	unsigned long flags;
  	int work_done;
- 
- 	txq_stats = &priv->xstats.txq_stats[chan];
- 	flags = u64_stats_update_begin_irqsave(&txq_stats->syncp);
+@@ -5551,7 +5556,7 @@ static int stmmac_napi_poll_tx(struct na
  	txq_stats->napi_poll++;
  	u64_stats_update_end_irqrestore(&txq_stats->syncp, flags);
  
@@ -61,7 +59,7 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
  	work_done = min(work_done, budget);
  
  	if (work_done < budget && napi_complete_done(napi, work_done)) {
-@@ -5519,6 +5524,10 @@ static int stmmac_napi_poll_tx(struct na
+@@ -5562,6 +5567,10 @@ static int stmmac_napi_poll_tx(struct na
  		spin_unlock_irqrestore(&ch->lock, flags);
  	}
  
@@ -72,7 +70,7 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
  	return work_done;
  }
  
-@@ -5527,22 +5536,23 @@ static int stmmac_napi_poll_rxtx(struct
+@@ -5570,6 +5579,7 @@ static int stmmac_napi_poll_rxtx(struct
  	struct stmmac_channel *ch =
  		container_of(napi, struct stmmac_channel, rxtx_napi);
  	struct stmmac_priv *priv = ch->priv_data;
@@ -80,16 +78,7 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
  	int rx_done, tx_done, rxtx_done;
  	struct stmmac_rxq_stats *rxq_stats;
  	struct stmmac_txq_stats *txq_stats;
- 	u32 chan = ch->index;
- 	unsigned long flags;
- 
- 	rxq_stats = &priv->xstats.rxq_stats[chan];
- 	flags = u64_stats_update_begin_irqsave(&rxq_stats->syncp);
- 	rxq_stats->napi_poll++;
- 	u64_stats_update_end_irqrestore(&rxq_stats->syncp, flags);
-
- 	txq_stats = &priv->xstats.txq_stats[chan];
- 	flags = u64_stats_update_begin_irqsave(&txq_stats->syncp);
+@@ -5586,7 +5596,7 @@ static int stmmac_napi_poll_rxtx(struct
  	txq_stats->napi_poll++;
  	u64_stats_update_end_irqrestore(&txq_stats->syncp, flags);
  
@@ -98,14 +87,3 @@ Signed-off-by: Paolo Abeni <pabeni@redhat.com>
  	tx_done = min(tx_done, budget);
  
  	rx_done = stmmac_rx_zc(priv, budget, chan);
-@@ -5557,6 +5567,10 @@ static int stmmac_napi_poll_rxtx(struct
- 		spin_unlock_irqrestore(&ch->lock, flags);
- 	}
- 
-+	/* TX still have packet to handle, check if we need to arm tx timer */
-+	if (tx_pending_packets)
-+		stmmac_tx_timer_arm(priv, chan);
-+
- 	return min(rxtx_done, budget - 1);
- }
- 

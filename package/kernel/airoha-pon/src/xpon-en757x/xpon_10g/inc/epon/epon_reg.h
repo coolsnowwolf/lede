@@ -1,0 +1,435 @@
+/***************************************************************
+Copyright Statement:
+
+This software/firmware and related documentation (“EcoNet Software”) 
+are protected under relevant copyright laws. The information contained herein 
+is confidential and proprietary to EcoNet (HK) Limited (“EcoNet”) and/or 
+its licensors. Without the prior written permission of EcoNet and/or its licensors, 
+any reproduction, modification, use or disclosure of EcoNet Software, and 
+information contained herein, in whole or in part, shall be strictly prohibited.
+
+EcoNet (HK) Limited  EcoNet. ALL RIGHTS RESERVED.
+
+BY OPENING OR USING THIS FILE, RECEIVER HEREBY UNEQUIVOCALLY 
+ACKNOWLEDGES AND AGREES THAT THE SOFTWARE/FIRMWARE AND ITS 
+DOCUMENTATIONS (“ECONET SOFTWARE”) RECEIVED FROM ECONET 
+AND/OR ITS REPRESENTATIVES ARE PROVIDED TO RECEIVER ON AN “AS IS” 
+BASIS ONLY. ECONET EXPRESSLY DISCLAIMS ANY AND ALL WARRANTIES, 
+WHETHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED 
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, 
+OR NON-INFRINGEMENT. NOR DOES ECONET PROVIDE ANY WARRANTY 
+WHATSOEVER WITH RESPECT TO THE SOFTWARE OF ANY THIRD PARTIES WHICH 
+MAY BE USED BY, INCORPORATED IN, OR SUPPLIED WITH THE ECONET SOFTWARE. 
+RECEIVER AGREES TO LOOK ONLY TO SUCH THIRD PARTIES FOR ANY AND ALL 
+WARRANTY CLAIMS RELATING THERETO. RECEIVER EXPRESSLY ACKNOWLEDGES 
+THAT IT IS RECEIVER’S SOLE RESPONSIBILITY TO OBTAIN FROM ANY THIRD 
+PARTY ALL PROPER LICENSES CONTAINED IN ECONET SOFTWARE.
+
+ECONET SHALL NOT BE RESPONSIBLE FOR ANY ECONET SOFTWARE RELEASES 
+MADE TO RECEIVER’S SPECIFICATION OR CONFORMING TO A PARTICULAR 
+STANDARD OR OPEN FORUM. RECEIVER'S SOLE AND EXCLUSIVE REMEDY AND 
+ECONET'S ENTIRE AND CUMULATIVE LIABILITY WITH RESPECT TO THE ECONET 
+SOFTWARE RELEASED HEREUNDER SHALL BE, AT ECONET'S SOLE OPTION, TO 
+REVISE OR REPLACE THE ECONET SOFTWARE AT ISSUE OR REFUND ANY SOFTWARE 
+LICENSE FEES OR SERVICE CHARGES PAID BY RECEIVER TO ECONET FOR SUCH 
+ECONET SOFTWARE.
+***************************************************************/
+#ifndef _EPON_REG_H_
+#define _EPON_REG_H_
+
+#include "epon_mac_reg_c_header.h"
+
+#define CONFIG_EPON_BASE_ADDR					(0x1FB60000)
+#define CONFIG_EPON_REG_RANGE					(sizeof(EPON_MAC_REGS))
+
+typedef struct eponMacHwtestReg_s{
+	__u32 addr;	
+	__u32 def_value;	/*default value*/
+	__u32 rwmask;/*bit:0-read only*/
+}eponMacHwtestReg_t;
+
+#ifdef TCSUPPORT_CPU_ARMV8_64
+#define READ_REG_WORD(reg)            get_xpon_data(reg)
+#define WRITE_REG_WORD(reg, val)      set_xpon_data(reg,val)
+#else
+#define READ_REG_WORD(reg)		ioread32((void __iomem *)(reg)) /* GetReg((uint)reg) */
+#define WRITE_REG_WORD(reg, val)      iowrite32(val, (void __iomem *)(reg)) /* SetReg((uint)reg, val) */
+#endif
+
+#define PAUSE(x)		mdelay(x)
+
+
+//#ifdef TCSUPPORT_CPU_EN7522
+#define REG_ACK_DONE_INT			(1<<25)
+#define REG_REQ_DONE_INT			(1<<24)
+//#endif
+
+/* e_glb_cfg */
+#define MPCP_FWD	(1<<22)
+#define BCST_LLID_0xFFFF_DROP 	(1<<21)
+#define BCST_LLID_0x7FFF_DROP (1<<20)
+#define MCST_LLID_DROP (1<<19)
+#define ALL_UNICAST_LLID_PKT_FWD (1<<18)
+#define FCS_ERR_FWD (1<<17)
+#define LLID_CRC8_ERR_FWD (1<<16)
+#define RXMPI_STOP (1<<13)
+#define TXMPI_STOP (1<<12)
+#define PHY_PWR_DOWN (1<<11)
+#define RX_NML_GATE_FWD (1<<10)
+#define RXMBI_STOP (1<<9)
+#define TXMBI_STOP (1<<8)
+#define CHK_ALL_GNT_MODE (1<<7)
+#define LOC_CNT_SYNC_METHOD (1<<6)
+#define TX_DEFAULT_RPT (1<<5)
+#define EPON_MAC_SW_RST (1<<4)
+#define EPON_OAM_CAL_IN_ETH (1<<3)
+#define EPON_MAC_LPBK_EN	(1<<2)
+#define RPT_TXPRI_CTRL	(1<<1)
+#define MODE_SEL	(1<<0)
+
+
+
+
+/* e_int_status */
+#define SEND_REGISTER_ACK_INT		(1<<25)
+#define SEND_REGISTER_REQ_INT		(1<<24)
+#define RPT_OVERINTVL_INT		(1<<15)
+#define MPCP_TIMEOUT_INT		(1<<14)
+#define TIMEDRFT_INT			(1<<13)
+#define TOD_1PPS_INT			(1<<12)
+#define TOD_UPDT_INT			(1<<11)
+#define PTP_MSG_TX_INT			(1<<10)
+#define GNT_BUF_OVRRUN_INT	(1<<9)
+#define LLID7_RCV_RGST_INT		(1<<8)
+#define LLID6_RCV_RGST_INT		(1<<7)
+#define LLID5_RCV_RGST_INT		(1<<6)
+#define LLID4_RCV_RGST_INT		(1<<5)
+#define LLID3_RCV_RGST_INT		(1<<4)
+#define LLID2_RCV_RGST_INT		(1<<3)
+#define LLID1_RCV_RGST_INT		(1<<2)
+#define LLID0_RCV_RGST_INT		(1<<1)
+#define RCV_DSCVRY_GATE_INT	(1<<0)
+
+#define EPON_HW_DSCV_STATE_UNREGISTERED	(0)
+#define EPON_HW_DSCV_STATE_REGISTERING	(1)
+#define EPON_HW_DSCV_STATE_REGISTERED	(2)
+#define EPON_DSCV_STATE_BITS		(0x11 << 30)
+
+
+#define EPON_SET_BIT(raw,val)			(raw |= val)
+#define EPON_REG_BIT_VALID(val1,val2,val3,index)	 (index < LLID8_REGISTER_IDX)?\
+												(val1 & (1 << index)):\
+										 	(((index >= LLID8_REGISTER_IDX)&&(index < RCV_DAUC_DSCVGATE_IDX))?\
+												(val2 & (1 << (index -LLID8_REGISTER_IDX))) :\
+												(((index >= RCV_DAUC_DSCVGATE_IDX)&&(index < INT_STATUS_MAX))?\
+												(val3 & (1 << (index -RCV_DAUC_DSCVGATE_IDX))):0))
+
+#define CHECK_QUEUE_THRESHOLD_PARAM_OUTBOUND(queue_threshold)  \
+      (queue_threshold->channel >= EPON_LLID_MAX_NUM \
+    || queue_threshold->queue >= EPON_MAX_QUEUE_PER_CHANNEL \
+    || queue_threshold->thrIdx >= EPON_MAX_QUEUE_THRESHOLD)
+
+
+#define EPON_REG_GLOBAL_CONFIG_MODE_SELECT_BIT				(0x01<<0)
+#define EPON_REG_GLOBAL_CONFIG_REPORT_TX_PRIORITY_BIT		(0x01<<1)
+#define EPON_REG_GLOBAL_CONFIG_MAC_LOOPBACK_ENABLE_BIT		(0x01<<2)
+#define EPON_REG_GLOBAL_CONFIG_OAM_COUNT_IN_ETH_BIT			(0x01<<3)
+#define EPON_REG_GLOBAL_CONFIG_MAC_SW_RESET_BIT				(0x01<<4)
+#define EPON_REG_GLOBAL_CONFIG__BIT							(0x01<<0)
+
+#define EPON_REG_ADJUST_TIME1_DEFAULT 						((SYNC_TIME_DEFAULT+PHY_TX_DELAY+EPON_DEFAULT_LASER_ON)<<16 + PHY_TX_DELAY_BY_MAC)
+#define EPON_REG_ADJUST_TIME2_DEFAULT						(6)
+
+
+#define EPON_RESET_LOOP_COUNTER_MAX		(8000)
+
+
+#ifdef CONFIG_USE_MT7520_ASIC 
+#define EPON_REG_TX_FETCH_DEFAULT							(0x202403e8)
+#else
+#define EPON_REG_TX_FETCH_DEFAULT							(0x242a03e8)
+#endif
+
+typedef enum epon_int_status_id
+{
+	DISCOVERY_GATE_IDX = 0,
+    LLID0_REGISTER_IDX,
+    LLID1_REGISTER_IDX,
+    LLID2_REGISTER_IDX,
+    LLID3_REGISTER_IDX,
+    LLID4_REGISTER_IDX,
+    LLID5_REGISTER_IDX,
+    LLID6_REGISTER_IDX,
+    LLID7_REGISTER_IDX,
+    GRANT_BUFFER_OVERRUN_IDX,
+    P2P_MSG_TX_IDX,
+    TOD_UPDATE_IDX,
+	TOD_ONE_PPS_IDX,
+    TIME_DRIFT_IDX,
+    MPCP_TIME_OUT_IDX,
+    REPORT_OVER_INTERVAL_IDX,
+	TX_FIFO_UNDER_RUN_IDX = 16,
+	POWER_SAVING_SLEEP_IDX,
+	POWER_SAVING_WAKE_UP_IDX,
+	RX_SLEEP_ALLOW_IDX,
+	POWER_SAVING_EARLY_WAKE_UP_IDX,
+	HIDEN_GRANT_IDX = 21,
+	BACK_TO_BACK_GRANT_IDX,
+	RECORD1_GRANT_IDX,
+	REGISTER_REQ_SEND_DONE_IDX,
+	REGISTER_ACK_SEND_DONE_IDX,
+	SNIFF_FIFO_TX_OVERRUN_IDX,
+	DOWNSTRAEM_KEY_CHANGE_IDX,
+	DOWNSTRAEM_KEY_MISS_IDX,
+	UPSTRAEM_KEY_CHANGE_IDX,
+	/*int status 3*/
+	LLID8_REGISTER_IDX = 32,
+    LLID9_REGISTER_IDX,
+    LLID10_REGISTER_IDX,
+    LLID11_REGISTER_IDX,
+    LLID12_REGISTER_IDX,
+    LLID13_REGISTER_IDX,
+    LLID14_REGISTER_IDX,
+    LLID15_REGISTER_IDX,
+    LLID16_REGISTER_IDX,
+    LLID17_REGISTER_IDX,
+    LLID18_REGISTER_IDX,
+    LLID19_REGISTER_IDX,
+    LLID20_REGISTER_IDX,
+    LLID21_REGISTER_IDX,
+    LLID22_REGISTER_IDX,
+    LLID23_REGISTER_IDX,
+    LLID24_REGISTER_IDX,
+    LLID25_REGISTER_IDX,
+    LLID26_REGISTER_IDX,
+    LLID27_REGISTER_IDX,
+    LLID28_REGISTER_IDX,
+    LLID29_REGISTER_IDX,
+    LLID30_REGISTER_IDX,
+    LLID31_REGISTER_IDX,
+    /*int status 2*/
+    RCV_DAUC_DSCVGATE_IDX = 64,
+    RCV_CRCERR_IDX,
+    RCV_EOFDROP_IDX,
+    RCVGNT_INFOFAIL_IDX,
+    SCHGNT_INV_IDX,
+    SCHFCH_TIMEO_IDX,
+    TXMPI_PLDENNEQ_IDX,
+    RXFIFO_OVRUN_IDX,
+    SCHFCH_NOPKT_IDX,
+    RCV_LEN_ERR_IDX,
+    RX_RGST_EXC_IDX,
+    RCV_IFCHK_ERR_IDX,
+    TX_LATESTART_IDX,
+	INT_STATUS_MAX
+}EPON_INT_STATUS_ID;
+
+static inline void EPON_RESET_REG_BIT_THEN_WAIT(__u32 regs, __u32 val)	
+{
+	int Raw = 0;
+	//int cnt = 0;
+	Raw = READ_REG_WORD(regs);
+	Raw |= val;
+	WRITE_REG_WORD(regs , Raw);
+    udelay(1);
+    #if 0
+	while(cnt <EPON_RESET_LOOP_COUNTER_MAX){ 
+	    cnt++;
+	}
+    #endif
+}
+
+static inline void EPON_SET_REG_BIT(__u32 regs, __u32 val)
+{
+	int Raw = 0;
+    Raw = READ_REG_WORD(regs) | val;
+    WRITE_REG_WORD(regs , Raw);
+}
+
+
+static inline void EPON_CLEAR_REG_BIT(__u32 regs, __u32 val)
+{
+	int Raw = 0;
+    Raw = READ_REG_WORD(regs) & (~(val));
+    WRITE_REG_WORD(regs , Raw);
+}
+
+
+// ---e_llid0_dscvry_sts  -- e_llid7_dscvry_sts
+typedef  union
+{
+  struct
+  {
+    __u32  llidDscvrySts: 2;//  LLID0_DSCVRY_STS
+    __u32 reserved: 4;//29:26		Reserved
+    __u32 rgstrFlgSts:2;//25:24 RGSTR_FLG_STS
+    __u32  reserved1:7;   //23:17		Reserved
+    __u32  llidValid:1;//16		 LLID0_VALID
+    __u32 llidValue:16;//15:0 	LLID0_VALUE
+  } Bits;
+  __u32 Raw;
+} eponLlidDscvStsReg_t;	//REG_e_llid0_dscvry_sts
+
+
+//e_rpt_mpcp_timeout_llid_idx
+typedef  union
+{
+  struct
+  {
+    __u8  reserve1;
+    __u8  reserve2;
+    __u8  mpcpTmoutLlid;
+    __u8  rptOverIntvlLlid;
+  } Bits;
+  __u32 Raw;
+} eponRptMpcpLlidReg_t;	//REG_e_rpt_mpcp_timeout_llid_idx
+
+
+typedef struct {
+	__u8 			channel ;
+	__u8			queue ;
+	__u8			thrIdx ;
+	__u16			value ;
+} eponQueueThreshold_t ;
+
+#define EPON_QTHRESHLD_RWCMD						(1<<31)
+#define EPON_QTHRESHLD_DONE							(1<<30)
+
+#define EPON_QTHRESHLD_VALUE_SHIFT					(8)
+#define EPON_QTHRESHLD_VALUE_MASK					(0xFFFF<<EPON_QTHRESHLD_VALUE_SHIFT)
+
+
+#if 0
+// --- e_llid_dscvry_ctrl ---
+typedef  union
+{
+  struct
+  {
+    __u32 mpcp_cmd  : 2;  
+    __u32 reserved: 13;
+    __u32 mpcp_cmd_done:1;
+    __u32 reserved2:3;
+    __u32 rgstr_ack_flg:1;
+    __u32 reserved3:3;
+    __u32 rgstr_req_flg:1;
+    __u32 reserved4:5;
+    __u32 tx_mpcp_llid_idx:3;
+  } bits;
+  __u32 value;
+} REG_e_llid_dscvry_ctrl;
+
+
+//e_mac_addr_cfg
+typedef  union
+{
+  struct
+  {
+    __u32 mac_addr_rwcmd:1;
+    __u32 reserved0:14;
+    __u32 mac_addr_rwcmd_done:1;
+    __u32 reserved1:12;
+    __u32 mac_addr_llid_indx:3;
+    __u32 mac_addr_dw_idx:1;
+  } Bits;
+  __u32 Raw;
+} REG_e_mac_addr_cfg;
+
+
+//e_security_key_cfg
+typedef  union
+{
+  struct
+  {
+    __u32 key_rwcmd:1;
+    __u32 reserved0:14;
+    __u32 key_rwcmd_done:1;
+    __u32 reserved1:10;
+    __u32 key_llid_index:3;
+    __u32 key_idx:1;
+	__u32 key_dw_indx:2;
+  } Bits;
+  __u32 Raw;
+} REG_e_security_key_cfg;
+
+
+
+/* EPON MAC register define */
+//#define REG_EPON_BASE		0xbfae0000//63365
+#define REG_EPON_BASE		0xbfb66000//7510 base
+
+#define e_glb_cfg    	(REG_EPON_BASE +0x00 )
+#define e_int_status     (REG_EPON_BASE +0x04 )
+#define e_int_en		(REG_EPON_BASE +0x08 )
+#define e_rpt_mpcp_timeout_llid_idx		(REG_EPON_BASE +0x0C )
+#define e_dyinggsp_cfg		(REG_EPON_BASE +0x10 )
+#define e_pending_gnt_num		(REG_EPON_BASE +0x14 )
+#define e_llid0_3_cfg		 (REG_EPON_BASE +0x20 )
+#define e_llid4_7_cfg		(REG_EPON_BASE +0x24 )
+#define e_llid_dscvry_ctrl		(REG_EPON_BASE +0x28 )
+#define e_llid0_dscvry_sts		(REG_EPON_BASE +0x2c )
+#define e_llid1_dscvry_sts		(REG_EPON_BASE +0x30 )
+#define e_llid2_dscvry_sts		(REG_EPON_BASE +0x34 )
+#define e_llid3_dscvry_sts		(REG_EPON_BASE +0x38 )
+#define e_llid4_dscvry_sts		 (REG_EPON_BASE +0x3c )
+#define e_llid5_dscvry_sts		(REG_EPON_BASE +0x40 )
+#define e_llid6_dscvry_sts		 (REG_EPON_BASE +0x44 )
+#define e_llid7_dscvry_sts		(REG_EPON_BASE +0x48 )
+#define e_mac_addr_cfg		(REG_EPON_BASE +0x50 )
+#define e_mac_addr_value		(REG_EPON_BASE +0x54 )
+#define e_security_key_cfg	(REG_EPON_BASE +0x58 )
+#define e_key_value			(REG_EPON_BASE +0x5c)
+
+#define e_rpt_data		(REG_EPON_BASE +0x60)
+#define e_rpt_len			(REG_EPON_BASE +0x64)
+
+#define e_local_time			(REG_EPON_BASE +0x80 )
+#define e_tod_sync_x			(REG_EPON_BASE +0x84 )
+#define e_tod_ltncy			(REG_EPON_BASE +0x88 )
+#define p2p_tx_tag1			(REG_EPON_BASE +0x8c )
+#define p2p_tx_tag2			(REG_EPON_BASE +0x90 )	
+#define e_new_tod_p2p_offset_sec_l32		(REG_EPON_BASE +0x94 )
+#define e_new_tod_p2p_tod_offset_nsec	(REG_EPON_BASE +0x98 )
+#define e_tod_p2p_tod_sec_l32	(REG_EPON_BASE +0x9c )
+#define e_tod_p2p_tod_nsec		(REG_EPON_BASE +0xa0 )
+#define e_tod_period			(REG_EPON_BASE +0xa4 )
+//#define 						(REG_EPON_BASE +0xa8 )
+#if 0
+#define REG_P2P_TOD_OFFSET_SEC_L32 				(REG_EPON_BASE +0x94 )
+#define REG_P2P_TOD_OFFSET_NSEC		(REG_EPON_BASE +0x98 )
+#define REG_P2P_TOD_SEC_L32			(REG_EPON_BASE +0x9C )
+//#define REG_P2P_TOD_SEC_H16			(REG_EPON_BASE +0xa0 )
+#define REG_P2P_TOD_NSEC				(REG_EPON_BASE +0xa0 )
+#endif
+#define e_txfetch_cfg				(REG_EPON_BASE +0xd0 )
+#define e_sync_time				(REG_EPON_BASE +0xd4 )
+#define e_tx_cal_cnst				(REG_EPON_BASE +0xd8 )
+#define e_laser_onoff_time		(REG_EPON_BASE +0xdc )
+#define e_grd_thrshld				(REG_EPON_BASE +0xe0 )
+#define e_mpcp_timeout_intvl		(REG_EPON_BASE +0xe4 )
+#define e_rpt_timeout_intvl		(REG_EPON_BASE +0xe8 )
+#define e_max_future_gnt_time	(REG_EPON_BASE +0xec )
+#define e_min_proc_time			(REG_EPON_BASE +0xf0 )
+#define e_trx_adjust_time1			(REG_EPON_BASE +0xf4 )
+#define e_trx_adjust_time2			(REG_EPON_BASE +0xf8 )
+#define e_dbg_prb_sel			(REG_EPON_BASE +0x100 )
+#define e_dbg_prb_h32			(REG_EPON_BASE +0x104 )
+#define e_dbg_prb_l32			(REG_EPON_BASE +0x108 )
+#define e_rxmbi_eth_cnt			(REG_EPON_BASE +0x10C )
+#define e_rxmpi_eth_cnt			(REG_EPON_BASE +0x110 )
+#define e_txmbi_eth_cnt			(REG_EPON_BASE +0x114 )
+#define e_txmpi_eth_cnt			(REG_EPON_BASE +0x118 )
+#define e_oam_stat			(REG_EPON_BASE +0x11C )
+#define e_mpcp_stat			(REG_EPON_BASE +0x120 )
+#define e_mpcp_rgst_stat			(REG_EPON_BASE +0x124 )
+#define e_gnt_pending_stat			(REG_EPON_BASE +0x128 )
+#define e_gnt_length_stat			(REG_EPON_BASE +0x12C )
+#define e_gnt_type_stat			(REG_EPON_BASE +0x130 )
+#define e_time_drft_stat			(REG_EPON_BASE +0x134 )
+#endif
+
+
+#endif /* _EPON_REG_H_ */
+
+
+
+

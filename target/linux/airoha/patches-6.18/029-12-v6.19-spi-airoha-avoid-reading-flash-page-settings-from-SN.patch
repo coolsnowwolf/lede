@@ -1,0 +1,206 @@
+From 902c0ea18a97b1a6eeee5799cb1fd9a79ef9208e Mon Sep 17 00:00:00 2001
+From: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Date: Sun, 12 Oct 2025 15:17:03 +0300
+Subject: [PATCH 12/14] spi: airoha: avoid reading flash page settings from
+ SNFI registers during driver startup
+
+The spinand driver do 3 type of dirmap requests:
+ * read/write whole flash page without oob
+   (offs = 0, len = page_size)
+ * read/write whole flash page including oob
+   (offs = 0, len = page_size + oob_size)
+ * read/write oob area only
+   (offs = page_size, len = oob_size)
+
+The trick is:
+ * read/write a single "sector"
+ * set a custom sector size equal to offs + len. It's a bit safer to
+   rounded up "sector size" value 64.
+ * set the transfer length equal to custom sector size
+
+And it works!
+
+Thus we can remove a dirty hack that reads flash page settings from
+SNFI registers during driver startup. Also airoha_snand_adjust_op_size()
+function becomes unnecessary.
+
+Signed-off-by: Mikhail Kshevetskiy <mikhail.kshevetskiy@iopsys.eu>
+Link: https://patch.msgid.link/20251012121707.2296160-13-mikhail.kshevetskiy@iopsys.eu
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ drivers/spi/spi-airoha-snfi.c | 115 ++--------------------------------
+ 1 file changed, 5 insertions(+), 110 deletions(-)
+
+--- a/drivers/spi/spi-airoha-snfi.c
++++ b/drivers/spi/spi-airoha-snfi.c
+@@ -223,13 +223,6 @@ struct airoha_snand_ctrl {
+ 	struct regmap *regmap_ctrl;
+ 	struct regmap *regmap_nfi;
+ 	struct clk *spi_clk;
+-
+-	struct {
+-		size_t page_size;
+-		size_t sec_size;
+-		u8 sec_num;
+-		u8 spare_size;
+-	} nfi_cfg;
+ };
+ 
+ static int airoha_snand_set_fifo_op(struct airoha_snand_ctrl *as_ctrl,
+@@ -490,55 +483,6 @@ static int airoha_snand_nfi_init(struct
+ 				  SPI_NFI_ALL_IRQ_EN, SPI_NFI_AHB_DONE_EN);
+ }
+ 
+-static int airoha_snand_nfi_config(struct airoha_snand_ctrl *as_ctrl)
+-{
+-	int err;
+-	u32 val;
+-
+-	err = regmap_write(as_ctrl->regmap_nfi, REG_SPI_NFI_CON,
+-			   SPI_NFI_FIFO_FLUSH | SPI_NFI_RST);
+-	if (err)
+-		return err;
+-
+-	/* auto FDM */
+-	err = regmap_clear_bits(as_ctrl->regmap_nfi, REG_SPI_NFI_CNFG,
+-				SPI_NFI_AUTO_FDM_EN);
+-	if (err)
+-		return err;
+-
+-	/* HW ECC */
+-	err = regmap_clear_bits(as_ctrl->regmap_nfi, REG_SPI_NFI_CNFG,
+-				SPI_NFI_HW_ECC_EN);
+-	if (err)
+-		return err;
+-
+-	/* DMA Burst */
+-	err = regmap_set_bits(as_ctrl->regmap_nfi, REG_SPI_NFI_CNFG,
+-			      SPI_NFI_DMA_BURST_EN);
+-	if (err)
+-		return err;
+-
+-	/* sec num */
+-	val = FIELD_PREP(SPI_NFI_SEC_NUM, 1);
+-	err = regmap_update_bits(as_ctrl->regmap_nfi, REG_SPI_NFI_CON,
+-				 SPI_NFI_SEC_NUM, val);
+-	if (err)
+-		return err;
+-
+-	/* enable cust sec size */
+-	err = regmap_set_bits(as_ctrl->regmap_nfi, REG_SPI_NFI_SECCUS_SIZE,
+-			      SPI_NFI_CUS_SEC_SIZE_EN);
+-	if (err)
+-		return err;
+-
+-	/* set cust sec size */
+-	val = FIELD_PREP(SPI_NFI_CUS_SEC_SIZE,
+-			 as_ctrl->nfi_cfg.sec_size * as_ctrl->nfi_cfg.sec_num);
+-	return regmap_update_bits(as_ctrl->regmap_nfi,
+-				  REG_SPI_NFI_SECCUS_SIZE,
+-				  SPI_NFI_CUS_SEC_SIZE, val);
+-}
+-
+ static bool airoha_snand_is_page_ops(const struct spi_mem_op *op)
+ {
+ 	if (op->addr.nbytes != 2)
+@@ -571,26 +515,6 @@ static bool airoha_snand_is_page_ops(con
+ 	}
+ }
+ 
+-static int airoha_snand_adjust_op_size(struct spi_mem *mem,
+-				       struct spi_mem_op *op)
+-{
+-	size_t max_len;
+-
+-	if (airoha_snand_is_page_ops(op)) {
+-		struct airoha_snand_ctrl *as_ctrl;
+-
+-		as_ctrl = spi_controller_get_devdata(mem->spi->controller);
+-		max_len = as_ctrl->nfi_cfg.sec_size;
+-		max_len += as_ctrl->nfi_cfg.spare_size;
+-		max_len *= as_ctrl->nfi_cfg.sec_num;
+-
+-		if (op->data.nbytes > max_len)
+-			op->data.nbytes = max_len;
+-	}
+-
+-	return 0;
+-}
+-
+ static bool airoha_snand_supports_op(struct spi_mem *mem,
+ 				     const struct spi_mem_op *op)
+ {
+@@ -641,7 +565,8 @@ static ssize_t airoha_snand_dirmap_read(
+ 
+ 	as_ctrl = spi_controller_get_devdata(spi->controller);
+ 
+-	bytes = as_ctrl->nfi_cfg.sec_num * as_ctrl->nfi_cfg.sec_size;
++	/* minimum oob size is 64 */
++	bytes = round_up(offs + len, 64);
+ 
+ 	/*
+ 	 * DUALIO and QUADIO opcodes are not supported by the spi controller,
+@@ -833,7 +758,8 @@ static ssize_t airoha_snand_dirmap_write
+ 
+ 	as_ctrl = spi_controller_get_devdata(spi->controller);
+ 
+-	bytes = as_ctrl->nfi_cfg.sec_num * as_ctrl->nfi_cfg.sec_size;
++	/* minimum oob size is 64 */
++	bytes = round_up(offs + len, 64);
+ 
+ 	opcode = desc->info.op_tmpl.cmd.opcode;
+ 	switch (opcode) {
+@@ -1076,7 +1002,6 @@ static int airoha_snand_exec_op(struct s
+ }
+ 
+ static const struct spi_controller_mem_ops airoha_snand_mem_ops = {
+-	.adjust_op_size = airoha_snand_adjust_op_size,
+ 	.supports_op = airoha_snand_supports_op,
+ 	.exec_op = airoha_snand_exec_op,
+ 	.dirmap_create = airoha_snand_dirmap_create,
+@@ -1106,36 +1031,6 @@ static int airoha_snand_setup(struct spi
+ 	return 0;
+ }
+ 
+-static int airoha_snand_nfi_setup(struct airoha_snand_ctrl *as_ctrl)
+-{
+-	u32 val, sec_size, sec_num;
+-	int err;
+-
+-	err = regmap_read(as_ctrl->regmap_nfi, REG_SPI_NFI_CON, &val);
+-	if (err)
+-		return err;
+-
+-	sec_num = FIELD_GET(SPI_NFI_SEC_NUM, val);
+-
+-	err = regmap_read(as_ctrl->regmap_nfi, REG_SPI_NFI_SECCUS_SIZE, &val);
+-	if (err)
+-		return err;
+-
+-	sec_size = FIELD_GET(SPI_NFI_CUS_SEC_SIZE, val);
+-
+-	/* init default value */
+-	as_ctrl->nfi_cfg.sec_size = sec_size;
+-	as_ctrl->nfi_cfg.sec_num = sec_num;
+-	as_ctrl->nfi_cfg.page_size = round_down(sec_size * sec_num, 1024);
+-	as_ctrl->nfi_cfg.spare_size = 16;
+-
+-	err = airoha_snand_nfi_init(as_ctrl);
+-	if (err)
+-		return err;
+-
+-	return airoha_snand_nfi_config(as_ctrl);
+-}
+-
+ static const struct regmap_config spi_ctrl_regmap_config = {
+ 	.name		= "ctrl",
+ 	.reg_bits	= 32,
+@@ -1227,7 +1122,7 @@ static int airoha_snand_probe(struct pla
+ 	ctrl->setup = airoha_snand_setup;
+ 	device_set_node(&ctrl->dev, dev_fwnode(dev));
+ 
+-	err = airoha_snand_nfi_setup(as_ctrl);
++	err = airoha_snand_nfi_init(as_ctrl);
+ 	if (err)
+ 		return err;
+ 
