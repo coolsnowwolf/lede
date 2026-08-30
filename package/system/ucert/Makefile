@@ -5,9 +5,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/ucert.git
-PKG_SOURCE_DATE:=2020-05-24
-PKG_SOURCE_VERSION:=00b921d80ac0dc47339305d803f865ff43c56d63
-PKG_MIRROR_HASH:=839fda1811a58a495ac7bbc41db75222dd5a15e4d72110ca6acc4cdad56908fe
+PKG_SOURCE_DATE:=2025-10-03
+PKG_SOURCE_VERSION:=57270b247c91f003db6e3ba1a71d6d1fa5710fef
+PKG_MIRROR_HASH:=a926fefa957f42c40caa9f8592f4c63a0a56af9094a9995eb0dfc5d82c9591cf
 
 CMAKE_INSTALL:=1
 PKG_CHECK_FORMAT_SECURITY:=1
@@ -31,23 +31,25 @@ HOST_BUILD_DEPENDS:=libubox/host libjson-c/host usign/host
 HOST_BUILD_PREFIX:=$(STAGING_DIR_HOST)
 PKG_BUILD_DEPENDS:=ucert/host
 
-define Package/ucert-full
-  SECTION:=base
-  CATEGORY:=Base system
-  DEPENDS:=+usign +libubox +libjson-c +libblobmsg-json
-  TITLE:=OpenWrt certificate generation and verification utility
-  PROVIDES:=ucert
-  VARIANT:=full
-endef
-
-define Package/ucert
+define Package/ucert/Default
   SECTION:=base
   CATEGORY:=Base system
   DEPENDS:=+usign +libubox
+endef
+
+define Package/ucert
+$(call Package/ucert/Default)
   TITLE:=OpenWrt certificate verification utility
-  PROVIDES:=ucert
-  CONFLICTS:=ucert-full
   VARIANT:=tiny
+  DEFAULT_VARIANT:=1
+endef
+
+define Package/ucert-full
+$(call Package/ucert/Default)
+  TITLE:=OpenWrt certificate generation and verification utility
+  DEPENDS+=+libjson-c +libblobmsg-json
+  VARIANT:=full
+  PROVIDES:=ucert
 endef
 
 ifeq ($(BUILD_VARIANT),full)
