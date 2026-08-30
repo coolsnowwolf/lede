@@ -1,0 +1,105 @@
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Wed, 1 Jan 2025 13:30:11 +0800
+Subject: [PATCH] pinctrl: mtmips: allow mux SDXC pins for mt76x8
+
+This is a hack to supprot two types of mt76x8 SDXC pinmaps:
+
+a) Use ethernet phy pins as SDXC IO.
+
+&pinctrl {
+	ephy-digital;
+
+	sdxc_iot_mode: sdxc_iot_mode {
+		esd {
+			groups = "esd";
+			function = "iot";
+		};
+
+		sdxc {
+			groups = "sdmode";
+			function = "sdxc";
+		};
+	};
+};
+
+b) Use I2S/I2C/GPIO0/UART1 pins as SDXC IO.
+
+&pinctrl {
+	ephy-analog;
+
+	sdxc_router_mode: sdxc_router_mode {
+		groups = "esd", "gpio", "i2c", "i2s", "sdmode", "uart1";
+		function = "gpio";
+	};
+};
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ drivers/pinctrl/mediatek/pinctrl-mt76x8.c | 24 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+--- a/drivers/pinctrl/mediatek/pinctrl-mt76x8.c
++++ b/drivers/pinctrl/mediatek/pinctrl-mt76x8.c
+@@ -1,10 +1,13 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ 
++#include <asm/mach-ralink/ralink_regs.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+ #include <linux/of.h>
+ #include "pinctrl-mtmips.h"
+ 
++#define SYSC_REG_AGPIO_CFG		0x3c
++
+ #define MT76X8_GPIO_MODE_MASK		0x3
+ 
+ #define MT76X8_GPIO_MODE_P4LED_KN	58
+@@ -26,6 +29,7 @@
+ #define MT76X8_GPIO_MODE_I2C		20
+ #define MT76X8_GPIO_MODE_REFCLK		18
+ #define MT76X8_GPIO_MODE_PERST		16
++#define MT76X8_GPIO_MODE_ESD		15
+ #define MT76X8_GPIO_MODE_WDT		14
+ #define MT76X8_GPIO_MODE_SPI		12
+ #define MT76X8_GPIO_MODE_SDMODE		10
+@@ -68,6 +72,12 @@ static struct mtmips_pmx_func refclk_grp
+ static struct mtmips_pmx_func perst_grp[] = { FUNC("perst", 0, 36, 1) };
+ static struct mtmips_pmx_func wdt_grp[] = { FUNC("wdt", 0, 38, 1) };
+ static struct mtmips_pmx_func spi_grp[] = { FUNC("spi", 0, 7, 4) };
++/*
++ * "esd" (Ethernet SDXC) group supports two mode:
++ * "gpio" - SDXC mux to I2S/I2C/GPIO0/UART1 pins with "gpio" mode
++ * "iot"  - SDXC mux to EPHY pins, eth p1-p4 pad must be set to "digital"
++ */
++static struct mtmips_pmx_func esd_grp[] = { FUNC("iot", 0, 47, 1) };
+ 
+ static struct mtmips_pmx_func sd_mode_grp[] = {
+ 	FUNC("sdxc jtag", 3, 22, 8),
+@@ -182,6 +192,7 @@ static struct mtmips_pmx_group mt76x8_pi
+ 	GRP("perst", perst_grp, 1, MT76X8_GPIO_MODE_PERST),
+ 	GRP("wdt", wdt_grp, 1, MT76X8_GPIO_MODE_WDT),
+ 	GRP("spi", spi_grp, 1, MT76X8_GPIO_MODE_SPI),
++	GRP("esd", esd_grp, 1, MT76X8_GPIO_MODE_ESD),
+ 	GRP_G("sdmode", sd_mode_grp, MT76X8_GPIO_MODE_MASK,
+ 				1, MT76X8_GPIO_MODE_SDMODE),
+ 	GRP_G("uart0", uart0_grp, MT76X8_GPIO_MODE_MASK,
+@@ -223,7 +234,18 @@ static struct mtmips_pmx_group mt76x8_pi
+ 
+ static int mt76x8_pinctrl_probe(struct platform_device *pdev)
+ {
+-	return mtmips_pinctrl_init(pdev, mt76x8_pinmux_data);
++	int ret;
++
++	ret = mtmips_pinctrl_init(pdev, mt76x8_pinmux_data);
++	if (ret)
++		return ret;
++
++	if (of_property_present(pdev->dev.of_node, "ephy-analog"))
++		rt_sysc_m32(0xf << 17, 0, SYSC_REG_AGPIO_CFG);
++	else if (of_property_present(pdev->dev.of_node, "ephy-digital"))
++		rt_sysc_m32(0xf << 17, 0xf << 17, SYSC_REG_AGPIO_CFG);
++
++	return ret;
+ }
+ 
+ static const struct of_device_id mt76x8_pinctrl_match[] = {

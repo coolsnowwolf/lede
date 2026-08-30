@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gleb Pesin <dormancygrace@gmail.com>
+Date: Wed, 29 Jul 2026 20:00:00 +0000
+Subject: [PATCH] net: dsa: add Ralink DMA metadata tagger
+
+The MT7620 frame engine can force the destination switch port through the
+TX DMA descriptor and reports the source switch port through the RX DMA
+descriptor.
+
+Add a DSA tagger which passes the destination port to the conduit driver as
+hardware-port metadata on TX. The conduit driver supplies the same metadata
+from the RX descriptor, so no in-band tag is needed in either direction.
+
+The conduit driver is responsible for translating METADATA_HW_PORT_MUX into
+the frame-engine TX descriptor's forced-port bitmap.
+
+Protocol value 32 is target-local. The ipq40xx, qualcommax and realtek
+patchsets use the same value for protocols built on mutually exclusive
+targets.
+
+Signed-off-by: Gleb Pesin <dormancygrace@gmail.com>
+---
+ include/net/dsa.h       |   2 ++
+ net/dsa/Kconfig         |  10 ++++++
+ net/dsa/Makefile        |   1 +
+ net/dsa/tag_ralink.c    |  94 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 107 insertions(+)
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -57,6 +57,7 @@ struct tc_action;
+ #define DSA_TAG_PROTO_BRCM_LEGACY_FCS_VALUE	29
+ #define DSA_TAG_PROTO_MXL862_VALUE		30
+ #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	31
++#define DSA_TAG_PROTO_RALINK_VALUE		32
+ 
+ enum dsa_tag_protocol {
+ 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
+@@ -91,6 +92,7 @@ enum dsa_tag_protocol {
+ 	DSA_TAG_PROTO_VSC73XX_8021Q	= DSA_TAG_PROTO_VSC73XX_8021Q_VALUE,
+ 	DSA_TAG_PROTO_MXL862		= DSA_TAG_PROTO_MXL862_VALUE,
+ 	DSA_TAG_PROTO_MXL862_8021Q	= DSA_TAG_PROTO_MXL862_8021Q_VALUE,
++	DSA_TAG_PROTO_RALINK		= DSA_TAG_PROTO_RALINK_VALUE,
+ };
+ 
+ struct dsa_switch;
+--- a/net/dsa/Kconfig
++++ b/net/dsa/Kconfig
+@@ -151,6 +151,16 @@ config NET_DSA_TAG_QCA
+ 	  Say Y or M if you want to enable support for tagging frames for
+ 	  the Qualcomm Atheros QCA8K switches.
+ 
++config NET_DSA_TAG_RALINK
++	tristate "Tag driver for Ralink embedded switches"
++	help
++	  Say Y or M if you want to enable support for Ralink SoCs whose
++	  frame engine selects the TX switch port through a DMA descriptor
++	  and reports the RX source port through a DMA descriptor.
++
++	  The Ethernet conduit driver must exchange DSA hardware-port
++	  metadata with the DMA descriptors in both directions.
++
+ config NET_DSA_TAG_RTL4_A
+ 	tristate "Tag driver for Realtek 4 byte protocol A tags"
+ 	help
+--- a/net/dsa/Makefile
++++ b/net/dsa/Makefile
+@@ -34,6 +34,7 @@ obj-$(CONFIG_NET_DSA_TAG_NONE) += tag_no
+ obj-$(CONFIG_NET_DSA_TAG_OCELOT) += tag_ocelot.o
+ obj-$(CONFIG_NET_DSA_TAG_OCELOT_8021Q) += tag_ocelot_8021q.o
+ obj-$(CONFIG_NET_DSA_TAG_QCA) += tag_qca.o
++obj-$(CONFIG_NET_DSA_TAG_RALINK) += tag_ralink.o
+ obj-$(CONFIG_NET_DSA_TAG_RTL4_A) += tag_rtl4_a.o
+ obj-$(CONFIG_NET_DSA_TAG_RTL8_4) += tag_rtl8_4.o
+ obj-$(CONFIG_NET_DSA_TAG_RZN1_A5PSW) += tag_rzn1_a5psw.o
+--- /dev/null
++++ b/net/dsa/tag_ralink.c
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/* Ralink DMA metadata DSA tag support */
++
++#include <net/dst_metadata.h>
++
++#include "tag.h"
++
++#define RALINK_NAME		"ralink"
++
++struct ralink_tagger_data {
++	unsigned int num_ports;
++	struct metadata_dst *meta[];
++};
++
++static struct sk_buff *ralink_tag_xmit(struct sk_buff *skb,
++				       struct net_device *dev)
++{
++	struct dsa_port *dp = dsa_user_to_port(dev);
++	struct ralink_tagger_data *data = dp->ds->tagger_data;
++
++	skb_dst_drop(skb);
++	skb_dst_set_noref(skb, &data->meta[dp->index]->dst);
++
++	return skb;
++}
++
++static struct sk_buff *ralink_tag_rcv(struct sk_buff *skb,
++				      struct net_device *dev)
++{
++	dev_err_ratelimited(&dev->dev,
++			    "RX frame arrived without hardware-port metadata\n");
++	return NULL;
++}
++
++static int ralink_tag_connect(struct dsa_switch *ds)
++{
++	struct ralink_tagger_data *data;
++	struct metadata_dst *md_dst;
++	int port;
++
++	data = kzalloc(struct_size(data, meta, ds->num_ports), GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	data->num_ports = ds->num_ports;
++	for (port = 0; port < ds->num_ports; port++) {
++		md_dst = metadata_dst_alloc(0, METADATA_HW_PORT_MUX,
++					    GFP_KERNEL);
++		if (!md_dst)
++			goto err_free;
++
++		md_dst->u.port_info.port_id = port;
++		data->meta[port] = md_dst;
++	}
++
++	ds->tagger_data = data;
++
++	return 0;
++
++err_free:
++	while (port--)
++		dst_release(&data->meta[port]->dst);
++	kfree(data);
++
++	return -ENOMEM;
++}
++
++static void ralink_tag_disconnect(struct dsa_switch *ds)
++{
++	struct ralink_tagger_data *data = ds->tagger_data;
++	int port;
++
++	for (port = 0; port < data->num_ports; port++)
++		dst_release(&data->meta[port]->dst);
++
++	kfree(data);
++	ds->tagger_data = NULL;
++}
++
++static const struct dsa_device_ops ralink_netdev_ops = {
++	.name		= RALINK_NAME,
++	.proto		= DSA_TAG_PROTO_RALINK,
++	.connect	= ralink_tag_connect,
++	.disconnect	= ralink_tag_disconnect,
++	.xmit		= ralink_tag_xmit,
++	.rcv		= ralink_tag_rcv,
++};
++
++MODULE_AUTHOR("Gleb Pesin <dormancygrace@gmail.com>");
++MODULE_DESCRIPTION("DSA tag driver for Ralink embedded switches");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_RALINK, RALINK_NAME);
++
++module_dsa_tag_driver(ralink_netdev_ops);

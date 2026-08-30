@@ -19,6 +19,8 @@
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
+#include <linux/of_platform.h>
+#include <linux/version.h>
 
 #include <ralink_regs.h>
 
@@ -255,11 +257,17 @@ static int mt7620_gsw_probe(struct platform_device *pdev)
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+static void mt7620_gsw_remove(struct platform_device *pdev)
+#else
 static int mt7620_gsw_remove(struct platform_device *pdev)
+#endif
 {
 	platform_set_drvdata(pdev, NULL);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
 	return 0;
+#endif
 }
 
 static struct platform_driver gsw_driver = {

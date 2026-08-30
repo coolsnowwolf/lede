@@ -1,0 +1,220 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] mtwifi: add Linux 6.18 build compatibility
+
+Pass the legacy compiler flags through modern Kbuild, use kernel-owned
+headers and drop obsolete address-limit state.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/mt_wifi_ap/Makefile
++++ b/mt_wifi_ap/Makefile
+@@ -1438,3 +1438,5 @@
+ ifeq ($(CONFIG_WHNAT_SUPPORT),y)
+ obj-m+=$(SRC_EMBEDDED_DIR)/plug_in/
+ endif
++
++ccflags-y += $(EXTRA_CFLAGS)
+--- a/mt_wifi/include/os/rt_linux.h
++++ b/mt_wifi/include/os/rt_linux.h
+@@ -71,7 +71,7 @@
+ #include <linux/unistd.h>
+ #include <asm/uaccess.h>
+ #include <asm/types.h>
+-#include <asm/unaligned.h>	/* for get_unaligned() */
++#include <linux/unaligned.h>	/* for get_unaligned() */
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 27)
+ #include <linux/pid.h>
+@@ -364,7 +364,6 @@
+ typedef struct _OS_FS_INFO_ {
+ 	int				fsuid;
+ 	int				fsgid;
+-	mm_segment_t	fs;
+ } OS_FS_INFO;
+ 
+ typedef struct _RTMP_OS_FD {
+--- a/mt_wifi/os/linux/rt_linux.c
++++ b/mt_wifi/os/linux/rt_linux.c
+@@ -1918,7 +1918,6 @@
+ {
+ 	struct file *file_w;
+ 	RTMP_STRING *fileName = "MacDump.txt";
+-	mm_segment_t orig_fs;
+ 	RTMP_STRING *msg;
+ 	UINT32 macAddr = 0, macValue = 0;
+ 
+@@ -1987,7 +1986,6 @@
+ {
+ 	struct file *file_w;
+ 	RTMP_STRING *fileName = "EEPROMDump.txt";
+-	mm_segment_t orig_fs;
+ 	RTMP_STRING *msg;
+ 	USHORT eepAddr = 0;
+ 	USHORT eepValue;
+@@ -2057,8 +2055,6 @@
+ {
+ 	struct file *file_w;
+ 	RTMP_STRING *fileName = "RFDump.txt";
+-	mm_segment_t orig_fs;
+-
+ #if 0
+ 	orig_fs = get_fs();
+ 	set_fs(KERNEL_DS);
+--- a/mt_wifi/embedded/ap/ap_mlme.c
++++ b/mt_wifi/embedded/ap/ap_mlme.c
+@@ -26,7 +26,7 @@
+  */
+ 
+ #include "rt_config.h"
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ 
+ #define MCAST_WCID_TO_REMOVE 0 /* Pat: TODO */
+ 
+--- a/mt_wifi/embedded/common/mlme.c
++++ b/mt_wifi/embedded/common/mlme.c
+@@ -26,7 +26,7 @@
+ */
+ 
+ #include "rt_config.h"
+-#include <stdarg.h>
++#include <linux/stdarg.h>
+ #ifdef TXRX_STAT_SUPPORT
+ #include "hdev/hdev_basic.h"
+ #endif
+--- a/mt_wifi/embedded/common/rt_os_util.c
++++ b/mt_wifi/embedded/common/rt_os_util.c
+@@ -159,7 +159,9 @@
+ 
+ UINT32 MtRandom32(VOID)
+ {
+-#if (LINUX_VERSION_CODE  >= KERNEL_VERSION(3, 8, 0))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
++	return get_random_u32();
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0))
+ 	return prandom_u32();
+ #else /* LINUX_VERSION_CODE >= KERNEL_VERSION(3,8,0) */
+ 	return random32();
+--- a/mt_wifi/os/linux/pci_main_dev.c
++++ b/mt_wifi/os/linux/pci_main_dev.c
+@@ -251,27 +251,16 @@
+ 
+ #if defined(PLATFORM_M_STB)
+ 	if (IS_ENABLED(CONFIG_ARM64) && (!IS_ENABLED(CONFIG_ZONE_DMA))) {
+-		if ((rv = pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) != 0) {
++		if ((rv = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))) != 0) {
+ 			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+ 					 ("set DMA mask failed!errno=%d\n", rv));
+ 			return rv;
+ 		}
+ 
+-		if ((rv = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64))) != 0) {
+-			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+-					 ("set DMA consistent mask failed!errno=%d\n", rv));
+-			return rv;
+-		}
+ 	}
+ 	else
+ #endif
+-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+-		/*
+-		 * pci_set_consistent_dma_mask() will always be able to set the same
+-		 * or a smaller mask as pci_set_dma_mask()
+-		 */
+-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+-	} else {
++	if (dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32))) {
+ 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+ 				 ("set DMA mask failed!errno=%d\n", rv));
+ 		goto err_out;
+--- a/mt_wifi/os/linux/rt_linux.c
++++ b/mt_wifi/os/linux/rt_linux.c
+@@ -251,8 +251,13 @@
+ 	IN OS_NDIS_MINIPORT_TIMER * pTimer,
+ 	OUT BOOLEAN *pCancelled)
+ {
+-	if (timer_pending(pTimer))
++	if (timer_pending(pTimer)) {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
++		*pCancelled = timer_delete_sync(pTimer);
++#else
+ 		*pCancelled = del_timer_sync(pTimer);
++#endif
++	}
+ 	else
+ 		*pCancelled = TRUE;
+ }
+--- a/mt_wifi/os/linux/rt_rbus_pci_util.c
++++ b/mt_wifi/os/linux/rt_rbus_pci_util.c
+@@ -144,7 +144,7 @@
+ 	}
+ 
+ 	if (pkt) {
+-		*pa = dma_map_single(pdev, *va, size, PCI_DMA_FROMDEVICE);
++		*pa = dma_map_single(pdev, *va, size, DMA_FROM_DEVICE);
+ 	} else {
+ 		*va = (PVOID)NULL;
+ 		*pa = (NDIS_PHYSICAL_ADDRESS)0;
+@@ -163,10 +163,10 @@
+ 	struct device *pdev = (struct device *)pDev;
+ 
+ 	if (direction == RTMP_PCI_DMA_TODEVICE)
+-		direction = PCI_DMA_TODEVICE;
++		direction = DMA_TO_DEVICE;
+ 
+ 	if (direction == RTMP_PCI_DMA_FROMDEVICE)
+-		direction = PCI_DMA_FROMDEVICE;
++		direction = DMA_FROM_DEVICE;
+ 
+ 	/*
+ 	 *	------ Porting Information ------
+@@ -196,10 +196,10 @@
+ 	struct device *pdev = (struct device *)pDev;
+ 
+ 	if (direction == RTMP_PCI_DMA_TODEVICE)
+-		direction = PCI_DMA_TODEVICE;
++		direction = DMA_TO_DEVICE;
+ 
+ 	if (direction == RTMP_PCI_DMA_FROMDEVICE)
+-		direction = PCI_DMA_FROMDEVICE;
++		direction = DMA_FROM_DEVICE;
+ 
+ 	if (size > 0)
+ 		dma_unmap_single(pdev, DmaAddr, size, direction);
+--- a/mt_wifi/embedded/plug_in/whnat/wed.c
++++ b/mt_wifi/embedded/plug_in/whnat/wed.c
+@@ -227,7 +227,7 @@
+ 
+ 	if (pkt) {
+ 		*vaddr = (void *) pkt->data;
+-		*paddr = dma_map_single(&pdev->dev, *vaddr, len, PCI_DMA_TODEVICE);
++		*paddr = dma_map_single(&pdev->dev, *vaddr, len, DMA_TO_DEVICE);
+ 	} else {
+ 		*vaddr = (void *) NULL;
+ 		*paddr = (dma_addr_t) 0;
+@@ -249,7 +249,7 @@
+ 	if (pkt == NULL)
+ 		return -1;
+ 
+-	dma_unmap_single(&pdev->dev, pa, len, PCI_DMA_FROMDEVICE);
++	dma_unmap_single(&pdev->dev, pa, len, DMA_FROM_DEVICE);
+ 	dev_kfree_skb_any(pkt);
+ 	return 0;
+ }
+--- a/mt_wifi/os/linux/rbus_prop_dev.c
++++ b/mt_wifi/os/linux/rbus_prop_dev.c
+@@ -83,13 +83,7 @@
+ 
+ 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> rt2880_probe\n"));
+ 
+-	if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
+-		/*
+-		 * pci_set_consistent_dma_mask() will always be able to set the same
+-		 * or a smaller mask as pci_set_dma_mask()
+-		 */
+-		pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(32));
+-	} else {
++	if (dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32))) {
+ 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+ 				 ("set DMA mask failed\n"));
+ 		goto err_out;

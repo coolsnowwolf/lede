@@ -241,9 +241,11 @@ static int aw9523_pcfg_param_to_reg(enum pin_config_param pcp, int pin, u8 *r)
 	case PIN_CONFIG_OUTPUT_ENABLE:
 		reg = AW9523_REG_CONF_STATE(pin);
 		break;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 	case PIN_CONFIG_OUTPUT:
 		reg = AW9523_REG_OUT_STATE(pin);
 		break;
+#endif
 	default:
 		return -ENOTSUPP;
 	}
@@ -275,7 +277,9 @@ static int aw9523_pconf_get(struct pinctrl_dev *pctldev, unsigned int pin,
 	switch (param) {
 	case PIN_CONFIG_BIAS_PULL_UP:
 	case PIN_CONFIG_INPUT_ENABLE:
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 	case PIN_CONFIG_OUTPUT:
+#endif
 		val &= BIT(regbit);
 		break;
 	case PIN_CONFIG_BIAS_PULL_DOWN:
@@ -327,6 +331,7 @@ static int aw9523_pconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 			goto end;
 
 		switch (param) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 		case PIN_CONFIG_OUTPUT:
 			/* First, enable pin output */
 			rc = regmap_update_bits(awi->regmap,
@@ -337,6 +342,7 @@ static int aw9523_pconf_set(struct pinctrl_dev *pctldev, unsigned int pin,
 
 			/* Then, fall through to config output level */
 			fallthrough;
+#endif
 		case PIN_CONFIG_OUTPUT_ENABLE:
 			arg = !arg;
 			fallthrough;
@@ -659,7 +665,11 @@ out:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static int aw9523_gpio_set_multiple(struct gpio_chip *chip,
+#else
 static void aw9523_gpio_set_multiple(struct gpio_chip *chip,
+#endif
 				    unsigned long *mask,
 				    unsigned long *bits)
 {
@@ -690,18 +700,29 @@ static void aw9523_gpio_set_multiple(struct gpio_chip *chip,
 	}
 out:
 	mutex_unlock(&awi->i2c_lock);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	return ret;
+#endif
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static int aw9523_gpio_set(struct gpio_chip *chip,
+#else
 static void aw9523_gpio_set(struct gpio_chip *chip,
+#endif
 			    unsigned int offset, int value)
 {
 	struct aw9523 *awi = gpiochip_get_data(chip);
 	u8 regbit = offset % AW9523_PINS_PER_PORT;
+	int ret;
 
 	mutex_lock(&awi->i2c_lock);
-	regmap_update_bits(awi->regmap, AW9523_REG_OUT_STATE(offset),
-			   BIT(regbit), value ? BIT(regbit) : 0);
+	ret = regmap_update_bits(awi->regmap, AW9523_REG_OUT_STATE(offset),
+				 BIT(regbit), value ? BIT(regbit) : 0);
 	mutex_unlock(&awi->i2c_lock);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	return ret;
+#endif
 }
 
 
@@ -820,7 +841,11 @@ static int aw9523_init_gpiochip(struct aw9523 *awi, unsigned int npins)
 	gpiochip->set_multiple = aw9523_gpio_set_multiple;
 	gpiochip->set_config = gpiochip_generic_config;
 	gpiochip->parent = dev;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	gpiochip->fwnode = dev_fwnode(dev);
+#else
 	gpiochip->of_node = dev->of_node;
+#endif
 	gpiochip->owner = THIS_MODULE;
 	gpiochip->can_sleep = false;
 
@@ -994,8 +1019,12 @@ static int aw9523_hw_init(struct aw9523 *awi)
 	return regmap_reinit_cache(awi->regmap, &aw9523_regmap);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static int aw9523_probe(struct i2c_client *client)
+#else
 static int aw9523_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
+#endif
 {
 	struct device *dev = &client->dev;
 	struct pinctrl_desc *pdesc;
@@ -1079,13 +1108,22 @@ err_disable_vregs:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static void aw9523_remove(struct i2c_client *client)
+#else
 static int aw9523_remove(struct i2c_client *client)
+#endif
 {
 	struct aw9523 *awi = i2c_get_clientdata(client);
 	int ret;
 
-	if (!awi)
+	if (!awi) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+		return;
+#else
 		return 0;
+#endif
+	}
 
 	/*
 	 * If the chip VIO is connected to a regulator that we can turn
@@ -1099,12 +1137,19 @@ static int aw9523_remove(struct i2c_client *client)
 		mutex_lock(&awi->i2c_lock);
 		ret = aw9523_hw_init(awi);
 		mutex_unlock(&awi->i2c_lock);
-		if (ret)
+		if (ret) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+			dev_warn(&client->dev, "failed to reset device: %d\n", ret);
+#else
 			return ret;
+#endif
+		}
 	}
 
 	mutex_destroy(&awi->i2c_lock);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 	return 0;
+#endif
 }
 
 static const struct i2c_device_id aw9523_i2c_id_table[] = {
@@ -1115,6 +1160,7 @@ MODULE_DEVICE_TABLE(i2c, aw9523_i2c_id_table);
 
 static const struct of_device_id of_aw9523_i2c_match[] = {
 	{ .compatible = "awinic,aw9523-pinctrl", },
+	{ }
 };
 MODULE_DEVICE_TABLE(of, of_aw9523_i2c_match);
 

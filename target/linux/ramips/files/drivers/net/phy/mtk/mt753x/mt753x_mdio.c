@@ -9,7 +9,9 @@
 #include <linux/version.h>
 #include <linux/init.h>
 #include <linux/device.h>
+#include <linux/gpio.h>
 #include <linux/delay.h>
+#include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/hrtimer.h>
 #include <linux/mii.h>
@@ -515,7 +517,12 @@ static int mt753x_hw_reset(struct gsw_mt753x *gsw)
 		return ret;
 	}
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	ret = devm_gpio_request_one(gsw->dev, gsw->reset_pin,
+				    GPIOF_OUT_INIT_LOW, "mt753x-reset");
+#else
 	ret = devm_gpio_request(gsw->dev, gsw->reset_pin, "mt753x-reset");
+#endif
 	if (ret) {
 		dev_info(gsw->dev, "Failed to request gpio %d\n",
 			 gsw->reset_pin);
@@ -806,15 +813,22 @@ fail:
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static void mt753x_remove(struct platform_device *pdev)
+#else
 static int mt753x_remove(struct platform_device *pdev)
+#endif
 {
 	struct gsw_mt753x *gsw = platform_get_drvdata(pdev);
 
 	if (gsw->irq >= 0)
 		cancel_work_sync(&gsw->irq_worker);
 
-	if (gsw->reset_pin >= 0)
+	if (gsw->reset_pin >= 0) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 		devm_gpio_free(&pdev->dev, gsw->reset_pin);
+#endif
+	}
 
 #ifdef CONFIG_SWCONFIG
 	mt753x_swconfig_destroy(gsw);
@@ -828,7 +842,9 @@ static int mt753x_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
 	return 0;
+#endif
 }
 
 static const struct of_device_id mt753x_ids[] = {

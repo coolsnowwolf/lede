@@ -1,0 +1,104 @@
+From de332bdaf33c09be03c05c0681beae1276ccbcc2 Mon Sep 17 00:00:00 2001
+From: Rany Hany <rany_hany@riseup.net>
+Date: Tue, 31 Mar 2026 20:29:53 +0300
+Subject: [PATCH 3/3] MIPS: SMP: Properly stop secondary CPUs for restart
+
+MT7621 deadlocks in the platform restart callback unless the other
+CPUs are stopped by taking other cores out of coherence and clocking
+them off, while halting sibling TCs on the restarting core.
+
+This fixes restart deadlocks on MT7621, although the exact reason
+why this is required is still unclear.
+
+Signed-off-by: Rany Hany <rany_hany@riseup.net>
+---
+ arch/mips/kernel/smp.c | 54 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
+
+--- a/arch/mips/kernel/smp.c
++++ b/arch/mips/kernel/smp.c
+@@ -33,6 +33,7 @@
+ #include <asm/processor.h>
+ #include <asm/idle.h>
+ #include <asm/r4k-timer.h>
++#include <asm/r4kcache.h>
+ #include <asm/mips-cps.h>
+ #include <asm/mmu_context.h>
+ #include <asm/time.h>
+@@ -414,6 +415,8 @@ asmlinkage void start_secondary(void)
+ 	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
+ }
+ 
++static atomic_t core_stop_count[NR_CPUS];
++
+ static void stop_this_cpu(void *dummy)
+ {
+ 	/*
+@@ -424,13 +427,66 @@ static void stop_this_cpu(void *dummy)
+ 	calculate_cpu_foreign_map();
+ 	local_irq_disable();
+ 	rcutree_report_cpu_dead();
+-	while (1);
++
++	if (mips_cm_present() && r4k_blast_dcache) {
++		unsigned int core = cpu_core(&current_cpu_data);
++
++		if (atomic_dec_and_test(&core_stop_count[core])) {
++			/* Flush data cache */
++			r4k_blast_dcache();
++			__sync();
++
++			if (mips_cm_revision() < CM_REV_CM3) {
++				/* Restrict coherence to own core first */
++				write_gcr_cl_coherence(1 << core);
++				read_gcr_cl_coherence();
++				__sync();
++			}
++
++			/* Disable coherence */
++			write_gcr_cl_coherence(0);
++			read_gcr_cl_coherence();
++
++			/* Gate the core clock */
++			if (mips_cpc_present())
++				write_cpc_cl_cmd(CPC_Cx_CMD_CLOCKOFF);
++		}
++	}
++
++	if (cpu_has_mipsmt) {
++		/* The last active VPE on the core will gate the core clock
++		 * and all other remaining VPEs will halt this TC instead.
++		 *
++		 * Note that on systems without CPC, this will be the
++		 * only way to shutdown the CPU.
++		 */
++		write_c0_tchalt(TCHALT_H);
++		instruction_hazard();
++	}
++
++	while (1)
++		cpu_relax();
+ }
+ 
+ void smp_send_stop(void)
+ {
++	static unsigned long stop_in_progress;
+ 	unsigned long timeout;
+ 
++	if (test_and_set_bit(0, &stop_in_progress))
++		return;
++
++	if (mips_cm_present()) {
++		unsigned int cpu;
++
++		for_each_online_cpu(cpu) {
++			unsigned int core;
++
++			core = cpu_core(&cpu_data[cpu]);
++			atomic_inc(&core_stop_count[core]);
++		}
++	}
++
+ 	smp_call_function(stop_this_cpu, NULL, 0);
+ 
+ 	/* Wait up to 1s for other CPUs to stop */

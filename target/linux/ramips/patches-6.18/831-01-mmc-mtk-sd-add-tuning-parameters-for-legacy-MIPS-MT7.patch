@@ -1,0 +1,81 @@
+From: Shiji Yang <yangshiji66@outlook.com>
+Date: Sat, 24 May 2025 15:53:26 +0800
+Subject: [PATCH 1/3] mmc: mtk-sd: add tuning parameters for legacy MIPS MT762x
+ SoCs
+
+The MIPS MT762x SoCs require some specific tuning parameters at
+different clock frequencies. These legacy SoCs only support max
+48~50 MHz High-Speed SD mode. Therefore, the standard tuning step
+is not available. We have to hard code these tuning parameters
+to make them work properly.
+
+Signed-off-by: Shiji Yang <yangshiji66@outlook.com>
+---
+ drivers/mmc/host/mtk-sd.c | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+--- a/drivers/mmc/host/mtk-sd.c
++++ b/drivers/mmc/host/mtk-sd.c
+@@ -77,8 +77,13 @@
+ #define MSDC_PATCH_BIT   0xb0
+ #define MSDC_PATCH_BIT1  0xb4
+ #define MSDC_PATCH_BIT2  0xb8
++#define MSDC_PAD_CTRL0   0xe0
++#define MSDC_PAD_CTRL1   0xe4
++#define MSDC_PAD_CTRL2   0xe8
+ #define MSDC_PAD_TUNE    0xec
+ #define MSDC_PAD_TUNE0   0xf0
++#define MSDC_DAT_RDDLY0  0xf0
++#define MSDC_DAT_RDDLY1  0xf4
+ #define PAD_DS_TUNE      0x188
+ #define PAD_CMD_TUNE     0x18c
+ #define EMMC51_CFG0	 0x204
+@@ -448,6 +453,7 @@ struct mtk_mmc_compatible {
+ 	bool use_internal_cd;
+ 	bool support_new_tx;
+ 	bool support_new_rx;
++	bool mips_mt762x;
+ };
+ 
+ struct msdc_tune_para {
+@@ -589,6 +595,7 @@ static const struct mtk_mmc_compatible m
+ 	.stop_clk_fix = false,
+ 	.enhance_rx = false,
+ 	.use_internal_cd = true,
++	.mips_mt762x = true,
+ };
+ 
+ static const struct mtk_mmc_compatible mt7622_compat = {
+@@ -1083,7 +1090,12 @@ static void msdc_set_mclk(struct msdc_ho
+ 	 * mmc_select_hs400() will drop to 50Mhz and High speed mode,
+ 	 * tune result of hs200/200Mhz is not suitable for 50Mhz
+ 	 */
+-	if (mmc->actual_clock <= 52000000) {
++	if (host->dev_comp->mips_mt762x &&
++	    mmc->actual_clock > 25000000) {
++		sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_RSPL);
++		sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_DSPL);
++		sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL);
++	} else if (mmc->actual_clock <= 52000000) {
+ 		writel(host->def_tune_para.iocon, host->base + MSDC_IOCON);
+ 		if (host->top_base) {
+ 			writel(host->def_tune_para.emmc_top_control,
+@@ -2032,6 +2044,18 @@ static void msdc_init_hw(struct msdc_hos
+ 				     MSDC_PAD_TUNE_RXDLYSEL);
+ 	}
+ 
++	if (host->dev_comp->mips_mt762x) {
++		/* Set pins drive strength */
++		writel(0x000d0044, host->base + MSDC_PAD_CTRL0);
++		writel(0x000e0044, host->base + MSDC_PAD_CTRL1);
++		writel(0x000e0044, host->base + MSDC_PAD_CTRL2);
++
++		/* Set tuning parameters */
++		writel(0x84101010, host->base + tune_reg);
++		writel(0x10101010, host->base + MSDC_DAT_RDDLY0);
++		writel(0x10101010, host->base + MSDC_DAT_RDDLY1);
++	}
++
+ 	if (mmc->caps2 & MMC_CAP2_NO_SDIO) {
+ 		sdr_clr_bits(host->base + SDC_CFG, SDC_CFG_SDIO);
+ 		sdr_clr_bits(host->base + MSDC_INTEN, MSDC_INTEN_SDIOIRQ);

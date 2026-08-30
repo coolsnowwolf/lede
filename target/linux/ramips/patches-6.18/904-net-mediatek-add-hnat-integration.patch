@@ -1,0 +1,101 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] net: mediatek: add HNAT integration
+
+Connect the MT762x HNAT driver to the mainline MediaTek Ethernet driver while
+leaving the mainline PPE path in place when HNAT is disabled.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/drivers/net/ethernet/mediatek/Kconfig
++++ b/drivers/net/ethernet/mediatek/Kconfig
+@@ -33,4 +33,11 @@
+ 	  This driver supports the ethernet MAC IP first used on
+ 	  MediaTek MT85** SoCs.
+ 
++config NET_MEDIATEK_HNAT
++	tristate "MediaTek MT762x hardware NAT support"
++	depends on NET_MEDIATEK_SOC && NF_CONNTRACK && IP_NF_NAT
++	help
++	  This driver supports hardware network address translation on
++	  MediaTek MT7621 and related SoCs.
++
+ endif #NET_VENDOR_MEDIATEK
+--- a/drivers/net/ethernet/mediatek/Makefile
++++ b/drivers/net/ethernet/mediatek/Makefile
+@@ -11,3 +11,4 @@
+ endif
+ obj-$(CONFIG_NET_MEDIATEK_SOC_WED) += mtk_wed_ops.o
+ obj-$(CONFIG_NET_MEDIATEK_STAR_EMAC) += mtk_star_emac.o
++obj-$(CONFIG_NET_MEDIATEK_HNAT) += mtk_hnat/
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -38,6 +38,10 @@
+ #include "mtk_eth_soc.h"
+ #include "mtk_wed.h"
+ 
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++#include "mtk_hnat/nf_hnat_mtk.h"
++#endif
++
+ static int mtk_msg_level = -1;
+ module_param_named(msg_level, mtk_msg_level, int, 0);
+ MODULE_PARM_DESC(msg_level, "Message level (-1=defaults,0=none,...,16=all)");
+@@ -2583,8 +2587,19 @@
+ 				skb_dst_set_noref(skb, &eth->dsa_meta[port]->dst);
+ 		}
+ 
++#if IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
++		if (mtk_is_netsys_v3_or_greater(eth))
++			*(u32 *)skb->head = trxd.rxd5;
++		else
++			*(u32 *)skb->head = trxd.rxd4;
++
++		skb_hnat_alg(skb) = 0;
++		skb_hnat_filled(skb) = 0;
++		skb_hnat_magic_tag(skb) = HNAT_MAGIC_TAG;
++#else
+ 		if (reason == MTK_PPE_CPU_REASON_HIT_UNBIND_RATE_REACHED)
+ 			mtk_ppe_check_skb(eth->ppe[ppe_idx], skb, hash);
++#endif
+ 
+ 		skb_record_rx_queue(skb, 0);
+ 		napi_gro_receive(napi, skb);
+@@ -3884,8 +3899,10 @@
+ 			return err;
+ 		}
+ 
++#if !IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
+ 		for (i = 0; i < ARRAY_SIZE(eth->ppe); i++)
+ 			mtk_ppe_start(eth->ppe[i]);
++#endif
+ 
+ 		for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 			if (!eth->netdev[i])
+@@ -4013,8 +4030,10 @@
+ 
+ 	mtk_dma_free(eth);
+ 
++#if !IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
+ 	for (i = 0; i < ARRAY_SIZE(eth->ppe); i++)
+ 		mtk_ppe_stop(eth->ppe[i]);
++#endif
+ 
+ 	return 0;
+ }
+@@ -5725,6 +5744,7 @@
+ 			goto err_free_dev;
+ 	}
+ 
++#if !IS_ENABLED(CONFIG_NET_MEDIATEK_HNAT)
+ 	if (eth->soc->offload_version) {
+ 		u8 ppe_num = eth->soc->ppe_num;
+ 
+@@ -5745,6 +5765,7 @@
+ 				goto err_deinit_ppe;
+ 		}
+ 	}
++#endif
+ 
+ 	for (i = 0; i < MTK_MAX_DEVS; i++) {
+ 		if (!eth->netdev[i])
+

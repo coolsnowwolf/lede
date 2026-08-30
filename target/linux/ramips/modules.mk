@@ -142,7 +142,7 @@ define KernelPackage/mtk-hnat
 	CONFIG_NET_MEDIATEK_HNAT \
 	CONFIG_NETFILTER_FAMILY_BRIDGE=y
   FILES:= \
-	$(LINUX_DIR)/drivers/net/ethernet/mtk/mtk_hnat/mtkhnat.ko
+	$(LINUX_DIR)/drivers/net/ethernet/$(if $(filter 6.18,$(KERNEL_PATCHVER)),mediatek,mtk)/mtk_hnat/mtkhnat.ko
   AUTOLOAD:=$(call AutoLoad,55,mtkhnat)
 endef
 

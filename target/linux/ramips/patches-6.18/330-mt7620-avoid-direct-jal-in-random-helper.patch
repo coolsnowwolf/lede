@@ -1,0 +1,72 @@
+From: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Date: Sun, 26 Oct 2025 10:36:02 +0100
+Subject: [PATCH] mt7620: avoid direct jal imm26 in random helper
+
+This patch forces an indirect call (via a function pointer) on the mt7620
+platform when calling the small random helpers used by the constant-folding
+fast path of get_random_u32_below(). That avoids embedding a 26-bit immediate
+jump target in a direct `jal` instruction, which on affected platforms can
+lead to sporadic incorrect jump targets, intermittent oopses/crashes/hangs,
+corrupted backtraces, or "half-written" instructions under some circumstances.
+
+The change is targetted and conservative: it only alters code generation on
+CONFIG_NET_RALINK_MT7620 builds and does not change the algorithmic behaviour
+of get_random_u32_below().
+
+Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+---
+ a/include/linux/random.h | 36 ++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 32 insertions(+), 4 deletions(-)
+
+--- a/include/linux/random.h
++++ b/include/linux/random.h
+@@ -73,17 +73,45 @@ static inline u32 get_random_u32_below(u
+ 	BUILD_BUG_ON_MSG(!ceil, "get_random_u32_below() must take ceil > 0");
+ 	if (ceil <= 1)
+ 		return 0;
+-	for (;;) {
+-		if (ceil <= 1U << 8) {
++	if (ceil <= 1U << 8) {
++#ifdef CONFIG_NET_RALINK_MT7620
++		typedef u8 (*getrnd_t)(void);
++		volatile getrnd_t rnd_fn = (getrnd_t)get_random_u8;
++#endif
++		for (;;) {
++#ifdef CONFIG_NET_RALINK_MT7620
++			u32 mult = ceil * rnd_fn();
++#else
+ 			u32 mult = ceil * get_random_u8();
++#endif
+ 			if (likely(is_power_of_2(ceil) || (u8)mult >= (1U << 8) % ceil))
+ 				return mult >> 8;
+-		} else if (ceil <= 1U << 16) {
++		}
++	} else if (ceil <= 1U << 16) {
++#ifdef CONFIG_NET_RALINK_MT7620
++		typedef u16 (*getrnd_t)(void);
++		volatile getrnd_t rnd_fn = (getrnd_t)get_random_u16;
++#endif
++		for (;;) {
++#ifdef CONFIG_NET_RALINK_MT7620
++			u32 mult = ceil * rnd_fn();
++#else
+ 			u32 mult = ceil * get_random_u16();
++#endif
+ 			if (likely(is_power_of_2(ceil) || (u16)mult >= (1U << 16) % ceil))
+ 				return mult >> 16;
+-		} else {
++		}
++	} else {
++#ifdef CONFIG_NET_RALINK_MT7620
++		typedef u32 (*getrnd_t)(void);
++		volatile getrnd_t rnd_fn = (getrnd_t)get_random_u32;
++#endif
++		for (;;) {
++#ifdef CONFIG_NET_RALINK_MT7620
++			u64 mult = (u64)ceil * rnd_fn();
++#else
+ 			u64 mult = (u64)ceil * get_random_u32();
++#endif
+ 			if (likely(is_power_of_2(ceil) || (u32)mult >= -ceil % ceil))
+ 				return mult >> 32;
+ 		}

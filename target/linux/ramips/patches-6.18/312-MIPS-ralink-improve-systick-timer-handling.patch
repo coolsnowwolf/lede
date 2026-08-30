@@ -1,0 +1,174 @@
+From: Gleb Pesin <dormancygrace@gmail.com>
+Date: Sat, 15 Aug 2026 19:30:00 +0300
+Subject: [PATCH] MIPS: ralink: improve systick timer handling
+
+Keep the system counter running when the clockevent is shut down, program
+the next event with wrap-safe arithmetic, and register the clocksource and
+clockevent with the modern helpers.
+
+Do not implement MT7620 CPU autosleep here. Its untracked CPU frequency
+changes break delay calibration and timekeeping.
+
+Clear SLEEP_EN during early MT7620 initialization so the result does not
+depend on reset state or on what a bootloader left behind.
+
+This is based on the original MT7620 CPU frequency scaling patch by John
+Crispin and the later systick timer improvements by Michael Lee.
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+Signed-off-by: Michael Lee <igvtee@gmail.com>
+Signed-off-by: Gleb Pesin <dormancygrace@gmail.com>
+---
+--- a/drivers/clocksource/timer-ralink.c
++++ b/drivers/clocksource/timer-ralink.c
+@@ -30,24 +30,38 @@ struct systick_device {
+ 	void __iomem *membase;
+ 	struct clock_event_device dev;
+ 	int irq_requested;
+-	int freq_scale;
+ };
+ 
+ static int systick_set_oneshot(struct clock_event_device *evt);
+ static int systick_shutdown(struct clock_event_device *evt);
+ 
++static inline unsigned int read_count(struct systick_device *sdev)
++{
++	return ioread32(sdev->membase + SYSTICK_COUNT);
++}
++
++static inline unsigned int read_compare(struct systick_device *sdev)
++{
++	return ioread32(sdev->membase + SYSTICK_COMPARE);
++}
++
++static inline void write_compare(struct systick_device *sdev, unsigned int val)
++{
++	iowrite32(val, sdev->membase + SYSTICK_COMPARE);
++}
++
+ static int systick_next_event(unsigned long delta,
+ 			      struct clock_event_device *evt)
+ {
+ 	struct systick_device *sdev;
+-	u32 count;
++	int res;
+ 
+ 	sdev = container_of(evt, struct systick_device, dev);
+-	count = ioread32(sdev->membase + SYSTICK_COUNT);
+-	count = (count + delta) % SYSTICK_FREQ;
+-	iowrite32(count, sdev->membase + SYSTICK_COMPARE);
++	delta += read_count(sdev);
++	write_compare(sdev, delta);
++	res = ((int)(read_count(sdev) - delta) >= 0) ? -ETIME : 0;
+ 
+-	return 0;
++	return res;
+ }
+ 
+ static void systick_event_handler(struct clock_event_device *dev)
+@@ -57,20 +71,25 @@ static void systick_event_handler(struct
+ 
+ static irqreturn_t systick_interrupt(int irq, void *dev_id)
+ {
+-	struct clock_event_device *dev = (struct clock_event_device *)dev_id;
++	int ret = 0;
++	struct clock_event_device *cdev;
++	struct systick_device *sdev;
+ 
+-	dev->event_handler(dev);
++	if (read_c0_cause() & STATUSF_IP7) {
++		cdev = (struct clock_event_device *)dev_id;
++		sdev = container_of(cdev, struct systick_device, dev);
++
++		/* Clear Count/Compare Interrupt */
++		write_compare(sdev, read_compare(sdev));
++		cdev->event_handler(cdev);
++		ret = 1;
++	}
+ 
+-	return IRQ_HANDLED;
++	return IRQ_RETVAL(ret);
+ }
+ 
+ static struct systick_device systick = {
+ 	.dev = {
+-		/*
+-		 * cevt-r4k uses 300, make sure systick
+-		 * gets used if available
+-		 */
+-		.rating			= 310,
+ 		.features		= CLOCK_EVT_FEAT_ONESHOT,
+ 		.set_next_event		= systick_next_event,
+ 		.set_state_shutdown	= systick_shutdown,
+@@ -88,7 +107,7 @@ static int systick_shutdown(struct clock
+ 	if (sdev->irq_requested)
+ 		free_irq(systick.dev.irq, &systick.dev);
+ 	sdev->irq_requested = 0;
+-	iowrite32(0, systick.membase + SYSTICK_CONFIG);
++	iowrite32(CFG_CNT_EN, systick.membase + SYSTICK_CONFIG);
+ 
+ 	return 0;
+ }
+@@ -121,12 +140,6 @@ static int __init ralink_systick_init(st
+ 	if (!systick.membase)
+ 		return -ENXIO;
+ 
+-	systick.dev.name = np->name;
+-	clockevents_calc_mult_shift(&systick.dev, SYSTICK_FREQ, 60);
+-	systick.dev.max_delta_ns = clockevent_delta2ns(0x7fff, &systick.dev);
+-	systick.dev.max_delta_ticks = 0x7fff;
+-	systick.dev.min_delta_ns = clockevent_delta2ns(0x3, &systick.dev);
+-	systick.dev.min_delta_ticks = 0x3;
+ 	systick.dev.irq = irq_of_parse_and_map(np, 0);
+ 	if (!systick.dev.irq) {
+ 		pr_err("%pOFn: request_irq failed", np);
+@@ -134,13 +147,19 @@ static int __init ralink_systick_init(st
+ 		goto err_iounmap;
+ 	}
+ 
++	/* enable counter then register clock source */
++	iowrite32(CFG_CNT_EN, systick.membase + SYSTICK_CONFIG);
+ 	ret = clocksource_mmio_init(systick.membase + SYSTICK_COUNT, np->name,
+-				    SYSTICK_FREQ, 301, 16,
++				    SYSTICK_FREQ, 200, 16,
+ 				    clocksource_mmio_readl_up);
+ 	if (ret)
+ 		goto err_free_irq;
+ 
+-	clockevents_register_device(&systick.dev);
++	/* register clock event */
++	systick.dev.name = np->name;
++	systick.dev.rating = 200;
++	systick.dev.cpumask = cpumask_of(0);
++	clockevents_config_and_register(&systick.dev, SYSTICK_FREQ, 0x3, 0x7fff);
+ 
+ 	pr_info("%pOFn: running - mult: %d, shift: %d\n",
+ 			np, systick.dev.mult, systick.dev.shift);
+--- a/arch/mips/ralink/mt7620.c
++++ b/arch/mips/ralink/mt7620.c
+@@ -36,6 +36,10 @@
+ #define PMU1_CFG		0x8C
+ #define DIG_SW_SEL		BIT(25)
+ 
++/* CPU sleep */
++#define CLK_LUT_CFG		0x40
++#define SLEEP_EN		BIT(31)
++
+ /* EFUSE bits */
+ #define EFUSE_MT7688		0x100000
+ 
+@@ -228,6 +232,14 @@ void __init prom_soc_init(struct ralink_
+ 		"MediaTek %s ver:%u eco:%u",
+ 		name, mt7620_get_soc_ver(), mt7620_get_soc_eco());
+ 
++	if (!is_mt76x8()) {
++		u32 clk_lut_cfg;
++
++		clk_lut_cfg = __raw_readl(MT7620_SYSC_BASE + CLK_LUT_CFG);
++		__raw_writel(clk_lut_cfg & ~SLEEP_EN,
++			     MT7620_SYSC_BASE + CLK_LUT_CFG);
++	}
++
+ 	cfg0 = __raw_readl(MT7620_SYSC_BASE + SYSC_REG_SYSTEM_CONFIG0);
+ 	if (is_mt76x8()) {
+ 		dram_type = cfg0 & DRAM_TYPE_MT7628_MASK;

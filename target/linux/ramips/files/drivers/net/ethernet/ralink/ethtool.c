@@ -13,6 +13,7 @@
  */
 
 #include "mtk_eth_soc.h"
+#include <linux/version.h>
 
 static const char fe_gdma_str[][ETH_GSTRING_LEN] = {
 #define _FE(x...)	# x,
@@ -70,9 +71,9 @@ static void fe_get_drvinfo(struct net_device *dev,
 	struct fe_priv *priv = netdev_priv(dev);
 	struct fe_soc_data *soc = priv->soc;
 
-	strlcpy(info->driver, priv->dev->driver->name, sizeof(info->driver));
-	strlcpy(info->version, MTK_FE_DRV_VERSION, sizeof(info->version));
-	strlcpy(info->bus_info, dev_name(priv->dev), sizeof(info->bus_info));
+	strscpy(info->driver, priv->dev->driver->name, sizeof(info->driver));
+	strscpy(info->version, MTK_FE_DRV_VERSION, sizeof(info->version));
+	strscpy(info->bus_info, dev_name(priv->dev), sizeof(info->bus_info));
 
 	if (soc->reg_table[FE_REG_FE_COUNTER_BASE])
 		info->n_stats = ARRAY_SIZE(fe_gdma_str);
@@ -125,8 +126,15 @@ out_get_link:
 	return ethtool_op_get_link(dev);
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+static int fe_set_ringparam(struct net_device *dev,
+			    struct ethtool_ringparam *ring,
+			    struct kernel_ethtool_ringparam *kernel_rp,
+			    struct netlink_ext_ack *extack)
+#else
 static int fe_set_ringparam(struct net_device *dev,
 			    struct ethtool_ringparam *ring)
+#endif
 {
 	struct fe_priv *priv = netdev_priv(dev);
 
@@ -146,8 +154,15 @@ static int fe_set_ringparam(struct net_device *dev,
 	return 0;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+static void fe_get_ringparam(struct net_device *dev,
+			     struct ethtool_ringparam *ring,
+			     struct kernel_ethtool_ringparam *kernel_rp,
+			     struct netlink_ext_ack *extack)
+#else
 static void fe_get_ringparam(struct net_device *dev,
 			     struct ethtool_ringparam *ring)
+#endif
 {
 	struct fe_priv *priv = netdev_priv(dev);
 

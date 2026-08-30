@@ -107,7 +107,7 @@ $(call KernelPackage/rt2x00/Default)
   DEPENDS += @(TARGET_ramips_rt288x||TARGET_ramips_rt305x||TARGET_ramips_rt3883||TARGET_ramips_mt7620) +kmod-rt2800-mmio +kmod-rt2800-lib
   TITLE += (RT28xx/RT3xxx SoC)
   FILES := \
-	$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt2x00soc.ko \
+	$(if $(filter-out 6.18,$(KERNEL_PATCHVER)),$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt2x00soc.ko) \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt2800soc.ko
   AUTOLOAD:=$(call AutoProbe,rt2800soc)
 endef
@@ -127,5 +127,3 @@ $(call KernelPackage/rt2x00/Default)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt2800usb.ko
   AUTOLOAD:=$(call AutoProbe,rt2800usb)
 endef
-
-
