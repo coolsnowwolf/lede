@@ -8,21 +8,21 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=valgrind
-PKG_VERSION:=3.20.0
+PKG_VERSION:=3.26.0
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL:=https://sourceware.org/pub/valgrind/
-PKG_HASH:=8536c031dbe078d342f121fa881a9ecd205cb5a78e639005ad570011bdb9f3c6
+PKG_HASH:=8d54c717029106f1644aadaf802ab9692e53d93dd015cbd19e74190eba616bd7
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
-PKG_LICENSE:=GPL-2.0+
+PKG_LICENSE:=GPL-3.0
 PKG_CPE_ID:=cpe:/a:valgrind:valgrind
 
 PKG_FIXUP = autoreconf
 PKG_INSTALL := 1
 PKG_BUILD_PARALLEL := 1
-PKG_USE_MIPS16:=0
+PKG_BUILD_FLAGS:=no-mips16
 PKG_SSP:=0
 
 STRIP:=:
@@ -33,9 +33,9 @@ include $(INCLUDE_DIR)/kernel.mk
 define Package/valgrind
   SECTION:=devel
   CATEGORY:=Development
-  DEPENDS:=@mips||mipsel||mips64||mips64el||i386||x86_64||powerpc||arm_v7||aarch64 +libpthread +librt
+  DEPENDS:=@mips||mipsel||mips64||mips64el||i386||x86_64||powerpc||arm_v7||aarch64||riscv64 +libpthread +librt
   TITLE:=debugging and profiling tools for Linux
-  URL:=http://www.valgrind.org
+  URL:=https://valgrind.org
 endef
 
 define Package/valgrind/default
@@ -82,7 +82,7 @@ define Package/valgrind/description
 	to speed up and reduce memory use of your programs.
 endef
 
-CPU := $(patsubst x86_64,amd64,$(patsubst x86,i386,$(patsubst um,$(ARCH),$(LINUX_KARCH))))
+CPU := $(patsubst riscv,riscv64,$(patsubst x86_64,amd64,$(patsubst x86,i386,$(patsubst um,$(ARCH),$(LINUX_KARCH)))))
 
 CONFIGURE_VARS += \
 	UNAME_R=$(LINUX_VERSION)
@@ -97,17 +97,14 @@ else
 	BITS := 32bit
 endif
 
+ifeq ($(CONFIG_arm_v7),y)
+	CONFIGURE_ARGS += --host=armv7-openwrt-linux$(if $(TARGET_SUFFIX),-$(TARGET_SUFFIX))
+endif
+
 CONFIGURE_ARGS += \
 	--enable-lto \
 	--enable-tls \
-	--without-x \
 	--without-mpicc \
-	--without-uiout \
-	--disable-valgrindmi \
-	--disable-tui \
-	--disable-valgrindtk \
-	--without-included-gettext \
-	--with-pagesize=4 \
 
 define Package/valgrind/install
 	$(INSTALL_DIR) $(1)/usr/bin
