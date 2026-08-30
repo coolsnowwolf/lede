@@ -21,7 +21,7 @@
 #include <linux/mfd/core.h>
 #include <linux/spi/spi.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <mfd/rb4xx-cpld.h>
 

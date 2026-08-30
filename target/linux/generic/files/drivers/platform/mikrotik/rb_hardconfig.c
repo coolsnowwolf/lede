@@ -36,6 +36,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/sysfs.h>
 #include <linux/lzo.h>
+#include <linux/version.h>
 
 #include "rb_hardconfig.h"
 #include "routerboot.h"
@@ -340,9 +341,15 @@ static ssize_t hc_tag_show_hwoptions(const u8 *pld, u16 pld_len, char *buf)
 	return out - buf;
 }
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0)
 static ssize_t hc_wlan_data_bin_read(struct file *filp, struct kobject *kobj,
 				     struct bin_attribute *attr, char *buf,
 				     loff_t off, size_t count);
+#else
+static ssize_t hc_wlan_data_bin_read(struct file *filp, struct kobject *kobj,
+				     const struct bin_attribute *attr, char *buf,
+				     loff_t off, size_t count);
+#endif
 
 static struct hc_wlan_attr {
 	const u16 erd_tag_id;
@@ -615,9 +622,15 @@ static ssize_t hc_attr_show(struct kobject *kobj, struct kobj_attribute *attr,
  * at boot time to load wlan caldata), this makes it possible to save memory for
  * the system.
  */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,18,0)
 static ssize_t hc_wlan_data_bin_read(struct file *filp, struct kobject *kobj,
 				     struct bin_attribute *attr, char *buf,
 				     loff_t off, size_t count)
+#else
+static ssize_t hc_wlan_data_bin_read(struct file *filp, struct kobject *kobj,
+				     const struct bin_attribute *attr, char *buf,
+				     loff_t off, size_t count)
+#endif
 {
 	struct hc_wlan_attr *hc_wattr;
 	size_t outlen;

@@ -15,6 +15,7 @@
 #include <linux/of_net.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/version.h>
 #include "ag71xx.h"
 
 #define AG71XX_DEFAULT_MSG_ENABLE	\
@@ -867,6 +868,7 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	u32 cfg2;
 	u32 ifctl;
 	u32 fifo5;
+	unsigned int speed;
 
 	if (!ag->link && update) {
 		ag71xx_hw_stop(ag);
@@ -882,7 +884,7 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 
 	cfg2 = ag71xx_rr(ag, AG71XX_REG_MAC_CFG2);
 	cfg2 &= ~(MAC_CFG2_IF_1000 | MAC_CFG2_IF_10_100 | MAC_CFG2_FDX);
-	cfg2 |= (ag->duplex) ? MAC_CFG2_FDX : 0;
+	cfg2 |= (ag->duplex || ag->builtin_switch) ? MAC_CFG2_FDX : 0;
 
 	ifctl = ag71xx_rr(ag, AG71XX_REG_MAC_IFCTL);
 	ifctl &= ~(MAC_IFCTL_SPEED);
@@ -890,7 +892,11 @@ __ag71xx_link_adjust(struct ag71xx *ag, bool update)
 	fifo5 = ag71xx_rr(ag, AG71XX_REG_FIFO_CFG5);
 	fifo5 &= ~FIFO_CFG5_BM;
 
-	switch (ag->speed) {
+	speed = ag->speed;
+	if (ag->builtin_switch)
+		speed = SPEED_1000;
+
+	switch (speed) {
 	case SPEED_1000:
 		cfg2 |= MAC_CFG2_IF_1000;
 		fifo5 |= FIFO_CFG5_BM;
@@ -990,7 +996,11 @@ static void ag71xx_hw_disable(struct ag71xx *ag)
 	ag71xx_dma_reset(ag);
 
 	napi_disable(&ag->napi);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,16,0)
 	del_timer_sync(&ag->oom_timer);
+#else
+	timer_delete_sync(&ag->oom_timer);
+#endif
 
 	ag71xx_rings_cleanup(ag);
 }
@@ -1170,7 +1180,11 @@ static int ag71xx_do_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 static void ag71xx_oom_timer_handler(struct timer_list *t)
 {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,16,0)
 	struct ag71xx *ag = from_timer(ag, t, oom_timer);
+#else
+	struct ag71xx *ag = timer_container_of(ag, t, oom_timer);
+#endif
 
 	napi_schedule(&ag->napi);
 }
@@ -1559,6 +1573,9 @@ static int ag71xx_probe(struct platform_device *pdev)
 		ag->pllregmap = NULL;
 	}
 
+	if (of_property_read_bool(np, "builtin-switch"))
+		ag->builtin_switch = 1;
+
 	ag->mac_base = devm_ioremap(&pdev->dev, res->start,
 				    res->end - res->start + 1);
 	if (!ag->mac_base)
@@ -1762,8 +1779,8 @@ static const struct of_device_id ag71xx_match[] = {
 };
 
 static struct platform_driver ag71xx_driver = {
-	.probe		= ag71xx_probe,
-	.remove_new	= ag71xx_remove,
+	.probe	= ag71xx_probe,
+	.remove	= ag71xx_remove,
 	.driver = {
 		.name	= AG71XX_DRV_NAME,
 		.of_match_table = ag71xx_match,

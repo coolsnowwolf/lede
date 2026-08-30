@@ -160,6 +160,7 @@ struct ag71xx {
 	u16			rx_buf_size;
 	u8			rx_buf_offset;
 	u8			tx_hang_workaround:1;
+	u8			builtin_switch:1;
 
 	struct net_device	*dev;
 	struct platform_device  *pdev;

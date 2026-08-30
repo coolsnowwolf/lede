@@ -1,21 +1,21 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ath10k-ct
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=1
 
 PKG_LICENSE:=GPLv2
 PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2022-05-13
-PKG_SOURCE_VERSION:=f808496fcc6b1f68942914117aebf8b3f8d52bb3
-PKG_MIRROR_HASH:=39527b3408696594eda5579521a9fb798417be4dda73fa08e8b3a8c7b0d3f3d9
+PKG_SOURCE_DATE:=2026-07-31
+PKG_SOURCE_VERSION:=fcbdb70debc261f9df6734bbb76d81cdc88e0e26
+PKG_MIRROR_HASH:=3bfcb2c8bc08902b95de16593b9d757e8c48f8891bd8ecd0934af14789294f37
 
-# Build the 5.15 ath10k-ct driver version.
+# Build the 7.2 ath10k-ct driver version.
 # Probably this should match as closely as
 # possible to whatever mac80211 backports version is being used.
-CT_KVER="-5.15"
+CT_KVER="-7.2"
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
@@ -33,9 +33,8 @@ define KernelPackage/ath10k-ct
   FILES:=\
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_pci.ko \
 	$(PKG_BUILD_DIR)/ath10k$(CT_KVER)/ath10k_core.ko
-  AUTOLOAD:=$(call AutoProbe,ath10k_core ath10k_pci)
-  MODPARAMS.ath10k_core:=frame_mode=2
-  PROVIDES:=kmod-ath10k-pci
+  AUTOLOAD:=$(call AutoProbe,ath10k_pci)
+  PROVIDES:=@kmod-ath10k-any
   VARIANT:=regular
 endef
 

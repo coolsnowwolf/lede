@@ -237,8 +237,8 @@ static const struct of_device_id ag71xx_mdio_match[] = {
 };
 
 static struct platform_driver ag71xx_mdio_driver = {
-	.probe		= ag71xx_mdio_probe,
-	.remove_new	= ag71xx_mdio_remove,
+	.probe	= ag71xx_mdio_probe,
+	.remove	= ag71xx_mdio_remove,
 	.driver = {
 		.name	 = "ag71xx-legacy-mdio",
 		.of_match_table = ag71xx_mdio_match,

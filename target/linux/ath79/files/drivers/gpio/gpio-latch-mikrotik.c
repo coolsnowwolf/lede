@@ -12,8 +12,7 @@
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
 #include <linux/platform_device.h>
-#include <linux/of_platform.h>
-#include <linux/of_gpio.h>
+#include <linux/version.h>
 
 #define GPIO_LATCH_DRIVER_NAME  "gpio-latch-mikrotik"
 #define GPIO_LATCH_LINES 9
@@ -45,7 +44,7 @@ static void gpio_latch_unlock(struct gpio_latch_chip *glc, bool disable)
 		mutex_unlock(&glc->latch_mutex);
 
 	if (disable)
-		glc->latch_enabled = true;
+		glc->latch_enabled = false;
 
 	mutex_unlock(&glc->mutex);
 }
@@ -63,7 +62,11 @@ gpio_latch_get(struct gpio_chip *gc, unsigned offset)
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,17,0)
+static int
+#else
 static void
+#endif
 gpio_latch_set(struct gpio_chip *gc, unsigned offset, int value)
 {
 	struct gpio_latch_chip *glc = gpiochip_get_data(gc);
@@ -78,6 +81,9 @@ gpio_latch_set(struct gpio_chip *gc, unsigned offset, int value)
 	gpio_latch_lock(glc, enable_latch);
 	gpiod_set_raw_value_cansleep(glc->gpios[offset], value);
 	gpio_latch_unlock(glc, disable_latch);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,17,0)
+	return 0;
+#endif
 }
 
 static int
