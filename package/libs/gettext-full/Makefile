@@ -8,26 +8,25 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=gettext-full
-PKG_VERSION:=0.22.5
+PKG_VERSION:=0.24.2
 PKG_RELEASE:=1
 
 PKG_SOURCE:=gettext-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@GNU/gettext
-PKG_HASH:=fe10c37353213d78a5b83d48af231e005c4da84db5ce88037d88355938259640
+PKG_HASH:=fcc0187f597aef6bc5bc95c629db1126315beb196b20570eaec6a4941850f7c5
 PKG_BUILD_DIR:=$(BUILD_DIR)/gettext-$(PKG_VERSION)
 HOST_BUILD_DIR:=$(BUILD_DIR_HOST)/gettext-$(PKG_VERSION)
 
 PKG_MAINTAINER:=Jo-Philipp Wich <jo@mein.io>
-PKG_LICENSE:=GPL-3.0-or-later
+PKG_LICENSE:=LGPL-2.1-or-later
+PKG_LICENSE_FILES:=gettext-runtime/intl/COPYING.LIB
 PKG_CPE_ID:=cpe:/a:gnu:gettext
 
 PKG_INSTALL:=1
 PKG_BUILD_DEPENDS:=gettext-full/host libunistring libxml2
 PKG_BUILD_PARALLEL:=0
 
-PKG_FIXUP:=autoreconf
-
-HOST_BUILD_DEPENDS:=gperf/host libiconv-full/host libunistring/host libxml2/host
+HOST_BUILD_DEPENDS:=gnulib-l10n/host gperf/host libiconv-full/host libunistring/host libxml2/host
 HOST_BUILD_PARALLEL:=0
 
 PKG_SUBDIRS:= \
@@ -66,13 +65,15 @@ define Package/libintl-full
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=GNU Internationalization library
-  URL:=http://www.gnu.org/software/gettext/
+  DEPENDS:=+libunistring +libxml2
+  URL:=https://www.gnu.org/software/gettext/
   ABI_VERSION:=8
 endef
 
 export GNULIB_SRCDIR:=$(HOST_GNULIB_SRCDIR)
 
 TARGET_CFLAGS += $(FPIC)
+TARGET_CFLAGS += -std=gnu2x
 ifneq ($(HOST_OS),Linux)
   TARGET_CFLAGS += -I$(STAGING_DIR_HOSTPKG)/include
 endif
@@ -163,8 +164,8 @@ define Build/InstallDev
 	$(INSTALL_DIR) $(1)/usr/lib/libintl-full/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libintl.{a,so*} $(1)/usr/lib/libintl-full/lib/
 
-	$(INSTALL_DIR) $(1)/usr/share/aclocal
-	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/share/aclocal/* $(1)/usr/share/aclocal/
+	$(INSTALL_DIR) $(1)/usr/share/gettext/m4
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/share/gettext/m4/* $(1)/usr/share/gettext/m4/
 
 	$(SED) '/read dummy/d' $(STAGING_DIR_HOSTPKG)/bin/gettextize
 endef
