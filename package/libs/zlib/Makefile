@@ -8,16 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=zlib
-PKG_VERSION:=1.2.13
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=1.3.2
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://github.com/madler/zlib/releases/download/v$(PKG_VERSION)
-PKG_HASH:=d14c38e313afc35a9a8760dadf26042f51ea0f5d154b0630a31da0540107fb98
+PKG_HASH:=d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3
 
 PKG_LICENSE:=Zlib
-PKG_LICENSE_FILES:=README
-PKG_CPE_ID:=cpe:/a:gnu:zlib
+PKG_LICENSE_FILES:=LICENSE
+PKG_CPE_ID:=cpe:/a:zlib:zlib
 
 PKG_CONFIG_DEPENDS:= CONFIG_ZLIB_OPTIMIZE_SPEED
 
@@ -28,7 +28,7 @@ define Package/zlib
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Library implementing the deflate compression method
-  URL:=http://www.zlib.net/
+  URL:=https://www.zlib.net/
 endef
 
 define Package/zlib-dev
@@ -70,7 +70,7 @@ define Build/InstallDev
 	$(CP)	$(PKG_INSTALL_DIR)/usr/lib/libz.{a,so*} \
 		$(1)/usr/lib/
 	mkdir -p $(1)/usr/lib/pkgconfig
-	$(CP)	$(PKG_INSTALL_DIR)/usr/share/pkgconfig/zlib.pc \
+	$(CP)	$(PKG_INSTALL_DIR)/usr/lib/pkgconfig/zlib.pc \
 		$(1)/usr/lib/pkgconfig/
 endef
 
@@ -90,7 +90,7 @@ define Package/zlib-dev/install
 	$(INSTALL_DIR) $(1)/usr/lib
 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libz.a $(1)/usr/lib/
 	$(INSTALL_DIR) $(1)/usr/lib/pkgconfig
-	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/share/pkgconfig/zlib.pc \
+	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/lib/pkgconfig/zlib.pc \
 	  $(1)/usr/lib/pkgconfig/
 endef
 
