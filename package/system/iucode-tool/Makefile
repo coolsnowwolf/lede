@@ -14,6 +14,7 @@ PKG_RELEASE:=2
 PKG_SOURCE:=iucode-tool_$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=https://gitlab.com/iucode-tool/releases/raw/latest
 PKG_HASH:=12b88efa4d0d95af08db05a50b3dcb217c0eb2bfc67b483779e33d498ddb2f95
+PKG_CPE_ID:=cpe:/a:iucode-tool_project:iucode-tool
 
 PKG_BUILD_DEPENDS:=USE_UCLIBC:argp-standalone USE_MUSL:argp-standalone
 HOST_BUILD_DEPENDS:=HOST_OS_MACOS:argp-standalone/host
