@@ -1,0 +1,197 @@
+From 99f59a309e185efab42f3a03e38b3d18d99f9b67 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 15 Apr 2026 16:22:08 +0100
+Subject: [PATCH] media: imx355: Support 2 lane readout.
+
+The sensor supports 2 or 4 lane readout, but the driver only allowed
+for 4 lanes. Add 2 lane support.
+
+The clock tree only supports single PLL mode to feed both IOP (MIPI)
+and IVT (Pixel array).
+2 lane mode supports a MIPI link frequency of up to 445MHz (890Mbit/s)
+cf 360MHz (720Mbit/s) for 4lane. Update clock setup and pixel rates to
+match.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx355.c | 67 +++++++++++++++++++++++++++-----------
+ 1 file changed, 48 insertions(+), 19 deletions(-)
+
+--- a/drivers/media/i2c/imx355.c
++++ b/drivers/media/i2c/imx355.c
+@@ -27,11 +27,14 @@
+ #define IMX355_REG_CHIP_ID		CCI_REG16(0x0016)
+ #define IMX355_CHIP_ID			0x0355
+ 
++#define IMX355_REG_LANE_SEL		CCI_REG8(0x0114)
++
+ /* PLL registers that depend on the external clock frequency */
+ #define IMX355_REG_EXTCLK_FREQ		CCI_REG16(0x0136)
+ #define IMX355_REG_PLL_OP_PREDIV	CCI_REG8(0x030d)
+ #define IMX355_REG_PLL_OP_MUL		CCI_REG16(0x030e)
+ #define IMX355_REG_PLL_IVT_PCK_DIV	CCI_REG8(0x0301)
++#define IMX355_REG_PLL_IVT_SYSCK_DIV	CCI_REG8(0x0303)
+ #define IMX355_PLL_OP_PREDIV		2
+ #define IMX355_PLL_IVT_PCK_DIV		5
+ 
+@@ -80,6 +83,8 @@
+ #define IMX355_TEST_PATTERN_GRAY_COLOR_BARS	3
+ #define IMX355_TEST_PATTERN_PN9			4
+ 
++#define IMX355_REG_REQ_LINK_BIT_RATE	CCI_REG16(0x0820)
++
+ #define IMX355_REG_BINNING_MODE		CCI_REG8(0x0900)
+ #define IMX355_REG_BINNING_TYPE		CCI_REG8(0x0901)
+ #define IMX355_REG_BINNING_WEIGHTING	CCI_REG8(0x0902)
+@@ -87,9 +92,6 @@
+ /* Flip Control */
+ #define IMX355_REG_ORIENTATION		CCI_REG8(0x0101)
+ 
+-/* number of data lanes */
+-#define IMX355_DATA_LANES		4
+-
+ #define IMX355_PIXEL_ARRAY_TOP		0
+ #define IMX355_PIXEL_ARRAY_LEFT		0
+ #define IMX355_PIXEL_ARRAY_WIDTH	3280
+@@ -120,30 +122,38 @@ struct imx355_mode {
+ 
+ struct imx355_clk_params {
+ 	u32 ext_clk;
+-	u16 extclk_freq; /* External clock (MHz) in 8.8 fixed point) */
+-	u16 pll_op_mpy;	/* OP system PLL multiplier */
++	u16 extclk_freq;	/* External clock (MHz) in 8.8 fixed point) */
++	u16 pll_op_mpy[2];	/* OP system PLL multiplier */
++	u8 pll_op_prediv[2];	/* OP system pre PLL d */
+ };
+ 
+ /*
+  * The clock tree is in single PLL mode, so PREDIV_VT and MPY_IVT do nothing.
+- * All modes use the same PLL setup for OP, with IOPCK being 720MHz.
++ * In 4 lane mode the MIPI rate is 360Mhz (720Mbit/s) and pixel rate is
++ * 288MPix/s.
++ * In 2 lane mode the MIPI rate is 444MHz (888Mbit/s) and pixel rate
++ * 177.6MPix/s with a 24MHz clock, and 441.6MHz (883.2Mbit/s) and 176.6MPix/s
++ * with a 19.2MHz clock.
+  */
+ static const struct imx355_clk_params imx355_clk_params[] = {
+ 	{
+ 		.ext_clk = 19200000,
+-		.extclk_freq = 0x1333,	/* 19.2 MHz */
+-		.pll_op_mpy = 75,	/* 19.2 / 2 * 75  = 720 MHz */
++		.extclk_freq = 0x1333,
++		.pll_op_mpy = { 75, 92 },
++		.pll_op_prediv = { 2, 2 }
+ 	},
+ 	{
+ 		.ext_clk = 24000000,
+-		.extclk_freq = 0x1800,	/* 24.0 MHz */
+-		.pll_op_mpy = 60,	/* 24.0 / 2 * 60  = 720 MHz */
++		.extclk_freq = 0x1800,
++		.pll_op_mpy = { 60, 111 },
++		.pll_op_prediv = { 2, 3 }
+ 	},
+ };
+ 
+ struct imx355_hwcfg {
+ 	s64 link_freq_menu;
+ 	unsigned long link_freq_bitmap;
++	unsigned int num_lanes;
+ };
+ 
+ struct imx355 {
+@@ -239,7 +249,6 @@ static const struct cci_reg_sequence imx
+ 	{ CCI_REG8(0x305a), 0x00 },
+ 	{ CCI_REG8(0x0112), 0x0a },
+ 	{ CCI_REG8(0x0113), 0x0a },
+-	{ CCI_REG8(0x0114), 0x03 },
+ 	{ IMX355_REG_PLL_IVT_PCK_DIV, IMX355_PLL_IVT_PCK_DIV },
+ 	{ CCI_REG8(0x0303), 0x01 },
+ 	{ CCI_REG8(0x0305), 0x02 },
+@@ -249,8 +258,6 @@ static const struct cci_reg_sequence imx
+ 	{ CCI_REG8(0x0310), 0x00 },
+ 	{ CCI_REG8(0x0220), 0x00 },
+ 	{ CCI_REG8(0x0222), 0x01 },
+-	{ CCI_REG8(0x0820), 0x0b },
+-	{ CCI_REG8(0x0821), 0x40 },
+ 	{ CCI_REG8(0x3088), 0x04 },
+ 	{ CCI_REG8(0x6813), 0x02 },
+ 	{ CCI_REG8(0x6835), 0x07 },
+@@ -805,6 +812,7 @@ imx355_set_pad_format(struct v4l2_subdev
+ 		__v4l2_ctrl_modify_range(imx355->vblank, IMX355_VBLANK_MIN,
+ 					 height, 1, vblank_def);
+ 		__v4l2_ctrl_s_ctrl(imx355->vblank, vblank_def);
++
+ 		h_blank = mode->llp - imx355->cur_mode->width;
+ 		/*
+ 		 * Currently hblank is not changeable.
+@@ -868,6 +876,8 @@ static int imx355_start_streaming(struct
+ {
+ 	const struct imx355_reg_list *reg_list;
+ 	const struct imx355_mode *mode;
++	int lane_idx = imx355->hwcfg->num_lanes == 4 ? 0 : 1;
++	u64 link_bitrate;
+ 	u8 binning_mode;
+ 	int ret = 0;
+ 
+@@ -903,7 +913,21 @@ static int imx355_start_streaming(struct
+ 	cci_write(imx355->regmap, IMX355_REG_EXTCLK_FREQ,
+ 		  imx355->clk_params->extclk_freq, &ret);
+ 	cci_write(imx355->regmap, IMX355_REG_PLL_OP_MUL,
+-		  imx355->clk_params->pll_op_mpy, &ret);
++		  imx355->clk_params->pll_op_mpy[lane_idx], &ret);
++	cci_write(imx355->regmap, IMX355_REG_PLL_OP_PREDIV,
++		  imx355->clk_params->pll_op_prediv[lane_idx], &ret);
++	cci_write(imx355->regmap, IMX355_REG_PLL_IVT_SYSCK_DIV,
++		  lane_idx ? 2 : 1, &ret);
++
++	/* Set MIPI configuration */
++	cci_write(imx355->regmap, IMX355_REG_LANE_SEL,
++		  imx355->hwcfg->num_lanes - 1, &ret);
++
++	link_bitrate = imx355->link_freq->qmenu_int[imx355->link_freq->val] *
++		       imx355->hwcfg->num_lanes * 2;
++	do_div(link_bitrate, 1000000);
++	cci_write(imx355->regmap, IMX355_REG_REQ_LINK_BIT_RATE, link_bitrate,
++		  &ret);
+ 
+ 	/* set digital gain control to all color mode */
+ 	cci_write(imx355->regmap, IMX355_REG_DPGA_USE_GLOBAL_GAIN, 1, &ret);
+@@ -1089,9 +1113,9 @@ static int imx355_init_controls(struct i
+ 		imx355->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 
+ 	/* pixel_rate = link_freq * 2 * nr_of_lanes / bits_per_sample */
+-	pixel_rate = imx355->hwcfg->link_freq_menu * 2 * 4;
++	pixel_rate = imx355->hwcfg->link_freq_menu * 2 * imx355->hwcfg->num_lanes;
+ 	do_div(pixel_rate, 10);
+-	/* By default, PIXEL_RATE is read only */
++
+ 	v4l2_ctrl_new_std(ctrl_hdlr, &imx355_ctrl_ops, V4L2_CID_PIXEL_RATE,
+ 			  pixel_rate, pixel_rate, 1, pixel_rate);
+ 
+@@ -1174,6 +1198,7 @@ static struct imx355_hwcfg *imx355_get_h
+ 	const struct imx355_clk_params *clk = imx355->clk_params;
+ 	struct fwnode_handle *ep;
+ 	struct fwnode_handle *fwnode = dev_fwnode(dev);
++	int lane_idx;
+ 	int ret;
+ 
+ 	if (!fwnode)
+@@ -1191,11 +1216,15 @@ static struct imx355_hwcfg *imx355_get_h
+ 	if (!cfg)
+ 		goto out_err;
+ 
+-	if (bus_cfg.bus.mipi_csi2.num_data_lanes != IMX355_DATA_LANES)
++	if (bus_cfg.bus.mipi_csi2.num_data_lanes != 2 &&
++	    bus_cfg.bus.mipi_csi2.num_data_lanes != 4)
+ 		goto out_err;
+ 
+-	cfg->link_freq_menu = (clk->ext_clk * clk->pll_op_mpy) /
+-			      (IMX355_PLL_OP_PREDIV * 2);
++	cfg->num_lanes = bus_cfg.bus.mipi_csi2.num_data_lanes;
++
++	lane_idx = cfg->num_lanes == 4 ? 0 : 1;
++	cfg->link_freq_menu = (clk->ext_clk * clk->pll_op_mpy[lane_idx]) /
++			      (clk->pll_op_prediv[lane_idx] * 2);
+ 	ret = v4l2_link_freq_to_bitmap(dev, bus_cfg.link_frequencies,
+ 				       bus_cfg.nr_of_link_frequencies,
+ 				       &cfg->link_freq_menu, 1,

@@ -8,8 +8,8 @@ define KernelPackage/camera-bcm2835
     CONFIG_VIDEO_BCM2835
   FILES:= \
     $(LINUX_DIR)/drivers/staging/vc04_services/bcm2835-camera/bcm2835-v4l2.ko
-  AUTOLOAD:=$(call AutoLoad,66,bcm2835-v4l2)
-  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-videobuf2)
+  AUTOLOAD:=$(call AutoLoad,67,bcm2835-v4l2)
+  $(call AddDepends/video,@TARGET_bcm27xx +kmod-vchiq-mmal-bcm2835 +kmod-video-videobuf2 +kmod-video-vmalloc)
 endef
 
 define KernelPackage/camera-bcm2835/description
@@ -20,15 +20,28 @@ endef
 $(eval $(call KernelPackage,camera-bcm2835))
 
 
+RP1_CFE_KCONFIG:=CONFIG_VIDEO_RP1_CFE
+RP1_CFE_FILES:=
+RP1_CFE_DEPENDS:=@TARGET_bcm27xx_bcm2712 +kmod-video-core +kmod-video-fwnode +kmod-video-dma-contig +kmod-video-async
+
+ifeq ($(CONFIG_LINUX_6_12),y)
+  RP1_CFE_KCONFIG += CONFIG_VIDEO_BCM2835
+  RP1_CFE_FILES += $(LINUX_DIR)/drivers/media/platform/raspberrypi/rp1_cfe/rp1-cfe.ko
+endif
+
+ifeq ($(CONFIG_LINUX_6_18),y)
+  RP1_CFE_KCONFIG += CONFIG_VIDEO_V4L2_SUBDEV_API=y
+  RP1_CFE_FILES += $(LINUX_DIR)/drivers/media/platform/raspberrypi/rp1-cfe/rp1-cfe.ko
+  RP1_CFE_DEPENDS += +kmod-video-videobuf2
+endif
+
 define KernelPackage/rp1-cfe
   TITLE:=RP1 Camera Front-End
   SUBMENU:=$(VIDEO_MENU)
-  KCONFIG:= \
-     CONFIG_VIDEO_RP1_CFE \
-     CONFIG_VIDEO_BCM2835
-  FILES:=$(LINUX_DIR)/drivers/media/platform/raspberrypi/rp1_cfe/rp1-cfe.ko
+  KCONFIG:=$(RP1_CFE_KCONFIG)
+  FILES:=$(RP1_CFE_FILES)
   AUTOLOAD:=$(call AutoLoad,67,rp1-cfe)
-  DEPENDS:=@TARGET_bcm27xx_bcm2712 +kmod-video-core +kmod-video-fwnode +kmod-video-dma-contig +kmod-video-async
+  DEPENDS:=$(RP1_CFE_DEPENDS)
 endef
 
 define KernelPackage/rp1-cfe/description
@@ -37,6 +50,77 @@ define KernelPackage/rp1-cfe/description
 endef
 
 $(eval $(call KernelPackage,rp1-cfe))
+
+
+define KernelPackage/rp1-cfe-downstream
+  TITLE:=RP1 Camera Front-End using DOWNSTREAM
+  SUBMENU:=$(VIDEO_MENU)
+  KCONFIG:= \
+    CONFIG_VIDEO_RP1_CFE_DOWNSTREAM \
+    CONFIG_VIDEO_V4L2_SUBDEV_API=y
+  FILES:=$(LINUX_DIR)/drivers/media/platform/raspberrypi/rp1_cfe/rp1-cfe-downstream.ko
+  AUTOLOAD:=$(call AutoLoad,67,rp1-cfe-downstream)
+  DEPENDS:=@TARGET_bcm27xx_bcm2712 @LINUX_6_18 +kmod-video-core +kmod-video-fwnode +kmod-video-dma-contig +kmod-video-async +kmod-video-videobuf2
+endef
+
+define KernelPackage/rp1-cfe-downstream/description
+  Support for the RP1 Camera Front End using the downstream driver.
+endef
+
+$(eval $(call KernelPackage,rp1-cfe-downstream))
+
+
+define KernelPackage/rp1-hevc-dec
+  TITLE:=Rasperry Pi HEVC decoder
+  SUBMENU:=$(VIDEO_MENU)
+  KCONFIG:= \
+    CONFIG_VIDEO_RPI_HEVC_DEC
+  FILES:=$(LINUX_DIR)/drivers/media/platform/raspberrypi/hevc_dec/rpi-hevc-dec.ko
+  AUTOLOAD:=$(call AutoLoad,67,rp1-hevc-dec)
+  DEPENDS:=@TARGET_bcm27xx_bcm2712 @LINUX_6_18 +kmod-video-core +kmod-video-dma-contig +kmod-video-videobuf2 +kmod-video-mem2mem
+endef
+
+define KernelPackage/rp1-hevc-dec/description
+  Raspberry Pi HEVC / H265 H/W decoder as a stateless V4L2 decoder device.
+endef
+
+$(eval $(call KernelPackage,rp1-hevc-dec))
+
+
+define KernelPackage/rpi-panel-attiny-regulator
+  TITLE:=Raspberry Pi 7-inch touchscreen panel ATTINY regulator
+  SUBMENU:=$(VIDEO_MENU)
+  KCONFIG:=CONFIG_REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY
+  FILES:=$(LINUX_DIR)/drivers/regulator/rpi-panel-attiny-regulator.ko
+  AUTOLOAD:=$(call AutoLoad,67,rpi-panel-attiny-regulator)
+  DEPENDS:=@TARGET_bcm27xx +kmod-regmap-i2c +kmod-backlight
+endef
+
+define KernelPackage/rpi-panel-attiny-regulator/description
+ Driver for the ATTINY regulator on the Raspberry Pi 7-inch
+ touchscreen unit. The regulator is used to enable power to the
+ TC358762, display and to control backlight.
+endef
+
+$(eval $(call KernelPackage,rpi-panel-attiny-regulator))
+
+
+define KernelPackage/rpi-panel-7inch-touchscreen
+  TITLE:=Raspberry Pi 7-inch touchscreen panel
+  SUBMENU:=$(VIDEO_MENU)
+  KCONFIG:= \
+    CONFIG_DRM_PANEL_RASPBERRYPI_TOUCHSCREEN
+    CONFIG_DRM_MIPI_DSI=y
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/panel/panel-raspberrypi-touchscreen.ko
+  AUTOLOAD:=$(call AutoProbe,panel-raspberrypi-touchscreen)
+  DEPENDS:=@TARGET_bcm27xx +kmod-drm
+endef
+
+define KernelPackage/rpi-panel-7inch-touchscreen/description
+ Driver for the Raspberry Pi 7" Touchscreen.
+endef
+
+$(eval $(call KernelPackage,rpi-panel-7inch-touchscreen))
 
 
 define KernelPackage/codec-bcm2835
@@ -57,22 +141,38 @@ endef
 $(eval $(call KernelPackage,codec-bcm2835))
 
 
+define KernelPackage/drm-v3d
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Broadcom V3D Graphics
+  DEPENDS:= \
+    @TARGET_bcm27xx_bcm2711||TARGET_bcm27xx_bcm2712 +kmod-drm \
+    +kmod-drm-shmem-helper +kmod-drm-sched
+  KCONFIG:=CONFIG_DRM_V3D
+  FILES:= \
+    $(LINUX_DIR)/drivers/gpu/drm/v3d/v3d.ko
+  AUTOLOAD:=$(call AutoProbe,v3d)
+endef
+
+define KernelPackage/drm-v3d/description
+  Broadcom V3D 3.x or newer GPUs. SoCs supported include the BCM2711,
+  BCM7268 and BCM7278.
+endef
+
+$(eval $(call KernelPackage,drm-v3d))
+
+
 define KernelPackage/drm-vc4
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=Broadcom VC4 Graphics
   DEPENDS:= \
-    @TARGET_bcm27xx +kmod-drm \
-    +kmod-sound-core \
-    +kmod-sound-soc-core
+    @TARGET_bcm27xx +kmod-drm +LINUX_6_18:kmod-drm-exec \
+    +kmod-drm-display-helper +kmod-drm-dma-helper \
+    +kmod-cec-core +kmod-sound-core +kmod-sound-soc-core
   KCONFIG:= \
     CONFIG_DRM_VC4 \
     CONFIG_DRM_VC4_HDMI_CEC=y
   FILES:= \
-    $(LINUX_DIR)/drivers/gpu/drm/display/drm_display_helper.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/drm_dma_helper.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko \
-    $(LINUX_DIR)/drivers/gpu/drm/drm_kms_helper.ko \
-    $(LINUX_DIR)/drivers/media/cec/core/cec.ko
+    $(LINUX_DIR)/drivers/gpu/drm/vc4/vc4.ko
   AUTOLOAD:=$(call AutoProbe,vc4)
 endef
 

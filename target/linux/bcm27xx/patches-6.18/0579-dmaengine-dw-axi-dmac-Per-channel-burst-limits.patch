@@ -1,0 +1,93 @@
+From 7cc7b6de703bdf3fc45f174a2230a3b2cc6753a0 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 30 Jan 2025 15:29:31 +0000
+Subject: [PATCH] dmaengine: dw-axi-dmac: Per-channel burst limits
+
+The DesignWare AXI DMAC IP can be configured with heterogeneous channel
+parameters. Allow maximum burst length to be set per-channel by making
+snps,axi-max-burst-len an array.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../dma/dw-axi-dmac/dw-axi-dmac-platform.c    | 29 ++++++++++++-------
+ drivers/dma/dw-axi-dmac/dw-axi-dmac.h         |  2 +-
+ 2 files changed, 19 insertions(+), 12 deletions(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -807,7 +807,7 @@ static int dw_axi_dma_set_hw_desc(struct
+ 	ctlhi = CH_CTL_H_LLI_VALID;
+ 
+ 	if (chan->chip->dw->hdata->restrict_axi_burst_len) {
+-		burst_len = chan->chip->dw->hdata->axi_rw_burst_len;
++		burst_len = chan->chip->dw->hdata->axi_rw_burst_len[chan->id];
+ 		ctlhi |= CH_CTL_H_ARLEN_EN | CH_CTL_H_AWLEN_EN |
+ 			 burst_len << CH_CTL_H_ARLEN_POS |
+ 			 burst_len << CH_CTL_H_AWLEN_POS;
+@@ -1085,7 +1085,7 @@ dma_chan_prep_dma_memcpy(struct dma_chan
+ 
+ 		reg = CH_CTL_H_LLI_VALID;
+ 		if (chan->chip->dw->hdata->restrict_axi_burst_len) {
+-			u32 burst_len = chan->chip->dw->hdata->axi_rw_burst_len;
++			u32 burst_len = chan->chip->dw->hdata->axi_rw_burst_len[chan->id];
+ 
+ 			reg |= (CH_CTL_H_ARLEN_EN |
+ 				burst_len << CH_CTL_H_ARLEN_POS |
+@@ -1494,6 +1494,7 @@ static int parse_device_properties(struc
+ {
+ 	struct device *dev = chip->dev;
+ 	u32 tmp, carr[DMAC_MAX_CHANNELS];
++	u32 val;
+ 	int ret;
+ 
+ 	ret = device_property_read_u32(dev, "dma-channels", &tmp);
+@@ -1550,15 +1551,21 @@ static int parse_device_properties(struc
+ 	}
+ 
+ 	/* axi-max-burst-len is optional property */
+-	ret = device_property_read_u32(dev, "snps,axi-max-burst-len", &tmp);
+-	if (!ret) {
+-		if (tmp > DWAXIDMAC_ARWLEN_MAX + 1)
+-			return -EINVAL;
+-		if (tmp < DWAXIDMAC_ARWLEN_MIN + 1)
+-			return -EINVAL;
+-
++	ret = device_property_read_u32_array(dev, "snps,axi-max-burst-len", NULL,
++					     chip->dw->hdata->nr_channels);
++	if ((ret > 0) &&
++	    !device_property_read_u32_array(dev, "snps,axi-max-burst-len",
++					    carr, ret)) {
+ 		chip->dw->hdata->restrict_axi_burst_len = true;
+-		chip->dw->hdata->axi_rw_burst_len = tmp;
++		for (tmp = 0; tmp < chip->dw->hdata->nr_channels; tmp++) {
++			// Replicate the last value to any remaining channels
++			val = carr[min(tmp, (u32)ret - 1)];
++			if (val > DWAXIDMAC_ARWLEN_MAX + 1)
++				return -EINVAL;
++			if (val < DWAXIDMAC_ARWLEN_MIN + 1)
++				return -EINVAL;
++			chip->dw->hdata->axi_rw_burst_len[tmp] = val;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -1672,7 +1679,7 @@ static int dw_probe(struct platform_devi
+ 	dma_cap_set(DMA_CYCLIC, dw->dma.cap_mask);
+ 
+ 	/* DMA capabilities */
+-	dw->dma.max_burst = hdata->axi_rw_burst_len;
++	dw->dma.max_burst = hdata->axi_rw_burst_len[0];
+ 	dw->dma.src_addr_widths = AXI_DMA_BUSWIDTHS;
+ 	dw->dma.dst_addr_widths = AXI_DMA_BUSWIDTHS;
+ 	dw->dma.directions = BIT(DMA_MEM_TO_MEM);
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
+@@ -29,7 +29,7 @@ struct dw_axi_dma_hcfg {
+ 	u32	block_size[DMAC_MAX_CHANNELS];
+ 	u32	priority[DMAC_MAX_CHANNELS];
+ 	/* maximum supported axi burst length */
+-	u32	axi_rw_burst_len;
++	u32	axi_rw_burst_len[DMAC_MAX_CHANNELS];
+ 	/* Register map for DMAX_NUM_CHANNELS <= 8 */
+ 	bool	reg_map_8_channels;
+ 	bool	restrict_axi_burst_len;

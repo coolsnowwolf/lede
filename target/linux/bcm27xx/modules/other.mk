@@ -61,7 +61,7 @@ define KernelPackage/rp1
   KCONFIG:=CONFIG_FIRMWARE_RP1
   FILES:=$(LINUX_DIR)/drivers/firmware/rp1.ko
   AUTOLOAD:=$(call AutoLoad,21,rp1)
-  DEPENDS:=@TARGET_bcm27xx_bcm2712
+  DEPENDS:=@(TARGET_bcm27xx_bcm2712&&LINUX_6_12)
 endef
 
 define KernelPackage/rp1/description
@@ -78,7 +78,7 @@ define KernelPackage/rp1-pio
   KCONFIG:=CONFIG_RP1_PIO
   FILES:=$(LINUX_DIR)/drivers/misc/rp1-pio.ko
   AUTOLOAD:=$(call AutoLoad,21,rp1-pio)
-  DEPENDS:=@TARGET_bcm27xx_bcm2712 +kmod-rp1
+  DEPENDS:=@TARGET_bcm27xx_bcm2712 +LINUX_6_12:kmod-rp1
 endef
 
 define KernelPackage/rp1-pio/description
@@ -125,13 +125,31 @@ endef
 $(eval $(call KernelPackage,ws2812-pio-rp1))
 
 
+define KernelPackage/rp1-pio-uart
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=RP1 PIO-based UART support
+  KCONFIG:=CONFIG_SERIAL_RP1_PIO_UART
+  FILES:=$(LINUX_DIR)/drivers/tty/serial/rp1-pio-uart.ko
+  AUTOLOAD:=$(call AutoLoad,21,rp1-pio-uart)
+  DEPENDS:=@TARGET_bcm27xx_bcm2712 @LINUX_6_18 +kmod-rp1-pio
+endef
+
+define KernelPackage/rp1-pio-uart/description
+  A software UART implemented using the RP1 PIO block, with DMA
+  moving data and a PIO interrupt used for break detection. Only
+  8N1 with no hardware flow control is supported.
+endef
+
+$(eval $(call KernelPackage,rp1-pio-uart))
+
+
 define KernelPackage/rp1-mailbox
   SUBMENU:=$(OTHER_MENU)
   TITLE:=RP1 mailbox IPC driver
   KCONFIG:=CONFIG_MBOX_RP1
   FILES:=$(LINUX_DIR)/drivers/mailbox/rp1-mailbox.ko
   AUTOLOAD:=$(call AutoLoad,21,rp1-mailbox)
-  DEPENDS:=@TARGET_bcm27xx_bcm2712
+  DEPENDS:=@(TARGET_bcm27xx_bcm2712&&LINUX_6_12)
 endef
 
 define KernelPackage/rp1-mailbox/description
@@ -139,3 +157,19 @@ define KernelPackage/rp1-mailbox/description
 endef
 
 $(eval $(call KernelPackage,rp1-mailbox))
+
+
+define KernelPackage/bcm27xx-hid
+  SUBMENU:=$(INPUT_MODULES_MENU)
+  TITLE:=USB HID support for bcm27xx boards
+  DEPENDS:=@TARGET_bcm27xx \
+	+kmod-usb-hid
+endef
+
+define KernelPackage/bcm27xx-hid/description
+ Pulls in USB Human Input Device (keyboard, mouse) support. Not
+ installed by default -- headless/router deployments don't need
+ it; install this if you want to attach a USB keyboard or mouse.
+endef
+
+$(eval $(call KernelPackage,bcm27xx-hid))

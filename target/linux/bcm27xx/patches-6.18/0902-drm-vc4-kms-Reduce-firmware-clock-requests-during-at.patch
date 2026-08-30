@@ -1,0 +1,149 @@
+From b0f70212b2fe409082cc0046f117d7116b2a66bf Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Mon, 13 Jul 2026 16:46:32 +0100
+Subject: [PATCH] drm/vc4: kms: Reduce firmware clock requests during atomic
+ commits
+
+On Raspberry Pi the core clock is managed by the firmware, so every
+clk_set_min_rate() call on it results in at least one blocking
+mailbox round-trip to the VPU: the clock is registered with
+CLK_GET_RATE_NOCACHE, so clk_set_rate_range() always queries the
+current rate via GET_CLOCK_RATE, and issues a SET_CLOCK_RATE on top
+if the aggregated rate changed. All of this happens under the global
+clk prepare_lock.
+
+vc4_atomic_commit_tail() currently requests a boost of the core clock
+to at least 500MHz at the start of *every* commit and settles back to
+the load-derived rate at the end, even though the boost is only needed
+to avoid stalling the pipeline during a full modeset. In addition the
+final drm_dbg() evaluated clk_get_rate() unconditionally, hiding
+another firmware query. A compositor page-flipping at 60Hz therefore
+generated several mailbox transactions per frame, all of them no-ops.
+
+Fix this in two ways:
+
+  - Only apply the 500MHz floor when one of the CRTCs in the commit
+    actually needs a modeset. Plane-only updates still raise the clock
+    to the maximum of the old and new state requirements before the
+    HVS is reprogrammed, since the load can change without a modeset.
+
+  - Cache the last requested minimum rate in struct vc4_hvs and skip
+    requests that wouldn't change it. The core and display clocks are
+    always requested at the same rate, so a single cached value is
+    enough, and the actual-rate debug query now only happens when the
+    request really changes.
+
+With this, steady-state page flips no longer generate any firmware
+mailbox traffic, while modesets and genuine load changes behave as
+before.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_drv.h |  6 ++++
+ drivers/gpu/drm/vc4/vc4_kms.c | 58 ++++++++++++++++++++++++++---------
+ 2 files changed, 50 insertions(+), 14 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_drv.h
++++ b/drivers/gpu/drm/vc4/vc4_drv.h
+@@ -339,6 +339,12 @@ struct vc4_hvs {
+ 	struct clk *core_clk;
+ 	struct clk *disp_clk;
+ 
++	/* Last min rate requested on core_clk and disp_clk. Each
++	 * clk_set_min_rate() on a firmware clock costs at least one
++	 * mailbox round-trip, so skip requests that wouldn't change it.
++	 */
++	unsigned long core_clk_min_rate;
++
+ 	struct {
+ 		unsigned int desc;
+ 		unsigned int enabled: 1;
+--- a/drivers/gpu/drm/vc4/vc4_kms.c
++++ b/drivers/gpu/drm/vc4/vc4_kms.c
+@@ -385,6 +385,40 @@ static void vc6_hvs_pv_muxing_commit(str
+ 	}
+ }
+ 
++/* Each clk_set_min_rate() on a firmware clock costs at least one
++ * mailbox round-trip to the VPU, so don't repeat requests that
++ * wouldn't change the rate.
++ */
++static void vc4_hvs_set_min_core_rate(struct vc4_hvs *hvs,
++				      unsigned long core_rate)
++{
++	struct drm_device *dev = &hvs->vc4->base;
++
++	if (core_rate == hvs->core_clk_min_rate)
++		return;
++
++	hvs->core_clk_min_rate = core_rate;
++
++	WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
++	WARN_ON(clk_set_min_rate(hvs->disp_clk, core_rate));
++
++	drm_dbg(dev, "Core clock min rate %lu Hz, actual rate: %lu Hz\n",
++		core_rate, clk_get_rate(hvs->core_clk));
++}
++
++static bool vc4_atomic_needs_modeset(struct drm_atomic_state *state)
++{
++	struct drm_crtc_state *new_crtc_state;
++	struct drm_crtc *crtc;
++	int i;
++
++	for_each_new_crtc_in_state(state, crtc, new_crtc_state, i)
++		if (drm_atomic_crtc_needs_modeset(new_crtc_state))
++			return true;
++
++	return false;
++}
++
+ static void vc4_atomic_commit_tail(struct drm_atomic_state *state)
+ {
+ 	struct drm_device *dev = state->dev;
+@@ -441,17 +475,19 @@ static void vc4_atomic_commit_tail(struc
+ 	if (vc4->gen == VC4_GEN_5 && !vc4->firmware_kms) {
+ 		unsigned long state_rate = max(old_hvs_state->core_clock_rate,
+ 					       new_hvs_state->core_clock_rate);
+-		unsigned long core_rate = clamp_t(unsigned long, state_rate,
+-						  500000000, hvs->max_core_rate);
+-
+-		drm_dbg(dev, "Raising the core clock at %lu Hz\n", core_rate);
++		unsigned long core_rate = min_t(unsigned long, state_rate,
++						hvs->max_core_rate);
+ 
+ 		/*
+ 		 * Do a temporary request on the core clock during the
+-		 * modeset.
++		 * modeset. Plane-only updates only need the rate the new
++		 * state asked for, not the 500MHz boost.
+ 		 */
+-		WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
+-		WARN_ON(clk_set_min_rate(hvs->disp_clk, core_rate));
++		if (vc4_atomic_needs_modeset(state))
++			core_rate = clamp_t(unsigned long, state_rate,
++					    500000000, hvs->max_core_rate);
++
++		vc4_hvs_set_min_core_rate(hvs, core_rate);
+ 	}
+ 
+ 	drm_atomic_helper_commit_modeset_disables(dev, state);
+@@ -498,17 +534,11 @@ static void vc4_atomic_commit_tail(struc
+ 						hvs->max_core_rate,
+ 						new_hvs_state->core_clock_rate);
+ 
+-		drm_dbg(dev, "Running the core clock at %lu Hz\n", core_rate);
+-
+ 		/*
+ 		 * Request a clock rate based on the current HVS
+ 		 * requirements.
+ 		 */
+-		WARN_ON(clk_set_min_rate(hvs->core_clk, core_rate));
+-		WARN_ON(clk_set_min_rate(hvs->disp_clk, core_rate));
+-
+-		drm_dbg(dev, "Core clock actual rate: %lu Hz\n",
+-			clk_get_rate(hvs->core_clk));
++		vc4_hvs_set_min_core_rate(hvs, core_rate);
+ 	}
+ }
+ 

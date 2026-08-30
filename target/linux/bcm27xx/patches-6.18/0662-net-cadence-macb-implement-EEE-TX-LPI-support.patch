@@ -1,0 +1,284 @@
+From 8a15cb90f40e40ae120c0fcb1be66a24e3ffbce4 Mon Sep 17 00:00:00 2001
+From: Nicolai Buchwitz <nb@tipi-net.de>
+Date: Thu, 26 Feb 2026 09:26:52 +0100
+Subject: [PATCH] net: cadence: macb: implement EEE TX LPI support
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+commit 0cc425f18f59 upstream
+
+The GEM MAC has hardware LPI registers (NCR bit 19: TXLPIEN) but no
+built-in idle timer, so asserting TXLPIEN blocks all TX immediately
+with no automatic wake. A software idle timer is required, as noted
+in Microchip documentation (section 40.6.19): "It is best to use
+firmware to control LPI."
+
+Implement phylink managed EEE using the mac_enable_tx_lpi and
+mac_disable_tx_lpi callbacks:
+
+- macb_tx_lpi_set(): sets or clears TXLPIEN; requires bp->lock to be
+  held by the caller (asserted with lockdep_assert_held). Returns bool
+  indicating whether the register actually changed, avoiding redundant
+  writes and unnecessary udelay on the xmit fast path.
+
+- macb_tx_lpi_work_fn(): delayed_work handler that enters LPI if all
+  TX queues are idle and EEE is still active. Takes bp->lock with
+  irqsave before calling macb_tx_lpi_set().
+
+- macb_tx_lpi_schedule(): arms the work timer using the LPI timer
+  value provided by phylink (default 250 ms). Called from
+  macb_tx_complete() after each TX drain so the idle countdown
+  restarts whenever the ring goes quiet.
+
+- macb_tx_lpi_wake(): called from macb_start_xmit() under bp->lock,
+  immediately before TSTART. Returns early if eee_active is false to
+  avoid a register read on the common path when EEE is disabled.
+  Clears TXLPIEN and applies a 50 us udelay for PHY wake (IEEE
+  802.3az Tw_sys_tx is 16.5 us for 1000BASE-T / 30 us for
+  100BASE-TX; GEM has no hardware enforcement). Only delays when
+  TXLPIEN was actually set. The delay is placed after tx_head is
+  advanced so the work_fn's queue-idle check sees a non-empty ring
+  and cannot race back into LPI before the frame is transmitted.
+
+- mac_enable_tx_lpi: stores the timer and sets eee_active under
+  bp->lock, then defers the first LPI entry by 1 second per IEEE
+  802.3az section 22.7a.
+
+- mac_disable_tx_lpi: cancels the work (sync, without the lock to
+  avoid deadlock with the work_fn), then takes bp->lock to clear
+  eee_active and deassert TXLPIEN.
+
+Populate phylink_config lpi_interfaces (MII, GMII, RGMII variants)
+and lpi_capabilities (MAC_100FD | MAC_1000FD) so phylink can
+negotiate EEE with the PHY and call the callbacks appropriately.
+Set lpi_timer_default to 250000 us and eee_enabled_default to true.
+
+Reviewed-by: Claudiu Beznea <claudiu.beznea@tuxon.dev>
+Reviewed-by: Théo Lebrun <theo.lebrun@bootlin.com>
+Signed-off-by: Nicolai Buchwitz <nb@tipi-net.de>
+---
+ drivers/net/ethernet/cadence/macb.h      |   8 ++
+ drivers/net/ethernet/cadence/macb_main.c | 124 +++++++++++++++++++++++
+ 2 files changed, 132 insertions(+)
+
+--- a/drivers/net/ethernet/cadence/macb.h
++++ b/drivers/net/ethernet/cadence/macb.h
+@@ -315,6 +315,8 @@
+ #define MACB_IRXFCS_SIZE	1
+ 
+ /* GEM specific NCR bitfields. */
++#define GEM_TXLPIEN_OFFSET		19
++#define GEM_TXLPIEN_SIZE		1
+ #define GEM_ENABLE_HS_MAC_OFFSET	31
+ #define GEM_ENABLE_HS_MAC_SIZE		1
+ 
+@@ -790,6 +792,7 @@
+ #define MACB_CAPS_NEED_TSUCLK			0x00000400
+ #define MACB_CAPS_QUEUE_DISABLE			0x00000800
+ #define MACB_CAPS_QBV				0x00001000
++#define MACB_CAPS_EEE				0x00002000
+ #define MACB_CAPS_PCS				0x01000000
+ #define MACB_CAPS_HIGH_SPEED			0x02000000
+ #define MACB_CAPS_CLK_HW_CHG			0x04000000
+@@ -1403,6 +1406,11 @@ struct macb {
+ 
+ 	struct work_struct	hresp_err_bh_work;
+ 
++	/* EEE / LPI state */
++	bool			eee_active;
++	struct delayed_work	tx_lpi_work;
++	u32			tx_lpi_timer;
++
+ 	int	rx_bd_rd_prefetch;
+ 	int	tx_bd_rd_prefetch;
+ 
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -10,6 +10,7 @@
+ #include <linux/clk-provider.h>
+ #include <linux/clk.h>
+ #include <linux/crc32.h>
++#include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/etherdevice.h>
+ #include <linux/firmware/xlnx-zynqmp.h>
+@@ -644,6 +645,107 @@ static const struct phylink_pcs_ops macb
+ 	.pcs_config = macb_pcs_config,
+ };
+ 
++static bool macb_tx_lpi_set(struct macb *bp, bool enable)
++{
++	u32 old, ncr;
++
++	lockdep_assert_held(&bp->lock);
++
++	ncr = macb_readl(bp, NCR);
++	old = ncr;
++	if (enable)
++		ncr |= GEM_BIT(TXLPIEN);
++	else
++		ncr &= ~GEM_BIT(TXLPIEN);
++	if (old != ncr)
++		macb_writel(bp, NCR, ncr);
++
++	return old != ncr;
++}
++
++static bool macb_tx_all_queues_idle(struct macb *bp)
++{
++	struct macb_queue *queue;
++	unsigned int q;
++
++	for (q = 0, queue = bp->queues; q < bp->num_queues; ++q, ++queue) {
++		if (READ_ONCE(queue->tx_head) != READ_ONCE(queue->tx_tail))
++			return false;
++	}
++	return true;
++}
++
++static void macb_tx_lpi_work_fn(struct work_struct *work)
++{
++	struct macb *bp = container_of(work, struct macb, tx_lpi_work.work);
++	unsigned long flags;
++
++	spin_lock_irqsave(&bp->lock, flags);
++	if (bp->eee_active && macb_tx_all_queues_idle(bp))
++		macb_tx_lpi_set(bp, true);
++	spin_unlock_irqrestore(&bp->lock, flags);
++}
++
++static void macb_tx_lpi_schedule(struct macb *bp)
++{
++	if (bp->eee_active)
++		mod_delayed_work(system_wq, &bp->tx_lpi_work,
++				 usecs_to_jiffies(bp->tx_lpi_timer));
++}
++
++/* Wake from LPI before transmitting. The MAC must deassert TXLPIEN
++ * and wait for the PHY to exit LPI before any frame can be sent.
++ * IEEE 802.3az Tw_sys is ~17us for 1000BASE-T, ~30us for 100BASE-TX;
++ * we use a conservative 50us.
++ */
++static void macb_tx_lpi_wake(struct macb *bp)
++{
++	lockdep_assert_held(&bp->lock);
++
++	if (!bp->eee_active)
++		return;
++
++	if (!macb_tx_lpi_set(bp, false))
++		return;
++
++	cancel_delayed_work(&bp->tx_lpi_work);
++	udelay(50);
++}
++
++static void macb_mac_disable_tx_lpi(struct phylink_config *config)
++{
++	struct net_device *ndev = to_net_dev(config->dev);
++	struct macb *bp = netdev_priv(ndev);
++	unsigned long flags;
++
++	cancel_delayed_work_sync(&bp->tx_lpi_work);
++
++	spin_lock_irqsave(&bp->lock, flags);
++	bp->eee_active = false;
++	macb_tx_lpi_set(bp, false);
++	spin_unlock_irqrestore(&bp->lock, flags);
++}
++
++static int macb_mac_enable_tx_lpi(struct phylink_config *config, u32 timer,
++				  bool tx_clk_stop)
++{
++	struct net_device *ndev = to_net_dev(config->dev);
++	struct macb *bp = netdev_priv(ndev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&bp->lock, flags);
++	bp->tx_lpi_timer = timer;
++	bp->eee_active = true;
++	spin_unlock_irqrestore(&bp->lock, flags);
++
++	/* Defer initial LPI entry by 1 second after link-up per
++	 * IEEE 802.3az section 22.7a.
++	 */
++	mod_delayed_work(system_wq, &bp->tx_lpi_work, msecs_to_jiffies(1000));
++
++	return 0;
++}
++
+ static void macb_mac_config(struct phylink_config *config, unsigned int mode,
+ 			    const struct phylink_link_state *state)
+ {
+@@ -899,6 +1001,8 @@ static const struct phylink_mac_ops macb
+ 	.mac_config = macb_mac_config,
+ 	.mac_link_down = macb_mac_link_down,
+ 	.mac_link_up = macb_mac_link_up,
++	.mac_disable_tx_lpi = macb_mac_disable_tx_lpi,
++	.mac_enable_tx_lpi = macb_mac_enable_tx_lpi,
+ };
+ 
+ static bool macb_phy_handle_exists(struct device_node *dn)
+@@ -994,6 +1098,18 @@ static int macb_mii_probe(struct net_dev
+ 		}
+ 	}
+ 
++	/* Configure EEE LPI if supported */
++	if (bp->caps & MACB_CAPS_EEE) {
++		__set_bit(PHY_INTERFACE_MODE_MII,
++			  bp->phylink_config.lpi_interfaces);
++		__set_bit(PHY_INTERFACE_MODE_GMII,
++			  bp->phylink_config.lpi_interfaces);
++		phy_interface_set_rgmii(bp->phylink_config.lpi_interfaces);
++		bp->phylink_config.lpi_capabilities = MAC_100FD | MAC_1000FD;
++		bp->phylink_config.lpi_timer_default = 250000;
++		bp->phylink_config.eee_enabled_default = true;
++	}
++
+ 	bp->phylink = phylink_create(&bp->phylink_config, bp->pdev->dev.fwnode,
+ 				     bp->phy_interface, &macb_phylink_ops);
+ 	if (IS_ERR(bp->phylink)) {
+@@ -1395,6 +1511,9 @@ static int macb_tx_complete(struct macb_
+ 		netif_wake_subqueue(bp->dev, queue_index);
+ 	spin_unlock_irqrestore(&queue->tx_ptr_lock, flags);
+ 
++	if (packets)
++		macb_tx_lpi_schedule(bp);
++
+ 	return packets;
+ }
+ 
+@@ -2504,6 +2623,7 @@ static netdev_tx_t macb_start_xmit(struc
+ 			     skb->len);
+ 
+ 	spin_lock(&bp->lock);
++	macb_tx_lpi_wake(bp);
+ 
+ 	/* TSTART write might get dropped, so make the IRQ retrigger a buffer read */
+ 	if (macb_readl(bp, TSR) & MACB_BIT(TGO))
+@@ -3223,6 +3343,8 @@ static int macb_close(struct net_device
+ 		netdev_tx_reset_queue(netdev_get_tx_queue(dev, q));
+ 	}
+ 
++	cancel_delayed_work_sync(&bp->tx_lpi_work);
++
+ 	phylink_stop(bp->phylink);
+ 	phylink_disconnect_phy(bp->phylink);
+ 
+@@ -5872,6 +5994,7 @@ static int macb_probe(struct platform_de
+ 	}
+ 
+ 	INIT_WORK(&bp->hresp_err_bh_work, macb_hresp_error_task);
++	INIT_DELAYED_WORK(&bp->tx_lpi_work, macb_tx_lpi_work_fn);
+ 
+ 	netdev_info(dev, "Cadence %s rev 0x%08x at 0x%08lx irq %d (%pM)\n",
+ 		    macb_is_gem(bp) ? "GEM" : "MACB", macb_readl(bp, MID),
+@@ -5916,6 +6039,7 @@ static void macb_remove(struct platform_
+ 		mdiobus_free(bp->mii_bus);
+ 
+ 		device_set_wakeup_enable(&bp->pdev->dev, 0);
++		cancel_delayed_work_sync(&bp->tx_lpi_work);
+ 		cancel_work_sync(&bp->hresp_err_bh_work);
+ 		pm_runtime_disable(&pdev->dev);
+ 		pm_runtime_dont_use_autosuspend(&pdev->dev);

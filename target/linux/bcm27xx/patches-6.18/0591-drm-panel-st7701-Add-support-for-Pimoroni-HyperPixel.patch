@@ -1,0 +1,329 @@
+From e7437769a42ef91a7aa0e1d9d6a88c222d6bdafe Mon Sep 17 00:00:00 2001
+From: Akira Ouchi <akkiesoft@marokun.net>
+Date: Sun, 7 Dec 2025 17:43:58 +0900
+Subject: [PATCH] drm/panel: st7701: Add support for Pimoroni HyperPixel 2.1
+ Round
+
+HyperPixel2R is another DPI fed/SPI configured panel using
+ST7701.
+Add the relevant configuration information to the driver.
+
+Signed-off-by: Akira Ouchi <akkiesoft@marokun.net>
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/panel/panel-sitronix-st7701.c | 249 +++++++++++++++++-
+ 1 file changed, 248 insertions(+), 1 deletion(-)
+
+--- a/drivers/gpu/drm/panel/panel-sitronix-st7701.c
++++ b/drivers/gpu/drm/panel/panel-sitronix-st7701.c
+@@ -12,6 +12,7 @@
+ #include <linux/bitfield.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/delay.h>
++#include <linux/media-bus-format.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/regulator/consumer.h>
+@@ -106,6 +107,7 @@ struct st7701_panel_desc {
+ 	const struct drm_display_mode *mode;
+ 	unsigned int lanes;
+ 	enum mipi_dsi_pixel_format format;
++	u32 mediabus_format;
+ 	unsigned int panel_sleep_delay;
+ 
+ 	/* TFT matrix driver configuration, panel specific. */
+@@ -542,6 +544,94 @@ static void wf40eswaa6mnn0_gip_sequence(
+ 	ST7701_WRITE(st7701, MIPI_DCS_SET_ADDRESS_MODE, 0);
+ }
+ 
++static void txw210001b0_gip_sequence(struct st7701 *st7701)
++{
++	ST7701_WRITE(st7701, MIPI_DCS_SOFT_RESET);
++
++	usleep_range(5000, 7000);
++
++	st7701_switch_cmd_bkx(st7701, true, 0);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK0_LNESET, 0x3B, 0x0);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK0_PORCTRL, 0xB, 0x2);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK0_INVSEL, 0x0, 0x2);
++
++	ST7701_WRITE(st7701, 0xCC, 0x10);
++
++	st7701_switch_cmd_bkx(st7701, true, 1);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_VRHS, 0x5D);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_VCOM, 0x43);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_VGHSS, 0x81);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_TESTCMD, 0x80);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_VGLS, 0x43);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_PWCTLR1, 0x85);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_PWCTLR2, 0x20);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_SPD1, 0x78);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_SPD2, 0x78);
++
++	ST7701_WRITE(st7701, ST7701_CMD2_BK1_MIPISET1, 0x88);
++
++	ST7701_WRITE(st7701, 0xE0, 0x0, 0x0, 0x2);
++
++	ST7701_WRITE(st7701, 0xE1,
++		     0x3, 0xA0, 0x0, 0x0, 0x4, 0xA0, 0x0, 0x0,
++		     0x0, 0x20, 0x20);
++
++	ST7701_WRITE(st7701, 0xE2,
++		     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
++		     0x0, 0x0, 0x0, 0x0, 0x0);
++
++	ST7701_WRITE(st7701, 0xE3, 0x0, 0x0, 0x11, 0x0);
++
++	ST7701_WRITE(st7701, 0xE4, 0x22, 0x0);
++
++	ST7701_WRITE(st7701, 0xE5,
++		     0x5, 0xEC, 0xA0, 0xA0, 0x7, 0xEE, 0xA0, 0xA0,
++		     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0);
++
++	ST7701_WRITE(st7701, 0xE6, 0x0, 0x0, 0x11, 0x0);
++
++	ST7701_WRITE(st7701, 0xE7, 0x22, 0x0);
++
++	ST7701_WRITE(st7701, 0xE8,
++		     0x6, 0xED, 0xA0, 0xA0, 0x8, 0xEF, 0xA0, 0xA0,
++		     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0);
++
++	ST7701_WRITE(st7701, 0xEB,
++		     0x0, 0x0, 0x40, 0x40, 0x0, 0x0, 0x0);
++
++	ST7701_WRITE(st7701, 0xED,
++		     0xFF, 0xFF, 0xFF, 0xBA, 0xA, 0xBF, 0x45, 0xFF,
++		     0xFF, 0x54, 0xFB, 0xA0, 0xAB, 0xFF, 0xFF, 0xFF);
++
++	ST7701_WRITE(st7701, 0xEF, 0x10, 0xD, 0x4, 0x8, 0x3F, 0x1F);
++
++	st7701_switch_cmd_bkx(st7701, true, 3);
++
++	ST7701_WRITE(st7701, 0xEF, 0x8);
++
++	st7701_switch_cmd_bkx(st7701, false, 0);
++
++	ST7701_WRITE(st7701, 0xCD, 0x8);  /* RGB format COLCTRL */
++
++	ST7701_WRITE(st7701, 0x36, 0x8); /* MadCtl */
++
++	ST7701_WRITE(st7701, 0x3A, 0x66);  /* Colmod */
++
++	ST7701_WRITE(st7701, MIPI_DCS_EXIT_SLEEP_MODE);
++}
++
+ static int st7701_prepare(struct drm_panel *panel)
+ {
+ 	struct st7701 *st7701 = panel_to_st7701(panel);
+@@ -631,6 +721,11 @@ static int st7701_get_modes(struct drm_p
+ 	drm_mode_set_name(mode);
+ 	drm_mode_probed_add(connector, mode);
+ 
++	if (st7701->desc->mediabus_format)
++		drm_display_info_set_bus_formats(&connector->display_info,
++						 &st7701->desc->mediabus_format,
++						 1);
++
+ 	connector->display_info.width_mm = desc_mode->width_mm;
+ 	connector->display_info.height_mm = desc_mode->height_mm;
+ 
+@@ -1178,6 +1273,26 @@ static const struct drm_display_mode wf4
+ 	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
+ };
+ 
++static const struct drm_display_mode txw210001b0_mode = {
++	.clock		= 19200,
++
++	.hdisplay	= 480,
++	.hsync_start	= 480 + 10,
++	.hsync_end	= 480 + 10 + 16,
++	.htotal		= 480 + 10 + 16 + 56,
++
++	.vdisplay	= 480,
++	.vsync_start	= 480 + 15,
++	.vsync_end	= 480 + 15 + 60,
++	.vtotal		= 480 + 15 + 60 + 15,
++
++	.width_mm	= 53,
++	.height_mm	= 53,
++	.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
++
++	.type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
++};
++
+ static const struct st7701_panel_desc wf40eswaa6mnn0_desc = {
+ 	.mode = &wf40eswaa6mnn0_mode,
+ 	.lanes = 2,
+@@ -1258,6 +1373,134 @@ static const struct st7701_panel_desc wf
+ 	.gip_sequence = wf40eswaa6mnn0_gip_sequence,
+ };
+ 
++static const struct st7701_panel_desc txw210001b0_desc = {
++	.mode = &txw210001b0_mode,
++	.mediabus_format = MEDIA_BUS_FMT_RGB888_1X24,
++	.pv_gamma = {
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC0_MASK, 0x2),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC4_MASK, 0x13),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC8_MASK, 0x1b),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC16_MASK, 0xd),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC24_MASK, 0x10),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC52_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC80_MASK, 0x8),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC108_MASK, 0x7),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC147_MASK, 0x7),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC175_MASK, 0x24),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC203_MASK, 0x4),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC231_MASK, 0x11),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC239_MASK, 0xe),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC247_MASK, 0x2c),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC251_MASK, 0x33),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC255_MASK, 0x1d)
++	},
++	.nv_gamma = {
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC0_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC4_MASK, 0x13),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0x0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC8_MASK, 0x1b),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC16_MASK, 0xd),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC24_MASK, 0x11),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC52_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC80_MASK, 0x8),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC108_MASK, 0x7),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC147_MASK, 0x7),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC175_MASK, 0x24),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC203_MASK, 0x4),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC231_MASK, 0x11),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC239_MASK, 0xe),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC247_MASK, 0x2c),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC251_MASK, 0x33),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC255_MASK, 0x1d)
++	},
++	.gip_sequence = txw210001b0_gip_sequence,
++};
++
++static const struct st7701_panel_desc hyperpixel2r_desc = {
++	.mode = &txw210001b0_mode,
++	.mediabus_format = MEDIA_BUS_FMT_RGB666_1X24_CPADHI,
++	.pv_gamma = {
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC0_MASK, 0x2),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC4_MASK, 0x13),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC8_MASK, 0x1b),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC16_MASK, 0xd),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC24_MASK, 0x10),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC52_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC80_MASK, 0x8),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC108_MASK, 0x7),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC147_MASK, 0x7),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC175_MASK, 0x24),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC203_MASK, 0x4),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC231_MASK, 0x11),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC239_MASK, 0xe),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC247_MASK, 0x2c),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC251_MASK, 0x33),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC255_MASK, 0x1d)
++	},
++	.nv_gamma = {
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC0_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC4_MASK, 0x13),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0x0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC8_MASK, 0x1b),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC16_MASK, 0xd),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC24_MASK, 0x11),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC52_MASK, 0x5),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC80_MASK, 0x8),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC108_MASK, 0x7),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC147_MASK, 0x7),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC175_MASK, 0x24),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC203_MASK, 0x4),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC231_MASK, 0x11),
++
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC239_MASK, 0xe),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC247_MASK, 0x2c),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC251_MASK, 0x33),
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_AJ_MASK, 0) |
++		CFIELD_PREP(ST7701_CMD2_BK0_GAMCTRL_VC255_MASK, 0x1d)
++	},
++	.gip_sequence = txw210001b0_gip_sequence,
++};
++
+ static void st7701_cleanup(void *data)
+ {
+ 	struct st7701 *st7701 = (struct st7701 *)data;
+@@ -1290,7 +1533,7 @@ static int st7701_probe(struct device *d
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	st7701->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
++	st7701->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
+ 	if (IS_ERR(st7701->reset)) {
+ 		dev_err(dev, "Couldn't get our reset GPIO\n");
+ 		return PTR_ERR(st7701->reset);
+@@ -1395,12 +1638,16 @@ MODULE_DEVICE_TABLE(of, st7701_dsi_of_ma
+ 
+ static const struct of_device_id st7701_spi_of_match[] = {
+ 	{ .compatible = "anbernic,rg28xx-panel", .data = &rg28xx_desc },
++	{ .compatible = "txw,txw210001b0", .data = &txw210001b0_desc },
++	{ .compatible = "pimoroni,hyperpixel2round", .data = &hyperpixel2r_desc },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(of, st7701_spi_of_match);
+ 
+ static const struct spi_device_id st7701_spi_ids[] = {
+ 	{ "rg28xx-panel" },
++	{ "txw210001b0" },
++	{ "hyperpixel2round" },
+ 	{ /* sentinel */ }
+ };
+ MODULE_DEVICE_TABLE(spi, st7701_spi_ids);

@@ -1,0 +1,260 @@
+From 7136f2b7245f380ac9ae2b29fd556ca9567c6e1b Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 11 Feb 2025 16:09:27 +0000
+Subject: [PATCH] media: hevc_dec: Add in downstream single planar SAND variant
+
+Upstream will take the multi-planar SAND format, but add back
+in the downstream single planar variant for backwards compatibility
+
+This includes the fixups that were present as separate patches in
+earlier versions.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../raspberrypi/hevc_dec/hevc_d_h265.c        | 93 ++++++++++++++++---
+ .../raspberrypi/hevc_dec/hevc_d_video.c       | 72 +++++++++++---
+ 2 files changed, 137 insertions(+), 28 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.c
++++ b/drivers/media/platform/raspberrypi/hevc_dec/hevc_d_h265.c
+@@ -1556,6 +1556,8 @@ static int hevc_d_h265_setup(struct hevc
+ 	unsigned int ctb_size_y;
+ 	bool sps_changed = false;
+ 	unsigned int lkg_slot;
++	/* Old (downstream only) bit size meanings */
++	bool old_bits = false;
+ 
+ 	de = dec_env_new(ctx);
+ 	if (!de) {
+@@ -1606,25 +1608,43 @@ static int hevc_d_h265_setup(struct hevc
+ 	de->cmd_len = 0;
+ 	de->dpbno_col = ~0U;
+ 
+-	de->luma_stride = ctx->dst_fmt.height * 128;
+-	de->frame_luma_addr =
+-		vb2_dma_contig_plane_dma_addr(&run->dst->vb2_buf, 0);
+-	de->chroma_stride = de->luma_stride / 2;
+-	de->frame_chroma_addr =
+-		vb2_dma_contig_plane_dma_addr(&run->dst->vb2_buf, 1);
+-	de->mvbase = 0;
+-	de->frame_slot = run->dst->vb2_buf.index;
++	switch (ctx->dst_fmt.pixelformat) {
++	case V4L2_PIX_FMT_NV12MT_COL128:
++	case V4L2_PIX_FMT_NV12MT_10_COL128:
++		de->luma_stride = ctx->dst_fmt.height * 128;
++		de->frame_luma_addr =
++			vb2_dma_contig_plane_dma_addr(&run->dst->vb2_buf, 0);
++		de->chroma_stride = de->luma_stride / 2;
++		de->frame_chroma_addr =
++			vb2_dma_contig_plane_dma_addr(&run->dst->vb2_buf, 1);
++		de->mvbase = 0;
++		de->frame_slot = run->dst->vb2_buf.index;
++		break;
++	case V4L2_PIX_FMT_NV12_COL128:
++	case V4L2_PIX_FMT_NV12_10_COL128:
++		de->luma_stride = ctx->dst_fmt.plane_fmt[0].bytesperline * 128;
++		de->frame_luma_addr =
++			vb2_dma_contig_plane_dma_addr(&run->dst->vb2_buf, 0);
++		de->chroma_stride = de->luma_stride;
++		de->frame_chroma_addr = de->frame_luma_addr +
++					(ctx->dst_fmt.height * 128);
++		de->mvbase = 0;
++		de->frame_slot = run->dst->vb2_buf.index;
++		old_bits = true;
++		break;
++	}
+ 
+ 	if (s->sps.bit_depth_luma_minus8 == 0) {
+-		if (ctx->dst_fmt.pixelformat != V4L2_PIX_FMT_NV12MT_COL128) {
++		if (ctx->dst_fmt.pixelformat != V4L2_PIX_FMT_NV12MT_COL128 &&
++		    ctx->dst_fmt.pixelformat != V4L2_PIX_FMT_NV12_COL128) {
+ 			v4l2_err(&dev->v4l2_dev,
+ 				 "Pixel format %#x != NV12MT_COL128 for 8-bit output",
+ 				 ctx->dst_fmt.pixelformat);
+ 			goto fail;
+ 		}
+ 	} else {
+-		if (ctx->dst_fmt.pixelformat !=
+-					V4L2_PIX_FMT_NV12MT_10_COL128) {
++		if (ctx->dst_fmt.pixelformat != V4L2_PIX_FMT_NV12MT_10_COL128 &&
++		    ctx->dst_fmt.pixelformat != V4L2_PIX_FMT_NV12_10_COL128) {
+ 			v4l2_err(&dev->v4l2_dev,
+ 				 "Pixel format %#x != NV12MT_10_COL128 for 10-bit output",
+ 				 ctx->dst_fmt.pixelformat);
+@@ -1643,6 +1663,42 @@ static int hevc_d_h265_setup(struct hevc
+ 		goto fail;
+ 	}
+ 
++	switch (ctx->dst_fmt.pixelformat) {
++	case V4L2_PIX_FMT_NV12MT_COL128:
++	case V4L2_PIX_FMT_NV12MT_10_COL128:
++		if (run->dst->vb2_buf.num_planes != 2) {
++			v4l2_warn(&dev->v4l2_dev, "Capture planes (%d) != 2\n",
++				  run->dst->vb2_buf.num_planes);
++			goto fail;
++		}
++		if (run->dst->planes[0].length < ctx->dst_fmt.plane_fmt[0].sizeimage ||
++		    run->dst->planes[1].length < ctx->dst_fmt.plane_fmt[1].sizeimage) {
++			v4l2_warn(&dev->v4l2_dev,
++				  "Capture planes length (%d/%d) < sizeimage (%d/%d)\n",
++				  run->dst->planes[0].length,
++				  run->dst->planes[1].length,
++				  ctx->dst_fmt.plane_fmt[0].sizeimage,
++				  ctx->dst_fmt.plane_fmt[1].sizeimage);
++			goto fail;
++		}
++		break;
++	case V4L2_PIX_FMT_NV12_COL128:
++	case V4L2_PIX_FMT_NV12_10_COL128:
++		if (run->dst->vb2_buf.num_planes != 1) {
++			v4l2_warn(&dev->v4l2_dev, "Capture planes (%d) != 1\n",
++				  run->dst->vb2_buf.num_planes);
++			goto fail;
++		}
++		if (run->dst->planes[0].length < ctx->dst_fmt.plane_fmt[0].sizeimage) {
++			v4l2_warn(&dev->v4l2_dev,
++				  "Capture planes length (%d) < sizeimage (%d)\n",
++				  run->dst->planes[0].length,
++				  ctx->dst_fmt.plane_fmt[0].sizeimage);
++			goto fail;
++		}
++		break;
++	}
++
+ 	/*
+ 	 * Need Aux ents for all (ref) DPB ents if temporal MV could
+ 	 * be enabled for any pic
+@@ -1688,15 +1744,24 @@ static int hevc_d_h265_setup(struct hevc
+ 	for (i = 0; i != run->h265.slice_ents; ++i) {
+ 		const struct v4l2_ctrl_hevc_slice_params *const sh = sh0 + i;
+ 		const bool last_slice = i + 1 == run->h265.slice_ents;
+-		const u32 byte_size = DIV_ROUND_UP(sh->bit_size, 8);
++		unsigned int bit_size = old_bits ? sh->bit_size - 8 * sh->data_byte_offset :
++						   sh->bit_size;
++		const u32 byte_size = DIV_ROUND_UP(bit_size, 8);
+ 		unsigned int j;
+ 
+ 		s->sh = sh;
+ 
++		if (old_bits && sh->bit_size <= 8 * sh->data_byte_offset) {
++			v4l2_warn(&dev->v4l2_dev,
++				  "data_byte_offset %d * 8 >= bits %d\n",
++				  sh->data_byte_offset, sh->bit_size);
++			goto fail;
++		}
++
+ 		if (sh->data_byte_offset + byte_size > run->src->planes[0].bytesused) {
+ 			v4l2_warn(&dev->v4l2_dev,
+ 				  "data_byte_offset %d + bits %d (= %d bytes) > bytesused %d\n",
+-				  sh->data_byte_offset, sh->bit_size, byte_size,
++				  sh->data_byte_offset, bit_size, byte_size,
+ 				  run->src->planes[0].bytesused);
+ 			goto fail;
+ 		}
+@@ -1706,7 +1771,7 @@ static int hevc_d_h265_setup(struct hevc
+ 		 * actual size of the buffer (which may well be what is used to set
+ 		 * bit_size if the caller isn't being very pedantic).
+ 		 */
+-		s->data_len = min(sh->bit_size / 8 + 1,
++		s->data_len = min(bit_size / 8 + 1,
+ 				  run->src->planes[0].bytesused - sh->data_byte_offset);
+ 
+ 		s->slice_qp = 26 + s->pps.init_qp_minus26 + sh->slice_qp_delta;
+--- a/drivers/media/platform/raspberrypi/hevc_dec/hevc_d_video.c
++++ b/drivers/media/platform/raspberrypi/hevc_dec/hevc_d_video.c
+@@ -128,17 +128,49 @@ static void hevc_d_prepare_dst_format(st
+ 		bytesperline = width * 4 / 3;
+ 		sizeimage = bytesperline * height;
+ 		break;
++
++	case V4L2_PIX_FMT_NV12_COL128:
++		/* Width rounds up to columns */
++		width = ALIGN(width, 128);
++		height = ALIGN(height, 16);
++
++		bytesperline = height * 3 / 2;
++		sizeimage = bytesperline * width;
++		break;
++
++	case V4L2_PIX_FMT_NV12_10_COL128:
++		/* width in pixels (3 pels = 4 bytes) rounded to 128 byte
++		 * columns
++		 */
++		width = ALIGN(((width + 2) / 3), 32) * 3;
++		height = ALIGN(height, 16);
++
++		bytesperline = height * 3 / 2;
++		sizeimage = bytesperline * width * 4 / 3;
++		break;
+ 	}
+ 
+ 	pix_fmt->width = width;
+ 	pix_fmt->height = height;
+ 
+ 	pix_fmt->field = V4L2_FIELD_NONE;
+-	pix_fmt->plane_fmt[0].bytesperline = bytesperline;
+-	pix_fmt->plane_fmt[0].sizeimage = sizeimage;
+-	pix_fmt->plane_fmt[1].bytesperline = bytesperline;
+-	pix_fmt->plane_fmt[1].sizeimage = sizeimage / 2;
+-	pix_fmt->num_planes = 2;
++	switch (pix_fmt->pixelformat) {
++	default:
++	case V4L2_PIX_FMT_NV12MT_COL128:
++	case V4L2_PIX_FMT_NV12MT_10_COL128:
++		pix_fmt->plane_fmt[0].bytesperline = bytesperline;
++		pix_fmt->plane_fmt[0].sizeimage = sizeimage;
++		pix_fmt->plane_fmt[1].bytesperline = bytesperline;
++		pix_fmt->plane_fmt[1].sizeimage = sizeimage / 2;
++		pix_fmt->num_planes = 2;
++		break;
++	case V4L2_PIX_FMT_NV12_COL128:
++	case V4L2_PIX_FMT_NV12_10_COL128:
++		pix_fmt->plane_fmt[0].bytesperline = bytesperline;
++		pix_fmt->plane_fmt[0].sizeimage = sizeimage;
++		pix_fmt->num_planes = 1;
++		break;
++	}
+ }
+ 
+ static int hevc_d_querycap(struct file *file, void *priv,
+@@ -223,19 +255,31 @@ static int hevc_d_hevc_validate_sps(cons
+ static u32 pixelformat_from_sps(const struct v4l2_ctrl_hevc_sps * const sps,
+ 				const int index)
+ {
++	static const u32 all_formats[] = {
++		V4L2_PIX_FMT_NV12MT_COL128,
++		V4L2_PIX_FMT_NV12MT_10_COL128,
++		V4L2_PIX_FMT_NV12_COL128,
++		V4L2_PIX_FMT_NV12_10_COL128,
++	};
+ 	u32 pf = 0;
+ 
+ 	if (!is_sps_set(sps) || !hevc_d_hevc_validate_sps(sps)) {
+ 		/* Treat this as an error? For now return both */
+-		if (index == 0)
+-			pf = V4L2_PIX_FMT_NV12MT_COL128;
+-		else if (index == 1)
+-			pf = V4L2_PIX_FMT_NV12MT_10_COL128;
+-	} else if (index == 0) {
+-		if (sps->bit_depth_luma_minus8 == 0)
+-			pf = V4L2_PIX_FMT_NV12MT_COL128;
+-		else if (sps->bit_depth_luma_minus8 == 2)
+-			pf = V4L2_PIX_FMT_NV12MT_10_COL128;
++
++		if (index < ARRAY_SIZE(all_formats))
++			pf = all_formats[index];
++	} else {
++		if (index == 0) {
++			if (sps->bit_depth_luma_minus8 == 0)
++				pf = V4L2_PIX_FMT_NV12MT_COL128;
++			else if (sps->bit_depth_luma_minus8 == 2)
++				pf = V4L2_PIX_FMT_NV12MT_10_COL128;
++		} else if (index == 1) {
++			if (sps->bit_depth_luma_minus8 == 0)
++				pf = V4L2_PIX_FMT_NV12_COL128;
++			else if (sps->bit_depth_luma_minus8 == 2)
++				pf = V4L2_PIX_FMT_NV12_10_COL128;
++		}
+ 	}
+ 
+ 	return pf;

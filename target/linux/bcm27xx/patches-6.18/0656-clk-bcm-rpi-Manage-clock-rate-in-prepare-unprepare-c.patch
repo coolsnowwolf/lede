@@ -1,0 +1,154 @@
+From 0276d66986d08212f3d33d299d5e2cd8eb2f87cc Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Fri, 16 Jan 2026 11:26:44 -0300
+Subject: [PATCH] clk: bcm: rpi: Manage clock rate in prepare/unprepare
+ callbacks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On current firmware versions, RPI_FIRMWARE_SET_CLOCK_STATE doesn't
+actually power off the clock. To achieve meaningful power savings, the
+clock rate must be set to the minimum before disabling. This might be
+fixed in future firmware releases.
+
+Rather than pushing rate management to clock consumers, handle it
+directly in the clock framework's prepare/unprepare callbacks. In
+unprepare, set the rate to the firmware-reported minimum before
+disabling the clock. In prepare, for clocks marked with `maximize`
+(currently v3d), restore the rate to the maximum after enabling.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/clk/bcm/clk-raspberrypi.c | 61 ++++++++++++++++++-------------
+ 1 file changed, 35 insertions(+), 26 deletions(-)
+
+--- a/drivers/clk/bcm/clk-raspberrypi.c
++++ b/drivers/clk/bcm/clk-raspberrypi.c
+@@ -66,7 +66,8 @@ const struct raspberrypi_clk_data *clk_h
+ struct raspberrypi_clk_variant {
+ 	bool		export;
+ 	char		*clkdev;
+-	unsigned long	min_rate;
++	u32		min_rate;
++	u32		max_rate;
+ 	bool		minimize;
+ 	bool		maximize;
+ 	u32		flags;
+@@ -290,16 +291,22 @@ static int raspberrypi_fw_dumb_determine
+ static int raspberrypi_fw_prepare(struct clk_hw *hw)
+ {
+ 	const struct raspberrypi_clk_data *data = clk_hw_to_data(hw);
++	struct raspberrypi_clk_variant *variant = data->variant;
+ 	struct raspberrypi_clk *rpi = data->rpi;
+ 	u32 state = RPI_FIRMWARE_STATE_ENABLE_BIT;
+ 	int ret;
+ 
+ 	ret = raspberrypi_clock_property(rpi->firmware, data,
+ 					 RPI_FIRMWARE_SET_CLOCK_STATE, &state);
+-	if (ret)
++	if (ret) {
+ 		dev_err_ratelimited(rpi->dev,
+ 				    "Failed to set clock %s state to on: %d\n",
+ 				    clk_hw_get_name(hw), ret);
++		return ret;
++	}
++
++	if (variant->maximize)
++		ret = raspberrypi_fw_set_rate(hw, variant->max_rate, 0);
+ 
+ 	return ret;
+ }
+@@ -307,10 +314,19 @@ static int raspberrypi_fw_prepare(struct
+ static void raspberrypi_fw_unprepare(struct clk_hw *hw)
+ {
+ 	const struct raspberrypi_clk_data *data = clk_hw_to_data(hw);
++	struct raspberrypi_clk_variant *variant = data->variant;
+ 	struct raspberrypi_clk *rpi = data->rpi;
+ 	u32 state = 0;
+ 	int ret;
+ 
++	/*
++	 * On current firmware versions, RPI_FIRMWARE_SET_CLOCK_STATE doesn't
++	 * actually power off the clock. To achieve meaningful power consumption
++	 * reduction, the driver needs to set the clock rate to minimum before
++	 * disabling it.
++	 */
++	raspberrypi_fw_set_rate(hw, variant->min_rate, 0);
++
+ 	ret = raspberrypi_clock_property(rpi->firmware, data,
+ 					 RPI_FIRMWARE_SET_CLOCK_STATE, &state);
+ 	if (ret)
+@@ -335,7 +351,7 @@ static struct clk_hw *raspberrypi_clk_re
+ {
+ 	struct raspberrypi_clk_data *data;
+ 	struct clk_init_data init = {};
+-	u32 min_rate, max_rate;
++	unsigned long rate;
+ 	int ret;
+ 
+ 	data = devm_kzalloc(rpi->dev, sizeof(*data), GFP_KERNEL);
+@@ -355,18 +371,20 @@ static struct clk_hw *raspberrypi_clk_re
+ 
+ 	data->hw.init = &init;
+ 
+-	ret = raspberrypi_clock_property(rpi->firmware, data,
+-					 RPI_FIRMWARE_GET_MIN_CLOCK_RATE,
+-					 &min_rate);
+-	if (ret) {
+-		dev_err(rpi->dev, "Failed to get clock %d min freq: %d\n",
+-			id, ret);
+-		return ERR_PTR(ret);
++	if (!variant->min_rate) {
++		ret = raspberrypi_clock_property(rpi->firmware, data,
++						 RPI_FIRMWARE_GET_MIN_CLOCK_RATE,
++						 &variant->min_rate);
++		if (ret) {
++			dev_err(rpi->dev, "Failed to get clock %d min freq: %d\n",
++				id, ret);
++			return ERR_PTR(ret);
++		}
+ 	}
+ 
+ 	ret = raspberrypi_clock_property(rpi->firmware, data,
+ 					 RPI_FIRMWARE_GET_MAX_CLOCK_RATE,
+-					 &max_rate);
++					 &variant->max_rate);
+ 	if (ret) {
+ 		dev_err(rpi->dev, "Failed to get clock %d max freq: %d\n",
+ 			id, ret);
+@@ -377,7 +395,7 @@ static struct clk_hw *raspberrypi_clk_re
+ 	if (ret)
+ 		return ERR_PTR(ret);
+ 
+-	clk_hw_set_rate_range(&data->hw, min_rate, max_rate);
++	clk_hw_set_rate_range(&data->hw, variant->min_rate, variant->max_rate);
+ 
+ 	if (variant->clkdev) {
+ 		ret = devm_clk_hw_register_clkdev(rpi->dev, &data->hw,
+@@ -388,20 +406,11 @@ static struct clk_hw *raspberrypi_clk_re
+ 		}
+ 	}
+ 
+-	if (variant->maximize)
+-		variant->min_rate = max_rate;
+-
+-	if (variant->min_rate) {
+-		unsigned long rate;
+-
+-		clk_hw_set_rate_range(&data->hw, variant->min_rate, max_rate);
+-
+-		rate = raspberrypi_fw_get_rate(&data->hw, 0);
+-		if (rate < variant->min_rate) {
+-			ret = raspberrypi_fw_set_rate(&data->hw, variant->min_rate, 0);
+-			if (ret)
+-				return ERR_PTR(ret);
+-		}
++	rate = raspberrypi_fw_get_rate(&data->hw, 0);
++	if (rate < variant->min_rate) {
++		ret = raspberrypi_fw_set_rate(&data->hw, variant->min_rate, 0);
++		if (ret)
++			return ERR_PTR(ret);
+ 	}
+ 
+ 	return &data->hw;

@@ -1,0 +1,70 @@
+From 8b724631f91cb2c1144e229cc89e0849d3e7f86a Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 16 Jun 2026 12:48:50 +0100
+Subject: [PATCH] misc: rp1-pio: Ensure transfers are configured
+
+Fail transfers if they haven't first been configured.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-pio.c | 28 +++++++++++++++++++---------
+ 1 file changed, 19 insertions(+), 9 deletions(-)
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -615,7 +615,7 @@ static int rp1_pio_sm_config_xfer_intern
+ 	struct dma_slave_config config = {};
+ 	struct dma_slave_caps dma_caps;
+ 	phys_addr_t fifo_addr;
+-	struct dma_info *dma;
++	struct dma_info *dma = NULL;
+ 	uint32_t dma_mask;
+ 	char chan_name[4];
+ 	int ret = 0;
+@@ -629,14 +629,17 @@ static int rp1_pio_sm_config_xfer_intern
+ 
+ 	dma_mask = 1 << (sm * 2 + dir);
+ 
+-	dma = &pio->dma_configs[sm][dir];
+-
+ 	spin_lock(&pio->lock);
+-	if (pio->claimed_dmas & dma_mask)
+-		rp1_pio_sm_dma_free(dev, dma);
+-	pio->claimed_dmas |= dma_mask;
+-	client->claimed_dmas |= dma_mask;
++	if (!(pio->claimed_dmas & dma_mask & ~client->claimed_dmas)) {
++		dma = &pio->dma_configs[sm][dir];
++		if (client->claimed_dmas & dma_mask)
++			rp1_pio_sm_dma_free(dev, dma);
++		pio->claimed_dmas |= dma_mask;
++		client->claimed_dmas |= dma_mask;
++	}
+ 	spin_unlock(&pio->lock);
++	if (!dma)
++		return -EBUSY;
+ 
+ 	dma->buf_size = buf_size;
+ 	/* Round up the allocations */
+@@ -879,13 +882,20 @@ static int rp1_pio_sm_xfer_data32_user(s
+ {
+ 	struct rp1_pio_sm_xfer_data32_args *args = param;
+ 	struct rp1_pio_device *pio = client->pio;
+-	struct dma_info *dma;
++	struct dma_info *dma = NULL;
++	uint32_t dma_mask;
+ 
+ 	if (args->sm >= RP1_PIO_SMS_COUNT || args->dir >= RP1_PIO_DIR_COUNT ||
+ 	    !args->data_bytes || !args->data)
+ 		return -EINVAL;
+ 
+-	dma = &pio->dma_configs[args->sm][args->dir];
++	dma_mask = 1 << (args->sm * 2 + args->dir);
++	spin_lock(&pio->lock);
++	if (client->claimed_dmas & dma_mask)
++		dma = &pio->dma_configs[args->sm][args->dir];
++	spin_unlock(&pio->lock);
++	if (!dma)
++		return -EINVAL;
+ 
+ 	if (args->dir == RP1_PIO_DIR_TO_SM)
+ 		return rp1_pio_sm_tx_user(pio, dma, args->data, args->data_bytes);

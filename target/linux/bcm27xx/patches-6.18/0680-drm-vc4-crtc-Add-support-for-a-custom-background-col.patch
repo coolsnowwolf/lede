@@ -1,0 +1,154 @@
+From 422e0009fe4cc681ccbd3fb3e6488e417035ae02 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 2 Sep 2025 14:35:10 +0100
+Subject: [PATCH] drm/vc4: crtc: Add support for a custom background color
+
+Since a previous patch introduced the BACKGROUND_COLOR CRTC property,
+which defaults to solid black, take it into account when programming the
+hardware.
+The exact registers used varies between the hardware generations,
+but is supported by all of them.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  3 +++
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 35 ++++++++++++++++++++++++++++++++--
+ drivers/gpu/drm/vc4/vc4_regs.h | 34 ++++++++++++++++++++++++++++++---
+ 3 files changed, 67 insertions(+), 5 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -38,6 +38,7 @@
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_atomic_uapi.h>
++#include <drm/drm_blend.h>
+ #include <drm/drm_fb_dma_helper.h>
+ #include <drm/drm_framebuffer.h>
+ #include <drm/drm_drv.h>
+@@ -1434,6 +1435,8 @@ int __vc4_crtc_init(struct drm_device *d
+ 	if (ret)
+ 		return ret;
+ 
++	drm_crtc_attach_background_color_property(crtc);
++
+ 	drm_crtc_helper_add(crtc, crtc_helper_funcs);
+ 
+ 	if (vc4->gen == VC4_GEN_4) {
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1256,6 +1256,7 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	struct vc4_crtc *vc4_crtc = to_vc4_crtc(crtc);
+ 	struct vc4_crtc_state *vc4_state = to_vc4_crtc_state(crtc->state);
+ 	unsigned int channel = vc4_state->assigned_channel;
++	u64 bgcolor = crtc->state->background_color;
+ 	struct drm_plane *plane;
+ 	struct vc4_plane_state *vc4_plane_state;
+ 	bool debug_dump_regs = false;
+@@ -1320,16 +1321,46 @@ void vc4_hvs_atomic_flush(struct drm_crt
+ 	WARN_ON_ONCE(dlist_next - dlist_start != vc4_state->mm->mm_node.size);
+ 
+ 	if (vc4->gen >= VC4_GEN_6_C) {
+-		/* This sets a black background color fill, as is the case
++		/* This sets the background color fill, as is the case
+ 		 * with other DRM drivers.
+ 		 */
++		if (vc4->gen == VC4_GEN_6_C) {
++			HVS_WRITE(SCALER6_DISPX_BGND(channel),
++				  VC4_SET_FIELD(DRM_ARGB64_GETR_BPCS(bgcolor, 8),
++						SCALER6_DISPX_BGND_FILL_RED) |
++				  VC4_SET_FIELD(DRM_ARGB64_GETG_BPCS(bgcolor, 8),
++						SCALER6_DISPX_BGND_FILL_GREEN) |
++				  VC4_SET_FIELD(DRM_ARGB64_GETB_BPCS(bgcolor, 8),
++						SCALER6_DISPX_BGND_FILL_BLUE) |
++				  VC4_SET_FIELD(DRM_ARGB64_GETA_BPCS(bgcolor, 8),
++						SCALER6_DISPX_BGND_FILL_ALPHA));
++		} else {
++			/* GEN_6_D takes a 12bit background colour */
++			HVS_WRITE(SCALER6D_DISPX_BGND0(channel),
++				  VC4_SET_FIELD(DRM_ARGB64_GETG_BPCS(bgcolor, 12),
++						SCALER6D_DISPX_BGND0_FILL_GREEN) |
++				  VC4_SET_FIELD(DRM_ARGB64_GETB_BPCS(bgcolor, 12),
++						SCALER6D_DISPX_BGND0_FILL_BLUE));
++			HVS_WRITE(SCALER6D_DISPX_BGND1(channel),
++				  VC4_SET_FIELD(DRM_ARGB64_GETR_BPCS(bgcolor, 12),
++						SCALER6D_DISPX_BGND1_FILL_RED) |
++				  VC4_SET_FIELD(DRM_ARGB64_GETA_BPCS(bgcolor, 12),
++						SCALER6D_DISPX_BGND1_FILL_ALPHA));
++		}
+ 		hvs->bg_fill[channel] = enable_bg_fill;
+ 	} else {
+ 		/* we can actually run with a lower core clock when background
+ 		 * fill is enabled on VC4_GEN_5 so leave it enabled always.
+ 		 */
+ 		HVS_WRITE(SCALER_DISPBKGNDX(channel),
+-			  HVS_READ(SCALER_DISPBKGNDX(channel)) |
++			  (HVS_READ(SCALER_DISPBKGNDX(channel)) &
++						~SCALER_DISPBKGND_FILL_MASK) |
++			  VC4_SET_FIELD(DRM_ARGB64_GETR_BPCS(bgcolor, 8),
++					SCALER_DISPBKGND_FILL_RED) |
++			  VC4_SET_FIELD(DRM_ARGB64_GETG_BPCS(bgcolor, 8),
++					SCALER_DISPBKGND_FILL_GREEN) |
++			  VC4_SET_FIELD(DRM_ARGB64_GETB_BPCS(bgcolor, 8),
++					SCALER_DISPBKGND_FILL_BLUE) |
+ 			  SCALER_DISPBKGND_FILL);
+ 	}
+ 
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -402,6 +402,15 @@
+  * opaque display planes will cover everything.
+  */
+ # define SCALER_DISPBKGND_FILL			BIT(24)
++# define SCALER_DISPBKGND_FILL_RED_MASK		VC4_MASK(23, 16)
++# define SCALER_DISPBKGND_FILL_RED_SHIFT	16
++# define SCALER_DISPBKGND_FILL_GREEN_MASK	VC4_MASK(15, 8)
++# define SCALER_DISPBKGND_FILL_GREEN_SHIFT	8
++# define SCALER_DISPBKGND_FILL_BLUE_MASK	VC4_MASK(7, 0)
++# define SCALER_DISPBKGND_FILL_BLUE_SHIFT	0
++# define SCALER_DISPBKGND_FILL_MASK		(SCALER_DISPBKGND_FILL_RED_MASK |   \
++						 SCALER_DISPBKGND_FILL_GREEN_MASK | \
++						 SCALER_DISPBKGND_FILL_BLUE_MASK)
+ 
+ #define SCALER_DISPSTAT0                        0x00000048
+ # define SCALER_DISPSTATX_MODE_MASK		VC4_MASK(31, 30)
+@@ -580,9 +589,16 @@
+ # define SCALER6_DISPX_CTRL1_INTLACE		BIT(0)
+ 
+ #define SCALER6_DISP0_BGND			0x00000038
+-#define SCALER6_DISPX_BGND(x)		((hvs->vc4->gen == VC4_GEN_6_C) ? \
+-	(SCALER6_DISP0_BGND + ((x) * (SCALER6_DISP1_BGND - SCALER6_DISP0_BGND))) : \
+-	(SCALER6D_DISP0_BGND + ((x) * (SCALER6D_DISP1_BGND - SCALER6D_DISP0_BGND))))
++#define SCALER6_DISPX_BGND(x)		\
++	(SCALER6_DISP0_BGND + ((x) * (SCALER6_DISP1_BGND - SCALER6_DISP0_BGND)))
++# define SCALER6_DISPX_BGND_FILL_ALPHA_MASK	VC4_MASK(31, 24)
++# define SCALER6_DISPX_BGND_FILL_ALPHA_SHIFT	24
++# define SCALER6_DISPX_BGND_FILL_RED_MASK	VC4_MASK(23, 16)
++# define SCALER6_DISPX_BGND_FILL_RED_SHIFT	16
++# define SCALER6_DISPX_BGND_FILL_GREEN_MASK	VC4_MASK(15, 8)
++# define SCALER6_DISPX_BGND_FILL_GREEN_SHIFT	8
++# define SCALER6_DISPX_BGND_FILL_BLUE_MASK	VC4_MASK(7, 0)
++# define SCALER6_DISPX_BGND_FILL_BLUE_SHIFT	0
+ 
+ #define SCALER6_DISP0_LPTRS			0x0000003c
+ #define SCALER6_DISPX_LPTRS(x)		((hvs->vc4->gen == VC4_GEN_6_C) ? \
+@@ -701,7 +717,19 @@
+ #define SCALER6D_DISP0_CTRL0			0x00000100
+ #define SCALER6D_DISP0_CTRL1			0x00000104
+ #define SCALER6D_DISP0_BGND0			0x00000108
++#define SCALER6D_DISPX_BGND0(x)		\
++	(SCALER6D_DISP0_BGND0 + ((x) * (SCALER6D_DISP1_BGND0 - SCALER6D_DISP0_BGND0)))
++# define SCALER6D_DISPX_BGND0_FILL_GREEN_MASK	VC4_MASK(31, 20)
++# define SCALER6D_DISPX_BGND0_FILL_GREEN_SHIFT	20
++# define SCALER6D_DISPX_BGND0_FILL_BLUE_MASK	VC4_MASK(15, 4)
++# define SCALER6D_DISPX_BGND0_FILL_BLUE_SHIFT	4
+ #define SCALER6D_DISP0_BGND1			0x0000010c
++#define SCALER6D_DISPX_BGND1(x)		\
++	(SCALER6D_DISP0_BGND1 + ((x) * (SCALER6D_DISP1_BGND1 - SCALER6D_DISP0_BGND1)))
++# define SCALER6D_DISPX_BGND1_FILL_ALPHA_MASK	VC4_MASK(31, 20)
++# define SCALER6D_DISPX_BGND1_FILL_ALPHA_SHIFT	20
++# define SCALER6D_DISPX_BGND1_FILL_RED_MASK	VC4_MASK(15, 4)
++# define SCALER6D_DISPX_BGND1_FILL_RED_SHIFT	4
+ #define SCALER6D_DISP0_LPTRS			0x00000110
+ #define SCALER6D_DISP0_COB			0x00000114
+ #define SCALER6D_DISP0_STATUS			0x00000118

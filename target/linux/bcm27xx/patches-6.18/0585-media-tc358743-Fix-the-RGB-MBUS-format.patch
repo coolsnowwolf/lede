@@ -1,0 +1,139 @@
+From 3b411a7a60f0c4cba28640375801319292932d24 Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <mripard@kernel.org>
+Date: Wed, 17 Sep 2025 13:16:13 +0200
+Subject: [PATCH] media: tc358743: Fix the RGB MBUS format
+
+Upstream series https://lore.kernel.org/linux-media/20250917-csi-bgr-rgb-v3-0-0145571b3aa4@kernel.org/
+
+The tc358743 is an HDMI to MIPI-CSI2 bridge. It can output all three
+HDMI 1.4 video formats: RGB 4:4:4, YCbCr 4:2:2, and YCbCr 4:4:4.
+
+RGB 4:4:4 is converted to the MIPI-CSI2 RGB888 video format, and listed
+in the driver as MEDIA_BUS_FMT_RGB888_1X24.
+
+Most CSI2 receiver drivers then map MEDIA_BUS_FMT_RGB888_1X24 to
+V4L2_PIX_FMT_RGB24.
+
+However, V4L2_PIX_FMT_RGB24 is defined as having its color components in
+the R, G and B order, from left to right. MIPI-CSI2 however defines the
+RGB888 format with blue first.
+
+This essentially means that the R and B will be swapped compared to what
+V4L2_PIX_FMT_RGB24 defines.
+
+The proper MBUS format would be BGR888, so let's use that.
+
+Fixes: d32d98642de6 ("[media] Driver for Toshiba TC358743 HDMI to CSI-2 bridge")
+Signed-off-by: Maxime Ripard <mripard@kernel.org>
+---
+ drivers/media/i2c/tc358743.c | 53 ++++++++++++++++++++++++++++++------
+ 1 file changed, 44 insertions(+), 9 deletions(-)
+
+--- a/drivers/media/i2c/tc358743.c
++++ b/drivers/media/i2c/tc358743.c
+@@ -756,6 +756,7 @@ static void tc358743_set_ref_clk(struct
+ static void tc358743_set_csi_color_space(struct v4l2_subdev *sd)
+ {
+ 	struct tc358743_state *state = to_state(sd);
++	struct device *dev = &state->i2c_client->dev;
+ 
+ 	switch (state->mbus_fmt_code) {
+ 	case MEDIA_BUS_FMT_UYVY8_1X16:
+@@ -771,7 +772,17 @@ static void tc358743_set_csi_color_space
+ 		mutex_unlock(&state->confctl_mutex);
+ 		break;
+ 	case MEDIA_BUS_FMT_RGB888_1X24:
+-		v4l2_dbg(2, debug, sd, "%s: RGB 888 24-bit\n", __func__);
++		/*
++		 * The driver was initially introduced with RGB888
++		 * support, but CSI really means BGR.
++		 *
++		 * Since we might have applications that would have
++		 * hard-coded the RGB888, let's support both.
++		 */
++		dev_warn_once(dev, "RGB format isn't actually supported by the hardware. The application should be fixed to use BGR.");
++		fallthrough;
++	case MEDIA_BUS_FMT_BGR888_1X24:
++		v4l2_dbg(2, debug, sd, "%s: BGR 888 24-bit\n", __func__);
+ 		i2c_wr8_and_or(sd, VOUT_SET2,
+ 				~(MASK_SEL422 | MASK_VOUT_422FIL_100) & 0xff,
+ 				0x00);
+@@ -1432,11 +1443,26 @@ static int tc358743_log_status(struct v4
+ 	v4l2_info(sd, "Stopped: %s\n",
+ 			(i2c_rd16(sd, CSI_STATUS) & MASK_S_HLT) ?
+ 			"yes" : "no");
+-	v4l2_info(sd, "Color space: %s\n",
+-			state->mbus_fmt_code == MEDIA_BUS_FMT_UYVY8_1X16 ?
+-			"YCbCr 422 16-bit" :
+-			state->mbus_fmt_code == MEDIA_BUS_FMT_RGB888_1X24 ?
+-			"RGB 888 24-bit" : "Unsupported");
++
++	switch (state->mbus_fmt_code) {
++	case MEDIA_BUS_FMT_BGR888_1X24:
++		/*
++		 * The driver was initially introduced with RGB888
++		 * support, but CSI really means BGR.
++		 *
++		 * Since we might have applications that would have
++		 * hard-coded the RGB888, let's support both.
++		 */
++	case MEDIA_BUS_FMT_RGB888_1X24:
++		v4l2_info(sd, "Color space: BGR 888 24-bit\n");
++		break;
++	case MEDIA_BUS_FMT_UYVY8_1X16:
++		v4l2_info(sd, "Color space: YCbCr 422 16-bit\n");
++		break;
++	default:
++		v4l2_info(sd, "Color space: Unsupported\n");
++		break;
++	}
+ 
+ 	v4l2_info(sd, "-----%s status-----\n", is_hdmi(sd) ? "HDMI" : "DVI-D");
+ 	v4l2_info(sd, "HDCP encrypted content: %s\n",
+@@ -1773,11 +1799,18 @@ static int tc358743_enum_mbus_code(struc
+ {
+ 	switch (code->index) {
+ 	case 0:
+-		code->code = MEDIA_BUS_FMT_RGB888_1X24;
++		code->code = MEDIA_BUS_FMT_BGR888_1X24;
+ 		break;
+ 	case 1:
+ 		code->code = MEDIA_BUS_FMT_UYVY8_1X16;
+ 		break;
++	case 2:
++		/*
++		 * We need to keep RGB888 for backward compatibility,
++		 * but we should list it last for userspace to pick BGR.
++		 */
++		code->code = MEDIA_BUS_FMT_RGB888_1X24;
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -1787,6 +1820,7 @@ static int tc358743_enum_mbus_code(struc
+ static u32 tc358743_g_colorspace(u32 code)
+ {
+ 	switch (code) {
++	case MEDIA_BUS_FMT_BGR888_1X24:
+ 	case MEDIA_BUS_FMT_RGB888_1X24:
+ 		return V4L2_COLORSPACE_SRGB;
+ 	case MEDIA_BUS_FMT_UYVY8_1X16:
+@@ -1824,7 +1858,8 @@ static int tc358743_set_fmt(struct v4l2_
+ 	u32 code = format->format.code; /* is overwritten by get_fmt */
+ 	int ret = tc358743_get_fmt(sd, sd_state, format);
+ 
+-	if (code == MEDIA_BUS_FMT_RGB888_1X24 ||
++	if (code == MEDIA_BUS_FMT_BGR888_1X24 ||
++	    code == MEDIA_BUS_FMT_RGB888_1X24 ||
+ 	    code == MEDIA_BUS_FMT_UYVY8_1X16)
+ 		format->format.code = code;
+ 	format->format.colorspace = tc358743_g_colorspace(format->format.code);
+@@ -2244,7 +2279,7 @@ static int tc358743_probe(struct i2c_cli
+ 	if (err < 0)
+ 		goto err_hdl;
+ 
+-	state->mbus_fmt_code = MEDIA_BUS_FMT_RGB888_1X24;
++	state->mbus_fmt_code = MEDIA_BUS_FMT_BGR888_1X24;
+ 
+ 	sd->dev = &client->dev;
+ 

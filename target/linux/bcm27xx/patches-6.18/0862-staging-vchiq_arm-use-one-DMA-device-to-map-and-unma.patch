@@ -1,0 +1,78 @@
+From 33cc967e07b0a5439fdcfdf942c904e00f4e794e Mon Sep 17 00:00:00 2001
+From: Rachmat Aditiya <raditiya@me.com>
+Date: Tue, 14 Jul 2026 02:57:43 +0700
+Subject: [PATCH] staging: vchiq_arm: use one DMA device to map and unmap bulk
+ pagelists
+
+create_pagelist() maps the bulk scatterlist with instance->state->dev
+(the vchiq platform device) while free_pagelist() and
+cleanup_pagelistinfo() unmap it with g_dma_dev - on BCM2711 the
+brcm,bcm2711-dma device resolved for use_36bit_addrs, whose dma-ranges
+differ from the vchiq node's. The coherent pagelist buffer is likewise
+allocated on instance->state->dev but freed on g_dma_dev.
+
+Mapping and unmapping with different devices breaks every userspace
+bulk transfer on Pi 4 arm64:
+
+ - the 36-bit addrs[] entries handed to the VPU are computed from
+   sg_dma_address() under the wrong device's dma-ranges, so the VPU
+   reads/writes the wrong bus addresses (bulk WRITE payloads arrive
+   as garbage; under sustained load the VPU stops responding to
+   mailbox requests entirely);
+
+ - the first bulk READ oopses in free_pagelist(): the DMA_FROM_DEVICE
+   dma_unmap_sg() cache invalidate mis-translates the dma address back
+   to phys under the other device's dma-ranges (0xf41e8e80 = phys
+   0x341e8e80 still carrying the vchiq device's 0xc0000000 alias):
+
+     Unable to handle kernel paging request at virtual address
+     ffffff80f41e8e80
+     CPU: 0 PID: 80 Comm: vchiq-slot/0
+     Call trace:
+      dcache_inval_poc+0x28/0x58 (P)
+      dma_direct_unmap_sg+0x224/0x260
+      dma_unmap_sg_attrs+0x60/0x148
+      free_pagelist.isra.0+0x54/0x1f8
+      slot_handler_func+0x4b8/0xdf0
+
+rpi-6.12.y paired these consistently: dma_map_sg/dma_unmap_sg both on
+g_dma_dev, dma_alloc_coherent/dma_free_coherent both on
+instance->state->dev. Restore that pairing.
+
+Verified on a Pi 4B Rev 1.5: on an unpatched 6.18 kernel a
+vc.ril.video_splitter payload loopback from a 64-bit userland oopses
+as above and vc.ril.video_decode consumes garbage; with this change
+the loopback round-trips byte-identical and decode runs at full rate.
+Nothing in-tree exercises userspace vchiq bulk on arm64 (the kernel
+MMAL clients use vc-sm-cma zero-copy imports), which is why this went
+unnoticed.
+
+Fixes: 35ef14168c34 ("staging: vchiq_arm: Set up dma ranges on child devices")
+Link: https://github.com/raspberrypi/linux/issues/7493
+Signed-off-by: Rachmat Aditiya <raditiya@me.com>
+---
+ .../staging/vc04_services/interface/vchiq_arm/vchiq_core.c  | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.c
+@@ -1474,8 +1474,8 @@ cleanup_pagelistinfo(struct vchiq_instan
+ 		dma_pool_free(g_dma_pool, pagelistinfo->pagelist,
+ 			      pagelistinfo->dma_addr);
+ 	} else {
+-		dma_free_coherent(g_dma_dev, pagelistinfo->pagelist_buffer_size,
+-				pagelistinfo->pagelist, pagelistinfo->dma_addr);
++		dma_free_coherent(instance->state->dev, pagelistinfo->pagelist_buffer_size,
++				  pagelistinfo->pagelist, pagelistinfo->dma_addr);
+ 	}
+ }
+ 
+@@ -1641,7 +1641,7 @@ create_pagelist(struct vchiq_instance *i
+ 		count -= len;
+ 	}
+ 
+-	dma_buffers = dma_map_sg(instance->state->dev,
++	dma_buffers = dma_map_sg(g_dma_dev,
+ 				 scatterlist,
+ 				 num_pages,
+ 				 pagelistinfo->dma_dir);

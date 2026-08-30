@@ -1,0 +1,53 @@
+From 10214efa1a114fc61131ff1e1240fd5a0f170803 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Sun, 12 Jul 2026 17:30:50 +0100
+Subject: [PATCH] dmaengine: dw-axi-dmac: Wait for runtime resume...
+
+...before using a channel
+
+dma_chan_alloc_chan_resources() called pm_runtime_get(), which only
+schedules the clock-enabling resume work asynchronously. If callers go
+on to configure and use the channel's registers immediately, the clocks
+may not yet be running, causing early register writes (e.g. CH_CFG) to
+be silently dropped. Later accesses succeed once the clock has come up,
+leaving the channel enabled but with an invalid configuration, and its
+completion interrupt never fires.
+
+Use pm_runtime_resume_and_get() so the clocks are guaranteed to be
+enabled before the channel is handed back to the caller.
+
+Fixes: 1fe20f1b8454 ("dmaengine: Introduce DW AXI DMAC driver")
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -603,6 +603,7 @@ static void dw_axi_dma_synchronize(struc
+ static int dma_chan_alloc_chan_resources(struct dma_chan *dchan)
+ {
+ 	struct axi_dma_chan *chan = dchan_to_axi_dma_chan(dchan);
++	int ret;
+ 
+ 	/* ASSERT: channel is idle */
+ 	if (axi_chan_is_hw_enable(chan)) {
+@@ -622,7 +623,17 @@ static int dma_chan_alloc_chan_resources
+ 	}
+ 	dev_vdbg(dchan2dev(dchan), "%s: allocating\n", axi_chan_name(chan));
+ 
+-	pm_runtime_get(chan->chip->dev);
++	/*
++	 * Callers configure and use the channel's registers as soon as this
++	 * returns, so the chip's clocks must already be running - a plain
++	 * pm_runtime_get() only schedules the resume asynchronously.
++	 */
++	ret = pm_runtime_resume_and_get(chan->chip->dev);
++	if (ret < 0) {
++		dma_pool_destroy(chan->desc_pool);
++		chan->desc_pool = NULL;
++		return ret;
++	}
+ 
+ 	return 0;
+ }

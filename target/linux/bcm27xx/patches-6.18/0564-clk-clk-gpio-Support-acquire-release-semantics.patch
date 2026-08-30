@@ -1,0 +1,216 @@
+From 6f4a4f3cca75a8fe7d38617cd0a2534bb8fce48a Mon Sep 17 00:00:00 2001
+From: Richard Oliver <richard.oliver@raspberrypi.com>
+Date: Thu, 5 Jun 2025 09:53:54 +0100
+Subject: [PATCH] clk: clk-gpio: Support acquire/release semantics
+
+Add support for the 'gpio-gate-clock-releasing' compatible string. The
+behaviour is identical to that of 'gpio-gate-clock' but the gpio is
+acquired on 'enable' and released on 'disable'.
+
+Signed-off-by: Richard Oliver <richard.oliver@raspberrypi.com>
+---
+ drivers/clk/clk-gpio.c | 129 +++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 123 insertions(+), 6 deletions(-)
+
+--- a/drivers/clk/clk-gpio.c
++++ b/drivers/clk/clk-gpio.c
+@@ -35,6 +35,7 @@
+  *
+  * @hw:		handle between common and hardware-specific interfaces
+  * @gpiod:	gpio descriptor
++ * @dev:	device pointer for acquire/release operations
+  *
+  * Clock with a gpio control for enabling and disabling the parent clock
+  * or switching between two parents by asserting or deasserting the gpio.
+@@ -46,9 +47,41 @@
+ struct clk_gpio {
+ 	struct clk_hw	hw;
+ 	struct gpio_desc *gpiod;
++	struct device *dev;
+ };
+ 
+ #define to_clk_gpio(_hw) container_of(_hw, struct clk_gpio, hw)
++static int clk_gpio_gate_acquire(struct clk_hw *hw)
++{
++	struct clk_gpio *clk = to_clk_gpio(hw);
++	struct device *dev = clk->dev;
++
++	clk->gpiod = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
++	if (IS_ERR(clk->gpiod)) {
++		int ret = PTR_ERR(clk->gpiod);
++
++		clk->gpiod = NULL;
++		return ret;
++	}
++
++	return 0;
++}
++
++static bool clk_gpio_gate_is_acquired(struct clk_hw *hw)
++{
++	struct clk_gpio *clk = to_clk_gpio(hw);
++
++	return !!clk->gpiod;
++}
++
++static void clk_gpio_gate_release(struct clk_hw *hw)
++{
++	struct clk_gpio *clk = to_clk_gpio(hw);
++	struct device *dev = clk->dev;
++
++	devm_gpiod_put(dev, clk->gpiod);
++	clk->gpiod = NULL;
++}
+ 
+ static int clk_gpio_gate_enable(struct clk_hw *hw)
+ {
+@@ -79,6 +112,37 @@ static const struct clk_ops clk_gpio_gat
+ 	.is_enabled = clk_gpio_gate_is_enabled,
+ };
+ 
++static int clk_gpio_gate_releasing_enable(struct clk_hw *hw)
++{
++	int ret;
++
++	ret = clk_gpio_gate_acquire(hw);
++	if (ret)
++		return ret;
++
++	return clk_gpio_gate_enable(hw);
++}
++
++static void clk_gpio_gate_releasing_disable(struct clk_hw *hw)
++{
++	clk_gpio_gate_disable(hw);
++	clk_gpio_gate_release(hw);
++}
++
++static int clk_gpio_gate_releasing_is_enabled(struct clk_hw *hw)
++{
++	if (!clk_gpio_gate_is_acquired(hw))
++		return 0;
++
++	return clk_gpio_gate_is_enabled(hw);
++}
++
++static const struct clk_ops clk_gpio_gate_releasing_ops = {
++	.enable = clk_gpio_gate_releasing_enable,
++	.disable = clk_gpio_gate_releasing_disable,
++	.is_enabled = clk_gpio_gate_releasing_is_enabled,
++};
++
+ static int clk_sleeping_gpio_gate_prepare(struct clk_hw *hw)
+ {
+ 	struct clk_gpio *clk = to_clk_gpio(hw);
+@@ -108,6 +172,37 @@ static const struct clk_ops clk_sleeping
+ 	.is_prepared = clk_sleeping_gpio_gate_is_prepared,
+ };
+ 
++static int clk_sleeping_gpio_gate_releasing_prepare(struct clk_hw *hw)
++{
++	int ret;
++
++	ret = clk_gpio_gate_acquire(hw);
++	if (ret)
++		return ret;
++
++	return clk_sleeping_gpio_gate_prepare(hw);
++}
++
++static void clk_sleeping_gpio_gate_releasing_unprepare(struct clk_hw *hw)
++{
++	clk_sleeping_gpio_gate_unprepare(hw);
++	clk_gpio_gate_release(hw);
++}
++
++static int clk_sleeping_gpio_gate_releasing_is_prepared(struct clk_hw *hw)
++{
++	if (!clk_gpio_gate_is_acquired(hw))
++		return 0;
++
++	return clk_sleeping_gpio_gate_is_prepared(hw);
++}
++
++static const struct clk_ops clk_sleeping_gpio_gate_releasing_ops = {
++	.prepare = clk_sleeping_gpio_gate_releasing_prepare,
++	.unprepare = clk_sleeping_gpio_gate_releasing_unprepare,
++	.is_prepared = clk_sleeping_gpio_gate_releasing_is_prepared,
++};
++
+ /**
+  * DOC: basic clock multiplexer which can be controlled with a gpio output
+  * Traits of this clock:
+@@ -162,6 +257,7 @@ static struct clk_hw *clk_register_gpio(
+ 	init.flags = CLK_SET_RATE_PARENT;
+ 
+ 	clk_gpio->gpiod = gpiod;
++	clk_gpio->dev = dev;
+ 	clk_gpio->hw.init = &init;
+ 
+ 	hw = &clk_gpio->hw;
+@@ -174,14 +270,29 @@ static struct clk_hw *clk_register_gpio(
+ 
+ static struct clk_hw *clk_hw_register_gpio_gate(struct device *dev,
+ 						int num_parents,
+-						struct gpio_desc *gpiod)
++						struct gpio_desc *gpiod,
++						bool releasing)
+ {
+ 	const struct clk_ops *ops;
+ 
+-	if (gpiod_cansleep(gpiod))
+-		ops = &clk_sleeping_gpio_gate_ops;
+-	else
+-		ops = &clk_gpio_gate_ops;
++	if (releasing) {
++		/* For releasing variant, confirm GPIO works then release it
++		 * for acquire/release semantics
++		 */
++		if (gpiod_cansleep(gpiod))
++			ops = &clk_sleeping_gpio_gate_releasing_ops;
++		else
++			ops = &clk_gpio_gate_releasing_ops;
++
++		devm_gpiod_put(dev, gpiod);
++		gpiod = NULL;
++	} else {
++		/* Regular variant - keep GPIO and choose appropriate ops */
++		if (gpiod_cansleep(gpiod))
++			ops = &clk_sleeping_gpio_gate_ops;
++		else
++			ops = &clk_gpio_gate_ops;
++	}
+ 
+ 	return clk_register_gpio(dev, num_parents, gpiod, ops);
+ }
+@@ -201,8 +312,11 @@ static int gpio_clk_driver_probe(struct
+ 	struct gpio_desc *gpiod;
+ 	struct clk_hw *hw;
+ 	bool is_mux;
++	bool is_releasing;
+ 
+ 	is_mux = of_device_is_compatible(node, "gpio-mux-clock");
++	is_releasing =
++		of_device_is_compatible(node, "gpio-gate-clock-releasing");
+ 
+ 	num_parents = of_clk_get_parent_count(node);
+ 	if (is_mux && num_parents != 2) {
+@@ -219,7 +333,9 @@ static int gpio_clk_driver_probe(struct
+ 	if (is_mux)
+ 		hw = clk_hw_register_gpio_mux(dev, gpiod);
+ 	else
+-		hw = clk_hw_register_gpio_gate(dev, num_parents, gpiod);
++		hw = clk_hw_register_gpio_gate(dev, num_parents, gpiod,
++					       is_releasing);
++
+ 	if (IS_ERR(hw))
+ 		return PTR_ERR(hw);
+ 
+@@ -229,6 +345,7 @@ static int gpio_clk_driver_probe(struct
+ static const struct of_device_id gpio_clk_match_table[] = {
+ 	{ .compatible = "gpio-mux-clock" },
+ 	{ .compatible = "gpio-gate-clock" },
++	{ .compatible = "gpio-gate-clock-releasing" },
+ 	{ }
+ };
+ 

@@ -1,0 +1,188 @@
+From 8f041b7aa3388c31b2bc477f55e9abf0eb9999a2 Mon Sep 17 00:00:00 2001
+From: Josh Blake <mail@josh.to>
+Date: Mon, 26 Jan 2026 09:34:45 +1100
+Subject: [PATCH] overlays: Add support for pps-rp1 dtoverlay
+
+Add support for pps-rp1 dtoverlay. Enables advanced pinctrl features
+found on RP1 based RPis and echo out functionality in the pps-gpio
+kernel module.
+
+Signed-off-by: Josh Blake <mail@josh.to>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |  46 ++++++++
+ .../arm/boot/dts/overlays/pps-rp1-overlay.dts | 103 ++++++++++++++++++
+ 3 files changed, 150 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/pps-rp1-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -227,6 +227,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	pitft35-resistive.dtbo \
+ 	pivision.dtbo \
+ 	pps-gpio.dtbo \
++	pps-rp1.dtbo \
+ 	proto-codec.dtbo \
+ 	pwm.dtbo \
+ 	pwm-2chan.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -4152,6 +4152,52 @@ Params: gpiopin                 Input GP
+                                 Default is "off".
+ 
+ 
++Name:   pps-rp1
++
++Info:   Configures the pps-gpio kernel module for use with the RP1 found on the
++        RPi 5 (pulse-per-second time signal via GPIO).
++
++Load:   dtoverlay=pps-rp1,<param>=<val>
++
++Params: pin                     (integer) Specifies the PPS input pin.
++                                Takes the pin number correlating to the RPi
++                                40-pin GPIO header.
++                                Defaults to GPIO 18.
++
++        pull-none               (boolean) Disable pull-up/down resistors on the
++                                PPS input pin.
++
++        pull-up                 (boolean) Enable pull-up resistor on the PPS
++                                input pin.
++
++        pull-down               (boolean) Enable pull-down resistor on the PPS
++                                input pin.
++
++        schmitt-trigger         (boolean) Enable the Schmitt-trigger on the PPS
++                                input pin.
++                                Defaults to off.
++
++        echo-pin                (integer) Specifies the PPS echo output pin.
++                                Takes the pin number correlating to the RPi
++                                40-pin GPIO header.
++                                Defaults to GPIO 17.
++
++        echo-ms                 (integer) Specifies the pulse-width in ms of the
++                                echo signal on the PPS echo output pin.
++                                Must be less than 999.
++                                Defaults to 10ms.
++
++        echo                    (boolean) Enables the PPS echo output signal.
++                                Defaults to off.
++
++        capture-clear           (boolean) Captures the clear event time.
++                                Defaults to off.
++
++        assert-falling-edge     (boolean) Trigger on the falling signal edge
++                                instead of the rising signal edge.
++                                Defaults to off.
++
++
+ Name:   proto-codec
+ Info:   Configures the PROTO Audio Codec card
+ Load:   dtoverlay=proto-codec
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/pps-rp1-overlay.dts
+@@ -0,0 +1,103 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// This file is released under the GPL v2.0 License, and comes without warranty, express or implied.
++// (C) Josh Blake, 2026
++
++/*
++ *	dtparams:
++ *	pin: (integer) Specifies the PPS Input pin.
++ *		Takes the pin number correlating to the RPi 40-pin GPIO.
++ *		Defaults to GPIO 18.
++ *	pull-none: (boolean) Disable pull-up/down resistors on the PPS Input pin.
++ *	pull-up: (boolean) Enable pull-up resistor on the PPS Input pin.
++ *	pull-down: (boolean) Enable pull-down resistor on the PPS Input pin.
++ *	schmitt-trigger: (boolean) Enable the Schmitt-trigger on the PPS Input pin.
++ *		Defaults to off.
++ *	echo-pin: (integer) Specifies the PPS Echo Output pin.
++ *		Takes the pin number correlating to the RPi 40-pin GPIO.
++ *		Defaults to GPIO 17.
++ *	echo-ms: (integer) Specifies the pulse-width in ms that the echo signal outputs
++ *		on the PPS Echo Output pin.
++ *		Must be less than 999.
++ *		Defaults to 10ms.
++ *	echo: (boolean) Enables the PPS Echo Output signal.
++ *		Defaults to off.
++ *	capture-clear: (boolean) Captures the clear event time.
++ *		Defaults to off.
++ *	assert-falling-edge: (boolean) Uses the falling signal edge instead of the
++ *		rising signal edge.
++ *		Defaults to off.
++ */
++
++/dts-v1/;
++/plugin/;
++
++/ {
++	compatible = "brcm,bcm2712";
++
++	fragment@0 {
++		target-path = "/";
++		__overlay__ {
++			pps: pps@ {
++				compatible = "pps-gpio";
++				pinctrl-names = "default";
++				pinctrl-0 = <&pps_gpios>;
++				gpios = <&gpio 18 0>;
++				status = "okay";
++			};
++		};
++	};
++
++	fragment@1 {
++		target = <&gpio>;
++		__overlay__ {
++			pps_gpios: pps_gpios@ {
++				pps_in: pps_in@ {
++					function = "gpio";
++					input-enable;
++				};
++			};
++		};
++	};
++
++	fragment@2 {
++		target = <&pps_gpios>;
++		__dormant__ {
++			pps_out: pps_out@ {
++				function = "gpio";
++				output-enable;
++				drive-push-pull;
++				bias-disable;
++			};
++		};
++	};
++
++	fragment@3 {
++		target = <&pps>;
++		pps_echo: __dormant__ {
++			echo-gpios = <&gpio 17 0>;
++			echo-active-ms = <10>;
++		};
++	};
++
++	__overrides__ {
++	// A very annoying and inelegant pinctrl to pin number LUT
++		pin =
++			<&pps>,"reg:0{,=18}",
++			<&pps>,"gpios:4{,=18}",
++			<&pps_gpios>,"reg:0{,=18}",
++			<&pps_in>,"reg:0{,=18}",
++			<&pps_in>,"pins{2=gpio2,3=gpio3,4=gpio4,17=gpio17,27=gpio27,22=gpio22,10=gpio10,9=gpio9,11=gpio11,0=gpio0,5=gpio5,6=gpio6,13=gpio13,19=gpio19,26=gpio26,14=gpio14,15=gpio15,18=gpio18,23=gpio23,24=gpio24,25=gpio25,8=gpio8,7=gpio7,1=gpio1,12=gpio12,16=gpio16,20=gpio20,21=gpio21,=gpio18}";
++		pull-none = <&pps_in>,"bias-disable?";
++		pull-up = <&pps_in>,"bias-pull-up?";
++		pull-down = <&pps_in>,"bias-pull-down?";
++		schmitt-trigger = <&pps_in>,"input-enable!",<&pps_in>,"input-schmitt-enable?";
++		assert-falling-edge = <&pps>,"assert-falling-edge?";
++		capture-clear = <&pps>,"capture-clear?";
++		echo-pin =
++			<&pps_out>,"reg:0{,=17}",
++			<&pps_out>,"pins{2=gpio2,3=gpio3,4=gpio4,17=gpio17,27=gpio27,22=gpio22,10=gpio10,9=gpio9,11=gpio11,0=gpio0,5=gpio5,6=gpio6,13=gpio13,19=gpio19,26=gpio26,14=gpio14,15=gpio15,18=gpio18,23=gpio23,24=gpio24,25=gpio25,8=gpio8,7=gpio7,1=gpio1,12=gpio12,16=gpio16,20=gpio20,21=gpio21,=gpio17}",
++			<&pps_echo>,"echo-gpios:4{,=17}";
++		echo-ms = <&pps_echo>,"echo-active-ms:0";
++		echo = <0>,"+2+3";
++	};
++};

@@ -1,0 +1,58 @@
+From 60a214806ad497d4bad449ce8808e824e5aa9b70 Mon Sep 17 00:00:00 2001
+From: Eugen Hristev <ehristev@kernel.org>
+Date: Wed, 20 May 2026 18:37:00 +0300
+Subject: [PATCH] media: bcm2835-unicam: Fix pipeline wrong validation for
+ unpacked formats
+
+The commit
+08f9794d9b79 ("media: bcm2835-unicam: Fix RGB format / mbus code association")
+introduced a check to see whether the format requested is the same as the
+fourcc in the format list.
+
+However, this breaks the case when userspace requested an unpacked fourcc,
+e.g. RG10.
+
+Unicam can work with or without unpacking pixels, e.g. pRAA or RG10, depending
+on what userspace requests.
+In the unpacking case, a dedicated register is being set.
+
+If the userspace requests pRAA, this works, because the check validates the
+pipeline:
+
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=3280,height=2464,pixelformat=pRAA \
+ --stream-mmap --stream-count=1 --stream-to=frame.raw
+
+but, with
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=3280,height=2464,pixelformat=RG10 \
+--stream-mmap --stream-count=1 --stream-to=frame.raw
+
+unicam complains at validation level:
+
+image: format mismatch: 0x300f <=> RG10 little-endian (0x30314752)
+
+This should work, because MEDIA_BUS_FMT_SRGGB10_1X10 can be packed into either
+RG10 or pRAA depending on the packing register.
+
+To fix this, modified the condition check to also allow in the case when
+requested format (fmt->pixelformat) is equal to fmtinfo->unpacked_fourcc.
+
+Fixes: 08f9794d9b79 ("media: bcm2835-unicam: Fix RGB format / mbus code association")
+Signed-off-by: Eugen Hristev <ehristev@kernel.org>
+Reviewed-by: Jai Luthra <jai.luthra@ideasonboard.com>
+Reviewed-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/platform/broadcom/bcm2835-unicam.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/drivers/media/platform/broadcom/bcm2835-unicam.c
++++ b/drivers/media/platform/broadcom/bcm2835-unicam.c
+@@ -2162,7 +2162,8 @@ static int unicam_video_link_validate(st
+ 		 * In order to allow the applications using the old behaviour to
+ 		 * run, let's accept the old combination, but warn about it.
+ 		 */
+-		if (fmtinfo->fourcc != fmt->pixelformat) {
++		if (fmt->pixelformat != fmtinfo->fourcc &&
++		    fmt->pixelformat != fmtinfo->unpacked_fourcc) {
+ 			if ((fmt->pixelformat == V4L2_PIX_FMT_BGR24 &&
+ 			     format->code == MEDIA_BUS_FMT_BGR888_1X24) ||
+ 			    (fmt->pixelformat == V4L2_PIX_FMT_RGB24 &&

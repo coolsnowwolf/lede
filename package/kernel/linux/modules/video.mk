@@ -964,14 +964,12 @@ define KernelPackage/video-videobuf2
   KCONFIG:= \
 	CONFIG_VIDEOBUF2_CORE \
 	CONFIG_VIDEOBUF2_MEMOPS \
-	CONFIG_VIDEOBUF2_V4L2 \
-	CONFIG_VIDEOBUF2_VMALLOC
+	CONFIG_VIDEOBUF2_V4L2
   FILES:= \
 	$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-common.ko \
 	$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-v4l2.ko \
-	$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-memops.ko \
-	$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-vmalloc.ko
-  AUTOLOAD:=$(call AutoLoad,65,videobuf2-core videobuf-v4l2 videobuf2-memops videobuf2-vmalloc)
+	$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-memops.ko
+  AUTOLOAD:=$(call AutoLoad,65,videobuf2-common videobuf2-v4l2 videobuf2-memops)
   $(call AddDepends/video)
 endef
 
@@ -980,6 +978,23 @@ define KernelPackage/video-videobuf2/description
 endef
 
 $(eval $(call KernelPackage,video-videobuf2))
+
+define KernelPackage/video-vmalloc
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Video vmalloc support
+  HIDDEN:=1
+  DEPENDS:=+kmod-video-videobuf2 +kmod-dma-buf
+  KCONFIG:=CONFIG_VIDEOBUF2_VMALLOC
+  FILES:=$(LINUX_DIR)/drivers/media/common/videobuf2/videobuf2-vmalloc.ko
+  AUTOLOAD:=$(call AutoLoad,66,videobuf2-vmalloc)
+  $(call AddDepends/video)
+endef
+
+define KernelPackage/video-vmalloc/description
+  Video vmalloc support
+endef
+
+$(eval $(call KernelPackage,video-vmalloc))
 
 define KernelPackage/video-async
   TITLE:=V4L2 ASYNC support
@@ -1021,7 +1036,7 @@ $(eval $(call KernelPackage,video-cpia2))
 
 define KernelPackage/video-pwc
   TITLE:=Philips USB webcam support
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-video-videobuf2
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-video-videobuf2 +kmod-video-vmalloc
   KCONFIG:= \
 	CONFIG_USB_PWC \
 	CONFIG_USB_PWC_DEBUG=n
@@ -1039,7 +1054,7 @@ $(eval $(call KernelPackage,video-pwc))
 
 define KernelPackage/video-uvc
   TITLE:=USB Video Class (UVC) support
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-video-videobuf2 +kmod-input-core
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-video-videobuf2 +kmod-video-vmalloc +kmod-input-core
   KCONFIG:= CONFIG_USB_VIDEO_CLASS CONFIG_UVC_COMMON@ge6.3
   FILES:=$(LINUX_DIR)/drivers/media/$(V4L2_USB_DIR)/uvc/uvcvideo.ko \
 	$(LINUX_DIR)/drivers/media/common/uvc.ko@ge6.3
@@ -1057,7 +1072,7 @@ $(eval $(call KernelPackage,video-uvc))
 define KernelPackage/video-gspca-core
   MENU:=1
   TITLE:=GSPCA webcam core support framework
-  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-input-core +kmod-video-videobuf2
+  DEPENDS:=@USB_SUPPORT +kmod-usb-core +kmod-input-core +kmod-video-videobuf2 +kmod-video-vmalloc
   KCONFIG:=CONFIG_USB_GSPCA
   FILES:=$(LINUX_DIR)/drivers/media/$(V4L2_USB_DIR)/gspca/gspca_main.ko
   AUTOLOAD:=$(call AutoProbe,gspca_main)
@@ -1683,7 +1698,7 @@ $(eval $(call KernelPackage,video-dma-sg))
 
 define KernelPackage/video-coda
   TITLE:=i.MX VPU support
-  DEPENDS:=@(TARGET_imx&&TARGET_imx_cortexa9) +kmod-video-mem2mem +kmod-video-dma-contig
+  DEPENDS:=@(TARGET_imx&&TARGET_imx_cortexa9) +kmod-video-mem2mem +kmod-video-dma-contig +kmod-video-vmalloc
   KCONFIG:= \
   	CONFIG_VIDEO_CODA \
   	CONFIG_VIDEO_IMX_VDOA
@@ -1723,7 +1738,7 @@ $(eval $(call KernelPackage,video-pxp))
 
 define KernelPackage/video-tw686x
   TITLE:=TW686x support
-  DEPENDS:=@PCIE_SUPPORT +kmod-video-dma-contig +kmod-video-dma-sg +kmod-sound-core
+  DEPENDS:=@PCIE_SUPPORT +kmod-video-dma-contig +kmod-video-dma-sg +kmod-sound-core +kmod-video-vmalloc
   KCONFIG:= CONFIG_VIDEO_TW686X
   FILES:= $(LINUX_DIR)/drivers/media/pci/tw686x/tw686x.ko
   AUTOLOAD:=$(call AutoProbe,tw686x)

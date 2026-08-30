@@ -1,0 +1,184 @@
+From a96eaa637db7cbd4be8173024f7d75ead22c6882 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 15 Apr 2026 15:01:20 +0100
+Subject: [PATCH] dtoverlays: Add overlay for imx355 image sensor
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |  17 +++
+ arch/arm/boot/dts/overlays/imx355-overlay.dts | 101 ++++++++++++++++++
+ arch/arm/boot/dts/overlays/imx355.dtsi        |  26 +++++
+ 4 files changed, 145 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/imx355-overlay.dts
+ create mode 100644 arch/arm/boot/dts/overlays/imx355.dtsi
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -143,6 +143,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	imx296.dtbo \
+ 	imx327.dtbo \
+ 	imx335.dtbo \
++	imx355.dtbo \
+ 	imx378.dtbo \
+ 	imx415.dtbo \
+ 	imx462.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2981,6 +2981,23 @@ Params: orientation             Sensor o
+                                 Module (1, 3, 4, or 5) or Pi 5.
+ 
+ 
++Name:   imx355
++Info:   Sony IMX355 camera module.
++        Uses Unicam 1, which is the standard camera connector on most Pi
++        variants.
++Load:   dtoverlay=imx355,<param>
++Params: orientation             Sensor orientation (0 = front, 1 = rear,
++                                2 = external, default external)
++        rotation                Mounting rotation of the camera sensor (0 or
++                                180, default 0)
++        media-controller        Configure use of Media Controller API for
++                                configuring the sensor (default on)
++        cam0                    Adopt the default configuration for CAM0 on a
++                                Compute Module (CSI0, i2c_vc, and cam0_reg).
++        4lane                   Enable 4 CSI2 lanes. This requires a Compute
++                                Module (1, 3, 4, or 5) or Pi 5.
++
++
+ Name:   imx378
+ Info:   Sony IMX378 camera module.
+         Uses Unicam 1, which is the standard camera connector on most Pi
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx355-overlay.dts
+@@ -0,0 +1,101 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Definitions for IMX355 camera module on VC I2C bus
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++
++/{
++	compatible = "brcm,bcm2835";
++
++	fragment@0 {
++		target = <&i2c0if>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	clk_frag: fragment@1 {
++		target = <&cam1_clk>;
++		__overlay__ {
++			status = "okay";
++			clock-frequency = <24000000>;
++		};
++	};
++
++	fragment@2 {
++		target = <&i2c0mux>;
++		__overlay__ {
++			status = "okay";
++		};
++	};
++
++	i2c_frag: fragment@100 {
++		target = <&i2c_csi_dsi>;
++		__overlay__ {
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "okay";
++
++			#include "imx355.dtsi"
++		};
++	};
++
++	csi_frag: fragment@101 {
++		target = <&csi1>;
++		csi: __overlay__ {
++			status = "okay";
++
++			port {
++				csi_ep: endpoint {
++					remote-endpoint = <&cam_endpoint>;
++					clock-lanes = <0>;
++					data-lanes = <1 2>;
++				};
++			};
++		};
++	};
++
++	fragment@102 {
++		target = <&csi1>;
++		__dormant__ {
++			compatible = "brcm,bcm2835-unicam-legacy";
++		};
++	};
++
++	fragment@201 {
++		target = <&csi_ep>;
++		__dormant__ {
++			data-lanes = <1 2 3 4>;
++		};
++	};
++
++	fragment@202 {
++		target = <&cam_endpoint>;
++		__dormant__ {
++			data-lanes = <1 2 3 4>;
++			link-frequencies =
++					/bits/ 64 <360000000>;
++		};
++	};
++
++	__overrides__ {
++		rotation = <&cam_node>,"rotation:0";
++		orientation = <&cam_node>,"orientation:0";
++		media-controller = <0>,"!102";
++		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
++		       <&csi_frag>, "target:0=",<&csi0>,
++		       <&clk_frag>, "target:0=",<&cam0_clk>,
++		       <&cam_node>, "clocks:0=",<&cam0_clk>,
++		       <&cam_node>, "avdd-supply:0=",<&cam0_reg>;
++		4lane = <0>, "+201+202";
++	};
++};
++
++&cam_node {
++	status = "okay";
++};
++
++&cam_endpoint {
++	remote-endpoint = <&csi_ep>;
++};
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/imx355.dtsi
+@@ -0,0 +1,26 @@
++// Fragment that configures an imx355
++
++cam_node: imx355@1a {
++	compatible = "sony,imx355";
++	reg = <0x1a>;
++	status = "disabled";
++
++	clocks = <&cam1_clk>;
++	clock-names = "xclk";
++
++	avdd-supply = <&cam1_reg>;	/* 2.8v */
++	dvdd-supply = <&cam_dummy_reg>;	/* 1.8v */
++	dovdd-supply = <&cam_dummy_reg>;/* 1.2v */
++
++	rotation = <180>;
++	orientation = <2>;
++
++	port {
++		cam_endpoint: endpoint {
++			clock-lanes = <0>;
++			data-lanes = <1 2>;
++			link-frequencies =
++				/bits/ 64 <444000000>;
++		};
++	};
++};

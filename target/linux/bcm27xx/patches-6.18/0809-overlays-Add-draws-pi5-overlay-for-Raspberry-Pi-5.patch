@@ -1,0 +1,287 @@
+From 836fa33251ba570d12b09e5ac16e1890c3c8d851 Mon Sep 17 00:00:00 2001
+From: Annaliese McDermond <nh6z@nh6z.net>
+Date: Wed, 1 Jul 2026 12:30:31 -0700
+Subject: [PATCH] overlays: Add draws-pi5 overlay for Raspberry Pi 5
+
+The DRAWS HAT clocks its TLV320AIC3204 codec from GPCLK0 on GPIO4. On
+BCM2835/BCM2711 this comes from the SoC clock manager
+(BCM2835_CLOCK_GP0) and the pin uses the legacy brcm,pins/brcm,function
+pinctrl binding. On BCM2712 the 40-pin header GPIOs and their clocks
+belong to the RP1, so neither the clock provider nor the pinctrl binding
+of the existing draws overlay applies and the codec cannot be clocked.
+
+Add a Pi 5 variant that sources the codec MCLK from the RP1 GP0 clock
+(RP1_CLK_GP0) at 25 MHz, muxed onto GPIO4 via the in-tree
+rp1_gpclksrc0_gpio4 pin group, and expresses the reset/IRQ/PPS pins with
+the RP1 string-based pinctrl binding. Everything else (regulators, PPS,
+SC16IS752, TLA2024 ADC, sound card and parameters) is carried over
+unchanged.
+
+Register the overlay in the Makefile and README, and add an overlay_map
+entry so "dtoverlay=draws" transparently loads draws-pi5 on BCM2712.
+
+Signed-off-by: Annaliese McDermond <nh6z@nh6z.net>
+Assisted-by: Claude:claude-opus-4-8
+---
+ arch/arm/boot/dts/overlays/Makefile           |   1 +
+ arch/arm/boot/dts/overlays/README             |   4 +
+ .../boot/dts/overlays/draws-pi5-overlay.dts   | 210 ++++++++++++++++++
+ arch/arm/boot/dts/overlays/overlay_map.dts    |  10 +
+ 4 files changed, 225 insertions(+)
+ create mode 100644 arch/arm/boot/dts/overlays/draws-pi5-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -60,6 +60,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	dpi18cpadhi.dtbo \
+ 	dpi24.dtbo \
+ 	draws.dtbo \
++	draws-pi5.dtbo \
+ 	dwc-otg-deprecated.dtbo \
+ 	dwc2.dtbo \
+ 	edt-ft5406.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -1253,6 +1253,10 @@ Params: draws_adc_ch4_gain      Sets the
+         alsaname                Name of the ALSA audio device (default "draws")
+ 
+ 
++Name:   draws-pi5
++Info:   See draws (this is the Pi 5 version)
++
++
+ Name:   dwc-otg
+ Info:   The dwc-otg has been deprecated.
+ Load:   <Deprecated>
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/draws-pi5-overlay.dts
+@@ -0,0 +1,210 @@
++#include <dt-bindings/clock/rp1.h>
++/*
++ * Device tree overlay for the DRAWS Hardware on Raspberry Pi 5 / RP1
++ *
++ * The codec's master clock is supplied by the RP1 GP0 general-purpose clock
++ * on GPIO4 (the "gpclk0" pin function), rather than the BCM2835 GP0 clock
++ * used by the Pi 4 and earlier variant (draws-overlay.dts).
++ */
++
++/dts-v1/;
++/plugin/;
++
++/ {
++    compatible = "brcm,bcm2712";
++
++    fragment@0 {
++        target = <&i2s_clk_producer>;
++        __overlay__ {
++            status = "okay";
++        };
++    };
++
++    fragment@1 {
++        target-path = "/";
++        __overlay__ {
++            regulators {
++                compatible = "simple-bus";
++                #address-cells = <1>;
++                #size-cells = <0>;
++
++                udrc0_ldoin: udrc0_ldoin {
++                    compatible = "regulator-fixed";
++                    regulator-name = "ldoin";
++                    regulator-min-microvolt = <3300000>;
++                    regulator-max-microvolt = <3300000>;
++                    regulator-always-on;
++                };
++
++                sc16is752_clk: sc16is752_draws_clk {
++                    compatible = "fixed-clock";
++                    #clock-cells = <0>;
++                    clock-frequency = <1843200>;
++                };
++            };
++
++            pps: pps {
++                compatible = "pps-gpio";
++                pinctrl-names = "default";
++                pinctrl-0 = <&pps_pins>;
++                gpios = <&gpio 7 0>;
++                status = "okay";
++            };
++
++            iio-hwmon {
++                compatible = "iio-hwmon";
++                status = "okay";
++                io-channels = <&tla2024 4>, <&tla2024 5>, <&tla2024 6>,
++                              <&tla2024 7>;
++            };
++        };
++    };
++
++    fragment@2 {
++        target = <&i2c_arm>;
++        __overlay__ {
++            #address-cells = <1>;
++            #size-cells = <0>;
++            status = "okay";
++
++            tlv320aic32x4: tlv320aic32x4@18 {
++                compatible = "ti,tlv320aic32x4";
++                reg = <0x18>;
++                #sound-dai-cells = <0>;
++                status = "okay";
++
++                clocks = <&rp1_clocks RP1_CLK_GP0>;
++                clock-names = "mclk";
++                assigned-clocks = <&rp1_clocks RP1_CLK_GP0>;
++                assigned-clock-rates = <25000000>;
++
++                pinctrl-names = "default";
++                pinctrl-0 = <&rp1_gpclksrc0_gpio4 &aic3204_reset>;
++
++                /*
++                 * GPIO13 is a shared, active-low reset for the codec and the
++                 * SC16IS752. The aic32x4 driver deasserts by driving the line
++                 * to its logical-low (released) state, so it must be declared
++                 * GPIO_ACTIVE_LOW (1) for the RP1 to leave it high on release.
++                 */
++                reset-gpios = <&gpio 13 1>;
++
++                iov-supply = <&udrc0_ldoin>;
++                ldoin-supply = <&udrc0_ldoin>;
++            };
++
++            sc16is752: sc16is752@50 {
++                compatible = "nxp,sc16is752";
++                reg = <0x50>;
++                clocks = <&sc16is752_clk>;
++                interrupt-parent = <&gpio>;
++                interrupts = <17 2>; /* IRQ_TYPE_EDGE_FALLING */
++
++                pinctrl-names = "default";
++                pinctrl-0 = <&sc16is752_irq>;
++            };
++
++            tla2024: tla2024@48 {
++                compatible = "ti,ads1015";
++                reg = <0x48>;
++                #address-cells = <1>;
++                #size-cells = <0>;
++                #io-channel-cells = <1>;
++
++                adc_ch4: channel@4 {
++                    reg = <4>;
++                    ti,gain = <1>;
++                    ti,datarate = <4>;
++                };
++
++                adc_ch5: channel@5 {
++                    reg = <5>;
++                    ti,gain = <1>;
++                    ti,datarate = <4>;
++                };
++
++                adc_ch6: channel@6 {
++                    reg = <6>;
++                    ti,gain = <2>;
++                    ti,datarate = <4>;
++                };
++
++                adc_ch7: channel@7 {
++                    reg = <7>;
++                    ti,gain = <2>;
++                    ti,datarate = <4>;
++                };
++            };
++        };
++    };
++
++    fragment@3 {
++        target = <&sound>;
++        snd: __overlay__ {
++            compatible = "simple-audio-card";
++            i2s-controller = <&i2s_clk_producer>;
++            status = "okay";
++
++            simple-audio-card,name = "draws";
++            simple-audio-card,format = "i2s";
++
++            simple-audio-card,bitclock-master = <&dailink0_master>;
++            simple-audio-card,frame-master = <&dailink0_master>;
++
++            simple-audio-card,widgets =
++                "Line", "Line In",
++                "Line", "Line Out";
++
++            simple-audio-card,routing =
++                "IN1_R", "Line In",
++                "IN1_L", "Line In",
++                "CM_L", "Line In",
++                "CM_R", "Line In",
++                "Line Out", "LOR",
++                "Line Out", "LOL";
++
++            dailink0_master: simple-audio-card,cpu {
++                sound-dai = <&i2s_clk_producer>;
++            };
++
++            simple-audio-card,codec {
++                sound-dai = <&tlv320aic32x4>;
++            };
++        };
++    };
++
++    fragment@4 {
++        target = <&gpio>;
++        __overlay__ {
++            aic3204_reset: aic3204_reset {
++                function = "gpio";
++                pins = "gpio13";
++                bias-pull-down;
++            };
++
++            sc16is752_irq: sc16is752_irq {
++                function = "gpio";
++                pins = "gpio17";
++                bias-pull-up;
++            };
++
++            pps_pins: pps_pins {
++                function = "gpio";
++                pins = "gpio7";
++                bias-disable;
++            };
++        };
++    };
++
++    __overrides__ {
++        draws_adc_ch4_gain = <&adc_ch4>,"ti,gain:0";
++        draws_adc_ch4_datarate = <&adc_ch4>,"ti,datarate:0";
++        draws_adc_ch5_gain = <&adc_ch5>,"ti,gain:0";
++        draws_adc_ch5_datarate = <&adc_ch5>,"ti,datarate:0";
++        draws_adc_ch6_gain = <&adc_ch6>,"ti,gain:0";
++        draws_adc_ch6_datarate = <&adc_ch6>,"ti,datarate:0";
++        draws_adc_ch7_gain = <&adc_ch7>,"ti,gain:0";
++        draws_adc_ch7_datarate = <&adc_ch7>,"ti,datarate:0";
++        alsaname = <&snd>, "simple-audio-card,name";
++    };
++};
+--- a/arch/arm/boot/dts/overlays/overlay_map.dts
++++ b/arch/arm/boot/dts/overlays/overlay_map.dts
+@@ -53,6 +53,16 @@
+ 		bcm2712;
+ 	};
+ 
++	draws {
++		bcm2835;
++		bcm2711;
++		bcm2712 = "draws-pi5";
++	};
++
++	draws-pi5 {
++		bcm2712;
++	};
++
+ 	dwc-otg {
+ 		renamed = "dwc-otg-deprecated";
+ 	};

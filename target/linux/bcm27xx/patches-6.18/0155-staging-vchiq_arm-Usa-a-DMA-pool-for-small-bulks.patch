@@ -1,0 +1,132 @@
+From 5252444b6ee1681ffb727144de8248696a49e863 Mon Sep 17 00:00:00 2001
+From: detule <ogjoneski@gmail.com>
+Date: Tue, 2 Oct 2018 04:10:08 -0400
+Subject: [PATCH] staging: vchiq_arm: Usa a DMA pool for small bulks
+
+During a bulk transfer we request a DMA allocation to hold the
+scatter-gather list.  Most of the time, this allocation is small
+(<< PAGE_SIZE), however it can be requested at a high enough frequency
+to cause fragmentation and/or stress the CMA allocator (think time
+spent in compaction here, or during allocations elsewhere).
+
+Implement a pool to serve up small DMA allocations, falling back
+to a coherent allocation if the request is greater than
+VCHIQ_DMA_POOL_SIZE.
+
+Signed-off-by: Oliver Gjoneski <ogjoneski@gmail.com>
+---
+ .../interface/vchiq_arm/vchiq_arm.c           |  7 ++++++
+ .../interface/vchiq_arm/vchiq_core.c          | 22 +++++++++++++++----
+ .../interface/vchiq_arm/vchiq_core.h          |  5 +++++
+ 3 files changed, 30 insertions(+), 4 deletions(-)
+
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_arm.c
+@@ -299,6 +299,13 @@ static int vchiq_platform_init(struct pl
+ 	}
+ 
+ 	g_dma_dev = dma_dev ?: dev;
++	g_dma_pool = dmam_pool_create("vchiq_scatter_pool", dev,
++				      VCHIQ_DMA_POOL_SIZE,
++				      drv_mgmt->info->cache_line_size, 0);
++	if (!g_dma_pool) {
++		dev_err(dev, "failed to create dma pool");
++		return -ENOMEM;
++	}
+ 
+ 	dev_dbg(&pdev->dev, "arm: vchiq_init - done (slots %p, phys %pad)\n",
+ 		vchiq_slot_zero, &slot_phys);
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.c
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.c
+@@ -194,6 +194,7 @@ static const char *const conn_state_name
+ 
+ unsigned int g_use_36bit_addrs = 0;
+ struct device *g_dma_dev;
++struct dma_pool *g_dma_pool;
+ 
+ static void
+ release_message_sync(struct vchiq_state *state, struct vchiq_header *header);
+@@ -1469,8 +1470,13 @@ cleanup_pagelistinfo(struct vchiq_instan
+ 	if (pagelistinfo->pages_need_release)
+ 		unpin_user_pages(pagelistinfo->pages, pagelistinfo->num_pages);
+ 
+-	dma_free_coherent(g_dma_dev, pagelistinfo->pagelist_buffer_size,
+-			  pagelistinfo->pagelist, pagelistinfo->dma_addr);
++	if (pagelistinfo->is_from_pool) {
++		dma_pool_free(g_dma_pool, pagelistinfo->pagelist,
++			      pagelistinfo->dma_addr);
++	} else {
++		dma_free_coherent(g_dma_dev, pagelistinfo->pagelist_buffer_size,
++				pagelistinfo->pagelist, pagelistinfo->dma_addr);
++	}
+ }
+ 
+ static inline bool
+@@ -1504,6 +1510,7 @@ create_pagelist(struct vchiq_instance *i
+ 	u32 *addrs;
+ 	unsigned int num_pages, offset, i, k;
+ 	int actual_pages;
++	bool is_from_pool;
+ 	size_t pagelist_size;
+ 	struct scatterlist *scatterlist, *sg;
+ 	int dma_buffers;
+@@ -1539,8 +1546,14 @@ create_pagelist(struct vchiq_instance *i
+ 	/* Allocate enough storage to hold the page pointers and the page
+ 	 * list
+ 	 */
+-	pagelist = dma_alloc_coherent(instance->state->dev, pagelist_size, &dma_addr,
+-				      GFP_KERNEL);
++	if (pagelist_size > VCHIQ_DMA_POOL_SIZE) {
++		pagelist = dma_alloc_coherent(instance->state->dev, pagelist_size, &dma_addr,
++						GFP_KERNEL);
++		is_from_pool = false;
++	} else {
++		pagelist = dma_pool_alloc(g_dma_pool, GFP_KERNEL, &dma_addr);
++		is_from_pool = true;
++	}
+ 
+ 	dev_dbg(instance->state->dev, "arm: %p\n", pagelist);
+ 
+@@ -1561,6 +1574,7 @@ create_pagelist(struct vchiq_instance *i
+ 	pagelistinfo->pagelist = pagelist;
+ 	pagelistinfo->pagelist_buffer_size = pagelist_size;
+ 	pagelistinfo->dma_addr = dma_addr;
++	pagelistinfo->is_from_pool = is_from_pool;
+ 	pagelistinfo->dma_dir =  (type == PAGELIST_WRITE) ?
+ 				  DMA_TO_DEVICE : DMA_FROM_DEVICE;
+ 	pagelistinfo->num_pages = num_pages;
+--- a/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.h
++++ b/drivers/staging/vc04_services/interface/vchiq_arm/vchiq_core.h
+@@ -7,6 +7,7 @@
+ #include <linux/mutex.h>
+ #include <linux/completion.h>
+ #include <linux/dma-mapping.h>
++#include <linux/dmapool.h>
+ #include <linux/dev_printk.h>
+ #include <linux/kthread.h>
+ #include <linux/kref.h>
+@@ -29,6 +30,8 @@
+ 
+ #endif	/* IS_ENABLED(CONFIG_RASPBERRYPI_FIRMWARE) */
+ 
++#define VCHIQ_DMA_POOL_SIZE PAGE_SIZE
++
+ #define VCHIQ_SERVICE_HANDLE_INVALID 0
+ 
+ #define VCHIQ_SLOT_SIZE     4096
+@@ -428,6 +431,7 @@ struct vchiq_pagelist_info {
+ 	struct pagelist *pagelist;
+ 	size_t pagelist_buffer_size;
+ 	dma_addr_t dma_addr;
++	bool is_from_pool;
+ 	enum dma_data_direction dma_dir;
+ 	unsigned int num_pages;
+ 	unsigned int pages_need_release;
+@@ -439,6 +443,7 @@ struct vchiq_pagelist_info {
+ 
+ extern unsigned int g_use_36bit_addrs;
+ extern struct device *g_dma_dev;
++extern struct dma_pool *g_dma_pool;
+ 
+ static inline bool vchiq_remote_initialised(const struct vchiq_state *state)
+ {

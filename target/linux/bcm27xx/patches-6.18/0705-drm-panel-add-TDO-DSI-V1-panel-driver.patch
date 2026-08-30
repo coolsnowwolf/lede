@@ -1,0 +1,540 @@
+From 736422e869a10c6f313d7524792dc251fcb671d8 Mon Sep 17 00:00:00 2001
+From: kun_liu <kun_liu@shtdo.com>
+Date: Thu, 16 Apr 2026 11:10:38 +0800
+Subject: [PATCH] drm/panel: add TDO DSI V1 panel driver
+
+panel-tdo-dsi-v1.c as module to driver tdo panel.
+
+Signed-off-by: kun_liu <kun_liu@shtdo.com>
+---
+ drivers/gpu/drm/panel/Kconfig            |  14 +
+ drivers/gpu/drm/panel/Makefile           |   1 +
+ drivers/gpu/drm/panel/panel-tdo-dsi-v1.c | 489 +++++++++++++++++++++++
+ 3 files changed, 504 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-tdo-dsi-v1.c
+
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -1095,6 +1095,20 @@ config DRM_PANEL_TPO_Y17P
+ 	  Say Y if you want to enable support for panels based on the
+ 	  TDO Y17P controller.
+ 
++config DRM_PANEL_TDO_DSI_V1
++	tristate "TDO touchscreen panels V1"
++	depends on DRM_MIPI_DSI
++	depends on I2C
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for TDO DSI
++	  touchscreen panels, e.g. tl034wvs03, tl040hds31, etc.
++	  This driver provides MIPI DSI display interface.
++	  It also handles backlight control via the backlight
++	  class device.
++	  To compile this driver as a module, choose M here; the
++	  module will be called panel-tdo-dsi-v1.
++
+ config DRM_PANEL_TPO_TD028TTEC1
+ 	tristate "Toppoly (TPO) TD028TTEC1 panel driver"
+ 	depends on OF && SPI
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -108,6 +108,7 @@ obj-$(CONFIG_DRM_PANEL_SONY_TULIP_TRULY_
+ obj-$(CONFIG_DRM_PANEL_STARTEK_KD070FHFID015) += panel-startek-kd070fhfid015.o
+ obj-$(CONFIG_DRM_PANEL_TDO_TL070WSH30) += panel-tdo-tl070wsh30.o
+ obj-$(CONFIG_DRM_PANEL_TPO_Y17P) += panel-tdo-y17p.o
++obj-$(CONFIG_DRM_PANEL_TDO_DSI_V1) += panel-tdo-dsi-v1.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TD028TTEC1) += panel-tpo-td028ttec1.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TD043MTEA1) += panel-tpo-td043mtea1.o
+ obj-$(CONFIG_DRM_PANEL_TPO_TPG110) += panel-tpo-tpg110.o
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-tdo-dsi-v1.c
+@@ -0,0 +1,489 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2026 TDO International Limited
++ *
++ * Based on panel-raspberrypi-touchscreen by Broadcom
++ */
++
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/regulator/consumer.h>
++
++#include <video/mipi_display.h>
++
++#include <drm/drm_crtc.h>
++#include <drm/drm_device.h>
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#include <video/mipi_display.h>
++
++struct tdo_panel_desc {
++	const struct panel_init_cmd *init;
++	const struct drm_display_mode *mode;
++	const unsigned long mode_flags;
++	unsigned int lanes;
++	enum mipi_dsi_pixel_format format;
++};
++
++struct tdo_panel {
++	struct drm_panel panel;
++	struct mipi_dsi_device *dsi;
++	const struct tdo_panel_desc *desc;
++
++	struct regulator *power;
++	struct gpio_desc *reset;
++
++	enum drm_panel_orientation orientation;
++};
++
++enum dsi_cmd_type {
++	INIT_DCS_CMD,
++	DELAY_CMD,
++};
++
++struct panel_init_cmd {
++	enum dsi_cmd_type type;
++	size_t len;
++	const char *data;
++};
++
++#define _INIT_DCS_CMD(...)                                                    \
++	{                                                                     \
++		.type = INIT_DCS_CMD, .len = sizeof((char[]){ __VA_ARGS__ }), \
++		.data = (char[])                                              \
++		{                                                             \
++			__VA_ARGS__                                           \
++		}                                                             \
++	}
++
++#define _INIT_DELAY_CMD(...)                                               \
++	{                                                                  \
++		.type = DELAY_CMD, .len = sizeof((char[]){ __VA_ARGS__ }), \
++		.data = (char[])                                           \
++		{                                                          \
++			__VA_ARGS__                                        \
++		}                                                          \
++	}
++
++static const struct panel_init_cmd tdo_panel_tl034wvs03_init[] = {
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x13),
++	_INIT_DCS_CMD(0xEF, 0x08),
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x10),
++	_INIT_DCS_CMD(0xC0, 0xE9, 0x03),
++	_INIT_DCS_CMD(0xC1, 0x10, 0x0C),
++	_INIT_DCS_CMD(0xC2, 0x01, 0x0A),
++	_INIT_DCS_CMD(0xC3, 0x02),
++	_INIT_DCS_CMD(0xCC, 0x10),
++	_INIT_DCS_CMD(0xCD, 0x08),
++	_INIT_DCS_CMD(0xB0, 0x0D, 0x14, 0x9C, 0x0B, 0x10, 0x06, 0x08, 0x09, 0x08, 0x22, 0x02, 0x4F,
++	0x0E, 0x66, 0x2D, 0x1F),
++	_INIT_DCS_CMD(0xB1, 0x00, 0x17, 0x9E, 0x0F, 0x11, 0x06, 0x0C, 0x08, 0x08, 0x26, 0x04, 0x51,
++	0x10, 0x6A, 0x33, 0x1B),
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x11),
++	_INIT_DCS_CMD(0xB0, 0x30),
++	_INIT_DCS_CMD(0xB1, 0x47),
++	_INIT_DCS_CMD(0xB2, 0x84),
++	_INIT_DCS_CMD(0xB3, 0x80),
++	_INIT_DCS_CMD(0xB5, 0x4E),
++	_INIT_DCS_CMD(0xB7, 0x85),
++	_INIT_DCS_CMD(0xB8, 0x20),
++	_INIT_DCS_CMD(0xC1, 0x78),
++	_INIT_DCS_CMD(0xC2, 0x78),
++	_INIT_DCS_CMD(0xD0, 0x88),
++	_INIT_DCS_CMD(0xE0, 0x00, 0x00, 0x02),
++	_INIT_DCS_CMD(0xE1, 0x06, 0xA0, 0x08, 0xA0, 0x05, 0xA0, 0x07, 0xA0, 0x00, 0x44, 0x44),
++	_INIT_DCS_CMD(0xE2, 0x30, 0x30, 0x44, 0x44, 0x6E, 0xA0, 0x00, 0x00, 0x6E, 0xA0, 0x00, 0x00),
++	_INIT_DCS_CMD(0xE3, 0x00, 0x00, 0x33, 0x33),
++	_INIT_DCS_CMD(0xE4, 0x44, 0x44),
++	_INIT_DCS_CMD(0xE5, 0x0D, 0x69, 0x0A, 0xA0, 0x0F, 0x6B, 0x0A, 0xA0, 0x09, 0x65, 0x0A, 0xA0,
++	0x0B, 0x67, 0x0A, 0xA0),
++	_INIT_DCS_CMD(0xE6, 0x00, 0x00, 0x33, 0x33),
++	_INIT_DCS_CMD(0xE7, 0x44, 0x44),
++	_INIT_DCS_CMD(0xE8, 0x0C, 0x68, 0x0A, 0xA0, 0x0E, 0x6A, 0x0A, 0xA0, 0x08, 0x64, 0x0A, 0xA0,
++	0x0A, 0x66, 0x0A, 0xA0),
++	_INIT_DCS_CMD(0xE9, 0x36, 0x10),
++	_INIT_DCS_CMD(0xEB, 0x00, 0x01, 0xE4, 0xE4, 0x44, 0x88, 0x40),
++	_INIT_DCS_CMD(0xED, 0xFF, 0x45, 0x67, 0xFA, 0x01, 0x2B, 0xCF, 0xFF, 0xFF, 0xFC, 0xB2, 0x10,
++	0xAF, 0x76, 0x54, 0xFF),
++	_INIT_DCS_CMD(0xEF, 0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F),
++	_INIT_DCS_CMD(0x3A, 0x66),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(50),
++	{},
++};
++
++static const struct panel_init_cmd tdo_panel_tl040wvs17_init[] = {
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x13),
++	_INIT_DCS_CMD(0xEF, 0x08),
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x10),
++	_INIT_DCS_CMD(0xC0, 0x3B, 0x00),
++	_INIT_DCS_CMD(0xC1, 0x0E, 0x0C),
++	_INIT_DCS_CMD(0xC2, 0x07, 0x0A),
++	_INIT_DCS_CMD(0xCC, 0x30),
++	_INIT_DCS_CMD(0xB0, 0x40, 0x07, 0x53, 0x0E, 0x12, 0x07, 0x0A, 0x09, 0x09, 0x26, 0x05, 0x10,
++	0x0D, 0x6E, 0x3B, 0xD6),
++	_INIT_DCS_CMD(0xB1, 0x40, 0x17, 0x5C, 0x0D, 0x11, 0x06, 0x08, 0x08, 0x08, 0x22, 0x03, 0x12,
++	0x11, 0x65, 0x28, 0xE8),
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x11),
++	_INIT_DCS_CMD(0xB0, 0x4D),
++	_INIT_DCS_CMD(0xB1, 0x4C),
++	_INIT_DCS_CMD(0xB2, 0x81),
++	_INIT_DCS_CMD(0xB3, 0x80),
++	_INIT_DCS_CMD(0xB5, 0x4C),
++	_INIT_DCS_CMD(0xB7, 0x85),
++	_INIT_DCS_CMD(0xB8, 0x33),
++	_INIT_DCS_CMD(0xC1, 0x78),
++	_INIT_DCS_CMD(0xC2, 0x78),
++	_INIT_DCS_CMD(0xD0, 0x88),
++	_INIT_DCS_CMD(0xE0, 0x00, 0x00, 0x02),
++	_INIT_DCS_CMD(0xE1, 0x05, 0x30, 0x00, 0x00, 0x06, 0x30, 0x00, 0x00, 0x0E, 0x30, 0x30),
++	_INIT_DCS_CMD(0xE2, 0x10, 0x10, 0x30, 0x30, 0xF4, 0x00, 0x00, 0x00, 0xF4, 0x00, 0x00, 0x00),
++	_INIT_DCS_CMD(0xE3, 0x00, 0x00, 0x11, 0x11),
++	_INIT_DCS_CMD(0xE4, 0x44, 0x44),
++	_INIT_DCS_CMD(0xE5, 0x0A, 0xF4, 0x30, 0xF0, 0x0C, 0xF6, 0x30, 0xF0, 0x06, 0xF0, 0x30, 0xF0,
++	0x08, 0xF2, 0x30, 0xF0),
++	_INIT_DCS_CMD(0xE6, 0x00, 0x00, 0x11, 0x11),
++	_INIT_DCS_CMD(0xE7, 0x44, 0x44),
++	_INIT_DCS_CMD(0xE8, 0x0B, 0xF5, 0x30, 0xF0, 0x0D, 0xF7, 0x30, 0xF0, 0x07, 0xF1, 0x30, 0xF0,
++	0x09, 0xF3, 0x30, 0xF0),
++	_INIT_DCS_CMD(0xE9, 0x36, 0x01),
++	_INIT_DCS_CMD(0xEB, 0x00, 0x01, 0xE4, 0xE4, 0x44, 0x88, 0x33),
++	_INIT_DCS_CMD(0xED, 0x20, 0xFA, 0xB7, 0x76, 0x65, 0x54, 0x4F, 0xFF, 0xFF, 0xF4, 0x45, 0x56,
++	0x67, 0x7B, 0xAF, 0x02),
++	_INIT_DCS_CMD(0xEF, 0x10, 0x0D, 0x04, 0x08, 0x3F, 0x1F),
++	_INIT_DCS_CMD(0xFF, 0x77, 0x01, 0x00, 0x00, 0x10),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(50),
++	{},
++};
++
++static const struct panel_init_cmd tdo_panel_tl040hds31_init[] = {
++	_INIT_DCS_CMD(0xB9, 0xF1, 0x12, 0x83),
++	_INIT_DCS_CMD(0xB1, 0x00, 0x00, 0x00, 0xDA, 0x80),
++	_INIT_DCS_CMD(0xB2, 0x3C, 0x12, 0x30),
++	_INIT_DCS_CMD(0xB3, 0x10, 0x10, 0x28, 0x28, 0x03, 0xFF, 0x00, 0x00, 0x00, 0x00),
++	_INIT_DCS_CMD(0xB4, 0x80),
++	_INIT_DCS_CMD(0xB5, 0x0A, 0x0A),
++	_INIT_DCS_CMD(0xB6, 0x97, 0x97),
++	_INIT_DCS_CMD(0xB8, 0x26, 0x22, 0xF0, 0x63),
++	_INIT_DCS_CMD(0xBA, 0x31, 0x81, 0x05, 0xF9, 0x0E, 0x0E, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x44, 0x25, 0x00, 0x90, 0x0A, 0x00, 0x00, 0x01, 0x4F, 0x01, 0x00, 0x00, 0x37),
++	_INIT_DCS_CMD(0xBC, 0x47),
++	_INIT_DCS_CMD(0xBF, 0x02, 0x11, 0x00),
++	_INIT_DCS_CMD(0xC0, 0x73, 0x73, 0x50, 0x50, 0x00, 0x00, 0x12, 0x70, 0x00),
++	_INIT_DCS_CMD(0xC1, 0x25, 0x00, 0x32, 0x32, 0x77, 0xE4, 0xFF, 0xFF, 0xCC, 0xCC, 0x77, 0x77),
++	_INIT_DCS_CMD(0xC6, 0x82, 0x00, 0xBF, 0xFF, 0x00, 0xFF),
++	_INIT_DCS_CMD(0xC7, 0xB8, 0x00, 0x0A, 0x00, 0x00, 0x00),
++	_INIT_DCS_CMD(0xC8, 0x10, 0x40, 0x1E, 0x02),
++	_INIT_DCS_CMD(0xCC, 0x0B),
++	_INIT_DCS_CMD(0xE0, 0x00, 0x0B, 0x10, 0x2C, 0x3D, 0x3F, 0x42, 0x3A, 0x07, 0x0D, 0x0F, 0x13,
++	0x15, 0x13, 0x14, 0x0F, 0x16, 0x00, 0x0B, 0x10, 0x2C, 0x3D, 0x3F, 0x42, 0x3A, 0x07, 0x0D,
++	0x0F, 0x13, 0x15, 0x13, 0x14, 0x0F, 0x16),
++	_INIT_DCS_CMD(0xE3, 0x07, 0x07, 0x0B, 0x0B, 0x0B, 0x0B, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00,
++	0xC0, 0x10),
++	_INIT_DCS_CMD(0xE9, 0xC8, 0x10, 0x0A, 0x00, 0x00, 0x80, 0x81, 0x12, 0x31, 0x23, 0x4F, 0x86,
++	0xA0, 0x00, 0x47, 0x08, 0x00, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x00,
++	0x00, 0x98, 0x02, 0x8B, 0xAF, 0x46, 0x02, 0x88, 0x88, 0x88, 0x88, 0x88, 0x98, 0x13, 0x8B,
++	0xAF, 0x57, 0x13, 0x88, 0x88, 0x88, 0x88, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
++	_INIT_DCS_CMD(0xEA, 0x97, 0x0C, 0x09, 0x09, 0x09, 0x78, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++	0x9F, 0x31, 0x8B, 0xA8, 0x31, 0x75, 0x88, 0x88, 0x88, 0x88, 0x88, 0x9F, 0x20, 0x8B, 0xA8,
++	0x20, 0x64, 0x88, 0x88, 0x88, 0x88, 0x88, 0x23, 0x00, 0x00, 0x02, 0x71, 0x00, 0x00, 0x00,
++	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x80, 0x81,
++	0x00, 0x00, 0x00, 0x00),
++	_INIT_DCS_CMD(0xEF, 0xFF, 0xFF, 0x01),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(250),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(50),
++	{},
++};
++
++static inline struct tdo_panel *panel_to_ws(struct drm_panel *panel)
++{
++	return container_of(panel, struct tdo_panel, panel);
++}
++
++static int tdo_panel_init_dcs_cmd(struct tdo_panel *ts)
++{
++	struct mipi_dsi_device *dsi = ts->dsi;
++	struct drm_panel *panel = &ts->panel;
++	int i, err = 0;
++
++	if (ts->desc->init) {
++		const struct panel_init_cmd *init_cmds = ts->desc->init;
++
++		for (i = 0; init_cmds[i].len != 0; i++) {
++			const struct panel_init_cmd *cmd = &init_cmds[i];
++
++			switch (cmd->type) {
++			case DELAY_CMD:
++				msleep(cmd->data[0]);
++				err = 0;
++				break;
++
++			case INIT_DCS_CMD:
++				err = mipi_dsi_dcs_write(
++					dsi, cmd->data[0],
++					cmd->len <= 1 ? NULL : &cmd->data[1],
++					cmd->len - 1);
++				break;
++
++			default:
++				err = -EINVAL;
++			}
++
++			if (err < 0) {
++				dev_err(panel->dev,
++					"failed to write command %u\n", i);
++				return err;
++			}
++		}
++	}
++	return 0;
++}
++
++static int tdo_panel_prepare(struct drm_panel *panel)
++{
++	struct tdo_panel *ctx = panel_to_ws(panel);
++	int ret;
++
++	/* And reset it */
++	if (ctx->reset) {
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(100);
++		gpiod_set_value_cansleep(ctx->reset, 1);
++		msleep(60);
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(60);
++	}
++
++	ret = tdo_panel_init_dcs_cmd(ctx);
++	if (ret < 0)
++		dev_err(panel->dev, "failed to init panel: %d\n", ret);
++
++	return 0;
++}
++
++static int tdo_panel_unprepare(struct drm_panel *panel)
++{
++	struct tdo_panel *ctx = panel_to_ws(panel);
++
++	mipi_dsi_dcs_set_display_off(ctx->dsi);
++	mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
++
++	if (ctx->reset)
++		gpiod_set_value_cansleep(ctx->reset, 1);
++
++	return 0;
++}
++
++static const struct drm_display_mode tdo_panel_tl034wvs03_mode = {
++	.clock = 40000,
++	.hdisplay = 480,
++	.hsync_start = 480 + 220,
++	.hsync_end = 480 + 220 + 20,
++	.htotal = 480 + 220 + 20 + 220,
++	.vdisplay = 480,
++	.vsync_start = 480 + 100,
++	.vsync_end = 480 + 100 + 10,
++	.vtotal = 480 + 100 + 10 + 100,
++	.width_mm = 60,
++	.height_mm = 60,
++};
++
++static const struct drm_display_mode tdo_panel_tl040wvs17_mode = {
++	.clock = 35000,
++	.hdisplay = 480,
++	.hsync_start = 480 + 250,
++	.hsync_end = 480 + 250 + 20,
++	.htotal = 480 + 250 + 20 + 250,
++	.vdisplay = 480,
++	.vsync_start = 480 + 30,
++	.vsync_end = 480 + 30 + 10,
++	.vtotal = 480 + 30 + 10 + 30,
++	.width_mm = 72,
++	.height_mm = 70,
++};
++
++static const struct drm_display_mode tdo_panel_tl040hds31_mode = {
++	.clock = 49500,
++	.hdisplay = 720,
++	.hsync_start = 720 + 140,
++	.hsync_end = 720 + 140 + 80,
++	.htotal = 720 + 140 + 80 + 140,
++	.vdisplay = 720,
++	.vsync_start = 720 + 20,
++	.vsync_end = 720 + 20 + 4,
++	.vtotal = 720 + 20 + 4 + 20,
++	.width_mm = 72,
++	.height_mm = 72,
++};
++
++static int tdo_panel_get_modes(struct drm_panel *panel,
++			      struct drm_connector *connector)
++{
++	struct tdo_panel *ctx = panel_to_ws(panel);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, ctx->desc->mode);
++
++	if (!mode) {
++		dev_err(&ctx->dsi->dev, "failed to add mode %ux%ux@%u\n",
++			ctx->desc->mode->hdisplay, ctx->desc->mode->vdisplay,
++			drm_mode_vrefresh(ctx->desc->mode));
++		return -ENOMEM;
++	}
++
++	drm_mode_set_name(mode);
++
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.width_mm = mode->width_mm;
++	connector->display_info.height_mm = mode->height_mm;
++
++	drm_connector_set_panel_orientation(connector, ctx->orientation);
++
++	return 1;
++}
++
++static enum drm_panel_orientation
++tdo_panel_get_orientation(struct drm_panel *panel)
++{
++	struct tdo_panel *ctx = panel_to_ws(panel);
++
++	return ctx->orientation;
++}
++
++static const struct drm_panel_funcs tdo_panel_funcs = {
++	.prepare = tdo_panel_prepare,
++	.unprepare = tdo_panel_unprepare,
++	.get_modes = tdo_panel_get_modes,
++	.get_orientation = tdo_panel_get_orientation,
++};
++
++static int tdo_panel_dsi_probe(struct mipi_dsi_device *dsi)
++{
++	struct tdo_panel *ctx;
++	int ret;
++
++	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	mipi_dsi_set_drvdata(dsi, ctx);
++	ctx->dsi = dsi;
++	ctx->desc = of_device_get_match_data(&dsi->dev);
++
++	ctx->panel.prepare_prev_first = true;
++	drm_panel_init(&ctx->panel, &dsi->dev, &tdo_panel_funcs,
++		       DRM_MODE_CONNECTOR_DSI);
++
++	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->reset))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
++				     "Couldn't get our reset GPIO\n");
++
++	ret = of_drm_get_panel_orientation(dsi->dev.of_node, &ctx->orientation);
++	if (ret) {
++		dev_err(&dsi->dev, "%pOF: failed to get orientation: %d\n",
++			dsi->dev.of_node, ret);
++		return ret;
++	}
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return ret;
++
++	drm_panel_add(&ctx->panel);
++
++	dsi->mode_flags = ctx->desc->mode_flags;
++	dsi->format = ctx->desc->format;
++	dsi->lanes = ctx->desc->lanes;
++	dev_info(&dsi->dev, "dsi panel: %s,lanes: %d\n",
++	(char *)of_get_property(dsi->dev.of_node, "compatible", NULL), dsi->lanes);
++
++	ret = mipi_dsi_attach(dsi);
++	if (ret)
++		drm_panel_remove(&ctx->panel);
++
++	return ret;
++}
++
++static void tdo_panel_dsi_remove(struct mipi_dsi_device *dsi)
++{
++	struct tdo_panel *ctx = mipi_dsi_get_drvdata(dsi);
++
++	mipi_dsi_detach(dsi);
++	drm_panel_remove(&ctx->panel);
++	if (ctx->reset)
++		gpiod_set_value_cansleep(ctx->reset, 1);
++}
++
++static void tdo_panel_dsi_shutdown(struct mipi_dsi_device *dsi)
++{
++	struct tdo_panel *ctx = mipi_dsi_get_drvdata(dsi);
++
++	if (ctx->reset)
++		gpiod_set_value_cansleep(ctx->reset, 1);
++
++};
++
++static const struct tdo_panel_desc tdo_panel_tl034wvs03_desc = {
++	.init = tdo_panel_tl034wvs03_init,
++	.mode = &tdo_panel_tl034wvs03_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++	MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct tdo_panel_desc tdo_panel_tl040wvs17_desc = {
++	.init = tdo_panel_tl040wvs17_init,
++	.mode = &tdo_panel_tl040wvs17_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++	MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct tdo_panel_desc tdo_panel_tl040hds31_desc = {
++	.init = tdo_panel_tl040hds31_init,
++	.mode = &tdo_panel_tl040hds31_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++	MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct of_device_id tdo_panel_of_match[] = {
++	{ .compatible = "tdo,4.0-dsi-tl034wvs03", &tdo_panel_tl034wvs03_desc },
++	{ .compatible = "tdo,4.0-dsi-tl040wvs17", &tdo_panel_tl040wvs17_desc },
++	{ .compatible = "tdo,4.0-dsi-tl040hds31", &tdo_panel_tl040hds31_desc },
++	{}
++};
++MODULE_DEVICE_TABLE(of, tdo_panel_of_match);
++
++static struct mipi_dsi_driver tdo_panel_dsi_driver = {
++	.probe		= tdo_panel_dsi_probe,
++	.remove		= tdo_panel_dsi_remove,
++	.shutdown	= tdo_panel_dsi_shutdown,
++	.driver = {
++		.name		= "tdo-dsi",
++		.of_match_table	= tdo_panel_of_match,
++	},
++};
++module_mipi_dsi_driver(tdo_panel_dsi_driver);
++
++MODULE_AUTHOR("LK <kun_liu@shtdo.com>");
++MODULE_DESCRIPTION("TDO DSI panel driver");
++MODULE_LICENSE("GPL");

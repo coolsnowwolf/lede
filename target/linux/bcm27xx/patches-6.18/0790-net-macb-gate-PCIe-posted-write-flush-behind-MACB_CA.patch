@@ -1,0 +1,87 @@
+From b1b307c0ab229d723431f81bc3466bdc7f5947c7 Mon Sep 17 00:00:00 2001
+From: Lukasz Raczylo <lukasz@raczylo.com>
+Date: Thu, 14 May 2026 23:30:37 +0100
+Subject: [PATCH] net: macb: gate PCIe posted-write flush behind
+ MACB_CAPS_PCIE_POSTED_WRITES
+
+After commit a9e13da2dc4c ("net: macb: flush PCIe posted write after TSTART doorbell")
+merged for the silent TX stall on BCM2712/RP1, the readback in
+macb_start_xmit() and macb_tx_restart() runs on every macb variant.
+
+SoC-integrated parts (Atmel, Microchip, SiFive, Xilinx, etc.) write
+NCR over on-chip MMIO with no fabric posted-write concern, and pay
+the non-posted PCIe-read latency for no benefit.  Only the
+PCIe-attached macb (currently BCM2712 + RP1) needs the flush.
+
+Introduce MACB_CAPS_PCIE_POSTED_WRITES and gate both readbacks
+behind it; set the cap on raspberrypi_rp1_config only.
+
+This is the rpi-6.18.y portion of the v2 follow-up to the netdev
+RFC submission; the mainline v2 is on lore:
+
+  https://lore.kernel.org/netdev/cover.1777064117.git.lukasz@raczylo.com/T/
+
+Signed-off-by: Lukasz Raczylo <lukasz@raczylo.com>
+---
+ drivers/net/ethernet/cadence/macb.h      |  4 ++++
+ drivers/net/ethernet/cadence/macb_main.c | 20 ++++++++++++--------
+ 2 files changed, 16 insertions(+), 8 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb.h
++++ b/drivers/net/ethernet/cadence/macb.h
+@@ -793,6 +793,10 @@
+ #define MACB_CAPS_QUEUE_DISABLE			0x00000800
+ #define MACB_CAPS_QBV				0x00001000
+ #define MACB_CAPS_EEE				0x00002000
++/* Register writes are posted on the parent fabric and need a non-posted
++ * read-back to guarantee delivery.  Currently set only on RP1.
++ */
++#define MACB_CAPS_PCIE_POSTED_WRITES		0x00004000
+ #define MACB_CAPS_PCS				0x01000000
+ #define MACB_CAPS_HIGH_SPEED			0x02000000
+ #define MACB_CAPS_CLK_HW_CHG			0x04000000
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -1951,12 +1951,13 @@ static void macb_tx_restart(struct macb_
+ 
+ 	spin_lock(&bp->lock);
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
+-	/* Flush the PCIe posted-write queue so the TSTART doorbell
+-	 * reliably reaches the MAC.  Without this, the write can sit
+-	 * in the fabric and the MAC never advances, causing a silent
+-	 * TX stall.
++	/* On PCIe-attached parts, flush the posted-write queue so the
++	 * TSTART doorbell reliably reaches the MAC.  Without this the
++	 * write can sit in the fabric and the MAC never advances,
++	 * causing a silent TX stall.
+ 	 */
+-	(void)macb_readl(bp, NCR);
++	if (bp->caps & MACB_CAPS_PCIE_POSTED_WRITES)
++		(void)macb_readl(bp, NCR);
+ 	spin_unlock(&bp->lock);
+ 
+ out_tx_ptr_unlock:
+@@ -2702,10 +2703,12 @@ static netdev_tx_t macb_start_xmit(struc
+ 		queue->tx_pending = 1;
+ 
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
+-	/* Flush the PCIe posted-write queue; see the comment in
+-	 * macb_tx_restart() for the reasoning.
++	/* Flush PCIe posted-write queue; see comment in macb_tx_restart().
++	 * Also flushes the preceding macb_tx_lpi_wake() NCR write and the
++	 * TSR-read tx_pending breadcrumb above.
+ 	 */
+-	(void)macb_readl(bp, NCR);
++	if (bp->caps & MACB_CAPS_PCIE_POSTED_WRITES)
++		(void)macb_readl(bp, NCR);
+ 	spin_unlock(&bp->lock);
+ 
+ 	if (CIRC_SPACE(queue->tx_head, queue->tx_tail, bp->tx_ring_size) < 1)
+@@ -5835,6 +5838,7 @@ static const struct macb_config raspberr
+ 	.caps = MACB_CAPS_GIGABIT_MODE_AVAILABLE | MACB_CAPS_CLK_HW_CHG |
+ 		MACB_CAPS_JUMBO |
+ 		MACB_CAPS_GEM_HAS_PTP |
++		MACB_CAPS_PCIE_POSTED_WRITES |
+ 		MACB_CAPS_EEE,
+ 	.dma_burst_length = 16,
+ 	.clk_init = macb_clk_init,

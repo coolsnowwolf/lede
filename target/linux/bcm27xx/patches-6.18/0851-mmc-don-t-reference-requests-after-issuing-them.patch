@@ -1,0 +1,86 @@
+From 66d46640d0a54ea21c4fffd0575e2b071333348a Mon Sep 17 00:00:00 2001
+From: Yufeng Gao <yufeng.gao@canonical.com>
+Date: Sun, 12 Jul 2026 22:03:57 +1000
+Subject: [PATCH] mmc: don't reference requests after issuing them
+
+Posted write tracking introduced in the commit below referenced the
+request in the submission path after it had been issued, racing with
+re-use of the request and potentially causing underflow of the pending
+write count. The count is signed but was compared against the unsigned
+posted write limit, so such an underflow would wrap to a large value
+and wrongly throttle further writes (hang entire system).
+
+Fixes: e6c1e862b2b8 ("mmc: restrict posted write counts for SD cards in CQ mode")
+
+Co-developed-by: Jonathan Bell <jonathan@raspberrypi.com>
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+Signed-off-by: Yufeng Gao <yufeng.gao@canonical.com>
+---
+ drivers/mmc/core/queue.c | 9 ++++++---
+ include/linux/mmc/card.h | 2 +-
+ 2 files changed, 7 insertions(+), 4 deletions(-)
+
+--- a/drivers/mmc/core/queue.c
++++ b/drivers/mmc/core/queue.c
+@@ -243,6 +243,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 	enum mmc_issued issued;
+ 	bool get_card, cqe_retune_ok;
+ 	blk_status_t ret;
++	bool write;
+ 
+ 	if (mmc_card_removed(mq->card)) {
+ 		req->rq_flags |= RQF_QUIET;
+@@ -250,6 +251,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 	}
+ 
+ 	issue_type = mmc_issue_type(mq, req);
++	write = req_op(req) == REQ_OP_WRITE;
+ 
+ 	spin_lock_irq(&mq->lock);
+ 
+@@ -271,7 +273,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 			spin_unlock_irq(&mq->lock);
+ 			return BLK_STS_RESOURCE;
+ 		}
+-		if (!host->hsq_enabled && host->cqe_enabled && req_op(req) == REQ_OP_WRITE &&
++		if (!host->hsq_enabled && host->cqe_enabled && write &&
+ 		    mq->pending_writes >= card->max_posted_writes) {
+ 			spin_unlock_irq(&mq->lock);
+ 			return BLK_STS_RESOURCE;
+@@ -292,7 +294,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 	/* Parallel dispatch of requests is not supported at the moment */
+ 	mq->busy = true;
+ 
+-	if (req_op(req) == REQ_OP_WRITE)
++	if (write)
+ 		mq->pending_writes++;
+ 	mq->in_flight[issue_type] += 1;
+ 	get_card = (mmc_tot_in_flight(mq) == 1);
+@@ -333,7 +335,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 		bool put_card = false;
+ 
+ 		spin_lock_irq(&mq->lock);
+-		if (req_op(req) == REQ_OP_WRITE)
++		if (write)
+ 			mq->pending_writes--;
+ 		mq->in_flight[issue_type] -= 1;
+ 		if (mmc_tot_in_flight(mq) == 0)
+@@ -345,6 +347,7 @@ static blk_status_t mmc_mq_queue_rq(stru
+ 	} else {
+ 		WRITE_ONCE(mq->busy, false);
+ 	}
++	WARN_ON_ONCE(mq->pending_writes < 0);
+ 
+ 	return ret;
+ }
+--- a/include/linux/mmc/card.h
++++ b/include/linux/mmc/card.h
+@@ -384,7 +384,7 @@ struct mmc_card {
+ 
+ 	struct workqueue_struct *complete_wq;	/* Private workqueue */
+ 
+-	unsigned int		max_posted_writes; /* command queue posted write limit */
++	int			max_posted_writes; /* command queue posted write limit */
+ };
+ 
+ static inline bool mmc_large_sector(struct mmc_card *card)

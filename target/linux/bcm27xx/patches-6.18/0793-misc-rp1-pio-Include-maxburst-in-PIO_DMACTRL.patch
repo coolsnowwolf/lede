@@ -1,0 +1,55 @@
+From f31ed0ba33c0e02929f1c5f50dc91f9f64a10124 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 15 Jun 2026 16:24:55 +0100
+Subject: [PATCH] misc: rp1-pio: Include maxburst in PIO_DMACTRL
+
+The PIO DMA interface exposes empty/not empty signals as well as
+the threshold signals required for bursts. If the FIFO is not ready
+for a burst, a single beat burst can still be performed.
+
+It is therefore safe to set the PIO FIFO thresholds to the burst size
+used by the DMA controller.
+
+See: https://forums.raspberrypi.com/viewtopic.php?t=398882
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-pio.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -50,7 +50,9 @@
+ #define RP1_PIO_FIFO_RX2	0x18
+ #define RP1_PIO_FIFO_RX3	0x1c
+ 
+-#define RP1_PIO_DMACTRL_DEFAULT	0x80000104
++#define RP1_PIO_FIFO_DEPTH	8
++
++#define RP1_PIO_DMACTRL_DEFAULT	0x80000100
+ 
+ #define HANDLER(_n, _f) \
+ 	[_IOC_NR(PIO_IOC_ ## _n)] = { #_n, rp1_pio_ ## _f, _IOC_SIZE(PIO_IOC_ ## _n) }
+@@ -679,6 +681,8 @@ static int rp1_pio_sm_config_xfer_intern
+ 	config.direction = (dir == RP1_PIO_DIR_TO_SM) ? DMA_MEM_TO_DEV : DMA_DEV_TO_MEM;
+ 	dma_caps.max_burst = 4;
+ 	dma_get_slave_caps(dma->chan, &dma_caps);
++	if (dma_caps.max_burst > RP1_PIO_FIFO_DEPTH)
++		dma_caps.max_burst = RP1_PIO_FIFO_DEPTH;
+ 	if (dir == RP1_PIO_DIR_TO_SM)
+ 		config.dst_maxburst = dma_caps.max_burst;
+ 	else
+@@ -690,9 +694,11 @@ static int rp1_pio_sm_config_xfer_intern
+ 
+ 	set_dmactrl_args.sm = sm;
+ 	set_dmactrl_args.is_tx = (dir == RP1_PIO_DIR_TO_SM);
+-	set_dmactrl_args.ctrl = RP1_PIO_DMACTRL_DEFAULT;
+ 	if (dir == RP1_PIO_DIR_FROM_SM)
+-		set_dmactrl_args.ctrl = (RP1_PIO_DMACTRL_DEFAULT & ~0x1f) | 1;
++		set_dmactrl_args.ctrl = RP1_PIO_DMACTRL_DEFAULT | config.src_maxburst;
++	else
++		set_dmactrl_args.ctrl = RP1_PIO_DMACTRL_DEFAULT |
++					(RP1_PIO_FIFO_DEPTH - config.dst_maxburst);
+ 
+ 	ret = rp1_pio_sm_set_dmactrl(client, &set_dmactrl_args);
+ 	if (ret)

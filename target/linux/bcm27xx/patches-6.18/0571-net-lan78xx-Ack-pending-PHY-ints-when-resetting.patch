@@ -1,0 +1,40 @@
+From 9a193a86a60e3924fab75ff4c6127f2ab041f493 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 15 Dec 2020 16:38:37 +0000
+Subject: [PATCH] net: lan78xx: Ack pending PHY ints when resetting
+
+lan78xx_link_reset explicitly clears the MAC's view of the PHY's IRQ
+status. In doing so it potentially leaves the PHY with a pending
+interrupt that will never be acknowledged, at which point no further
+interrupts will be generated.
+
+Avoid the problem by acknowledging any pending PHY interrupt after
+clearing the MAC's status bit.
+
+See: https://github.com/raspberrypi/linux/issues/2937
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/net/usb/lan78xx.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/usb/lan78xx.c
++++ b/drivers/net/usb/lan78xx.c
+@@ -1650,7 +1650,16 @@ exit_unlock:
+  */
+ static int lan78xx_phy_int_ack(struct lan78xx_net *dev)
+ {
+-	return lan78xx_write_reg(dev, INT_STS, INT_STS_PHY_INT_);
++		struct phy_device *phydev = dev->net->phydev;
++	int ret = lan78xx_write_reg(dev, INT_STS, INT_STS_PHY_INT_);
++
++	if (unlikely(ret < 0))
++		return ret;
++
++	/* Acknowledge any pending PHY interrupt, lest it be the last */
++	phy_read(phydev, LAN88XX_INT_STS);
++
++	return 0;
+ }
+ 
+ /* some work can't be done in tasklets, so we use keventd

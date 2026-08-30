@@ -1,0 +1,92 @@
+From 60fc80b89d134d720fbab7ef504f80a4ae7a998c Mon Sep 17 00:00:00 2001
+From: Lukasz Raczylo <lukasz@raczylo.com>
+Date: Thu, 14 May 2026 23:31:22 +0100
+Subject: [PATCH] net: macb: drop destructive ISR read, use IMR barrier in
+ macb_tx_poll
+
+Commit ff6914e97386 ("net: macb: re-check ISR after IER re-enable
+in macb_tx_poll") added a re-check of ISR with a TCOMP mask after
+unmasking the interrupt, intended to catch completions that fired
+while masked plus serve as a PCIe read barrier so the descriptor
+check sees up-to-date TX_USED.
+
+That ISR read is destructive on silicon where MACB_CAPS_ISR_CLEAR_ON_WRITE
+is not set -- raspberrypi_rp1_config is one such case.  On read-clear
+ISR the queue_readl(queue, ISR) call consumes every set bit, but the
+macb_tx_poll() use-site masks the value down to MACB_BIT(TCOMP) and
+discards the rest.  Any RCOMP / ROVR / TXUBR bit set in ISR at the
+moment of the read is silently consumed and never processed by the
+primary macb_interrupt() handler.  The race window is small (~200-500 ns
+per macb_tx_poll completion) but real, and on a level-triggered IRQ the
+consumed bit drops the line before GIC delivery, so the IRQ for that
+event is never raised at all.
+
+Replace the destructive read with a read of IMR, the read-only
+interrupt-mask mirror.  IMR has no side effects on either read-clear
+or W1C ISR silicon, and the MMIO read still serves as an architected
+PCIe read barrier that retires prior peripheral DMA writes before the
+following macb_tx_complete_pending() inspects the descriptor.  The
+"directly sample a latched TCOMP" half of the original change is lost;
+the PCIe-barrier half -- which is what the documented race in the
+existing rmb() comment requires -- is preserved.
+
+This is the rpi-6.18.y portion of the v2 follow-up to the netdev RFC
+submission; the mainline v2 is on lore:
+
+  https://lore.kernel.org/netdev/cover.1777064117.git.lukasz@raczylo.com/T/
+
+Fixes: ff6914e97386 ("net: macb: re-check ISR after IER re-enable in macb_tx_poll")
+Signed-off-by: Lukasz Raczylo <lukasz@raczylo.com>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 37 ++++++++++++++----------
+ 1 file changed, 22 insertions(+), 15 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -2002,24 +2002,31 @@ static int macb_tx_poll(struct napi_stru
+ 	if (work_done < budget && napi_complete_done(napi, work_done)) {
+ 		queue_writel(queue, IER, MACB_BIT(TCOMP));
+ 
+-		/* TCOMP events that fire while the interrupt is masked do
+-		 * not re-fire when IER is re-enabled.  Catch this two ways
+-		 * to avoid losing a wakeup:
++		/* TCOMP events that fire while masked don't re-fire when
++		 * IER is re-enabled (HW errata), so check in software.
++		 * macb_tx_complete_pending() inspects the descriptor at
++		 * tx_tail; the rmb() in there orders prior CPU writes but
++		 * does not retire in-flight peripheral DMA writes that
++		 * may still be racing back to memory on PCIe-attached
++		 * parts.
+ 		 *
+-		 *   (1) Read ISR -- catches completions the hardware flagged
+-		 *       but that we did not see as an interrupt.  The MMIO
+-		 *       read doubles as a PCIe read barrier, flushing any
+-		 *       in-flight descriptor TX_USED DMA writes into memory.
+-		 *   (2) macb_tx_complete_pending() inspects the ring after
+-		 *       that flush, catching a descriptor whose TX_USED is
+-		 *       now visible as a result of the barrier.
++		 * Read a side-effect-free MMIO register (IMR, the
++		 * read-only mask mirror) to act as a PCIe read barrier
++		 * for prior peripheral DMA writes.  After this read, any
++		 * in-flight TX_USED descriptor update has retired and
++		 * macb_tx_complete_pending() will observe it.
+ 		 *
+-		 * This can race with the interrupt handler taking the same
+-		 * path if an interrupt fires just after the IER write;
+-		 * rescheduling NAPI in that case is harmless.
++		 * Note: an earlier form of this block read ISR directly
++		 * to also sample a latched TCOMP bit, but that is
++		 * destructive on silicon where MACB_CAPS_ISR_CLEAR_ON_WRITE
++		 * is not set (raspberrypi_rp1_config among others): the
++		 * read clears every set bit, and a masked check silently
++		 * consumes RCOMP / ROVR / TXUBR bits the IRQ handler is
++		 * expected to process in one pass.  IMR is non-destructive
++		 * on both read-clear and W1C silicon.
+ 		 */
+-		if ((queue_readl(queue, ISR) & MACB_BIT(TCOMP)) ||
+-		    macb_tx_complete_pending(queue)) {
++		(void)queue_readl(queue, IMR);
++		if (macb_tx_complete_pending(queue)) {
+ 			queue_writel(queue, IDR, MACB_BIT(TCOMP));
+ 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
+ 				queue_writel(queue, ISR, MACB_BIT(TCOMP));

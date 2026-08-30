@@ -1,0 +1,108 @@
+From cb0544e69b4d108b90e7131120a633feed0c92eb Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <mripard@redhat.com>
+Date: Mon, 9 Mar 2026 16:07:41 +0100
+Subject: [PATCH] media: bcm2835-unicam: Fix RGB format / mbus code association
+
+Commit 08f9794d9b799b56b301d7537e8771f0d41f51a1 upstream.
+
+The Unicam driver is a MIPI-CSI2 Receiver, that can capture RGB 4:4:4,
+YCbCr 4:2:2, and raw formats.
+
+RGB 4:4:4 is converted to the MIPI-CSI2 RGB888 video format, and
+associated to the MEDIA_BUS_FMT_RGB888_1X24 media bus code.
+
+However, V4L2_PIX_FMT_RGB24 is defined as having its color components in
+the R, G and B order, from left to right. MIPI-CSI2 however defines the
+RGB888 format with blue first, and that's what MEDIA_BUS_FMT_RGB888_1X24
+defines too.
+
+This essentially means that the R and B will be swapped compared to what
+V4L2_PIX_FMT_RGB24 defines. The same situation occurs with
+V4L2_PIX_FMT_BGR24 being associated to MEDIA_BUS_FMT_BGR888_1X24.
+
+In order to fix the swapped components, we need to change the
+association of V4L2_PIX_FMT_BGR24 to MEDIA_BUS_FMT_RGB888_1X24, and of
+V4L2_PIX_FMT_RGB24 to MEDIA_BUS_FMT_BGR888_1X24.
+
+Since the media bus code is exposed to userspace, and validated by
+unicam's link_validate implementation, we need to explicitly accept (and
+warn) the old association still to preserve backward compatibility.
+
+Signed-off-by: Maxime Ripard <mripard@redhat.com>
+Reviewed-by: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
+Signed-off-by: Sakari Ailus <sakari.ailus@linux.intel.com>
+Signed-off-by: Hans Verkuil <hverkuil+cisco@kernel.org>
+---
+ .../media/platform/broadcom/bcm2835-unicam.c  | 41 +++++++++++++++----
+ 1 file changed, 32 insertions(+), 9 deletions(-)
+
+--- a/drivers/media/platform/broadcom/bcm2835-unicam.c
++++ b/drivers/media/platform/broadcom/bcm2835-unicam.c
+@@ -342,12 +342,12 @@ static const struct unicam_format_info u
+ 		.csi_dt		= MIPI_CSI2_DT_RGB565,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_RGB24, /* rgb */
+-		.code		= MEDIA_BUS_FMT_RGB888_1X24,
++		.code		= MEDIA_BUS_FMT_BGR888_1X24,
+ 		.depth		= 24,
+ 		.csi_dt		= MIPI_CSI2_DT_RGB888,
+ 	}, {
+ 		.fourcc		= V4L2_PIX_FMT_BGR24, /* bgr */
+-		.code		= MEDIA_BUS_FMT_BGR888_1X24,
++		.code		= MEDIA_BUS_FMT_RGB888_1X24,
+ 		.depth		= 24,
+ 		.csi_dt		= MIPI_CSI2_DT_RGB888,
+ 	}, {
+@@ -2148,22 +2148,45 @@ static int unicam_video_link_validate(st
+ 		const struct v4l2_pix_format *fmt = &node->fmt.fmt.pix;
+ 		const struct unicam_format_info *fmtinfo;
+ 
+-		fmtinfo = unicam_find_format_by_fourcc(fmt->pixelformat,
+-						       UNICAM_SD_PAD_SOURCE_IMAGE);
++		fmtinfo = unicam_find_format_by_code(format->code,
++						     UNICAM_SD_PAD_SOURCE_IMAGE);
+ 		if (WARN_ON(!fmtinfo)) {
+ 			ret = -EPIPE;
+ 			goto out;
+ 		}
+ 
+-		if (fmtinfo->code != format->code ||
+-		    fmt->height != format->height ||
++		/*
++		 * Unicam initially associated BGR24 to BGR888_1X24 and RGB24 to
++		 * RGB888_1X24.
++		 *
++		 * In order to allow the applications using the old behaviour to
++		 * run, let's accept the old combination, but warn about it.
++		 */
++		if (fmtinfo->fourcc != fmt->pixelformat) {
++			if ((fmt->pixelformat == V4L2_PIX_FMT_BGR24 &&
++			     format->code == MEDIA_BUS_FMT_BGR888_1X24) ||
++			    (fmt->pixelformat == V4L2_PIX_FMT_RGB24 &&
++			     format->code == MEDIA_BUS_FMT_RGB888_1X24)) {
++				dev_warn_once(node->dev->dev,
++					      "Incorrect pixel format %p4cc for 0x%04x. Fix your application to use %p4cc.\n",
++					      &fmt->pixelformat, format->code, &fmtinfo->fourcc);
++			} else {
++				dev_dbg(node->dev->dev,
++					"image: format mismatch: 0x%04x <=> %p4cc\n",
++					format->code, &fmt->pixelformat);
++				ret = -EPIPE;
++				goto out;
++			}
++		}
++
++		if (fmt->height != format->height ||
+ 		    fmt->width != format->width ||
+ 		    fmt->field != format->field) {
+ 			dev_dbg(node->dev->dev,
+-				"image: (%u x %u) 0x%08x %s != (%u x %u) 0x%08x %s\n",
+-				fmt->width, fmt->height, fmtinfo->code,
++				"image: (%u x %u) %s != (%u x %u) %s\n",
++				fmt->width, fmt->height,
+ 				v4l2_field_names[fmt->field],
+-				format->width, format->height, format->code,
++				format->width, format->height,
+ 				v4l2_field_names[format->field]);
+ 			ret = -EPIPE;
+ 		}

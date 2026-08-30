@@ -1,0 +1,173 @@
+From d30fd123fee11a1ec21a6179272f87111973fd28 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 14 Apr 2026 14:30:50 +0100
+Subject: [PATCH] nvme-pci: manually allocate Host Memory Buffer segments on
+ arm64
+
+The Host Memory Buffer allocation algorithm interacts badly with arm64
+platforms with no IOMMU for PCIe devices, such as BCM2711/BCM2712.
+
+The discontiguous VA allocation in nvme_host_mem_alloc_single() always
+fails, so nvme_alloc_host_mem_multi() falls back to the DMA coherent
+allocation scheme. On arm64, this will come out of CMA by default.
+
+Recent DRAM-less SSDs will request significant amounts of host memory -
+up to 128MB. As NVMe devices are set up early in boot, CMA is
+mostly-free so it ends up being claimed by a driver using it for opaque
+device-exclusive buffers. The divide-and-conquer allocation strategy
+also paradoxically results in increased CMA pressure if portions are
+already reserved.
+
+PCIe NVMe controllers implement a variably-sized HMB descriptor table,
+typically ranging from 32 to 256 entries in size. Therefore, aside from
+implementation-specific costs in the controller doing more granular
+look-ups, providing smaller orders is acceptable. Failing to provide a
+HMB does not prevent the controller from functioning.
+
+Create an alternate implementation for arm64 that creates a scatterlist
+and directly assigns contiguous pages from the buddy allocator, retrying
+with smaller orders on failure. This will avoid CMA by default.
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/nvme/host/pci.c | 98 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 98 insertions(+)
+
+--- a/drivers/nvme/host/pci.c
++++ b/drivers/nvme/host/pci.c
+@@ -183,9 +183,11 @@ struct nvme_dev {
+ 	/* host memory buffer support: */
+ 	u64 host_mem_size;
+ 	u32 nr_host_mem_descs;
++	u32 nr_sgl_ents;
+ 	u32 host_mem_descs_size;
+ 	dma_addr_t host_mem_descs_dma;
+ 	struct nvme_host_mem_buf_desc *host_mem_descs;
++	struct scatterlist *host_mem_sgl;
+ 	void **host_mem_desc_bufs;
+ 	unsigned int nr_allocated_queues;
+ 	unsigned int nr_write_queues;
+@@ -2306,6 +2308,13 @@ static int nvme_set_host_mem(struct nvme
+ 	return ret;
+ }
+ 
++#if IS_ENABLED(CONFIG_ARM64)
++static void nvme_free_host_mem_multi(struct nvme_dev *dev)
++{
++	dma_unmap_sg(dev->dev, dev->host_mem_sgl, dev->nr_host_mem_descs, DMA_FROM_DEVICE);
++	sgl_free(dev->host_mem_sgl);
++}
++#else
+ static void nvme_free_host_mem_multi(struct nvme_dev *dev)
+ {
+ 	int i;
+@@ -2322,6 +2331,7 @@ static void nvme_free_host_mem_multi(str
+ 	kfree(dev->host_mem_desc_bufs);
+ 	dev->host_mem_desc_bufs = NULL;
+ }
++#endif
+ 
+ static void nvme_free_host_mem(struct nvme_dev *dev)
+ {
+@@ -2366,6 +2376,93 @@ static int nvme_alloc_host_mem_single(st
+ 	return 0;
+ }
+ 
++#if IS_ENABLED(CONFIG_ARM64)
++static int nvme_alloc_host_mem_multi(struct nvme_dev *dev, u64 preferred,
++				     u32 chunk_size)
++{
++	struct nvme_host_mem_buf_desc *descs;
++	u32 max_entries, len, descs_size;
++	dma_addr_t descs_dma;
++	struct scatterlist *slist;
++	struct page *page;
++	int i = 0, mapped_nents;
++	u64 size, tmp;
++
++	tmp = (preferred + chunk_size - 1);
++	do_div(tmp, chunk_size);
++	max_entries = tmp;
++
++	if (dev->ctrl.hmmaxd && dev->ctrl.hmmaxd < max_entries)
++		max_entries = dev->ctrl.hmmaxd;
++
++	descs_size = max_entries * sizeof(*descs);
++	/*
++	 * Allocate the descriptor table from coherent memory -
++	 * usually occupies less than/up to a single page.
++	 */
++	descs = dma_alloc_coherent(dev->dev, descs_size, &descs_dma,
++				      GFP_KERNEL);
++	if (!descs)
++		goto out;
++
++	slist = kcalloc(max_entries, sizeof(struct scatterlist), GFP_KERNEL);
++	if (!slist)
++		goto out_free_descs;
++
++	sg_init_table(slist, max_entries);
++
++	dev_dbg(dev->dev, "Allocating HMB pref = %llu max_entries = %u\n",
++		  preferred, max_entries);
++
++	for (size = 0; size < preferred && i < max_entries; size += len) {
++		int order;
++
++		len = min_t(u64, chunk_size, preferred - size);
++		order = get_order(len);
++		page = alloc_pages(GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN, order);
++		if (!page)
++			break;
++		sg_set_page(&slist[i], page, len, 0);
++		i++;
++	}
++	if (size < preferred)
++		goto out_free_sgl;
++
++	mapped_nents = dma_map_sg(dev->dev, slist, i, DMA_FROM_DEVICE);
++	if (mapped_nents <= 0)
++		goto out_free_pages;
++
++	/* Flush in case the CPU has cached any parts of the DMA buffers */
++	dma_sync_sg_for_device(dev->dev, slist, i, DMA_FROM_DEVICE);
++
++	i = dev->nr_host_mem_descs = mapped_nents;
++
++	while (--i >= 0) {
++		descs[i].addr = sg_dma_address(&slist[i]);
++		WARN_ON_ONCE(sg_dma_len(&slist[i]) & (NVME_CTRL_PAGE_SIZE - 1));
++		descs[i].size = sg_dma_len(&slist[i]) / NVME_CTRL_PAGE_SIZE;
++	}
++
++	dev->host_mem_size = size;
++	dev->host_mem_descs = descs;
++	dev->host_mem_descs_dma = descs_dma;
++	dev->host_mem_descs_size = descs_size;
++	dev->host_mem_sgl = slist;
++	return 0;
++
++out_free_pages:
++	/* Don't use mapped_nents here as it could be incomplete */
++	while (--i >= 0)
++		__free_pages(sg_page(&slist[i]), get_order(slist[i].length));
++out_free_sgl:
++	kfree(slist);
++out_free_descs:
++	dma_free_coherent(dev->dev, descs_size, descs, descs_dma);
++out:
++	dev->host_mem_descs = NULL;
++	return -ENOMEM;
++}
++#else
+ static int nvme_alloc_host_mem_multi(struct nvme_dev *dev, u64 preferred,
+ 		u32 chunk_size)
+ {
+@@ -2426,6 +2523,7 @@ out:
+ 	dev->host_mem_descs = NULL;
+ 	return -ENOMEM;
+ }
++#endif
+ 
+ static int nvme_alloc_host_mem(struct nvme_dev *dev, u64 min, u64 preferred)
+ {

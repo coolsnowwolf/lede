@@ -1,0 +1,84 @@
+From b2f7eec2bfff1a7f03e9c2ad81cb4d654079ba79 Mon Sep 17 00:00:00 2001
+From: Lukasz Raczylo <lukasz@raczylo.com>
+Date: Thu, 14 May 2026 23:31:51 +0100
+Subject: [PATCH] net: macb: gate TX stall watchdog on netif_carrier_ok, use
+ warn_ratelimited
+
+Commit 79dc190b12f9 ("net: macb: add TX stall watchdog as
+defence-in-depth safety net") added a per-queue 1 Hz delayed_work
+that fires macb_tx_restart() if tx_tail has not advanced.  Two
+operational follow-ups:
+
+1. Boot-time false positive.  Between macb_open() and link autoneg
+   completion, queue->tx_head can advance from kernel-queued packets
+   while tx_tail stays at 0 because no TCOMPs have arrived yet.  The
+   first watchdog tick at +1000 ms then trips its head!=tail check
+   and fires a spurious TX-stall warning + re-kick.  Observed at
+   ~25% rate during fleet rolling reboots (6 of 24 nodes, all
+   tail=0 head=5-7).  The re-kick itself is harmless on a healthy
+   ring (macb_tx_restart() verifies TBQP vs head before re-asserting
+   TSTART), but the warning is noise and confuses operators who
+   read it as a real silent-stall event.
+
+   Gate the stall check on netif_carrier_ok().  No carrier means no
+   completion is possible, so skipping the check is safe; the
+   watchdog still ticks so it picks up immediately once carrier
+   comes up.
+
+2. netdev_warn_once() limits visibility to one event per netdev
+   lifetime, which is fine for a warn-once defensive log but defeats
+   any operator accounting of real stall events on long-running
+   nodes.  Switch to pr_warn_ratelimited() with an explicit
+   netdev_name() prefix: bounded log noise, the events stay visible
+   in the journal for accounting, and it avoids
+   netdev_warn_ratelimited() which is not available in this tree.
+
+This is the rpi-6.18.y portion of the v2 follow-up to the netdev RFC
+submission; the mainline v2 is on lore:
+
+  https://lore.kernel.org/netdev/cover.1777064117.git.lukasz@raczylo.com/T/
+
+Co-authored-by: John Laur <johnlaur@gmail.com>
+Signed-off-by: Lukasz Raczylo <lukasz@raczylo.com>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -2075,6 +2075,16 @@ static void macb_tx_stall_watchdog(struc
+ 	if (!netif_running(bp->dev))
+ 		return;
+ 
++	/* No carrier => no completion is possible.  Skip the stall
++	 * check (otherwise queue->tx_head can advance from kernel-
++	 * queued packets between macb_open() and link autoneg
++	 * completion while tx_tail stays unchanged, tripping a false
++	 * positive), but keep the watchdog ticking so it picks up
++	 * once carrier comes up.
++	 */
++	if (!netif_carrier_ok(bp->dev))
++		goto reschedule;
++
+ 	spin_lock_irqsave(&queue->tx_ptr_lock, flags);
+ 	cur_tail = queue->tx_tail;
+ 	cur_head = queue->tx_head;
+@@ -2084,13 +2094,14 @@ static void macb_tx_stall_watchdog(struc
+ 	spin_unlock_irqrestore(&queue->tx_ptr_lock, flags);
+ 
+ 	if (stalled) {
+-		netdev_warn_once(bp->dev,
+-				 "TX stall detected on queue %u (tail=%u head=%u); re-kicking TSTART\n",
+-				 (unsigned int)(queue - bp->queues),
+-				 cur_tail, cur_head);
++		pr_warn_ratelimited("%s: TX stall detected on queue %u (tail=%u head=%u); re-kicking TSTART\n",
++				    netdev_name(bp->dev),
++				    (unsigned int)(queue - bp->queues),
++				    cur_tail, cur_head);
+ 		macb_tx_restart(queue);
+ 	}
+ 
++reschedule:
+ 	schedule_delayed_work(&queue->tx_stall_watchdog_work,
+ 			      msecs_to_jiffies(MACB_TX_STALL_INTERVAL_MS));
+ }

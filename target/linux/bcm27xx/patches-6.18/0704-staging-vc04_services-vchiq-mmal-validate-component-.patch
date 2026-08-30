@@ -1,0 +1,52 @@
+From 311a06494ddf019c2aeab52f44dd9bf415938be7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Sebasti=C3=A1n=20Alba=20Vives?= <sebasjosue84@gmail.com>
+Date: Sun, 29 Mar 2026 07:11:11 +0000
+Subject: [PATCH] staging: vc04_services: vchiq-mmal: validate component index
+ in event_to_host_cb()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+event_to_host_cb() uses msg->u.event_to_host.client_component as an
+index into the instance->component[] array (size VCHIQ_MMAL_MAX_COMPONENTS
+= 64) without bounds validation. While the kernel generally trusts the
+hardware it is bound to, a bounds check here hardens the driver against
+potential firmware bugs that could otherwise cause an uncontrolled
+out-of-bounds array access and kernel crash.
+
+Add a bounds check on comp_idx before using it as an array index and
+move the component pointer assignment after the validation. Use
+pr_err_ratelimited() to avoid log flooding. Note: this file does not
+currently have access to a struct device, so dev_err() is not available.
+
+Cc: stable@vger.kernel.org
+Fixes: b18ee53ad297 ("staging: bcm2835: Break MMAL support out from camera")
+Signed-off-by: Sebastián Alba Vives <sebasjosue84@gmail.com>
+---
+ drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+--- a/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
++++ b/drivers/staging/vc04_services/vchiq-mmal/mmal-vchiq.c
+@@ -478,12 +478,19 @@ static void event_to_host_cb(struct vchi
+ 			     struct mmal_msg *msg, u32 msg_len)
+ {
+ 	int comp_idx = msg->u.event_to_host.client_component;
+-	struct vchiq_mmal_component *component =
+-					&instance->component[comp_idx];
++	struct vchiq_mmal_component *component;
+ 	struct vchiq_mmal_port *port = NULL;
+ 	struct mmal_msg_context *msg_context;
+ 	u32 port_num = msg->u.event_to_host.port_num;
+ 
++	if (comp_idx < 0 || comp_idx >= VCHIQ_MMAL_MAX_COMPONENTS) {
++		pr_err_ratelimited("%s: component index %d out of range\n",
++				   __func__, comp_idx);
++		return;
++	}
++
++	component = &instance->component[comp_idx];
++
+ 	if (msg->u.buffer_from_host.drvbuf.magic == MMAL_MAGIC) {
+ 		pr_err("%s: MMAL_MSG_TYPE_BUFFER_TO_HOST with bad magic\n",
+ 		       __func__);

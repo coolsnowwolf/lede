@@ -1,0 +1,222 @@
+From b97835145ed1bf30b5c27fa5686956f70d915f55 Mon Sep 17 00:00:00 2001
+From: j-schambacher <joerg@hifiberry.com>
+Date: Mon, 13 Jul 2026 09:16:54 +0200
+Subject: [PATCH] overlays: hifiberry-studio: add Digi/AES overlay, register
+ controller
+
+Add hifiberry-studio-digi-overlay.dts for the Studio Digi/AES card,
+wired the same way as the DAC8x PRO overlay (i2s1, clk-provider), plus
+the GPIO7 FS-change/PLL-lost interrupt line the driver now requests
+automatically for AES-type cards.
+
+Both existing DAC8x overlays use the "hb_studio_ctrl" I2C client node
+(compatible "hifiberry,hb-studio-ctrl") so the driver's separate
+controller probe can be attached.
+A "no_controls" can be used to skip registering the ALSA controls for
+a card. The PRO overlay also switches to the new
+"hifiberry,hifiberry-studio" compatible string and
+adds the informational "card-type" property; the base overlay keeps
+"hifiberry,hifiberry-studio-dac8x" for backwards compatibility.
+
+Signed-off-by: j-schambacher <joerg@hifiberry.com>
+---
+ arch/arm/boot/dts/overlays/Makefile           |  1 +
+ arch/arm/boot/dts/overlays/README             | 17 +++-
+ .../hifiberry-studio-dac8x-overlay.dts        | 12 ++-
+ .../hifiberry-studio-dac8x-pro-overlay.dts    | 14 +++-
+ .../hifiberry-studio-digi-overlay.dts         | 83 +++++++++++++++++++
+ 5 files changed, 120 insertions(+), 7 deletions(-)
+ create mode 100644 arch/arm/boot/dts/overlays/hifiberry-studio-digi-overlay.dts
+
+--- a/arch/arm/boot/dts/overlays/Makefile
++++ b/arch/arm/boot/dts/overlays/Makefile
+@@ -109,6 +109,7 @@ dtbo-$(CONFIG_ARCH_BCM2835) += \
+ 	hifiberry-digi-pro.dtbo \
+ 	hifiberry-studio-dac8x.dtbo \
+ 	hifiberry-studio-dac8x-pro.dtbo \
++	hifiberry-studio-digi.dtbo \
+ 	highperi.dtbo \
+ 	hy28a.dtbo \
+ 	hy28b.dtbo \
+--- a/arch/arm/boot/dts/overlays/README
++++ b/arch/arm/boot/dts/overlays/README
+@@ -2127,14 +2127,23 @@ Params: <None>
+ 
+ Name:   hifiberry-studio-dac8x
+ Info:   Configures the HifiBerry Studio DAC8x audio card
+-Load:   dtoverlay=hifiberry-studio-dac8x
+-Params: <None>
++Load:   dtoverlay=hifiberry-studio-dac8x,<param>=<val>
++Params: no_controls             Do not register the ALSA controls for
++                                this card
+ 
+ 
+ Name:   hifiberry-studio-dac8x-pro
+ Info:   Configures the HifiBerry Studio DAC8x PRO audio card
+-Load:   dtoverlay=hifiberry-studio-dac8x-pro
+-Params: <None>
++Load:   dtoverlay=hifiberry-studio-dac8x-pro,<param>=<val>
++Params: no_controls             Do not register the ALSA controls for
++                                this card
++
++
++Name:   hifiberry-studio-digi
++Info:   Configures the HifiBerry Studio Digi/AES audio card
++Load:   dtoverlay=hifiberry-studio-digi,<param>=<val>
++Params: no_controls             Do not register the ALSA controls for
++                                this card
+ 
+ 
+ Name:   highperi
+--- a/arch/arm/boot/dts/overlays/hifiberry-studio-dac8x-overlay.dts
++++ b/arch/arm/boot/dts/overlays/hifiberry-studio-dac8x-overlay.dts
+@@ -10,6 +10,13 @@
+ 		target = <&i2c1>;
+ 		__overlay__ {
+ 			status = "okay";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			hb_studio_ctrl: hb_studio_ctrl@10 {
++				compatible = "hifiberry,hb-studio-ctrl";
++				reg = <0x10>;
++				status = "okay";
++			};
+ 		};
+ 	};
+ 
+@@ -49,11 +56,14 @@
+ 
+ 	fragment@4 {
+ 		target = <&sound>;
+-		__overlay__ {
++		hifiberry_studio: __overlay__ {
+ 			compatible = "hifiberry,hifiberry-studio-dac8x";
+ 			i2s-controller = <&i2s_clk_producer>;
+ 			status = "okay";
+ 		};
+ 	};
+ 
++	__overrides__ {
++		no_controls = <&hifiberry_studio>,"no-controls?";
++	};
+ };
+--- a/arch/arm/boot/dts/overlays/hifiberry-studio-dac8x-pro-overlay.dts
++++ b/arch/arm/boot/dts/overlays/hifiberry-studio-dac8x-pro-overlay.dts
+@@ -10,6 +10,13 @@
+ 		target = <&i2c1>;
+ 		__overlay__ {
+ 			status = "okay";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			hb_studio_ctrl: hb_studio_ctrl@10 {
++				compatible = "hifiberry,hb-studio-ctrl";
++				reg = <0x10>;
++				status = "okay";
++			};
+ 		};
+ 	};
+ 
+@@ -49,12 +56,15 @@
+ 
+ 	fragment@4 {
+ 		target = <&sound>;
+-		__overlay__ {
+-			compatible = "hifiberry,hifiberry-studio-dac8x";
++		hifiberry_studio: __overlay__ {
++			compatible = "hifiberry,hifiberry-studio";
+ 			i2s-controller = <&i2s_clk_consumer>;
+ 			clk-provider;
+ 			status = "okay";
+ 		};
+ 	};
+ 
++	__overrides__ {
++		no_controls = <&hifiberry_studio>,"no-controls?";
++	};
+ };
+--- /dev/null
++++ b/arch/arm/boot/dts/overlays/hifiberry-studio-digi-overlay.dts
+@@ -0,0 +1,83 @@
++// SPDX-License-Identifier: GPL-2.0
++// Definitions for HiFiBerry Studio Digi/AES soundcard
++/dts-v1/;
++/plugin/;
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/interrupt-controller/irq.h>
++#include <dt-bindings/pinctrl/bcm2835.h>
++
++/ {
++	compatible = "brcm,bcm2712";
++
++	fragment@0 {
++		target = <&i2c1>;
++		__overlay__ {
++			status = "okay";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			hb_studio_ctrl: hb_studio_ctrl@10 {
++				compatible = "hifiberry,hb-studio-ctrl";
++				reg = <0x10>;
++				status = "okay";
++			};
++		};
++	};
++
++	fragment@1 {
++		target = <&gpio>;
++		__overlay__ {
++			rp1_i2s1_digi: rp1_i2s1_digi {
++				function = "i2s1";
++				pins = "gpio18", "gpio19", "gpio20",
++				       "gpio21", "gpio22", "gpio23",
++				       "gpio24", "gpio25", "gpio26",
++				       "gpio27";
++				bias-disable;
++			};
++			digi_int_pin: digi_int_pin {
++				pins = "gpio7";
++				bias-pull-up;
++			};
++		};
++	};
++
++	fragment@2 {
++		target = <&i2s_clk_consumer>;
++		__overlay__ {
++			pinctrl-names = "default";
++			pinctrl-0 = <&rp1_i2s1_digi>;
++			status = "okay";
++		};
++	};
++
++	fragment@3 {
++		target-path = "/";
++		__overlay__ {
++			dummy-codec {
++				#sound-dai-cells = <0>;
++				compatible = "snd-soc-dummy";
++				status = "okay";
++			};
++		};
++	};
++
++	fragment@4 {
++		target = <&sound>;
++		hifiberry_studio: __overlay__ {
++			compatible = "hifiberry,hifiberry-studio";
++			i2s-controller = <&i2s_clk_consumer>;
++			clk-provider;
++			pinctrl-names = "default";
++			pinctrl-0 = <&digi_int_pin>;
++			interrupt-parent = <&gpio>;
++			interrupts = <7 IRQ_TYPE_EDGE_BOTH>;
++			gpios = <&gpio 7 GPIO_ACTIVE_HIGH>;
++			status = "okay";
++		};
++	};
++
++	__overrides__ {
++		no_controls = <&hifiberry_studio>,"no-controls?";
++	};
++};

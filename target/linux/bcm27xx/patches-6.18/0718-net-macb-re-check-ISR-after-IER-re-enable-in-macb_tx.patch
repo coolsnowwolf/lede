@@ -1,0 +1,96 @@
+From ff6914e97386f9a7d37468c79996dc6c34172cfb Mon Sep 17 00:00:00 2001
+From: Lukasz Raczylo <lukasz@raczylo.com>
+Date: Fri, 24 Apr 2026 00:00:00 +0000
+Subject: [PATCH] net: macb: re-check ISR after IER re-enable in macb_tx_poll
+
+macb_tx_poll() runs with TCOMP masked, drains the TX ring, then
+calls napi_complete_done() and re-enables TCOMP via IER.  An
+existing comment in the function notes:
+
+	/* Packet completions only seem to propagate to raise
+	 * interrupts when interrupts are enabled at the time, so if
+	 * packets were sent while interrupts were disabled,
+	 * they will not cause another interrupt to be generated when
+	 * interrupts are re-enabled.
+	 */
+
+and mitigates this by calling macb_tx_complete_pending(), which
+inspects driver-visible ring state (descriptor->ctrl, after rmb())
+and reschedules NAPI if a completion is observable in memory.
+
+On PCIe-attached parts (BCM2712 + RP1 on Raspberry Pi 5 is the
+setup we have in front of us), the descriptor DMA write that sets
+TX_USED may not have retired to system memory at the point
+macb_tx_complete_pending() runs.  The rmb() synchronises the CPU
+view of earlier CPU writes; it is not sufficient to retire an
+in-flight peripheral DMA write.  Under that ordering the in-memory
+descriptor can still read TX_USED=0 when the hardware has in fact
+completed the frame; the check returns false; NAPI exits; the
+quirk above prevents the re-enabled IER from re-firing; the ring
+goes quiescent.
+
+Add an explicit ISR read after the IER write.  The MMIO read
+serves two independent purposes:
+
+  (1) It is an architected PCIe read barrier for earlier
+      peripheral-originated DMA writes on the same path, so a
+      subsequent macb_tx_complete_pending() observes any TX_USED
+      write that was in flight at the time of the barrier.
+
+  (2) It samples the hardware ISR directly, so a TCOMP bit that
+      the hardware set while TCOMP was masked is visible here,
+      independently of whether the descriptor DMA has retired.
+
+If either signal indicates pending work, reschedule NAPI via the
+same path as the existing check.
+
+This patch addresses one of three candidate races for the silent
+TX stall described in the cover letter.  Whether it is sufficient
+by itself, or whether it requires the PCIe posted-write flush in
+patch 1/3 to cover the observed behaviour, we have not yet
+verified at runtime.
+
+Link: https://github.com/cilium/cilium/issues/43198
+Link: https://bugs.launchpad.net/ubuntu/+source/linux-raspi/+bug/2133877
+Signed-off-by: Lukasz Raczylo <lukasz@raczylo.com>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 27 +++++++++++++++---------
+ 1 file changed, 17 insertions(+), 10 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -1999,17 +1999,24 @@ static int macb_tx_poll(struct napi_stru
+ 	if (work_done < budget && napi_complete_done(napi, work_done)) {
+ 		queue_writel(queue, IER, MACB_BIT(TCOMP));
+ 
+-		/* Packet completions only seem to propagate to raise
+-		 * interrupts when interrupts are enabled at the time, so if
+-		 * packets were sent while interrupts were disabled,
+-		 * they will not cause another interrupt to be generated when
+-		 * interrupts are re-enabled.
+-		 * Check for this case here to avoid losing a wakeup. This can
+-		 * potentially race with the interrupt handler doing the same
+-		 * actions if an interrupt is raised just after enabling them,
+-		 * but this should be harmless.
++		/* TCOMP events that fire while the interrupt is masked do
++		 * not re-fire when IER is re-enabled.  Catch this two ways
++		 * to avoid losing a wakeup:
++		 *
++		 *   (1) Read ISR -- catches completions the hardware flagged
++		 *       but that we did not see as an interrupt.  The MMIO
++		 *       read doubles as a PCIe read barrier, flushing any
++		 *       in-flight descriptor TX_USED DMA writes into memory.
++		 *   (2) macb_tx_complete_pending() inspects the ring after
++		 *       that flush, catching a descriptor whose TX_USED is
++		 *       now visible as a result of the barrier.
++		 *
++		 * This can race with the interrupt handler taking the same
++		 * path if an interrupt fires just after the IER write;
++		 * rescheduling NAPI in that case is harmless.
+ 		 */
+-		if (macb_tx_complete_pending(queue)) {
++		if ((queue_readl(queue, ISR) & MACB_BIT(TCOMP)) ||
++		    macb_tx_complete_pending(queue)) {
+ 			queue_writel(queue, IDR, MACB_BIT(TCOMP));
+ 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
+ 				queue_writel(queue, ISR, MACB_BIT(TCOMP));

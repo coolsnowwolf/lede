@@ -1,0 +1,308 @@
+From 5fe081e028463bc519d86ff712224d1f489a9e25 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Fri, 8 May 2026 18:13:44 +0100
+Subject: [PATCH] char: broadcom: vcio: Create addtional vcio nodes for fine
+ grained acccess
+
+vcio has a number of uses, including clocks and power, board info, gencmd,
+display, vpu execution, provisioning, crypto, ab booting.
+
+Currently we have to give a user access to all or none of these.
+
+Provide some additional nodes which can only access a subset of these
+commands.
+
+That allows, say, gencmd access from a user or group, without exposing
+more dangerous commands.
+
+The initial extra nodes are for gencmd, provisioning, ab and crypto.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/char/broadcom/vcio.c | 205 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 188 insertions(+), 17 deletions(-)
+
+--- a/drivers/char/broadcom/vcio.c
++++ b/drivers/char/broadcom/vcio.c
+@@ -30,12 +30,138 @@
+ #define IOCTL_MBOX_PROPERTY32 _IOWR(VCIO_IOC_MAGIC, 0, compat_uptr_t)
+ #endif
+ 
++/* Tags permitted via /dev/vcio_provisioning. */
++static const u32 vcio_provisioning_tags[] = {
++	0x00038021, /* SET_CUSTOMER_OTP */
++	0x00038024, /* SET_USER_OTP */
++	0x00038082, /* SET_CUSTOMER_ETHER_MAC_OTP */
++	0x00038083, /* SET_CUSTOMER_WIFI_MAC_OTP */
++	0x00038084, /* SET_CUSTOMER_BT_MAC_OTP */
++	0x00030085, /* TST_MAC_OTP */
++	0x00030086, /* SET_CUSTOMER_OTP_LOCK */
++};
++
++/* Tags permitted via /dev/vcio_ab. */
++static const u32 vcio_ab_tags[] = {
++	0x00030048, /* SET_NOTIFY_REBOOT */
++	0x00030057, /* SET_GLOBAL_RESET */
++	0x00030064, /* GET_REBOOT_FLAGS */
++	0x00038064, /* SET_REBOOT_FLAGS */
++	0x0003008b, /* GET_REBOOT_ORDER */
++	0x0003808b, /* SET_REBOOT_ORDER */
++	0x0003008c, /* GET_REBOOT_ARG */
++	0x0003808c, /* SET_REBOOT_ARG */
++	0x0003008d, /* GET_BOOT_COUNT */
++	0x0003808d, /* SET_BOOT_COUNT */
++	0x00040011, /* GET_RSTS */
++	0x00030096, /* GET_EEPROM_PACKET */
++	0x00038096, /* SET_EEPROM_PACKET */
++	0x00030097, /* GET_EEPROM_UPDATE_STATUS */
++	0x00038097, /* SET_EEPROM_UPDATE_STATUS */
++	0x00030098, /* GET_EEPROM_PARTITION */
++	0x00038098, /* SET_EEPROM_PARTITION */
++	0x00030099, /* GET_EEPROM_AB_PARAMS */
++	0x00038099, /* SET_EEPROM_AB_PARAMS */
++};
++
++/* Tags permitted via /dev/vcio_gencmd. */
++static const u32 vcio_gencmd_tags[] = {
++	0x00030080, /* GET_GENCMD_RESULT */
++};
++
++/* Tags permitted via /dev/vcio_crypto. */
++static const u32 vcio_crypto_tags[] = {
++	0x0003008e, /* GET_CRYPTO_LAST_ERROR */
++	0x0003008f, /* GET_CRYPTO_NUM_OTP_KEYS */
++	0x00030090, /* GET_CRYPTO_KEY_STATUS */
++	0x00038090, /* SET_CRYPTO_KEY_STATUS */
++	0x00030091, /* GET_CRYPTO_ECDSA_SIGN */
++	0x00030092, /* GET_CRYPTO_HMAC_SHA256 */
++	0x00030093, /* GET_CRYPTO_PUBLIC_KEY */
++	0x00030094, /* GET_CRYPTO_PRIVATE_KEY */
++	0x00030095, /* GET_CRYPTO_GEN_ECDSA */
++};
++
++struct vcio_group {
++	const char *name;
++	const u32 *tags;
++	size_t num_tags;
++};
++
++#define VCIO_GROUP(suffix) {						\
++	.name = "vcio_" #suffix,					\
++	.tags = vcio_ ## suffix ## _tags,				\
++	.num_tags = ARRAY_SIZE(vcio_ ## suffix ## _tags),		\
++}
++
++static const struct vcio_group vcio_groups[] = {
++	VCIO_GROUP(provisioning),
++	VCIO_GROUP(ab),
++	VCIO_GROUP(gencmd),
++	VCIO_GROUP(crypto),
++};
++
++struct vcio_dev {
++	struct miscdevice misc_dev;
++	struct rpi_firmware *fw;
++	const u32 *allowed_tags;
++	size_t num_allowed_tags;
++};
++
+ struct vcio_data {
+ 	struct rpi_firmware *fw;
+-	struct miscdevice misc_dev;
++	struct vcio_dev vcio;
++	struct vcio_dev groups[ARRAY_SIZE(vcio_groups)];
+ };
+ 
+-static int vcio_user_property_list(struct vcio_data *vcio, void *user)
++static bool vcio_tag_allowed(const struct vcio_dev *vdev, u32 tag)
++{
++	size_t i;
++
++	if (!vdev->allowed_tags)
++		return true;
++
++	for (i = 0; i < vdev->num_allowed_tags; i++)
++		if (vdev->allowed_tags[i] == tag)
++			return true;
++
++	return false;
++}
++
++static int vcio_check_tags(const struct vcio_dev *vdev, const u32 *buf,
++			   size_t size)
++{
++	size_t offset = 8; /* skip total size and status words */
++
++	if (!vdev->allowed_tags)
++		return 0;
++
++	while (offset + 12 <= size) {
++		u32 tag = buf[offset / 4];
++		u32 val_size;
++
++		if (tag == 0)
++			return 0;
++
++		if (!vcio_tag_allowed(vdev, tag)) {
++			pr_warn_ratelimited("%s: tag 0x%08x not permitted\n",
++					    vdev->misc_dev.name, tag);
++			return -EPERM;
++		}
++
++		val_size = buf[offset / 4 + 1];
++		if (val_size > size - offset - 12)
++			return -EINVAL;
++		offset += 12 + ALIGN(val_size, 4);
++
++		if (offset > size)
++			return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int vcio_user_property_list(struct vcio_dev *vdev, void *user)
+ {
+ 	u32 *buf, size;
+ 	int ret;
+@@ -44,6 +170,9 @@ static int vcio_user_property_list(struc
+ 	if (copy_from_user(&size, user, sizeof(size)))
+ 		return -EFAULT;
+ 
++	if (size < 12)
++		return -EINVAL;
++
+ 	buf = kmalloc(size, GFP_KERNEL);
+ 	if (!buf)
+ 		return -ENOMEM;
+@@ -53,8 +182,14 @@ static int vcio_user_property_list(struc
+ 		return -EFAULT;
+ 	}
+ 
++	ret = vcio_check_tags(vdev, buf, size);
++	if (ret) {
++		kfree(buf);
++		return ret;
++	}
++
+ 	/* Strip off protocol encapsulation */
+-	ret = rpi_firmware_property_list(vcio->fw, &buf[2], size - 12);
++	ret = rpi_firmware_property_list(vdev->fw, &buf[2], size - 12);
+ 	if (ret) {
+ 		kfree(buf);
+ 		return ret;
+@@ -86,12 +221,12 @@ static int vcio_device_release(struct in
+ static long vcio_device_ioctl(struct file *file, unsigned int ioctl_num,
+ 			      unsigned long ioctl_param)
+ {
+-	struct vcio_data *vcio = container_of(file->private_data,
+-					      struct vcio_data, misc_dev);
++	struct vcio_dev *vdev = container_of(file->private_data,
++					     struct vcio_dev, misc_dev);
+ 
+ 	switch (ioctl_num) {
+ 	case IOCTL_MBOX_PROPERTY:
+-		return vcio_user_property_list(vcio, (void *)ioctl_param);
++		return vcio_user_property_list(vdev, (void *)ioctl_param);
+ 	default:
+ 		pr_err("unknown ioctl: %x\n", ioctl_num);
+ 		return -EINVAL;
+@@ -102,12 +237,12 @@ static long vcio_device_ioctl(struct fil
+ static long vcio_device_compat_ioctl(struct file *file, unsigned int ioctl_num,
+ 				     unsigned long ioctl_param)
+ {
+-	struct vcio_data *vcio = container_of(file->private_data,
+-					      struct vcio_data, misc_dev);
++	struct vcio_dev *vdev = container_of(file->private_data,
++					     struct vcio_dev, misc_dev);
+ 
+ 	switch (ioctl_num) {
+ 	case IOCTL_MBOX_PROPERTY32:
+-		return vcio_user_property_list(vcio, compat_ptr(ioctl_param));
++		return vcio_user_property_list(vdev, compat_ptr(ioctl_param));
+ 	default:
+ 		pr_err("unknown ioctl: %x\n", ioctl_num);
+ 		return -EINVAL;
+@@ -124,6 +259,21 @@ const struct file_operations vcio_fops =
+ 	.release = vcio_device_release,
+ };
+ 
++static int vcio_register(struct device *dev, struct vcio_dev *vdev,
++			 struct rpi_firmware *fw, const char *name,
++			 const u32 *allowed_tags, size_t num_allowed_tags)
++{
++	vdev->fw = fw;
++	vdev->allowed_tags = allowed_tags;
++	vdev->num_allowed_tags = num_allowed_tags;
++	vdev->misc_dev.fops = &vcio_fops;
++	vdev->misc_dev.minor = MISC_DYNAMIC_MINOR;
++	vdev->misc_dev.name = name;
++	vdev->misc_dev.parent = dev;
++
++	return misc_register(&vdev->misc_dev);
++}
++
+ static int vcio_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -131,6 +281,8 @@ static int vcio_probe(struct platform_de
+ 	struct device_node *fw_node;
+ 	struct rpi_firmware *fw;
+ 	struct vcio_data *vcio;
++	size_t i;
++	int ret;
+ 
+ 	fw_node = of_get_parent(np);
+ 	if (!fw_node) {
+@@ -143,24 +295,43 @@ static int vcio_probe(struct platform_de
+ 	if (!fw)
+ 		return -EPROBE_DEFER;
+ 
+-	vcio = devm_kzalloc(dev, sizeof(struct vcio_data), GFP_KERNEL);
++	vcio = devm_kzalloc(dev, sizeof(*vcio), GFP_KERNEL);
+ 	if (!vcio)
+ 		return -ENOMEM;
+ 
+ 	vcio->fw = fw;
+-	vcio->misc_dev.fops = &vcio_fops;
+-	vcio->misc_dev.minor = MISC_DYNAMIC_MINOR;
+-	vcio->misc_dev.name = "vcio";
+-	vcio->misc_dev.parent = dev;
++	platform_set_drvdata(pdev, vcio);
++
++	ret = vcio_register(dev, &vcio->vcio, fw, "vcio", NULL, 0);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < ARRAY_SIZE(vcio_groups); i++) {
++		const struct vcio_group *g = &vcio_groups[i];
+ 
+-	return misc_register(&vcio->misc_dev);
++		ret = vcio_register(dev, &vcio->groups[i], fw, g->name,
++				    g->tags, g->num_tags);
++		if (ret)
++			goto err_groups;
++	}
++
++	return 0;
++
++err_groups:
++	while (i--)
++		misc_deregister(&vcio->groups[i].misc_dev);
++	misc_deregister(&vcio->vcio.misc_dev);
++	return ret;
+ }
+ 
+ static void vcio_remove(struct platform_device *pdev)
+ {
+-	struct device *dev = &pdev->dev;
++	struct vcio_data *vcio = platform_get_drvdata(pdev);
++	size_t i = ARRAY_SIZE(vcio_groups);
+ 
+-	misc_deregister(dev_get_drvdata(dev));
++	while (i--)
++		misc_deregister(&vcio->groups[i].misc_dev);
++	misc_deregister(&vcio->vcio.misc_dev);
+ }
+ 
+ static const struct of_device_id vcio_ids[] = {

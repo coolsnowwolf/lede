@@ -1,0 +1,124 @@
+From fdba99c26106d20cf5812e4ea701d1b095590e1e Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 11 Aug 2025 17:15:43 +0100
+Subject: [PATCH] dmaengine: dw-axi-dmac: Add DMA channel selection
+
+Add a mechanism to allow clients to prefer some DMA channels over
+others. This is required to allow high-bandwidth clients to request
+one of the two "heavy" channels, but could also be used to prevent
+some clients from hogging all channels.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ .../dma/dw-axi-dmac/dw-axi-dmac-platform.c    | 73 ++++++++++++++++++-
+ drivers/dma/dw-axi-dmac/dw-axi-dmac.h         |  1 +
+ 2 files changed, 70 insertions(+), 4 deletions(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -1474,19 +1474,75 @@ static int __maybe_unused axi_dma_runtim
+ 	return axi_dma_resume(chip);
+ }
+ 
++static bool dw_axi_dma_filter_fn(struct dma_chan *dchan, void *filter_param)
++{
++	struct axi_dma_chan *chan = dchan_to_axi_dma_chan(dchan);
++	uint32_t selector = *(const uint32_t *)filter_param;
++
++	return !!(selector & (1 << chan->id));
++}
++
+ static struct dma_chan *dw_axi_dma_of_xlate(struct of_phandle_args *dma_spec,
+ 					    struct of_dma *ofdma)
+ {
+ 	struct dw_axi_dma *dw = ofdma->of_dma_data;
+ 	struct axi_dma_chan *chan;
++	uint32_t chan_flags_all = 0;
++	uint32_t busy_channels;
+ 	struct dma_chan *dchan;
++	dma_cap_mask_t mask;
++	uint32_t chan_mask;
++	uint32_t chan_sel;
++	int max_score;
++	int score;
++	int i;
++
++	for (i = 0; i < dw->hdata->nr_channels; i++)
++		chan_flags_all |= dw->chan_flags[i];
++
++	dma_cap_zero(mask);
++	dma_cap_set(DMA_SLAVE, mask);
++
++	chan_sel = dma_spec->args[0];
++	busy_channels = 0;
++	dchan = NULL;
++
++	while (1) {
++		max_score = 0;
++		chan_mask = 0;
++
++		for (i = 0; i < dw->hdata->nr_channels; i++) {
++			if (busy_channels & (1 << i))
++				continue;
++			/*
++			 * Positive matches (wanted flags that match) score twice that of
++			 * negetive matches (not wanted flags that are not present).
++			 */
++			score = 2 * hweight32(chan_sel & dw->chan_flags[i]) +
++				1 * hweight32(~chan_sel & ~dw->chan_flags[i] & chan_flags_all);
++			if (score > max_score) {
++				max_score = score;
++				chan_mask = (1 << i);
++			} else if (score == max_score) {
++				chan_mask |= (1 << i);
++			}
++		}
+ 
+-	dchan = dma_get_any_slave_channel(&dw->dma);
+-	if (!dchan)
+-		return NULL;
++		if (!chan_mask)
++			return NULL;
++
++		dchan = __dma_request_channel(&mask, dw_axi_dma_filter_fn,
++					      &chan_mask, ofdma->of_node);
++		if (dchan)
++			break;
++
++		/* Repeat, after first marking this group of channels as busy */
++		busy_channels |= chan_mask;
++	}
+ 
+ 	chan = dchan_to_axi_dma_chan(dchan);
+-	chan->hw_handshake_num = dma_spec->args[0];
++	chan->hw_handshake_num = (u8)chan_sel;
++
+ 	return dchan;
+ }
+ 
+@@ -1568,6 +1624,15 @@ static int parse_device_properties(struc
+ 		}
+ 	}
+ 
++	/* snps,chan-flags is optional */
++	memset(chip->dw->chan_flags, 0, sizeof(chip->dw->chan_flags));
++	if (device_property_read_u32_array(dev, "snps,chan-flags",
++				       chip->dw->chan_flags,
++				       chip->dw->hdata->nr_channels) < 0)
++		device_property_read_u32_array(dev, "snps,sel-require",
++					       chip->dw->chan_flags,
++					       chip->dw->hdata->nr_channels);
++
+ 	return 0;
+ }
+ 
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac.h
+@@ -58,6 +58,7 @@ struct dw_axi_dma {
+ 	struct dma_device	dma;
+ 	struct dw_axi_dma_hcfg	*hdata;
+ 	struct device_dma_parameters	dma_parms;
++	u32	chan_flags[DMAC_MAX_CHANNELS];
+ 
+ 	/* channels */
+ 	struct axi_dma_chan	*chan;

@@ -1,0 +1,39 @@
+From e69f1381a62bdcb6cfd8641a6a96b2afa595e157 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 11 Jun 2026 16:43:26 +0100
+Subject: [PATCH] watchdog: bcm2835: Clamp timeouts to the h/w max
+
+The kernel watchdog framework permits arbitrarily large timeout values
+to be requested; if the request exceeds the maximum interval supported
+by the hardware, the kernel's watchdogd thread automatically pings the
+hardware to keep it alive until the time remaining until the expected
+reset fits within the hardware's registers. Although each watchdog
+driver reports the largest timeout, the onus is on them to limit the
+value passed in:
+
+  Drivers implementing max_hw_heartbeat_ms set the hardware watchdog
+  heartbeat to the minimum of timeout and max_hw_heartbeat_ms.
+
+bcm2835_wdt instead masks off the high bits of the counter, meaning that
+the actual time until the device resets is (requested_time % 16). This
+was spotted when the requested timeout was 1 minute, giving an actual
+timeout of 12 seconds, but a requested 100 seconds becomes 4 seconds.
+
+Correct bcm2835_wdt_start to implement the expected behaviour.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/watchdog/bcm2835_wdt.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+--- a/drivers/watchdog/bcm2835_wdt.c
++++ b/drivers/watchdog/bcm2835_wdt.c
+@@ -65,7 +65,7 @@ static int bcm2835_wdt_start(struct watc
+ 
+ 	spin_lock_irqsave(&wdt->lock, flags);
+ 
+-	writel_relaxed(PM_PASSWORD | (SECS_TO_WDOG_TICKS(wdog->timeout) &
++	writel_relaxed(PM_PASSWORD | min(SECS_TO_WDOG_TICKS(wdog->timeout),
+ 				PM_WDOG_TIME_SET), wdt->base + PM_WDOG);
+ 	cur = readl_relaxed(wdt->base + PM_RSTC);
+ 	writel_relaxed(PM_PASSWORD | (cur & PM_RSTC_WRCFG_CLR) |

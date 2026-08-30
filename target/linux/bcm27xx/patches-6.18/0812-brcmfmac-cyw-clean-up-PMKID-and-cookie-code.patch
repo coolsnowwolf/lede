@@ -1,0 +1,66 @@
+From 05cd2866fcc6acda569f7f05fe283826b2b74d37 Mon Sep 17 00:00:00 2001
+From: Bogdan Nicolae <bogdan.nicolae@acm.org>
+Date: Fri, 3 Jul 2026 16:51:52 -0500
+Subject: [PATCH] brcmfmac-cyw: clean up PMKID and cookie code
+
+Do not touch the cookie. Value 0 means any follow-up should be discarded
+downstream. Instead, set the packet_id directly.cAlso, zero out the whole
+auth_status data structure instead of just auth_status.pmkid, which is
+safer: other bytes than pmkid may leak from stack if ssid_len is less than
+32, although the firmware is likely to ignore them.  Do not rely on
+userspace to set params->pmkid only if authentication is successful (true
+for hostapd). Guard against it anyway.
+
+Signed-off-by: Bogdan Nicolae <bogdan.nicolae@acm.org>
+---
+ .../wireless/broadcom/brcm80211/brcmfmac/cyw/core.c   | 11 +++++------
+ 1 file changed, 5 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cyw/core.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/cyw/core.c
+@@ -127,7 +127,7 @@ int brcmf_cyw_mgmt_tx(struct wiphy *wiph
+ 	if (!ieee80211_is_auth(mgmt->frame_control))
+ 		return brcmf_cfg80211_mgmt_tx(wiphy, wdev, params, cookie);
+ 
+-	*cookie = (u32)atomic_inc_return(&brcmf_cyw_mgmt_tx_id);
++	*cookie = 0;
+ 	vif = container_of(wdev, struct brcmf_cfg80211_vif, wdev);
+ 
+ 	reinit_completion(&vif->mgmt_tx);
+@@ -159,7 +159,7 @@ int brcmf_cyw_mgmt_tx(struct wiphy *wiph
+ 
+ 	memcpy(&mf_params->da[0], &mgmt->da[0], ETH_ALEN);
+ 	memcpy(&mf_params->bssid[0], &mgmt->bssid[0], ETH_ALEN);
+-	mf_params->packet_id = cpu_to_le32(*cookie);
++	mf_params->packet_id = cpu_to_le32(atomic_inc_return(&brcmf_cyw_mgmt_tx_id));
+ 	memcpy(mf_params->data, &buf[DOT11_MGMT_HDR_LEN],
+ 	       le16_to_cpu(mf_params->len));
+ 
+@@ -204,7 +204,7 @@ brcmf_cyw_external_auth(struct wiphy *wi
+ {
+ 	struct brcmf_if *ifp;
+ 	struct brcmf_pub *drvr;
+-	struct brcmf_auth_req_status_le auth_status;
++	struct brcmf_auth_req_status_le auth_status = {};
+ 	int ret = 0;
+ 
+ 	brcmf_dbg(TRACE, "Enter\n");
+@@ -212,6 +212,8 @@ brcmf_cyw_external_auth(struct wiphy *wi
+ 	ifp = netdev_priv(dev);
+ 	drvr = ifp->drvr;
+ 	if (params->status == WLAN_STATUS_SUCCESS) {
++		if (params->pmkid)
++			memcpy(auth_status.pmkid, params->pmkid, WLAN_PMKID_LEN);
+ 		auth_status.flags = cpu_to_le16(BRCMF_EXTAUTH_SUCCESS);
+ 	} else {
+ 		bphy_err(drvr, "External authentication failed: status=%d\n",
+@@ -224,9 +226,6 @@ brcmf_cyw_external_auth(struct wiphy *wi
+ 				      IEEE80211_MAX_SSID_LEN);
+ 	auth_status.ssid_len = cpu_to_le32(params->ssid.ssid_len);
+ 	memcpy(auth_status.ssid, params->ssid.ssid, params->ssid.ssid_len);
+-	memset(auth_status.pmkid, 0, WLAN_PMKID_LEN);
+-	if (params->pmkid)
+-		memcpy(auth_status.pmkid, params->pmkid, WLAN_PMKID_LEN);
+ 
+ 	ret = brcmf_fil_iovar_data_set(ifp, "auth_status", &auth_status,
+ 				       sizeof(auth_status));

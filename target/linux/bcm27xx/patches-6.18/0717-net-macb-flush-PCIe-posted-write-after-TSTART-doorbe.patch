@@ -1,0 +1,71 @@
+From a9e13da2dc4cc0daea81b82f780206922a6c8d17 Mon Sep 17 00:00:00 2001
+From: Lukasz Raczylo <lukasz@raczylo.com>
+Date: Fri, 24 Apr 2026 00:00:00 +0000
+Subject: [PATCH] net: macb: flush PCIe posted write after TSTART doorbell
+
+macb_start_xmit() and macb_tx_restart() kick transmission by
+OR-ing MACB_BIT(TSTART) into NCR.  On PCIe-attached macb instances
+(BCM2712 + RP1 PCIe south bridge on Raspberry Pi 5 is the setup we
+have in front of us), writes to NCR are posted PCIe writes: they
+are not guaranteed to reach the device before the issuing CPU
+returns.  An existing source-level comment at the TSTART site
+acknowledges that such writes can be lost under some conditions:
+
+	/* TSTART write might get dropped, so make the IRQ retrigger
+	 * a buffer read */
+
+and arms a recovery handshake via queue->tx_pending /
+queue->txubr_pending that runs on the next TCOMP interrupt.  That
+recovery path depends on a subsequent TCOMP actually firing.  If
+the TSTART write never reaches the MAC, no TX begins, no TCOMP
+completion arrives, and the ring remains quiescent without any
+kernel-visible indication.
+
+Add a read-back of NCR after each TSTART write in macb_start_xmit()
+and macb_tx_restart().  The read is an architected PCIe read
+barrier for earlier posted writes on the same path; it ensures the
+doorbell has reached the MAC before the functions return.
+
+The existing tx_pending / txubr_pending handshake is left in place
+unchanged -- it remains the correct recovery for any other reason
+the MAC could silently fail to start TX.
+
+We do not have direct hardware evidence that TSTART is being lost
+on the RP1 path.  This patch is one of a three-patch series
+("candidate fixes for silent TX stall on BCM2712/RP1"); see the
+cover letter for context.  We have verified it compiles and
+applies cleanly; runtime verification is pending.
+
+Link: https://github.com/cilium/cilium/issues/43198
+Link: https://bugs.launchpad.net/ubuntu/+source/linux-raspi/+bug/2133877
+Signed-off-by: Lukasz Raczylo <lukasz@raczylo.com>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -1949,6 +1949,12 @@ static void macb_tx_restart(struct macb_
+ 
+ 	spin_lock(&bp->lock);
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
++	/* Flush the PCIe posted-write queue so the TSTART doorbell
++	 * reliably reaches the MAC.  Without this, the write can sit
++	 * in the fabric and the MAC never advances, causing a silent
++	 * TX stall.
++	 */
++	(void)macb_readl(bp, NCR);
+ 	spin_unlock(&bp->lock);
+ 
+ out_tx_ptr_unlock:
+@@ -2630,6 +2636,10 @@ static netdev_tx_t macb_start_xmit(struc
+ 		queue->tx_pending = 1;
+ 
+ 	macb_writel(bp, NCR, macb_readl(bp, NCR) | MACB_BIT(TSTART));
++	/* Flush the PCIe posted-write queue; see the comment in
++	 * macb_tx_restart() for the reasoning.
++	 */
++	(void)macb_readl(bp, NCR);
+ 	spin_unlock(&bp->lock);
+ 
+ 	if (CIRC_SPACE(queue->tx_head, queue->tx_tail, bp->tx_ring_size) < 1)

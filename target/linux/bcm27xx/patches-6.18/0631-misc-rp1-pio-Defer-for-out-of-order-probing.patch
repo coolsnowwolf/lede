@@ -1,0 +1,74 @@
+From 4138e8796e0083574b566b02598eb804349f991e Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 28 Jan 2026 16:23:55 +0000
+Subject: [PATCH] misc: rp1-pio: Defer for out-of-order probing
+
+In the event that a client of the rp1-pio driver is probed before it,
+return -EPROBE_DEFER from pio_open to allow it to be retried.
+Otherwise, return an error code on error, not a NULL pointer, as that
+is what clients are expecting.
+
+See: https://github.com/raspberrypi/linux/issues/7211
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-pio.c | 22 +++++++++++++++-------
+ 1 file changed, 15 insertions(+), 7 deletions(-)
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -1035,7 +1035,9 @@ struct rp1_pio_client *rp1_pio_open(void
+ 	struct rp1_pio_client *client;
+ 
+ 	if (!g_pio)
+-		return ERR_PTR(-ENOENT);
++		return ERR_PTR(-EPROBE_DEFER);
++	if (IS_ERR(g_pio))
++		return ERR_CAST(g_pio);
+ 
+ 	client = kzalloc(sizeof(*client), GFP_KERNEL);
+ 	if (!client)
+@@ -1292,15 +1294,18 @@ static int rp1_pio_probe(struct platform
+ 		return dev_err_probe(dev, -EPROBE_DEFER, "failed to find RP1 firmware driver\n");
+ 	if (IS_ERR(fw)) {
+ 		dev_warn(dev, "failed to contact RP1 firmware\n");
+-		return PTR_ERR(fw);
++		ret = PTR_ERR(fw);
++		goto out_err;
+ 	}
+ 	ret = rp1_firmware_get_feature(fw, FOURCC_PIO, &op_base, &op_count);
+ 	if (ret < 0)
+-		return ret;
++		goto out_err;
+ 
+ 	pio = devm_kzalloc(&pdev->dev, sizeof(*pio), GFP_KERNEL);
+-	if (!pio)
+-		return -ENOMEM;
++	if (!pio) {
++		ret = -ENOMEM;
++		goto out_err;
++	}
+ 
+ 	platform_set_drvdata(pdev, pio);
+ 	pio->fw_pio_base = op_base;
+@@ -1311,8 +1316,10 @@ static int rp1_pio_probe(struct platform
+ 	mutex_init(&pio->instr_mutex);
+ 
+ 	p = devm_platform_get_and_ioremap_resource(pdev, 0, &ioresource);
+-	if (IS_ERR(p))
+-		return PTR_ERR(p);
++	if (IS_ERR(p)) {
++		ret = PTR_ERR(p);
++		goto out_err;
++	}
+ 
+ 	pio->phys_addr = ioresource->start;
+ 
+@@ -1359,6 +1366,7 @@ out_unregister:
+ 	unregister_chrdev_region(pio->dev_num, 1);
+ 
+ out_err:
++	g_pio = ERR_PTR(ret);
+ 	return ret;
+ }
+ 

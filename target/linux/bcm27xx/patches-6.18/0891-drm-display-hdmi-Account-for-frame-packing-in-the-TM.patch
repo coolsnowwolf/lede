@@ -1,0 +1,94 @@
+From 9732b3393d1fc0990a6a5b5417cdba9a5dd6c5d6 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Mon, 27 Jul 2026 14:31:17 +0100
+Subject: [PATCH] drm/display/hdmi: Account for frame packing in the TMDS
+ character rate
+
+An HDMI frame packing 3D mode transmits the left and right eye views,
+separated by an active space gap, within a single frame period. Per
+HDMI 1.4b section 8.2.3.2 the resulting raster has twice the vertical
+total of the base 2D mode, so the pixel clock - and with it the TMDS
+character rate - is doubled.
+
+drm_hdmi_compute_mode_clock() derives the rate from mode->clock, which
+for a stereo mode still describes the base 2D timing; the doubling only
+appears in the crtc_* timings, and only once a driver asks for it with
+CRTC_STEREO_DOUBLE. The computed rate was therefore half the real one,
+so the sink's max_tmds_clock was checked against the wrong value and
+drivers programmed half the pixel clock the mode needs.
+
+Only a driver that both advertises stereo modes and uses the HDMI
+connector helpers can see a change here, and vc4 is currently the only
+one. i915 and nouveau set connector->stereo_allowed but compute their
+TMDS rates themselves. The remaining callers of
+drm_hdmi_compute_mode_clock() - ite-it6263, dw_hdmi_qp-rockchip,
+inno_hdmi and sun4i_hdmi - leave stereo_allowed clear, so
+drm_mode_validate_flag() prunes 3D modes from their connectors and none
+ever reaches this function. Should userspace hand such a driver a
+3D-flagged mode directly, it is now rejected as exceeding the sink's
+TMDS limit rather than being driven at half rate.
+
+Non-stereo modes, and the 3D layouts that fit within the 2D timing
+(side-by-side, top-and-bottom, and friends), are unaffected.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/display/drm_hdmi_helper.c  |  8 ++++++++
+ drivers/gpu/drm/tests/drm_connector_test.c | 22 ++++++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+--- a/drivers/gpu/drm/display/drm_hdmi_helper.c
++++ b/drivers/gpu/drm/display/drm_hdmi_helper.c
+@@ -254,6 +254,14 @@ drm_hdmi_compute_mode_clock(const struct
+ 	if (mode->flags & DRM_MODE_FLAG_DBLCLK)
+ 		clock = clock * 2;
+ 
++	/*
++	 * HDMI 1.4b Spec, Section 8.2.3.2 - Frame Packing Structure
++	 * transmits both eyes within a single frame, at twice the vertical
++	 * total, and thus twice the pixel clock, of the base 2D mode.
++	 */
++	if ((mode->flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING)
++		clock = clock * 2;
++
+ 	return DIV_ROUND_CLOSEST_ULL(clock * bpc, 8);
+ }
+ EXPORT_SYMBOL(drm_hdmi_compute_mode_clock);
+--- a/drivers/gpu/drm/tests/drm_connector_test.c
++++ b/drivers/gpu/drm/tests/drm_connector_test.c
+@@ -1626,6 +1626,27 @@ static void drm_test_drm_hdmi_compute_mo
+ }
+ 
+ /*
++ * Test that for a frame packing stereo mode, the TMDS character rate is
++ * indeed double the mode pixel clock.
++ */
++static void drm_test_drm_hdmi_compute_mode_clock_stereo_frame_packing(struct kunit *test)
++{
++	struct drm_connector_init_priv *priv = test->priv;
++	struct drm_display_mode *mode;
++	unsigned long long rate;
++	struct drm_device *drm = &priv->drm;
++
++	mode = drm_kunit_display_mode_from_cea_vic(test, drm, 32);
++	KUNIT_ASSERT_NOT_NULL(test, mode);
++
++	mode->flags |= DRM_MODE_FLAG_3D_FRAME_PACKING;
++
++	rate = drm_hdmi_compute_mode_clock(mode, 8, HDMI_COLORSPACE_RGB);
++	KUNIT_ASSERT_GT(test, rate, 0);
++	KUNIT_EXPECT_EQ(test, (mode->clock * 1000ULL) * 2, rate);
++}
++
++/*
+  * Test that the TMDS character rate computation for the VIC modes
+  * explicitly listed in the spec as supporting YUV420 succeed and return
+  * half the mode pixel clock.
+@@ -1784,6 +1805,7 @@ static struct kunit_case drm_hdmi_comput
+ 	KUNIT_CASE(drm_test_drm_hdmi_compute_mode_clock_rgb_12bpc),
+ 	KUNIT_CASE(drm_test_drm_hdmi_compute_mode_clock_rgb_12bpc_vic_1),
+ 	KUNIT_CASE(drm_test_drm_hdmi_compute_mode_clock_rgb_double),
++	KUNIT_CASE(drm_test_drm_hdmi_compute_mode_clock_stereo_frame_packing),
+ 	KUNIT_CASE_PARAM(drm_test_connector_hdmi_compute_mode_clock_yuv420_valid,
+ 			 drm_hdmi_compute_mode_clock_yuv420_valid_gen_params),
+ 	KUNIT_CASE(drm_test_connector_hdmi_compute_mode_clock_yuv420_10_bpc),

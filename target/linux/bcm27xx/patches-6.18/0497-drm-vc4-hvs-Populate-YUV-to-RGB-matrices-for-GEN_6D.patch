@@ -1,0 +1,115 @@
+From b9ba15e1ab84004f4aa2ac7be63c0e1925efb2ae Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 11 Sep 2025 15:44:02 +0100
+Subject: [PATCH] drm/vc4: hvs: Populate YUV to RGB matrices for GEN_6D
+
+All the matrix entries for the YUV to RGB conversion matrices were
+being filled with the same coefficients.
+Compute the values for the BT601, BT709, and BT2020 matrices in
+both full and limited range, and program those into the hardware.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hvs.c | 79 +++++++++++++++++++++++++++++++----
+ 1 file changed, 71 insertions(+), 8 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -1845,9 +1845,71 @@ static const struct vc6_csc_coeff_entry
+ 	}
+ };
+ 
++/*
++ * GEN_6D has a 3x3 matrix of signed 3p12 fixed point values, signed 13bit
++ * offset, and high and low clamp values. The offset can be applied before or
++ * after the multiply - for use here for YUV to RGB conversion it is easier to
++ * put it before.
++ * Clamp values are always set to max 0xfff and min 0, and the conversion always
++ * has the offset before the multiply.
++ */
++struct vc6_d0_csc_coeff_entry {
++	u32 csc[3][2];
++};
++
++static const struct vc6_d0_csc_coeff_entry vc6_d0_csc_coeffs[2][3] = {
++	[DRM_COLOR_YCBCR_LIMITED_RANGE] = {
++		[DRM_COLOR_YCBCR_BT601] = {
++			.csc = {
++				{ 0x1f002543, 0x00003313 },
++				{ 0x18002543, 0xf377e5fc },
++				{ 0x18002543, 0x408d0000 }
++			}
++		},
++		[DRM_COLOR_YCBCR_BT709] = {
++			.csc = {
++				{ 0x1f002543, 0x0000395e },
++				{ 0x18002543, 0xf92deef2 },
++				{ 0x18002543, 0x43990000 }
++			}
++		},
++		[DRM_COLOR_YCBCR_BT2020] = {
++			.csc = {
++				{ 0x1f002543, 0x000035a0 },
++				{ 0x18002543, 0xfa00eb20 },
++				{ 0x18002543, 0x44800000 }
++			}
++		}
++	},
++	[DRM_COLOR_YCBCR_FULL_RANGE] = {
++		[DRM_COLOR_YCBCR_BT601] = {
++			.csc = {
++				{ 0x00002000, 0x00002cdd },
++				{ 0x18002000, 0xf4fde926 },
++				{ 0x18002000, 0x38b40000 }
++			}
++		},
++		[DRM_COLOR_YCBCR_BT709] = {
++			.csc = {
++				{ 0x00002000, 0x00003265 },
++				{ 0x18002000, 0xfa01f105 },
++				{ 0x18002000, 0x3b610000 }
++			}
++		},
++		[DRM_COLOR_YCBCR_BT2020] = {
++			.csc = {
++				{ 0x00002000, 0x00002f30 },
++				{ 0x18002000, 0xfabcedb7 },
++				{ 0x18002000, 0x3c340000 }
++			}
++		}
++	}
++};
++
+ static int vc6_hvs_hw_init(struct vc4_hvs *hvs)
+ {
+ 	const struct vc6_csc_coeff_entry *coeffs;
++	const struct vc6_d0_csc_coeff_entry *d0_coeffs;
+ 	unsigned int i;
+ 
+ 	HVS_WRITE(SCALER6_CONTROL,
+@@ -1884,16 +1946,17 @@ static int vc6_hvs_hw_init(struct vc4_hv
+ 			HVS_WRITE(CFC1_N_NL_CSC_CTRL(i), BIT(15));
+ 		}
+ 	} else {
+-		for (i = 0; i < 8; i++) {
+-			HVS_WRITE(SCALER_PI_CMP_CSC_RED0(i), 0x1f002566);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_RED1(i), 0x3994);
++		for (i = 0; i < 6; i++) {
++			d0_coeffs = &vc6_d0_csc_coeffs[i / 3][i % 3];
++			HVS_WRITE(SCALER_PI_CMP_CSC_RED0(i), d0_coeffs->csc[0][0]);
++			HVS_WRITE(SCALER_PI_CMP_CSC_RED1(i), d0_coeffs->csc[0][1]);
+ 			HVS_WRITE(SCALER_PI_CMP_CSC_RED_CLAMP(i), 0xfff00000);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_CFG(i), 0x1);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_GREEN0(i), 0x18002566);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_GREEN1(i), 0xf927eee2);
++			HVS_WRITE(SCALER_PI_CMP_CSC_CFG(i), 1);
++			HVS_WRITE(SCALER_PI_CMP_CSC_GREEN0(i), d0_coeffs->csc[1][0]);
++			HVS_WRITE(SCALER_PI_CMP_CSC_GREEN1(i), d0_coeffs->csc[1][1]);
+ 			HVS_WRITE(SCALER_PI_CMP_CSC_GREEN_CLAMP(i), 0xfff00000);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_BLUE0(i), 0x18002566);
+-			HVS_WRITE(SCALER_PI_CMP_CSC_BLUE1(i), 0x43d80000);
++			HVS_WRITE(SCALER_PI_CMP_CSC_BLUE0(i), d0_coeffs->csc[2][0]);
++			HVS_WRITE(SCALER_PI_CMP_CSC_BLUE1(i), d0_coeffs->csc[2][1]);
+ 			HVS_WRITE(SCALER_PI_CMP_CSC_BLUE_CLAMP(i), 0xfff00000);
+ 		}
+ 	}

@@ -1,0 +1,52 @@
+From 741426f4bc591beb37116a6d97d422a2d4f988b6 Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Mon, 27 Jul 2026 14:32:14 +0100
+Subject: [PATCH] drm/vc4: Support frame packed stereo modes
+
+vc4 has always set connector->stereo_allowed, so a client with
+DRM_CLIENT_CAP_STEREO_3D is offered the frame packing modes advertised
+by the sink, but nothing ever expanded the timings for them. The
+pixelvalve was programmed with the base 2D raster while the sink
+expected two eyes and an active space gap, so the picture was wrong.
+
+Ask for CRTC_STEREO_DOUBLE when recomputing the adjusted mode's crtc_*
+fields. drm_mode_set_crtcinfo() then doubles crtc_vdisplay,
+crtc_vsync_start, crtc_vsync_end, crtc_vtotal and crtc_clock, which is
+everything the pixelvalve, the HVS and the audio CTS calculation need.
+The matching TMDS character rate comes from the HDMI connector helpers
+and the 3D_Structure vendor infoframe from
+drm_hdmi_vendor_infoframe_from_display_mode(), so nothing else has to
+change.
+
+CRTC_INTERLACE_HALVE_V has to be passed as well: drm_mode_set_crtcinfo()
+rebuilds every crtc_* field from scratch, and without it the halved
+field timings the core derived earlier for interlaced modes would be
+lost.
+
+Non-stereo modes are unaffected, as the CRTC_STEREO_DOUBLE adjustment
+applies only to modes carrying DRM_MODE_FLAG_3D_FRAME_PACKING.
+
+The WiFi interference workaround just above deliberately keeps keying
+off mode->clock, i.e. the 2D pixel clock. Frame packing modes landing in
+the affected range are not known to exist, and reworking that test would
+change behaviour for existing 2D modes.
+
+Tested on a Raspberry Pi 5.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1730,6 +1730,9 @@ static int vc4_hdmi_encoder_atomic_check
+ 		tmds_char_rate = mode->clock * 1000;
+ 	}
+ 
++	/* Rebuilds every crtc_* field, so CRTC_INTERLACE_HALVE_V is needed too */
++	drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V | CRTC_STEREO_DOUBLE);
++
+ 	return 0;
+ }
+ 

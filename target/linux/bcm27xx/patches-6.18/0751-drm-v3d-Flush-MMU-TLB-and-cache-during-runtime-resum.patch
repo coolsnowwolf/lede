@@ -1,0 +1,101 @@
+From 36998c7f7c8ad2f46e10021bbe9a98b561a5fddf Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Mon, 25 May 2026 16:15:53 -0300
+Subject: [PATCH] drm/v3d: Flush MMU TLB and cache during runtime resume
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+v3d_mmu_set_page_table() ends by calling v3d_mmu_flush_all() to flush the
+MMU cache and clear the TLB after reprogramming V3D_MMU_PT_PA_BASE.
+v3d_mmu_flush_all() is gated by pm_runtime_get_if_active(), which returns
+0 unless runtime_status == RPM_ACTIVE.
+
+v3d_mmu_set_page_table() is called from two paths that *know* V3D is
+reachable, but where the runtime PM status might be wrong:
+
+  1. v3d_power_resume(): the runtime resume callback itself, where
+     runtime_status is RPM_RESUMING.
+
+  2. v3d_reset(): called from the DRM scheduler timeout handler with the
+     hung job's pm_runtime reference held, so RPM_ACTIVE, but here we
+     don't need to take an extra reference for the duration of the flush
+     either.
+
+In the first case pm_runtime_get_if_active() returns 0, the flush is
+silently skipped, and V3D resumes executing with whatever MMUC/TLB state
+happened to survive the last reset. On BCM2711, this leaves stale
+translations live across runtime PM cycles, manifesting as random GPU
+hangs.
+
+Split the actual flush sequence into a helper that does the writes
+unconditionally, and have v3d_mmu_set_page_table() call it directly.
+
+Fixes: 17af1d14deaf ("drm/v3d: Introduce Runtime Power Management")
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_mmu.c | 31 ++++++++++++++++++++++---------
+ 1 file changed, 22 insertions(+), 9 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_mmu.c
++++ b/drivers/gpu/drm/v3d/v3d_mmu.c
+@@ -35,13 +35,14 @@ static bool v3d_mmu_is_aligned(u32 page,
+ 		IS_ALIGNED(page_address, alignment >> V3D_MMU_PAGE_SHIFT);
+ }
+ 
+-int v3d_mmu_flush_all(struct v3d_dev *v3d)
++/*
++ * Issue the MMUC flush and TLB clear unconditionally. The caller must
++ * already know that V3D is reachable. In particular, this is used from
++ * the runtime resume callback.
++ */
++static int v3d_mmu_flush_all_locked(struct v3d_dev *v3d)
+ {
+-	int ret = 0;
+-
+-	/* Flush the PTs only if we're already awake */
+-	if (!pm_runtime_get_if_active(v3d->drm.dev))
+-		return 0;
++	int ret;
+ 
+ 	V3D_WRITE(V3D_MMUC_CONTROL, V3D_MMUC_CONTROL_FLUSH |
+ 		  V3D_MMUC_CONTROL_ENABLE);
+@@ -50,7 +51,7 @@ int v3d_mmu_flush_all(struct v3d_dev *v3
+ 			 V3D_MMUC_CONTROL_FLUSHING), 100);
+ 	if (ret) {
+ 		dev_err(v3d->drm.dev, "MMUC flush wait idle failed\n");
+-		goto pm_put;
++		return ret;
+ 	}
+ 
+ 	V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL) |
+@@ -61,7 +62,19 @@ int v3d_mmu_flush_all(struct v3d_dev *v3
+ 	if (ret)
+ 		dev_err(v3d->drm.dev, "MMU TLB clear wait idle failed\n");
+ 
+-pm_put:
++	return ret;
++}
++
++int v3d_mmu_flush_all(struct v3d_dev *v3d)
++{
++	int ret;
++
++	/* Flush the PTs only if we're already awake */
++	if (!pm_runtime_get_if_active(v3d->drm.dev))
++		return 0;
++
++	ret = v3d_mmu_flush_all_locked(v3d);
++
+ 	v3d_pm_runtime_put(v3d);
+ 	return ret;
+ }
+@@ -83,7 +96,7 @@ int v3d_mmu_set_page_table(struct v3d_de
+ 		  V3D_MMU_ILLEGAL_ADDR_ENABLE);
+ 	V3D_WRITE(V3D_MMUC_CONTROL, V3D_MMUC_CONTROL_ENABLE);
+ 
+-	return v3d_mmu_flush_all(v3d);
++	return v3d_mmu_flush_all_locked(v3d);
+ }
+ 
+ void v3d_mmu_insert_ptes(struct v3d_bo *bo)

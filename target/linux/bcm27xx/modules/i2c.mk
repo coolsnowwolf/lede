@@ -32,3 +32,21 @@ define KernelPackage/i2c-brcmstb/description
 endef
 
 $(eval $(call KernelPackage,i2c-brcmstb))
+
+
+define KernelPackage/bcm27xx-i2c
+  SUBMENU:=$(I2C_MENU)
+  TITLE:=I2C support for bcm27xx boards
+  DEPENDS:=@TARGET_bcm27xx +kmod-i2c-bcm2835 \
+	+TARGET_bcm27xx_bcm2711:kmod-i2c-brcmstb \
+	+TARGET_bcm27xx_bcm2712:kmod-i2c-brcmstb \
+	+TARGET_bcm27xx_bcm2712:kmod-i2c-designware-platform
+endef
+
+define KernelPackage/bcm27xx-i2c/description
+ Pulls in the correct I2C kernel modules for whichever bcm27xx
+ board you're building for, without needing to know which specific
+ driver combination your particular Pi/CM generation requires.
+endef
+
+$(eval $(call KernelPackage,bcm27xx-i2c))

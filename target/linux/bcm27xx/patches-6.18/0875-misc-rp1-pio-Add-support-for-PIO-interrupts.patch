@@ -1,0 +1,1101 @@
+From ee9c2a4007e551c86ec55379b01af5abd5f7c1d7 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Thu, 2 Jul 2026 17:15:56 +0100
+Subject: [PATCH] misc: rp1-pio: Add support for PIO interrupts
+
+The PIO block exposes 2 assignable interrupts. Make them available to
+kernel and userspace PIO applications.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-fw-pio.h      |   5 +
+ drivers/misc/rp1-pio.c         | 537 +++++++++++++++++++++++++++------
+ include/linux/pio_rp1.h        | 171 ++++++++++-
+ include/uapi/misc/rp1_pio_if.h |  60 +++-
+ 4 files changed, 678 insertions(+), 95 deletions(-)
+
+--- a/drivers/misc/rp1-fw-pio.h
++++ b/drivers/misc/rp1-fw-pio.h
+@@ -52,6 +52,11 @@ enum rp1_pio_ops {
+ 	PIO_SM_GET_FLAGS,	// u16 sm, u8 clear, u8 rsvd, u32 flags, u32 wait -> u32 level
+ 	PIO_SM_GET_DMACTRL,	// u16 sm, u16 is_tx -> u32 ctrl
+ 
++	PIO_SET_IRQN_SOURCE_MASK_ENABLED,	// u16 irq_index, u8 enabled, u8 rsvd,
++						// uint32_t source_mask
++	PIO_INTERRUPT_GET,	// u16 pio_interrupt_num -> u8 active
++	PIO_INTERRUPT_CLEAR,	// u16 pio_interrupt_num
++
+ 	PIO_COUNT
+ };
+ 
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -2,7 +2,7 @@
+ /*
+  * PIO driver for RP1
+  *
+- * Copyright (C) 2023-2024 Raspberry Pi Ltd.
++ * Copyright (C) 2023-2026 Raspberry Pi Ltd.
+  *
+  * Parts of this driver are based on:
+  *  - vcio.c, by Noralf Trønnes
+@@ -20,9 +20,11 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/fs.h>
+ #include <linux/init.h>
++#include <linux/interrupt.h>
+ #include <linux/ioctl.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/of_irq.h>
+ #include <linux/pio_rp1.h>
+ #include <linux/platform_device.h>
+ #include <linux/rp1-firmware.h>
+@@ -88,6 +90,16 @@ struct dma_info {
+ 	struct dma_buf_info bufs[DMA_BOUNCE_BUFFER_COUNT];
+ };
+ 
++struct rp1_pio_client;
++
++struct irq_info {
++	int irq;
++	bool enabled;
++	struct rp1_pio_client *owner;
++	pio_irq_handler_t handler;
++	void *context;
++};
++
+ struct rp1_pio_device {
+ 	struct platform_device *pdev;
+ 	struct rp1_firmware *fw;
+@@ -97,6 +109,8 @@ struct rp1_pio_device {
+ 	struct class *dev_class;
+ 	struct cdev cdev;
+ 	phys_addr_t phys_addr;
++	uint irq_count;
++	struct irq_info irqs[RP1_PIO_IRQ_COUNT];
+ 	uint32_t claimed_sms;
+ 	uint32_t claimed_dmas;
+ 	spinlock_t lock;
+@@ -110,10 +124,14 @@ struct rp1_pio_device {
+ 
+ struct rp1_pio_client {
+ 	struct rp1_pio_device *pio;
++	spinlock_t lock;
++	struct completion completion;
++	uint32_t wake_reason;
+ 	uint32_t claimed_sms;
+ 	uint32_t claimed_instrs;
+ 	uint32_t claimed_dmas;
+ 	int error;
++	int irqs[RP1_PIO_IRQ_COUNT];
+ };
+ 
+ static struct rp1_pio_device *g_pio;
+@@ -300,7 +318,7 @@ int rp1_pio_remove_program(struct rp1_pi
+ {
+ 	struct rp1_pio_remove_program_args *args = param;
+ 	uint32_t used_mask;
+-	int ret = -ENOENT;
++	int ret = -ENODEV;
+ 
+ 	if (args->num_instrs > RP1_PIO_INSTR_COUNT ||
+ 		args->origin >= RP1_PIO_INSTR_COUNT ||
+@@ -542,7 +560,7 @@ int rp1_pio_sm_get_flags(struct rp1_pio_
+ 	int ret;
+ 
+ 	ret = rp1_pio_message_resp(client->pio, PIO_SM_GET_FLAGS, args, sizeof(*args),
+-				   &args->flags, NULL, 4);
++				   &args->flags, NULL, sizeof(args->flags));
+ 	if (ret >= 0)
+ 		return offsetof(struct rp1_pio_sm_get_flags_args, flags) + ret;
+ 	args->flags = ~0;
+@@ -614,6 +632,253 @@ int rp1_pio_gpio_set_drive_strength(stru
+ }
+ EXPORT_SYMBOL_GPL(rp1_pio_gpio_set_drive_strength);
+ 
++static void rp1_pio_irq_handler_userspace(void *context)
++{
++	struct irq_info *irqi = context;
++	struct rp1_pio_client *client = irqi->owner;
++	struct rp1_pio_device *pio = client->pio;
++	uint32_t intmask = 1 << (irqi - pio->irqs);
++	unsigned long flags;
++
++	spin_lock_irqsave(&client->lock, flags);
++	client->wake_reason |= intmask;
++	spin_unlock_irqrestore(&client->lock, flags);
++
++	complete(&client->completion);
++}
++
++int rp1_pio_irq_claim(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_irq_claim_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	struct irq_info *irqi;
++	int ret = -1;
++	int i;
++
++	// Try to claim one of the PIO interrupts
++
++	args->irq_index = -ENODEV;
++
++	spin_lock(&pio->lock);
++	for (i = 0; i < pio->irq_count; i++) {
++		irqi = &pio->irqs[i];
++		if (!irqi->owner) {
++			irqi->owner = client;
++			irqi->handler = rp1_pio_irq_handler_userspace;
++			irqi->context = irqi;
++			args->irq_index = i;
++			ret = sizeof(*args);
++			break;
++		}
++		args->irq_index = -EBUSY;
++	}
++	spin_unlock(&pio->lock);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_claim);
++
++int rp1_pio_irq_wait(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_irq_wait_args *args = param;
++	unsigned long timeout;
++	unsigned long flags;
++	long rem;
++
++	if (args->timeout_ms)
++		timeout = msecs_to_jiffies(args->timeout_ms);
++	else
++		timeout = MAX_SCHEDULE_TIMEOUT;
++	rem = wait_for_completion_interruptible_timeout(&client->completion, timeout);
++	if (rem < 0)
++		return (int)rem;
++
++	spin_lock_irqsave(&client->lock, flags);
++	args->active_mask = rem ? client->wake_reason : 0;
++	client->wake_reason = 0;
++	spin_unlock_irqrestore(&client->lock, flags);
++	return sizeof(*args);
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_wait);
++
++int rp1_pio_set_irqn_source_mask_enabled(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_set_irqn_source_mask_enabled_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_SET_IRQN_SOURCE_MASK_ENABLED,
++			       args, sizeof(*args));
++}
++EXPORT_SYMBOL_GPL(rp1_pio_set_irqn_source_mask_enabled);
++
++int rp1_pio_interrupt_get(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_interrupt_get_args *args = param;
++	int ret;
++
++	ret = rp1_pio_message_resp(client->pio, PIO_INTERRUPT_GET, args, sizeof(*args),
++				   &args->active, NULL, sizeof(args->active));
++	if (ret >= 0)
++		return offsetof(struct rp1_pio_interrupt_get_args, active) + ret;
++	return ret;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_interrupt_get);
++
++int rp1_pio_interrupt_clear(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_interrupt_clear_args *args = param;
++
++	return rp1_pio_message(client->pio, PIO_INTERRUPT_CLEAR, args, sizeof(*args));
++}
++EXPORT_SYMBOL_GPL(rp1_pio_interrupt_clear);
++
++int rp1_pio_irq_set_enabled(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_irq_set_enabled_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	uint irq_index = args->irq_index;
++	struct irq_info *irqi;
++
++	if (irq_index >= ARRAY_SIZE(pio->irqs))
++		return -EINVAL;
++	if (irq_index >= pio->irq_count)
++		return -EINVAL;
++	irqi = &pio->irqs[irq_index];
++	if (irqi->owner != client)
++		return -EBUSY;
++
++	spin_lock(&pio->lock);
++	if (args->enabled && !irqi->enabled) {
++		enable_irq(irqi->irq);
++		irqi->enabled = true;
++	} else if (!args->enabled && irqi->enabled) {
++		disable_irq_nosync(irqi->irq);
++		irqi->enabled = false;
++	}
++	spin_unlock(&pio->lock);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_set_enabled);
++
++int rp1_pio_irq_is_enabled(struct rp1_pio_client *client, void *param)
++{
++	struct rp1_pio_irq_set_enabled_args *args = param;
++	struct rp1_pio_device *pio = client->pio;
++	uint irq_index = args->irq_index;
++	struct irq_info *irqi;
++
++	if (irq_index >= ARRAY_SIZE(pio->irqs))
++		return -EINVAL;
++	if (irq_index >= pio->irq_count)
++		return -EINVAL;
++	irqi = &pio->irqs[irq_index];
++	if (irqi->owner != client)
++		return -EBUSY;
++
++	args->enabled = irqi->enabled;
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_is_enabled);
++
++void rp1_pio_irq_add_handler(struct rp1_pio_client *client, uint num,
++			     pio_irq_handler_t handler, void *context)
++{
++	struct rp1_pio_device *pio = client->pio;
++	struct irq_info *irqi;
++
++	if (num >= pio->irq_count) {
++		dev_err(&pio->pdev->dev, "%s: bad irq index %u\n", __func__, num);
++		return;
++	}
++
++	irqi = &pio->irqs[num];
++
++	spin_lock(&pio->lock);
++	if (irqi->owner && irqi->owner != client) {
++		spin_unlock(&pio->lock);
++		dev_err(&pio->pdev->dev, "%s: irq %u already claimed\n", __func__, num);
++		return;
++	}
++	if (irqi->enabled) {
++		/*
++		 * The hard-irq handler reads ->handler/->context without
++		 * taking pio->lock, so they must not change while the line
++		 * can fire. Callers must disable the irq before swapping
++		 * its handler.
++		 */
++		spin_unlock(&pio->lock);
++		dev_err(&pio->pdev->dev, "%s: irq %u is enabled\n", __func__, num);
++		return;
++	}
++
++	irqi->owner = client;
++	irqi->handler = handler;
++	irqi->context = context;
++	spin_unlock(&pio->lock);
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_add_handler);
++
++void rp1_pio_irq_remove_handler(struct rp1_pio_client *client,
++			     uint num, pio_irq_handler_t handler)
++{
++	struct rp1_pio_device *pio = client->pio;
++	struct irq_info *irqi;
++
++	if (num >= pio->irq_count)
++		return;
++
++	irqi = &pio->irqs[num];
++
++	spin_lock(&pio->lock);
++	if (irqi->owner == client && irqi->handler == handler) {
++		irqi->handler = NULL;
++		irqi->context = NULL;
++		irqi->owner = NULL;
++	}
++	spin_unlock(&pio->lock);
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_remove_handler);
++
++pio_irq_handler_t rp1_pio_irq_get_handler(struct rp1_pio_client *client, uint num)
++{
++	struct rp1_pio_device *pio = client->pio;
++	struct irq_info *irqi;
++	pio_irq_handler_t handler;
++
++	if (num >= pio->irq_count)
++		return false;
++
++	irqi = &pio->irqs[num];
++
++	spin_lock(&pio->lock);
++	handler = irqi->handler;
++	spin_unlock(&pio->lock);
++
++	return handler;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_get_handler);
++
++uint rp1_pio_irq_map(struct rp1_pio_client *client, uint irqn)
++{
++	unsigned long flags;
++	int pirq;
++
++	spin_lock_irqsave(&client->lock, flags);
++	pirq = client->irqs[irqn];
++	if (pirq < 0) {
++		struct rp1_pio_irq_claim_args args = { .irq_index = -1 };
++
++		rp1_pio_irq_claim(client, &args);
++		pirq = args.irq_index;
++		if (pirq >= 0)
++			client->irqs[irqn] = pirq;
++	}
++	spin_unlock_irqrestore(&client->lock, flags);
++	return (uint)pirq;
++}
++EXPORT_SYMBOL_GPL(rp1_pio_irq_map);
++
+ static void rp1_pio_sm_dma_callback(void *param)
+ {
+ 	struct dma_info *dma = param;
+@@ -645,8 +910,8 @@ static void rp1_pio_sm_dma_free(struct d
+ 				  dma->bufs[dma->buf_count].buf,
+ 				  dma->bufs[dma->buf_count].dma_addr);
+ 	}
+-
+ 	dma_release_channel(dma->chan);
++	dma->chan = NULL;
+ }
+ 
+ static int rp1_pio_sm_config_xfer_internal(struct rp1_pio_client *client, uint sm, uint dir,
+@@ -722,6 +987,9 @@ static int rp1_pio_sm_config_xfer_intern
+ 		sg_dma_address(&dbi->sgl) = dbi->dma_addr;
+ 	}
+ 
++	dma->head_idx = 0;
++	dma->tail_idx = 0;
++
+ 	fifo_addr = pio->phys_addr;
+ 	fifo_addr += sm * (RP1_PIO_FIFO_TX1 - RP1_PIO_FIFO_TX0);
+ 	fifo_addr += (dir == RP1_PIO_DIR_TO_SM) ? RP1_PIO_FIFO_TX0 : RP1_PIO_FIFO_RX0;
+@@ -794,19 +1062,14 @@ static int rp1_pio_sm_tx_user(struct rp1
+ 	struct device *dev = &pdev->dev;
+ 	int ret = 0;
+ 
+-	/* Clean the slate - we're running synchronously */
+-	dma->head_idx = 0;
+-	dma->tail_idx = 0;
+-
+ 	while (bytes > 0) {
+ 		size_t copy_bytes = min(bytes, dma->buf_size);
+ 		struct dma_buf_info *dbi;
+ 
+ 		/* grab the next free buffer, waiting if they're all full */
+ 		if (dma->head_idx - dma->tail_idx == dma->buf_count) {
+-			if (down_timeout(&dma->buf_sem,
+-				msecs_to_jiffies(1000))) {
+-				dev_err(dev, "DMA bounce timed out\n");
++			if (down_interruptible(&dma->buf_sem)) {
++				dev_err(dev, "DMA bounce interrupted\n");
+ 				break;
+ 			}
+ 			dma->tail_idx++;
+@@ -847,84 +1110,97 @@ static int rp1_pio_sm_tx_user(struct rp1
+ 		bytes -= copy_bytes;
+ 	}
+ 
+-	/* Block for completion */
+-	while (dma->tail_idx != dma->head_idx) {
+-		if (down_timeout(&dma->buf_sem, msecs_to_jiffies(1000))) {
+-			dev_err(dev, "DMA wait timed out\n");
+-			ret = -ETIMEDOUT;
+-			break;
+-		}
+-		dma->tail_idx++;
+-	}
+-
+ 	return ret;
+ }
+ 
+-static int rp1_pio_sm_rx_user(struct rp1_pio_device *pio, struct dma_info *dma,
+-				  void __user *userbuf, size_t bytes)
++static int rp1_pio_sm_rx_submit(struct rp1_pio_device *pio, struct dma_info *dma, size_t len)
+ {
+ 	struct platform_device *pdev = pio->pdev;
+ 	struct dma_async_tx_descriptor *desc;
+ 	struct device *dev = &pdev->dev;
+-	int ret = 0;
++	struct dma_buf_info *dbi;
++	int ret;
+ 
+-	/* Clean the slate - we're running synchronously */
+-	dma->head_idx = 0;
+-	dma->tail_idx = 0;
++	if (len > dma->buf_size)
++		return -EINVAL;
+ 
+-	while (bytes || dma->tail_idx != dma->head_idx) {
+-		size_t copy_bytes = min(bytes, dma->buf_size);
+-		struct dma_buf_info *dbi;
++	dbi = &dma->bufs[dma->head_idx % dma->buf_count];
++	sg_dma_len(&dbi->sgl) = len;
++	desc = dmaengine_prep_slave_sg(dma->chan, &dbi->sgl, 1,
++				       DMA_DEV_TO_MEM,
++				       DMA_PREP_INTERRUPT | DMA_CTRL_ACK |
++				       DMA_PREP_FENCE);
++	if (!desc) {
++		dev_err(dev, "DMA preparation failed\n");
++		return -EIO;
++	}
+ 
+-		/*
+-		 * wait for the next RX to complete if all the buffers are
+-		 * outstanding or we're finishing up.
+-		 */
+-		if (!bytes || dma->head_idx - dma->tail_idx == dma->buf_count) {
+-			if (down_timeout(&dma->buf_sem,
+-				msecs_to_jiffies(1000))) {
+-				dev_err(dev, "DMA wait timed out\n");
+-				ret = -ETIMEDOUT;
+-				break;
+-			}
++	desc->callback = rp1_pio_sm_dma_callback;
++	desc->callback_param = dma;
+ 
+-			dbi = &dma->bufs[dma->tail_idx++ % dma->buf_count];
+-			ret = copy_to_user(userbuf, dbi->buf, sg_dma_len(&dbi->sgl));
+-			if (ret < 0)
+-				break;
+-			userbuf += sg_dma_len(&dbi->sgl);
++	/* Submit the buffer - the callback will kick the semaphore */
++	ret = dmaengine_submit(desc);
++	if (ret < 0)
++		return ret;
+ 
+-			if (!bytes)
+-				continue;
+-		}
++	dma->head_idx++;
++	dma_async_issue_pending(dma->chan);
+ 
+-		dbi = &dma->bufs[dma->head_idx % dma->buf_count];
+-		sg_dma_len(&dbi->sgl) = copy_bytes;
+-		desc = dmaengine_prep_slave_sg(dma->chan, &dbi->sgl, 1,
+-					       DMA_DEV_TO_MEM,
+-					       DMA_PREP_INTERRUPT | DMA_CTRL_ACK |
+-					       DMA_PREP_FENCE);
+-		if (!desc) {
+-			dev_err(dev, "DMA preparation failed\n");
+-			ret = -EIO;
+-			break;
+-		}
++	return 0;
++}
+ 
+-		desc->callback = rp1_pio_sm_dma_callback;
+-		desc->callback_param = dma;
++/*
++ * A NULL userbuf queues a receive of exactly "bytes" and returns without
++ * waiting: it puts the app in control of its own read-ahead depth and
++ * chunk sizes, rather than us assuming every read is a full dma->buf_size
++ * chunk (reads can be any size up to buf_size, and need not match it).
++ */
++static int rp1_pio_sm_rx_user(struct rp1_pio_device *pio, struct dma_info *dma,
++				  void __user *userbuf, size_t bytes)
++{
++	struct device *dev = &pio->pdev->dev;
++	int ret;
+ 
+-		/* Submit the buffer - the callback will kick the semaphore */
+-		ret = dmaengine_submit(desc);
+-		if (ret < 0)
+-			break;
++	if (!bytes)
++		return -EINVAL;
+ 
+-		dma->head_idx++;
+-		dma_async_issue_pending(dma->chan);
++	if (!userbuf) {
++		if (dma->head_idx - dma->tail_idx == dma->buf_count)
++			return -EBUSY;
+ 
+-		bytes -= copy_bytes;
++		return rp1_pio_sm_rx_submit(pio, dma, bytes);
+ 	}
+ 
+-	return ret;
++	while (bytes) {
++		struct dma_buf_info *dbi;
++		size_t len;
++
++		if (dma->head_idx == dma->tail_idx) {
++			/* Nothing already queued: arm exactly what's needed */
++			len = min(bytes, dma->buf_size);
++			ret = rp1_pio_sm_rx_submit(pio, dma, len);
++			if (ret)
++				return ret;
++		}
++
++		dbi = &dma->bufs[dma->tail_idx % dma->buf_count];
++		len = sg_dma_len(&dbi->sgl);
++		if (len > bytes)
++			return -EINVAL;
++
++		if (down_interruptible(&dma->buf_sem)) {
++			dev_err(dev, "DMA wait interrupted\n");
++			return -ETIMEDOUT;
++		}
++		dma->tail_idx++;
++
++		if (copy_to_user(userbuf, dbi->buf, len))
++			return -EFAULT;
++		userbuf += len;
++		bytes -= len;
++	}
++
++	return 0;
+ }
+ 
+ static int rp1_pio_sm_xfer_data32_user(struct rp1_pio_client *client, void *param)
+@@ -935,7 +1211,8 @@ static int rp1_pio_sm_xfer_data32_user(s
+ 	uint32_t dma_mask;
+ 
+ 	if (args->sm >= RP1_PIO_SMS_COUNT || args->dir >= RP1_PIO_DIR_COUNT ||
+-	    !args->data_bytes || !args->data)
++	    !args->data_bytes ||
++	    (!args->data && args->dir != RP1_PIO_DIR_FROM_SM))
+ 		return -EINVAL;
+ 
+ 	dma_mask = 1 << (args->sm * 2 + args->dir);
+@@ -1007,13 +1284,13 @@ int rp1_pio_sm_xfer_data(struct rp1_pio_
+ 			return -EINVAL;
+ 		}
+ 
+-		/* Grab a dma buffer */
++		/*
++		 * Never block: the caller manages its own outstanding count
++		 * and is told about freed slots via its callback.
++		 */
+ 		if (dma->head_idx - dma->tail_idx == dma->buf_count) {
+-			if (down_timeout(&dma->buf_sem, msecs_to_jiffies(1000))) {
+-				dev_err(dev, "DMA wait timed out\n");
+-				kfree(dxs);
+-				return -ETIMEDOUT;
+-			}
++			kfree(dxs);
++			return -EBUSY;
+ 		}
+ 
+ 		dbi = &dma->bufs[dma->head_idx % dma->buf_count];
+@@ -1106,11 +1383,20 @@ struct handler_info {
+ 
+ 	HANDLER(READ_HW, read_hw),
+ 	HANDLER(WRITE_HW, write_hw),
++
++	HANDLER(IRQ_CLAIM, irq_claim),
++	HANDLER(IRQ_WAIT, irq_wait),
++	HANDLER(IRQ_SET_ENABLED, irq_set_enabled),
++	HANDLER(IRQ_IS_ENABLED, irq_is_enabled),
++	HANDLER(SET_IRQN_SOURCE_MASK_ENABLED, set_irqn_source_mask_enabled),
++	HANDLER(INTERRUPT_GET, interrupt_get),
++	HANDLER(INTERRUPT_CLEAR, interrupt_clear),
+ };
+ 
+ struct rp1_pio_client *rp1_pio_open(void)
+ {
+ 	struct rp1_pio_client *client;
++	int i;
+ 
+ 	if (!g_pio)
+ 		return ERR_PTR(-EPROBE_DEFER);
+@@ -1121,7 +1407,12 @@ struct rp1_pio_client *rp1_pio_open(void
+ 	if (!client)
+ 		return ERR_PTR(-ENOMEM);
+ 
++	for (i = 0; i < RP1_PIO_IRQ_COUNT; i++)
++		client->irqs[i] = -1;
++
+ 	client->pio = g_pio;
++	spin_lock_init(&client->lock);
++	init_completion(&client->completion);
+ 
+ 	return client;
+ }
+@@ -1130,18 +1421,49 @@ EXPORT_SYMBOL_GPL(rp1_pio_open);
+ void rp1_pio_close(struct rp1_pio_client *client)
+ {
+ 	struct rp1_pio_device *pio = client->pio;
+-	uint claimed_dmas = client->claimed_dmas;
++	uint32_t claimed;
++	struct irq_info *irqi;
++	unsigned long flags;
+ 	int i;
+ 
++	/* Wake any waiter */
++	spin_lock_irqsave(&client->lock, flags);
++	client->wake_reason = 0;
++	spin_unlock_irqrestore(&client->lock, flags);
++	complete(&client->completion);
++
+ 	/* Free any allocated resources */
+ 
+-	for (i = 0; claimed_dmas; i++) {
++	spin_lock(&pio->lock);
++	for (i = 0; i < pio->irq_count; i++) {
++		irqi = &pio->irqs[i];
++		if (irqi->owner == client) {
++			/*
++			 * Disable directly rather than via irq_set_enabled():
++			 * that helper takes pio->lock itself, and it is
++			 * already held here.
++			 */
++			if (irqi->enabled) {
++				disable_irq(irqi->irq);
++				irqi->enabled = false;
++			}
++
++			irqi->owner = NULL;
++			irqi->handler = NULL;
++			irqi->context = NULL;
++		}
++	}
++	spin_unlock(&pio->lock);
++
++	claimed = client->claimed_dmas;
++
++	for (i = 0; claimed; i++) {
+ 		uint mask = (1 << i);
+ 
+-		if (claimed_dmas & mask) {
++		if (claimed & mask) {
+ 			struct dma_info *dma = &pio->dma_configs[i >> 1][i & 1];
+ 
+-			claimed_dmas &= ~mask;
++			claimed &= ~mask;
+ 			rp1_pio_sm_dma_free(&pio->pdev->dev, dma);
+ 		}
+ 	}
+@@ -1333,6 +1655,30 @@ static long rp1_pio_compat_ioctl(struct
+ #define rp1_pio_compat_ioctl NULL
+ #endif
+ 
++static irqreturn_t rp1_pio_irq_handler(int irq, void *dev_id)
++{
++	struct rp1_pio_device *pio = dev_id;
++	struct irq_info *irqi = NULL;
++	int i;
++
++	for (i = 0; i < pio->irq_count; i++) {
++		if (irq == pio->irqs[i].irq) {
++			irqi = &pio->irqs[i];
++			break;
++		}
++	}
++
++	if (!irqi || !irqi->handler) {
++		pr_err("disabling unwanted interrupt\n");
++		disable_irq_nosync(irq);
++		return IRQ_NONE;
++	}
++
++	irqi->handler(irqi->context);
++
++	return IRQ_HANDLED;
++}
++
+ const struct file_operations rp1_pio_fops = {
+ 	.owner =	THIS_MODULE,
+ 	.open =		rp1_pio_file_open,
+@@ -1352,6 +1698,7 @@ static int rp1_pio_probe(struct platform
+ 	struct device *cdev;
+ 	char dev_name[16];
+ 	void *p;
++	int irq;
+ 	int ret;
+ 	int i;
+ 
+@@ -1363,7 +1710,7 @@ static int rp1_pio_probe(struct platform
+ 			return -EINVAL;
+ 	}
+ 
+-	pdev->id = of_alias_get_id(pdev->dev.of_node, "pio");
++	pdev->id = of_alias_get_id(dev->of_node, "pio");
+ 	if (pdev->id < 0)
+ 		return dev_err_probe(dev, pdev->id, "alias is missing\n");
+ 
+@@ -1379,7 +1726,7 @@ static int rp1_pio_probe(struct platform
+ 	if (ret < 0)
+ 		goto out_err;
+ 
+-	pio = devm_kzalloc(&pdev->dev, sizeof(*pio), GFP_KERNEL);
++	pio = devm_kzalloc(dev, sizeof(*pio), GFP_KERNEL);
+ 	if (!pio) {
+ 		ret = -ENOMEM;
+ 		goto out_err;
+@@ -1399,6 +1746,25 @@ static int rp1_pio_probe(struct platform
+ 		goto out_err;
+ 	}
+ 
++	if (pio->fw_pio_count > PIO_INTERRUPT_CLEAR) {
++		for (i = 0; i < ARRAY_SIZE(pio->irqs); i++) {
++			irq = of_irq_get(dev->of_node, i);
++			if (irq < 0)
++				break;
++			ret = devm_request_irq(dev, irq, rp1_pio_irq_handler,
++					0, pdev->name, pio);
++			if (ret < 0) {
++				dev_err(dev, "failed to request an irq (rc=%d)\n", ret);
++				goto out_err;
++			}
++
++			disable_irq(irq);
++			pio->irqs[i].irq = irq;
++		}
++
++		pio->irq_count = i;
++	}
++
+ 	pio->phys_addr = ioresource->start;
+ 
+ 	ret = alloc_chrdev_region(&pio->dev_num, 0, 1, DRIVER_NAME);
+@@ -1431,7 +1797,8 @@ static int rp1_pio_probe(struct platform
+ 
+ 	g_pio = pio;
+ 
+-	dev_info(dev, "Created instance as %s\n", dev_name);
++	dev_info(dev, "Created instance as %s (op count %d, %d interrupts)\n",
++		 dev_name, pio->fw_pio_count, pio->irq_count);
+ 	return 0;
+ 
+ out_cdev_del:
+@@ -1475,7 +1842,7 @@ static struct platform_driver rp1_pio_dr
+ 		.of_match_table	= of_match_ptr(rp1_pio_ids),
+ 	},
+ 	.probe		= rp1_pio_probe,
+-	.remove	= rp1_pio_remove,
++	.remove		= rp1_pio_remove,
+ 	.shutdown	= rp1_pio_remove,
+ };
+ 
+--- a/include/linux/pio_rp1.h
++++ b/include/linux/pio_rp1.h
+@@ -46,6 +46,7 @@
+ #define GPIOS_MASK			((1 << RP1_PIO_GPIO_COUNT) - 1)
+ 
+ #define PICO_NO_HARDWARE		0
++#define PICO_PIO_VERSION		0
+ 
+ #define pio0				pio_open_helper(0)
+ 
+@@ -102,6 +103,18 @@
+ #define PROC_PIO_SM0_EXECCTRL_STATUS_N_BITS	0x0000001f
+ #define PROC_PIO_SM0_EXECCTRL_STATUS_N_LSB	0
+ 
++#define irq_add_shared_handler(num, handler, ...) \
++	irq_add_handler(pio, num, handler, NULL)
++
++#define irq_has_shared_handler(num, handler, ...) \
++	(irq_get_handler(pio, num, handler, NULL) != NULL)
++
++#define irq_set_exclusive_handler(num, handler) \
++	irq_add_handler(pio, num, handler, NULL)
++
++#define irq_get_exclusive_handler(num) \
++	((void *)irq_get_handler(pio, num))
++
+ enum pio_fifo_join {
+ 	PIO_FIFO_JOIN_NONE = 0,
+ 	PIO_FIFO_JOIN_TX = 1,
+@@ -179,14 +192,36 @@ enum pio_sm_flags {
+ 	PIO_SM_FLAG_RXUNDER = 0x0008,
+ };
+ 
++
++enum pio_interrupt_source {
++	PIS_SM0_RX_FIFO_NOT_EMPTY,
++	PIS_SM1_RX_FIFO_NOT_EMPTY,
++	PIS_SM2_RX_FIFO_NOT_EMPTY,
++	PIS_SM3_RX_FIFO_NOT_EMPTY,
++	PIS_SM0_TX_FIFO_NOT_FULL,
++	PIS_SM1_TX_FIFO_NOT_FULL,
++	PIS_SM2_TX_FIFO_NOT_FULL,
++	PIS_SM3_TX_FIFO_NOT_FULL,
++	PIS_INTERRUPT0,
++	PIS_INTERRUPT1,
++	PIS_INTERRUPT2,
++	PIS_INTERRUPT3,
++
++	PIS_MAX
++};
++
+ struct fp24_8 {
+ 	uint32_t val;
+ };
+ 
+ typedef rp1_pio_sm_config pio_sm_config;
+ 
++typedef void (*pio_irq_handler_t)(void *context);
++
+ typedef struct rp1_pio_client *PIO;
+ 
++static struct rp1_pio_client *g_client;
++
+ int rp1_pio_init(void);
+ PIO rp1_pio_open(void);
+ void rp1_pio_close(struct rp1_pio_client *client);
+@@ -233,6 +268,22 @@ int rp1_pio_gpio_set_oeover(struct rp1_p
+ int rp1_pio_gpio_set_input_enabled(struct rp1_pio_client *client, void *param);
+ int rp1_pio_gpio_set_drive_strength(struct rp1_pio_client *client, void *param);
+ 
++int rp1_pio_irq_claim(struct rp1_pio_client *client, void *param);
++int rp1_pio_irq_wait(struct rp1_pio_client *client, void *param);
++int rp1_pio_set_irqn_source_mask_enabled(struct rp1_pio_client *client, void *param);
++int rp1_pio_interrupt_get(struct rp1_pio_client *client, void *param);
++int rp1_pio_interrupt_clear(struct rp1_pio_client *client, void *param);
++int rp1_pio_irq_set_enabled(struct rp1_pio_client *client, void *param);
++int rp1_pio_irq_is_enabled(struct rp1_pio_client *client, void *param);
++
++void rp1_pio_irq_add_handler(struct rp1_pio_client *client, uint num,
++			     pio_irq_handler_t handler, void *context);
++void rp1_pio_irq_remove_handler(struct rp1_pio_client *client,
++			     uint num, pio_irq_handler_t handler);
++pio_irq_handler_t rp1_pio_irq_get_handler(struct rp1_pio_client *client, uint num);
++uint rp1_pio_irq_map(struct rp1_pio_client *client, uint irqn);
++
++
+ static inline int pio_init(void)
+ {
+ 	return rp1_pio_init();
+@@ -240,11 +291,14 @@ static inline int pio_init(void)
+ 
+ static inline struct rp1_pio_client *pio_open(void)
+ {
+-	return rp1_pio_open();
++	g_client = rp1_pio_open();
++	return g_client;
+ }
+ 
+ static inline void pio_close(struct rp1_pio_client *client)
+ {
++	if (g_client == client)
++		g_client = NULL;
+ 	rp1_pio_close(client);
+ }
+ 
+@@ -1066,4 +1120,119 @@ static inline int pio_gpio_disable_pulls
+ 	return pio_gpio_set_pulls(client, gpio, false, false);
+ }
+ 
++static inline int pio_get_irq_num(struct rp1_pio_client *client, uint irqn)
++{
++	return rp1_pio_irq_map(client, irqn);
++}
++
++static inline void pio_set_irqn_source_mask_enabled(struct rp1_pio_client *client, uint irq_index,
++						    uint32_t source_mask, bool enabled)
++{
++	struct rp1_pio_set_irqn_source_mask_enabled_args args = {
++		.irq_index = rp1_pio_irq_map(client, irq_index),
++		.source_mask = source_mask, .enabled = enabled,
++	};
++
++	rp1_pio_set_irqn_source_mask_enabled(client, &args);
++}
++
++static inline void pio_set_irq0_source_enabled(struct rp1_pio_client *client,
++					       enum pio_interrupt_source source,
++					       bool enabled)
++{
++	pio_set_irqn_source_mask_enabled(client, 0, 1 << source, enabled);
++}
++
++static inline void pio_set_irq1_source_enabled(struct rp1_pio_client *client,
++					       enum pio_interrupt_source source,
++					       bool enabled)
++{
++	pio_set_irqn_source_mask_enabled(client, 1, 1 << source, enabled);
++}
++
++static inline void pio_set_irq0_source_mask_enabled(struct rp1_pio_client *client,
++						    uint32_t source_mask,
++						    bool enabled)
++{
++	pio_set_irqn_source_mask_enabled(client, 0, source_mask, enabled);
++}
++
++static inline void pio_set_irq1_source_mask_enabled(struct rp1_pio_client *client,
++						    uint32_t source_mask,
++						    bool enabled)
++{
++	pio_set_irqn_source_mask_enabled(client, 1, source_mask, enabled);
++}
++
++static inline void pio_set_irqn_source_enabled(struct rp1_pio_client *client, uint irq_index,
++					       enum pio_interrupt_source source, bool enabled)
++{
++	pio_set_irqn_source_mask_enabled(client, irq_index, 1 << source, enabled);
++}
++
++static inline uint pio_interrupt_rel(uint sm, uint pio_interrupt_num)
++{
++	return (pio_interrupt_num & 0x1c) | ((pio_interrupt_num + sm) & 0x3);
++}
++
++static inline void irq_add_handler(struct rp1_pio_client *client, uint num,
++				   pio_irq_handler_t handler,
++				   void *context)
++{
++	return rp1_pio_irq_add_handler(client, num, handler, context);
++}
++
++static inline pio_irq_handler_t irq_get_handler(struct rp1_pio_client *client, uint num)
++{
++	return rp1_pio_irq_get_handler(client, num);
++}
++
++static inline bool irq_has_handler(struct rp1_pio_client *client, uint num)
++{
++	return rp1_pio_irq_get_handler(client, num) != NULL;
++}
++
++static inline void irq_set_enabled(struct rp1_pio_client *client, uint num, bool enabled)
++{
++	struct rp1_pio_irq_set_enabled_args args = { .irq_index = num, .enabled = enabled };
++
++	if (bad_params_if(client, num >= RP1_PIO_IRQ_COUNT))
++		return;
++
++	rp1_pio_irq_set_enabled(client, &args);
++};
++
++static inline bool irq_is_enabled(struct rp1_pio_client *client, uint num)
++{
++	struct rp1_pio_irq_set_enabled_args args = { .irq_index = num };
++
++	if (bad_params_if(client, num >= RP1_PIO_IRQ_COUNT))
++		return false;
++
++	(void)rp1_pio_irq_is_enabled(client, &args);
++
++	return !!args.enabled;
++}
++
++static inline bool pio_interrupt_get(struct rp1_pio_client *client, uint pio_interrupt_num)
++{
++	struct rp1_pio_interrupt_get_args args = { .pio_interrupt_num = pio_interrupt_num };
++
++	if (bad_params_if(client, pio_interrupt_num >= PIS_MAX))
++		return false;
++
++	(void)rp1_pio_interrupt_get(client, &args);
++
++	return !!args.active;
++}
++
++static inline void pio_interrupt_clear(struct rp1_pio_client *client, uint pio_interrupt_num)
++{
++	struct rp1_pio_interrupt_get_args args = { .pio_interrupt_num = pio_interrupt_num };
++
++	if (bad_params_if(client, pio_interrupt_num >= PIS_MAX))
++		return;
++	(void)rp1_pio_interrupt_clear(client, &args);
++}
++
+ #endif
+--- a/include/uapi/misc/rp1_pio_if.h
++++ b/include/uapi/misc/rp1_pio_if.h
+@@ -1,6 +1,6 @@
+ /* SPDX-License-Identifier: GPL-2.0 + WITH Linux-syscall-note */
+ /*
+- * Copyright (c) 2023-24 Raspberry Pi Ltd.
++ * Copyright (c) 2023-26 Raspberry Pi Ltd.
+  * All rights reserved.
+  */
+ #ifndef _PIO_RP1_IF_H
+@@ -8,16 +8,17 @@
+ 
+ #include <linux/ioctl.h>
+ 
+-#define RP1_PIO_INSTRUCTION_COUNT   32
+-#define RP1_PIO_SM_COUNT            4
+-#define RP1_PIO_GPIO_COUNT          28
+-#define RP1_GPIO_FUNC_PIO           7
+-
+-#define RP1_PIO_ORIGIN_ANY          ((uint16_t)(~0))
+-
+-#define RP1_PIO_DIR_TO_SM           0
+-#define RP1_PIO_DIR_FROM_SM         1
+-#define RP1_PIO_DIR_COUNT           2
++#define RP1_PIO_INSTRUCTION_COUNT	32
++#define RP1_PIO_SM_COUNT		4
++#define RP1_PIO_GPIO_COUNT		28
++#define RP1_GPIO_FUNC_PIO		7
++#define RP1_PIO_IRQ_COUNT		2
++
++#define RP1_PIO_ORIGIN_ANY		((uint16_t)(~0))
++
++#define RP1_PIO_DIR_TO_SM		0
++#define RP1_PIO_DIR_FROM_SM		1
++#define RP1_PIO_DIR_COUNT		2
+ 
+ typedef struct {
+ 	uint32_t clkdiv;
+@@ -203,6 +204,38 @@ struct rp1_access_hw_args {
+ 	void *data;
+ };
+ 
++struct rp1_pio_irq_claim_args {
++	int irq_index; /* OUT */
++};
++
++struct rp1_pio_irq_wait_args {
++	uint32_t timeout_ms;
++	uint32_t active_mask; /* OUT */
++};
++
++struct rp1_pio_irq_set_enabled_args {
++	uint16_t irq_index;
++	uint8_t enabled;
++	uint8_t rsvd;
++};
++
++struct rp1_pio_set_irqn_source_mask_enabled_args {
++	uint16_t irq_index;
++	uint8_t enabled;
++	uint8_t rsvd;
++	uint32_t source_mask;
++};
++
++struct rp1_pio_interrupt_get_args {
++	uint16_t pio_interrupt_num;
++	uint16_t rsvd;
++	uint8_t active; /* OUT */
++};
++
++struct rp1_pio_interrupt_clear_args {
++	uint16_t pio_interrupt_num;
++};
++
+ #define PIO_IOC_MAGIC 102
+ 
+ #define PIO_IOC_SM_CONFIG_XFER _IOW(PIO_IOC_MAGIC, 0, struct rp1_pio_sm_config_xfer_args)
+@@ -250,4 +283,13 @@ struct rp1_access_hw_args {
+ #define PIO_IOC_GPIO_SET_INPUT_ENABLED _IOW(PIO_IOC_MAGIC, 56, struct rp1_gpio_set_args)
+ #define PIO_IOC_GPIO_SET_DRIVE_STRENGTH _IOW(PIO_IOC_MAGIC, 57, struct rp1_gpio_set_args)
+ 
++#define PIO_IOC_IRQ_CLAIM _IOWR(PIO_IOC_MAGIC, 60, struct rp1_pio_irq_claim_args)
++#define PIO_IOC_IRQ_WAIT _IOWR(PIO_IOC_MAGIC, 61, struct rp1_pio_irq_wait_args)
++#define PIO_IOC_IRQ_SET_ENABLED _IOW(PIO_IOC_MAGIC, 62, struct rp1_pio_irq_set_enabled_args)
++#define PIO_IOC_IRQ_IS_ENABLED _IOWR(PIO_IOC_MAGIC, 63, struct rp1_pio_irq_set_enabled_args)
++#define PIO_IOC_SET_IRQN_SOURCE_MASK_ENABLED \
++	_IOW(PIO_IOC_MAGIC, 64, struct rp1_pio_set_irqn_source_mask_enabled_args)
++#define PIO_IOC_INTERRUPT_GET _IOWR(PIO_IOC_MAGIC, 65, struct rp1_pio_interrupt_get_args)
++#define PIO_IOC_INTERRUPT_CLEAR _IOW(PIO_IOC_MAGIC, 66, struct rp1_pio_interrupt_clear_args)
++
+ #endif

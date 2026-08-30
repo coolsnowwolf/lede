@@ -1,0 +1,44 @@
+From a8548398000fce0174e1b1a45ea94e0b43432835 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Tue, 26 May 2026 20:30:58 -0300
+Subject: [PATCH] drm/v3d: Wait for pending L2T flush before cleaning caches
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+v3d_clean_caches() starts the cache-clean sequence by writing
+V3D_L2TCACTL_TMUWCF to V3D_CTL_L2TCACTL and then polling for that bit to
+clear. It does not, however, check for an L2T flush (L2TFLS) that may
+still be in flight from a previous operation.
+
+On pre-V3D 7.1 hardware, kicking off the TMU write-combiner flush while an
+L2T flush is still pending can clobber bits in L2TCACTL and cause cache
+inconsistencies.
+
+Poll for L2TFLS to clear before writing L2TCACTL on V3D < 7.1, ensuring
+any pending flush has completed before a new clean is issued.
+
+Cc: stable@vger.kernel.org
+Fixes: d223f98f0209 ("drm/v3d: Add support for compute shader dispatch.")
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_gem.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -226,6 +226,14 @@ v3d_clean_caches(struct v3d_dev *v3d)
+ 		}
+ 	}
+ 
++	/* GFXH-1897: Ensure pending flushes complete before writing L2TCACTL */
++	if (v3d->ver < V3D_GEN_71) {
++		if (wait_for(!(V3D_CORE_READ(core, V3D_CTL_L2TCACTL) &
++			       V3D_L2TCACTL_L2TFLS), 100)) {
++			DRM_ERROR("Timeout waiting for L2T clean\n");
++		}
++	}
++
+ 	V3D_CORE_WRITE(core, V3D_CTL_L2TCACTL, V3D_L2TCACTL_TMUWCF);
+ 	if (wait_for(!(V3D_CORE_READ(core, V3D_CTL_L2TCACTL) &
+ 		       V3D_L2TCACTL_TMUWCF), 100)) {

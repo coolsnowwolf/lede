@@ -1,0 +1,88 @@
+From 1f128d5a97120f7fa011250ec30227da020c89da Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Tue, 28 Jul 2026 17:06:09 +0100
+Subject: [PATCH] pinctrl: rp1: Make IRQ usage set a pin to an input
+
+This is a less invasive solution to the problem that requesting that
+a GPIO be used as an interrupt from Device Tree (not going via
+gpio descriptors) does not automatically make it an input. This can lead
+to interrupt storms.
+
+See: https://github.com/raspberrypi/linux/issues/7520
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+Co-authored-by: Nicolai Buchwitz <nb@tipi-net.de>
+---
+ drivers/pinctrl/pinctrl-rp1.c | 30 ++++++++++++++++++++++++++----
+ 1 file changed, 26 insertions(+), 4 deletions(-)
+
+--- a/drivers/pinctrl/pinctrl-rp1.c
++++ b/drivers/pinctrl/pinctrl-rp1.c
+@@ -742,13 +742,9 @@ static int rp1_gpio_set(struct gpio_chip
+ static int rp1_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
+ {
+ 	struct rp1_pin_info *pin = rp1_get_pin(chip, offset);
+-	u32 fsel;
+ 
+ 	if (!pin)
+ 		return -EINVAL;
+-	fsel = rp1_get_fsel(pin);
+-	if (fsel != RP1_FSEL_GPIO)
+-		return -EINVAL;
+ 	return (rp1_get_dir(pin) == RP1_DIR_OUTPUT) ?
+ 		GPIO_LINE_DIRECTION_OUT :
+ 		GPIO_LINE_DIRECTION_IN;
+@@ -971,6 +967,23 @@ static int rp1_gpio_irq_set_affinity(str
+ 	return -EINVAL;
+ }
+ 
++static int rp1_gpio_irq_reqres(struct irq_data *d)
++{
++	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
++	int ret;
++
++	ret = gpiochip_irq_reqres(d);
++	if (!ret)
++		ret = rp1_gpio_direction_input(gc, d->hwirq);
++
++	return ret;
++}
++
++static void rp1_gpio_irq_relres(struct irq_data *d)
++{
++	return gpiochip_irq_relres(d);
++}
++
+ static struct irq_chip rp1_gpio_irq_chip = {
+ 	.name = MODULE_NAME,
+ 	.irq_enable = rp1_gpio_irq_enable,
+@@ -980,6 +993,8 @@ static struct irq_chip rp1_gpio_irq_chip
+ 	.irq_mask = rp1_gpio_irq_disable,
+ 	.irq_unmask = rp1_gpio_irq_enable,
+ 	.irq_set_affinity = rp1_gpio_irq_set_affinity,
++	.irq_request_resources = rp1_gpio_irq_reqres,
++	.irq_release_resources = rp1_gpio_irq_relres,
+ 	.flags = IRQCHIP_IMMUTABLE,
+ };
+ 
+@@ -1333,6 +1348,12 @@ static int rp1_pmx_gpio_set_direction(st
+ 	return 0;
+ }
+ 
++static bool rp1_pmx_function_is_gpio(struct pinctrl_dev *pctldev,
++				     unsigned int selector)
++{
++	return selector == func_gpio;
++}
++
+ static const struct pinmux_ops rp1_pmx_ops = {
+ 	.free = rp1_pmx_free,
+ 	.get_functions_count = rp1_pmx_get_functions_count,
+@@ -1341,6 +1362,7 @@ static const struct pinmux_ops rp1_pmx_o
+ 	.set_mux = rp1_pmx_set,
+ 	.gpio_disable_free = rp1_pmx_gpio_disable_free,
+ 	.gpio_set_direction = rp1_pmx_gpio_set_direction,
++	.function_is_gpio = rp1_pmx_function_is_gpio,
+ };
+ 
+ static void rp1_pull_config_set(struct rp1_pin_info *pin, unsigned int arg)

@@ -1,0 +1,3043 @@
+From 3557febd204cb30e861ffa47230f2685764109b5 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Fri, 14 Apr 2023 13:50:08 +0100
+Subject: [PATCH] drm/panel: Add panel driver for Waveshare DSI touchscreens
+
+Waveshare sell a range of DSI panels of varying sizes, all
+using a common MCU to control the panel and backlight.
+
+Add a panel driver that supports these panels.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+drm/panel: waveshare: Fix up timings for 10.1" panel
+
+The 10.1" panel doesn't work with the timings defined. vc4
+will always have been fixing up the timing due to the limited
+integer divider, so compute the fixed up mode and use it
+directly.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+drivers/gpu/drm/panel:fix waveshare panel software restart/shutdown display is abnormal
+Fixed the screen stays white when the user restarts or shuts down
+
+Signed-off-by: eng33 <eng33@waveshare.com>
+
+ drivers/gpu/drm/panel:Modify the DSI mode to fix the problem that 7.9inch cannot be displayed
+
+Signed-off-by: eng33 <eng33@waveshare.com>
+
+ drivers/gpu/drm/panel:Modified the timing of 11.9inch to fix the issue that 11.9inch was displayed abnormally
+
+Signed-off-by: eng33 <eng33@waveshare.com>
+
+Driver:add waveshare 4inch dsi lcd (C) driver
+
+Signed-off-by: Eng33 <eng33@waveshare.net>
+
+drivers:gpu:drm:panel: Added waveshare 5.0inch, 6.25inch, and 8.8inch dsi screen devices
+
+Signed-off-by: eng33 <eng33@waveshare.com>
+
+drm: panel: Added waveshare 13.3inch panel
+
+Signed-off-by: eng33 <eng33@waveshare.com>
+
+drm: panel: Added waveshare 7.0inch h dsi screen support
+
+Signed-off-by: Waveshare_Team <support@waveshare.com>
+
+drivers/gpu/drm/panel : Add the device for the Waveshare DSI-TOUCH series panels.
+
+the driver are provided for the Waveshare DSI-TOUCH series panels,
+modelled after the other Ilitek controller drivers,
+but not limited to Ilitek series controllers.
+The aim is to offer a more consistent operation and
+experience for the Waveshare DSI-TOUCH series panels.
+
+Signed-off-by: Waveshare_Team <support@waveshare.com>
+
+drivers/gpu/drm/panel : Update display driver
+
+1) Add LCD power control
+2) Added support for:
+	A) Add support for 3.4-DSI-TOUCH-C
+	B) Add support for 4-DSI-TOUCH-C
+	C) Add support for 8-DSI-TOUCH-A
+	D) Add support for 9-DSI-TOUCH-B
+	E) Add support for 10.1-DSI-TOUCH-B
+	F) Add support for 12.3-DSI-TOUCH-A
+
+Signed-off-by: Waveshare_Team <support@waveshare.com>
+---
+ drivers/gpu/drm/panel/Kconfig                 |   20 +
+ drivers/gpu/drm/panel/Makefile                |    2 +
+ .../gpu/drm/panel/panel-waveshare-dsi-v2.c    | 2284 +++++++++++++++++
+ drivers/gpu/drm/panel/panel-waveshare-dsi.c   |  633 +++++
+ 4 files changed, 2939 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-waveshare-dsi-v2.c
+ create mode 100644 drivers/gpu/drm/panel/panel-waveshare-dsi.c
+
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -1156,6 +1156,26 @@ config DRM_PANEL_VISIONOX_VTDR6130
+ 	  Say Y here if you want to enable support for Visionox
+ 	  VTDR6130 1080x2400 AMOLED DSI panel.
+ 
++config DRM_PANEL_WAVESHARE_TOUCHSCREEN
++	tristate "Waveshare touchscreen panels"
++	depends on DRM_MIPI_DSI
++	depends on I2C
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for the Waveshare
++	  DSI Touchscreens.  To compile this driver as a module,
++	  choose M here.
++
++config DRM_PANEL_WAVESHARE_TOUCHSCREEN_V2
++	tristate "Waveshare touchscreen panels V2"
++	depends on DRM_MIPI_DSI
++	depends on I2C
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y here if you want to enable support for the Waveshare
++	  DSI Touchscreens.  To compile this driver as a module,
++	  choose M here.
++
+ config DRM_PANEL_WIDECHIPS_WS2401
+ 	tristate "Widechips WS2401 DPI panel driver"
+ 	depends on SPI && GPIOLIB
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -115,5 +115,7 @@ obj-$(CONFIG_DRM_PANEL_VISIONOX_RM69299)
+ obj-$(CONFIG_DRM_PANEL_VISIONOX_RM692E5) += panel-visionox-rm692e5.o
+ obj-$(CONFIG_DRM_PANEL_VISIONOX_VTDR6130) += panel-visionox-vtdr6130.o
+ obj-$(CONFIG_DRM_PANEL_VISIONOX_R66451) += panel-visionox-r66451.o
++obj-$(CONFIG_DRM_PANEL_WAVESHARE_TOUCHSCREEN) += panel-waveshare-dsi.o
++obj-$(CONFIG_DRM_PANEL_WAVESHARE_TOUCHSCREEN_V2) += panel-waveshare-dsi-v2.o
+ obj-$(CONFIG_DRM_PANEL_WIDECHIPS_WS2401) += panel-widechips-ws2401.o
+ obj-$(CONFIG_DRM_PANEL_XINPENG_XPP055C272) += panel-xinpeng-xpp055c272.o
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-waveshare-dsi-v2.c
+@@ -0,0 +1,2284 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2024 Waveshare International Limited
++ *
++ * Based on panel-raspberrypi-touchscreen by Broadcom
++ */
++
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/errno.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++
++#include <linux/gpio/consumer.h>
++#include <linux/regulator/consumer.h>
++
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#include <video/mipi_display.h>
++
++struct ws_panel_desc {
++	const struct panel_init_cmd *init;
++	const struct drm_display_mode *mode;
++	const unsigned long mode_flags;
++	unsigned int lanes;
++	enum mipi_dsi_pixel_format format;
++};
++
++struct ws_panel {
++	struct drm_panel panel;
++	struct mipi_dsi_device *dsi;
++	const struct ws_panel_desc *desc;
++
++	struct regulator *power;
++	struct gpio_desc *reset;
++	struct gpio_desc *iovcc;
++	struct gpio_desc *avdd;
++
++	enum drm_panel_orientation orientation;
++};
++
++enum dsi_cmd_type {
++	INIT_DCS_CMD,
++	DELAY_CMD,
++};
++
++struct panel_init_cmd {
++	enum dsi_cmd_type type;
++	size_t len;
++	const char *data;
++};
++
++#define _INIT_DCS_CMD(...)                                                    \
++	{                                                                     \
++		.type = INIT_DCS_CMD, .len = sizeof((char[]){ __VA_ARGS__ }), \
++		.data = (char[])                                              \
++		{                                                             \
++			__VA_ARGS__                                           \
++		}                                                             \
++	}
++
++#define _INIT_DELAY_CMD(...)                                               \
++	{                                                                  \
++		.type = DELAY_CMD, .len = sizeof((char[]){ __VA_ARGS__ }), \
++		.data = (char[])                                           \
++		{                                                          \
++			__VA_ARGS__                                        \
++		}                                                          \
++	}
++
++static const struct panel_init_cmd ws_panel_12_3_a_4lane_init[] = {
++	_INIT_DCS_CMD(0xB9, 0x83, 0x10, 0x2E),
++	_INIT_DCS_CMD(0xE9, 0xCD),
++	_INIT_DCS_CMD(0xBB, 0x01),
++	_INIT_DCS_CMD(0xE9, 0x00),
++	_INIT_DCS_CMD(0xD1, 0x67, 0x2C, 0xFF, 0x05),
++	_INIT_DCS_CMD(0xBE, 0x11, 0x96, 0x89),
++	_INIT_DCS_CMD(0xD9, 0x04, 0x03, 0x04),
++	_INIT_DCS_CMD(0xB1, 0x10, 0xFA, 0xAF, 0xAF, 0x33, 0x33, 0xB1, 0x4D,
++		      0x2F, 0x36, 0x36, 0x36, 0x36, 0x22, 0x21, 0x15, 0x00),
++	_INIT_DCS_CMD(0xB2, 0x00, 0xD0, 0x27, 0x80, 0x00, 0x14, 0x40, 0x2C,
++		      0x32, 0x02, 0x00, 0x00, 0x15, 0x20, 0xD7, 0x00),
++	_INIT_DCS_CMD(0xB4, 0x98, 0xA0, 0x01, 0x01, 0x98, 0xA0, 0x68, 0x50,
++		      0x01, 0xC7, 0x01, 0x58, 0x00, 0xFF, 0x00, 0xFF),
++	_INIT_DCS_CMD(0xB6, 0x4D, 0x4D, 0xE3),
++	_INIT_DCS_CMD(0xBF, 0xFC, 0x85, 0x80),
++	_INIT_DCS_CMD(0xD2, 0x33, 0x33),
++	_INIT_DCS_CMD(0xD3, 0x00, 0x00, 0x00, 0x00, 0x64, 0x04, 0x00, 0x08,
++		      0x08, 0x27, 0x27, 0x22, 0x2F, 0x15, 0x15, 0x04, 0x04,
++		      0x32, 0x10, 0x13, 0x00, 0x13, 0x32, 0x10, 0x1F, 0x00,
++		      0x02, 0x32, 0x17, 0xFD, 0x00, 0x10, 0x00, 0x00, 0x20,
++		      0x30, 0x01, 0x55, 0x21, 0x38, 0x01, 0x55, 0x0F),
++	_INIT_DCS_CMD(0xE0, 0x00, 0x0C, 0x1A, 0x23, 0x2B, 0x4F, 0x64, 0x69,
++		      0x6C, 0x64, 0x77, 0x77, 0x76, 0x80, 0x79, 0x7E, 0x85,
++		      0x9A, 0x97, 0x4D, 0x56, 0x64, 0x70, 0x00, 0x0C, 0x1A,
++		      0x23, 0x2B, 0x4F, 0x64, 0x69, 0x6C, 0x64, 0x77, 0x77,
++		      0x76, 0x80, 0x79, 0x7E, 0x85, 0x9A, 0x97, 0x4D, 0x56,
++		      0x64, 0x76),
++	_INIT_DCS_CMD(0xBD, 0x01),
++	_INIT_DCS_CMD(0xB1, 0x01, 0x9B, 0x01, 0x31),
++	_INIT_DCS_CMD(0xCB, 0x80, 0x36, 0x12, 0x16, 0xC0, 0x28, 0x40, 0x84,
++		      0x22),
++	_INIT_DCS_CMD(0xD3, 0x01, 0x00, 0xFC, 0x00, 0x00, 0x11, 0x10, 0x00,
++		      0x0E, 0x00, 0x01),
++	_INIT_DCS_CMD(0xBD, 0x02),
++	_INIT_DCS_CMD(0xB4, 0x4E, 0x00, 0x33, 0x11, 0x33, 0x88),
++	_INIT_DCS_CMD(0xBF, 0xF2, 0x00, 0x02),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xC0, 0x23, 0x23, 0x22, 0x11, 0xA2, 0x17, 0x00, 0x80,
++		      0x00, 0x00, 0x08, 0x00, 0x63, 0x63),
++	_INIT_DCS_CMD(0xC6, 0xF9),
++	_INIT_DCS_CMD(0xC7, 0x30),
++	_INIT_DCS_CMD(0xC8, 0x00, 0x04, 0x04, 0x00, 0x00, 0x82, 0x13, 0x01),
++	_INIT_DCS_CMD(0xD0, 0x07, 0x04, 0x05),
++	_INIT_DCS_CMD(0xD5, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x21, 0x20,
++		      0x21, 0x20, 0x01, 0x00, 0x03, 0x02, 0x05, 0x04, 0x07,
++		      0x06, 0x1A, 0x1A, 0x1A, 0x1A, 0x9A, 0x9A, 0x9A, 0x9A,
++		      0x18, 0x18, 0x18, 0x18, 0x21, 0x20, 0x21, 0x20, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18),
++	_INIT_DCS_CMD(0xD6, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x20, 0x21,
++		      0x20, 0x21, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
++		      0x07, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A, 0x1A,
++		      0x18, 0x18, 0x18, 0x18, 0x20, 0x21, 0x20, 0x21, 0x98,
++		      0x98, 0x98, 0x98, 0x98, 0x98, 0x98, 0x98, 0x98, 0x98),
++	_INIT_DCS_CMD(0xBD, 0x01),
++	_INIT_DCS_CMD(0xE7, 0x00, 0x34, 0x01, 0x88, 0x0E, 0xBE, 0x0F),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xC2, 0x43, 0xFF, 0x10),
++	_INIT_DCS_CMD(0xCC, 0x02),
++	_INIT_DCS_CMD(0xBD, 0x03),
++	_INIT_DCS_CMD(0xB2, 0x80),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xD8, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
++		      0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0x80, 0x2A, 0xAA, 0xAA,
++		      0xAA, 0xAA, 0x80, 0x2A, 0xAA, 0xAA, 0xAA),
++	_INIT_DCS_CMD(0xBD, 0x01),
++	_INIT_DCS_CMD(0xD8, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
++		      0xAA, 0xAA, 0xAA, 0xAA),
++	_INIT_DCS_CMD(0xBD, 0x02),
++	_INIT_DCS_CMD(0xD8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0xFF, 0xFF,
++		      0xFF, 0xFF, 0xFF, 0xF0),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(20),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_10_1_a_4lane_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65),
++	_INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x03),
++	_INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00),
++	_INIT_DCS_CMD(0x01, 0x3B),
++	_INIT_DCS_CMD(0x0C, 0x74),
++	_INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xAF),
++	_INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xAF),
++	_INIT_DCS_CMD(0x1C, 0x00),
++	_INIT_DCS_CMD(0x35, 0x26),
++	_INIT_DCS_CMD(0x37, 0x09),
++	_INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x00),
++	_INIT_DCS_CMD(0x3A, 0x01),
++	_INIT_DCS_CMD(0x3C, 0x78),
++	_INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0x7F),
++	_INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0xA0),
++	_INIT_DCS_CMD(0x42, 0x81),
++	_INIT_DCS_CMD(0x43, 0x14),
++	_INIT_DCS_CMD(0x44, 0x23),
++	_INIT_DCS_CMD(0x45, 0x28),
++	_INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x57, 0x69),
++	_INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x2A),
++	_INIT_DCS_CMD(0x5B, 0x17),
++	_INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x6B),
++	_INIT_DCS_CMD(0x5F, 0x5C),
++	_INIT_DCS_CMD(0x60, 0x4F),
++	_INIT_DCS_CMD(0x61, 0x4D),
++	_INIT_DCS_CMD(0x62, 0x3F),
++	_INIT_DCS_CMD(0x63, 0x42),
++	_INIT_DCS_CMD(0x64, 0x2B),
++	_INIT_DCS_CMD(0x65, 0x44),
++	_INIT_DCS_CMD(0x66, 0x43),
++	_INIT_DCS_CMD(0x67, 0x43),
++	_INIT_DCS_CMD(0x68, 0x63),
++	_INIT_DCS_CMD(0x69, 0x52),
++	_INIT_DCS_CMD(0x6A, 0x5A),
++	_INIT_DCS_CMD(0x6B, 0x4F),
++	_INIT_DCS_CMD(0x6C, 0x4E),
++	_INIT_DCS_CMD(0x6D, 0x20),
++	_INIT_DCS_CMD(0x6E, 0x0F),
++	_INIT_DCS_CMD(0x6F, 0x00),
++	_INIT_DCS_CMD(0x70, 0x7F),
++	_INIT_DCS_CMD(0x71, 0x6B),
++	_INIT_DCS_CMD(0x72, 0x5C),
++	_INIT_DCS_CMD(0x73, 0x4F),
++	_INIT_DCS_CMD(0x74, 0x4D),
++	_INIT_DCS_CMD(0x75, 0x3F),
++	_INIT_DCS_CMD(0x76, 0x42),
++	_INIT_DCS_CMD(0x77, 0x2B),
++	_INIT_DCS_CMD(0x78, 0x44),
++	_INIT_DCS_CMD(0x79, 0x43),
++	_INIT_DCS_CMD(0x7A, 0x43),
++	_INIT_DCS_CMD(0x7B, 0x63),
++	_INIT_DCS_CMD(0x7C, 0x52),
++	_INIT_DCS_CMD(0x7D, 0x5A),
++	_INIT_DCS_CMD(0x7E, 0x4F),
++	_INIT_DCS_CMD(0x7F, 0x4E),
++	_INIT_DCS_CMD(0x80, 0x20),
++	_INIT_DCS_CMD(0x81, 0x0F),
++	_INIT_DCS_CMD(0x82, 0x00),
++	_INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x02),
++	_INIT_DCS_CMD(0x01, 0x02),
++	_INIT_DCS_CMD(0x02, 0x00),
++	_INIT_DCS_CMD(0x03, 0x00),
++	_INIT_DCS_CMD(0x04, 0x1E),
++	_INIT_DCS_CMD(0x05, 0x1E),
++	_INIT_DCS_CMD(0x06, 0x1F),
++	_INIT_DCS_CMD(0x07, 0x1F),
++	_INIT_DCS_CMD(0x08, 0x1F),
++	_INIT_DCS_CMD(0x09, 0x17),
++	_INIT_DCS_CMD(0x0A, 0x17),
++	_INIT_DCS_CMD(0x0B, 0x37),
++	_INIT_DCS_CMD(0x0C, 0x37),
++	_INIT_DCS_CMD(0x0D, 0x47),
++	_INIT_DCS_CMD(0x0E, 0x47),
++	_INIT_DCS_CMD(0x0F, 0x45),
++	_INIT_DCS_CMD(0x10, 0x45),
++	_INIT_DCS_CMD(0x11, 0x4B),
++	_INIT_DCS_CMD(0x12, 0x4B),
++	_INIT_DCS_CMD(0x13, 0x49),
++	_INIT_DCS_CMD(0x14, 0x49),
++	_INIT_DCS_CMD(0x15, 0x1F),
++	_INIT_DCS_CMD(0x16, 0x01),
++	_INIT_DCS_CMD(0x17, 0x01),
++	_INIT_DCS_CMD(0x18, 0x00),
++	_INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x1E),
++	_INIT_DCS_CMD(0x1B, 0x1E),
++	_INIT_DCS_CMD(0x1C, 0x1F),
++	_INIT_DCS_CMD(0x1D, 0x1F),
++	_INIT_DCS_CMD(0x1E, 0x1F),
++	_INIT_DCS_CMD(0x1F, 0x17),
++	_INIT_DCS_CMD(0x20, 0x17),
++	_INIT_DCS_CMD(0x21, 0x37),
++	_INIT_DCS_CMD(0x22, 0x37),
++	_INIT_DCS_CMD(0x23, 0x46),
++	_INIT_DCS_CMD(0x24, 0x46),
++	_INIT_DCS_CMD(0x25, 0x44),
++	_INIT_DCS_CMD(0x26, 0x44),
++	_INIT_DCS_CMD(0x27, 0x4A),
++	_INIT_DCS_CMD(0x28, 0x4A),
++	_INIT_DCS_CMD(0x29, 0x48),
++	_INIT_DCS_CMD(0x2A, 0x48),
++	_INIT_DCS_CMD(0x2B, 0x1F),
++	_INIT_DCS_CMD(0x2C, 0x01),
++	_INIT_DCS_CMD(0x2D, 0x01),
++	_INIT_DCS_CMD(0x2E, 0x00),
++	_INIT_DCS_CMD(0x2F, 0x00),
++	_INIT_DCS_CMD(0x30, 0x1F),
++	_INIT_DCS_CMD(0x31, 0x1F),
++	_INIT_DCS_CMD(0x32, 0x1E),
++	_INIT_DCS_CMD(0x33, 0x1E),
++	_INIT_DCS_CMD(0x34, 0x1F),
++	_INIT_DCS_CMD(0x35, 0x17),
++	_INIT_DCS_CMD(0x36, 0x17),
++	_INIT_DCS_CMD(0x37, 0x37),
++	_INIT_DCS_CMD(0x38, 0x37),
++	_INIT_DCS_CMD(0x39, 0x08),
++	_INIT_DCS_CMD(0x3A, 0x08),
++	_INIT_DCS_CMD(0x3B, 0x0A),
++	_INIT_DCS_CMD(0x3C, 0x0A),
++	_INIT_DCS_CMD(0x3D, 0x04),
++	_INIT_DCS_CMD(0x3E, 0x04),
++	_INIT_DCS_CMD(0x3F, 0x06),
++	_INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x02),
++	_INIT_DCS_CMD(0x43, 0x02),
++	_INIT_DCS_CMD(0x44, 0x00),
++	_INIT_DCS_CMD(0x45, 0x00),
++	_INIT_DCS_CMD(0x46, 0x1F),
++	_INIT_DCS_CMD(0x47, 0x1F),
++	_INIT_DCS_CMD(0x48, 0x1E),
++	_INIT_DCS_CMD(0x49, 0x1E),
++	_INIT_DCS_CMD(0x4A, 0x1F),
++	_INIT_DCS_CMD(0x4B, 0x17),
++	_INIT_DCS_CMD(0x4C, 0x17),
++	_INIT_DCS_CMD(0x4D, 0x37),
++	_INIT_DCS_CMD(0x4E, 0x37),
++	_INIT_DCS_CMD(0x4F, 0x09),
++	_INIT_DCS_CMD(0x50, 0x09),
++	_INIT_DCS_CMD(0x51, 0x0B),
++	_INIT_DCS_CMD(0x52, 0x0B),
++	_INIT_DCS_CMD(0x53, 0x05),
++	_INIT_DCS_CMD(0x54, 0x05),
++	_INIT_DCS_CMD(0x55, 0x07),
++	_INIT_DCS_CMD(0x56, 0x07),
++	_INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x5B, 0x30),
++	_INIT_DCS_CMD(0x5C, 0x16),
++	_INIT_DCS_CMD(0x5D, 0x34),
++	_INIT_DCS_CMD(0x5E, 0x05),
++	_INIT_DCS_CMD(0x5F, 0x02),
++	_INIT_DCS_CMD(0x63, 0x00),
++	_INIT_DCS_CMD(0x64, 0x6A),
++	_INIT_DCS_CMD(0x67, 0x73),
++	_INIT_DCS_CMD(0x68, 0x1D),
++	_INIT_DCS_CMD(0x69, 0x08),
++	_INIT_DCS_CMD(0x6A, 0x6A),
++	_INIT_DCS_CMD(0x6B, 0x08),
++	_INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x00),
++	_INIT_DCS_CMD(0x6E, 0x00),
++	_INIT_DCS_CMD(0x6F, 0x88),
++	_INIT_DCS_CMD(0x75, 0xFF),
++	_INIT_DCS_CMD(0x77, 0xDD),
++	_INIT_DCS_CMD(0x78, 0x3F),
++	_INIT_DCS_CMD(0x79, 0x15),
++	_INIT_DCS_CMD(0x7A, 0x17),
++	_INIT_DCS_CMD(0x7D, 0x14),
++	_INIT_DCS_CMD(0x7E, 0x82),
++	_INIT_DCS_CMD(0xE0, 0x04),
++	_INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3),
++	_INIT_DCS_CMD(0x09, 0x61),
++	_INIT_DCS_CMD(0x0E, 0x48),
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE6, 0x02),
++	_INIT_DCS_CMD(0xE7, 0x0C),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(60),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_10_1_a_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65),
++	_INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x01),
++	_INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00),
++	_INIT_DCS_CMD(0x01, 0x38),
++	_INIT_DCS_CMD(0x03, 0x10),
++	_INIT_DCS_CMD(0x04, 0x38),
++	_INIT_DCS_CMD(0x0C, 0x74),
++	_INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xAF),
++	_INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xAF),
++	_INIT_DCS_CMD(0x1C, 0x00),
++	_INIT_DCS_CMD(0x35, 0x26),
++	_INIT_DCS_CMD(0x37, 0x09),
++	_INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x00),
++	_INIT_DCS_CMD(0x3A, 0x01),
++	_INIT_DCS_CMD(0x3C, 0x78),
++	_INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0x7F),
++	_INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0xA0),
++	_INIT_DCS_CMD(0x42, 0x81),
++	_INIT_DCS_CMD(0x43, 0x1E),
++	_INIT_DCS_CMD(0x44, 0x0D),
++	_INIT_DCS_CMD(0x45, 0x28),
++	_INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x57, 0x69),
++	_INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x2A),
++	_INIT_DCS_CMD(0x5B, 0x17),
++	_INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x6A),
++	_INIT_DCS_CMD(0x5F, 0x5B),
++	_INIT_DCS_CMD(0x60, 0x4F),
++	_INIT_DCS_CMD(0x61, 0x4A),
++	_INIT_DCS_CMD(0x62, 0x3D),
++	_INIT_DCS_CMD(0x63, 0x41),
++	_INIT_DCS_CMD(0x64, 0x2A),
++	_INIT_DCS_CMD(0x65, 0x44),
++	_INIT_DCS_CMD(0x66, 0x43),
++	_INIT_DCS_CMD(0x67, 0x44),
++	_INIT_DCS_CMD(0x68, 0x62),
++	_INIT_DCS_CMD(0x69, 0x52),
++	_INIT_DCS_CMD(0x6A, 0x59),
++	_INIT_DCS_CMD(0x6B, 0x4C),
++	_INIT_DCS_CMD(0x6C, 0x48),
++	_INIT_DCS_CMD(0x6D, 0x3A),
++	_INIT_DCS_CMD(0x6E, 0x26),
++	_INIT_DCS_CMD(0x6F, 0x00),
++	_INIT_DCS_CMD(0x70, 0x7F),
++	_INIT_DCS_CMD(0x71, 0x6A),
++	_INIT_DCS_CMD(0x72, 0x5B),
++	_INIT_DCS_CMD(0x73, 0x4F),
++	_INIT_DCS_CMD(0x74, 0x4A),
++	_INIT_DCS_CMD(0x75, 0x3D),
++	_INIT_DCS_CMD(0x76, 0x41),
++	_INIT_DCS_CMD(0x77, 0x2A),
++	_INIT_DCS_CMD(0x78, 0x44),
++	_INIT_DCS_CMD(0x79, 0x43),
++	_INIT_DCS_CMD(0x7A, 0x44),
++	_INIT_DCS_CMD(0x7B, 0x62),
++	_INIT_DCS_CMD(0x7C, 0x52),
++	_INIT_DCS_CMD(0x7D, 0x59),
++	_INIT_DCS_CMD(0x7E, 0x4C),
++	_INIT_DCS_CMD(0x7F, 0x48),
++	_INIT_DCS_CMD(0x80, 0x3A),
++	_INIT_DCS_CMD(0x81, 0x26),
++	_INIT_DCS_CMD(0x82, 0x00),
++	_INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x42),
++	_INIT_DCS_CMD(0x01, 0x42),
++	_INIT_DCS_CMD(0x02, 0x40),
++	_INIT_DCS_CMD(0x03, 0x40),
++	_INIT_DCS_CMD(0x04, 0x5E),
++	_INIT_DCS_CMD(0x05, 0x5E),
++	_INIT_DCS_CMD(0x06, 0x5F),
++	_INIT_DCS_CMD(0x07, 0x5F),
++	_INIT_DCS_CMD(0x08, 0x5F),
++	_INIT_DCS_CMD(0x09, 0x57),
++	_INIT_DCS_CMD(0x0A, 0x57),
++	_INIT_DCS_CMD(0x0B, 0x77),
++	_INIT_DCS_CMD(0x0C, 0x77),
++	_INIT_DCS_CMD(0x0D, 0x47),
++	_INIT_DCS_CMD(0x0E, 0x47),
++	_INIT_DCS_CMD(0x0F, 0x45),
++	_INIT_DCS_CMD(0x10, 0x45),
++	_INIT_DCS_CMD(0x11, 0x4B),
++	_INIT_DCS_CMD(0x12, 0x4B),
++	_INIT_DCS_CMD(0x13, 0x49),
++	_INIT_DCS_CMD(0x14, 0x49),
++	_INIT_DCS_CMD(0x15, 0x5F),
++	_INIT_DCS_CMD(0x16, 0x41),
++	_INIT_DCS_CMD(0x17, 0x41),
++	_INIT_DCS_CMD(0x18, 0x40),
++	_INIT_DCS_CMD(0x19, 0x40),
++	_INIT_DCS_CMD(0x1A, 0x5E),
++	_INIT_DCS_CMD(0x1B, 0x5E),
++	_INIT_DCS_CMD(0x1C, 0x5F),
++	_INIT_DCS_CMD(0x1D, 0x5F),
++	_INIT_DCS_CMD(0x1E, 0x5F),
++	_INIT_DCS_CMD(0x1F, 0x57),
++	_INIT_DCS_CMD(0x20, 0x57),
++	_INIT_DCS_CMD(0x21, 0x77),
++	_INIT_DCS_CMD(0x22, 0x77),
++	_INIT_DCS_CMD(0x23, 0x46),
++	_INIT_DCS_CMD(0x24, 0x46),
++	_INIT_DCS_CMD(0x25, 0x44),
++	_INIT_DCS_CMD(0x26, 0x44),
++	_INIT_DCS_CMD(0x27, 0x4A),
++	_INIT_DCS_CMD(0x28, 0x4A),
++	_INIT_DCS_CMD(0x29, 0x48),
++	_INIT_DCS_CMD(0x2A, 0x48),
++	_INIT_DCS_CMD(0x2B, 0x5F),
++	_INIT_DCS_CMD(0x2C, 0x01),
++	_INIT_DCS_CMD(0x2D, 0x01),
++	_INIT_DCS_CMD(0x2E, 0x00),
++	_INIT_DCS_CMD(0x2F, 0x00),
++	_INIT_DCS_CMD(0x30, 0x1F),
++	_INIT_DCS_CMD(0x31, 0x1F),
++	_INIT_DCS_CMD(0x32, 0x1E),
++	_INIT_DCS_CMD(0x33, 0x1E),
++	_INIT_DCS_CMD(0x34, 0x1F),
++	_INIT_DCS_CMD(0x35, 0x17),
++	_INIT_DCS_CMD(0x36, 0x17),
++	_INIT_DCS_CMD(0x37, 0x37),
++	_INIT_DCS_CMD(0x38, 0x37),
++	_INIT_DCS_CMD(0x39, 0x08),
++	_INIT_DCS_CMD(0x3A, 0x08),
++	_INIT_DCS_CMD(0x3B, 0x0A),
++	_INIT_DCS_CMD(0x3C, 0x0A),
++	_INIT_DCS_CMD(0x3D, 0x04),
++	_INIT_DCS_CMD(0x3E, 0x04),
++	_INIT_DCS_CMD(0x3F, 0x06),
++	_INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x02),
++	_INIT_DCS_CMD(0x43, 0x02),
++	_INIT_DCS_CMD(0x44, 0x00),
++	_INIT_DCS_CMD(0x45, 0x00),
++	_INIT_DCS_CMD(0x46, 0x1F),
++	_INIT_DCS_CMD(0x47, 0x1F),
++	_INIT_DCS_CMD(0x48, 0x1E),
++	_INIT_DCS_CMD(0x49, 0x1E),
++	_INIT_DCS_CMD(0x4A, 0x1F),
++	_INIT_DCS_CMD(0x4B, 0x17),
++	_INIT_DCS_CMD(0x4C, 0x17),
++	_INIT_DCS_CMD(0x4D, 0x37),
++	_INIT_DCS_CMD(0x4E, 0x37),
++	_INIT_DCS_CMD(0x4F, 0x09),
++	_INIT_DCS_CMD(0x50, 0x09),
++	_INIT_DCS_CMD(0x51, 0x0B),
++	_INIT_DCS_CMD(0x52, 0x0B),
++	_INIT_DCS_CMD(0x53, 0x05),
++	_INIT_DCS_CMD(0x54, 0x05),
++	_INIT_DCS_CMD(0x55, 0x07),
++	_INIT_DCS_CMD(0x56, 0x07),
++	_INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x5B, 0x30),
++	_INIT_DCS_CMD(0x5C, 0x00),
++	_INIT_DCS_CMD(0x5D, 0x34),
++	_INIT_DCS_CMD(0x5E, 0x05),
++	_INIT_DCS_CMD(0x5F, 0x02),
++	_INIT_DCS_CMD(0x63, 0x00),
++	_INIT_DCS_CMD(0x64, 0x6A),
++	_INIT_DCS_CMD(0x67, 0x73),
++	_INIT_DCS_CMD(0x68, 0x07),
++	_INIT_DCS_CMD(0x69, 0x08),
++	_INIT_DCS_CMD(0x6A, 0x6A),
++	_INIT_DCS_CMD(0x6B, 0x08),
++	_INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x00),
++	_INIT_DCS_CMD(0x6E, 0x00),
++	_INIT_DCS_CMD(0x6F, 0x88),
++	_INIT_DCS_CMD(0x75, 0xFF),
++	_INIT_DCS_CMD(0x77, 0xDD),
++	_INIT_DCS_CMD(0x78, 0x2C),
++	_INIT_DCS_CMD(0x79, 0x15),
++	_INIT_DCS_CMD(0x7A, 0x17),
++	_INIT_DCS_CMD(0x7D, 0x14),
++	_INIT_DCS_CMD(0x7E, 0x82),
++	_INIT_DCS_CMD(0xE0, 0x04),
++	_INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3),
++	_INIT_DCS_CMD(0x09, 0x61),
++	_INIT_DCS_CMD(0x0E, 0x48),
++	_INIT_DCS_CMD(0x37, 0x58),
++	_INIT_DCS_CMD(0x2B, 0x0F),
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE6, 0x02),
++	_INIT_DCS_CMD(0xE7, 0x0C),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(60),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_10_1_b_4lane_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65),
++	_INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x03),
++	_INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00),
++	_INIT_DCS_CMD(0x01, 0x3D),
++	_INIT_DCS_CMD(0x03, 0x10),
++	_INIT_DCS_CMD(0x04, 0x3F),
++	_INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xBF),
++	_INIT_DCS_CMD(0x19, 0x01),
++	_INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xBF),
++	_INIT_DCS_CMD(0x1C, 0x01),
++	_INIT_DCS_CMD(0x24, 0xFE),
++	_INIT_DCS_CMD(0x37, 0x19),
++	_INIT_DCS_CMD(0x38, 0x05),
++	_INIT_DCS_CMD(0x39, 0x08),
++	_INIT_DCS_CMD(0x3A, 0x1F),
++	_INIT_DCS_CMD(0x3C, 0x74),
++	_INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0xFF),
++	_INIT_DCS_CMD(0x40, 0x04),
++	_INIT_DCS_CMD(0x41, 0xA0),
++	_INIT_DCS_CMD(0x42, 0x7E),
++	_INIT_DCS_CMD(0x43, 0x1A),
++	_INIT_DCS_CMD(0x44, 0x0F),
++	_INIT_DCS_CMD(0x45, 0x24),
++	_INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x57, 0xA9),
++	_INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x38),
++	_INIT_DCS_CMD(0x5B, 0x1A),
++	_INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x65),
++	_INIT_DCS_CMD(0x5F, 0x52),
++	_INIT_DCS_CMD(0x60, 0x44),
++	_INIT_DCS_CMD(0x61, 0x3D),
++	_INIT_DCS_CMD(0x62, 0x2D),
++	_INIT_DCS_CMD(0x63, 0x2D),
++	_INIT_DCS_CMD(0x64, 0x14),
++	_INIT_DCS_CMD(0x65, 0x28),
++	_INIT_DCS_CMD(0x66, 0x25),
++	_INIT_DCS_CMD(0x67, 0x23),
++	_INIT_DCS_CMD(0x68, 0x3F),
++	_INIT_DCS_CMD(0x69, 0x2D),
++	_INIT_DCS_CMD(0x6A, 0x34),
++	_INIT_DCS_CMD(0x6B, 0x27),
++	_INIT_DCS_CMD(0x6C, 0x24),
++	_INIT_DCS_CMD(0x6D, 0x18),
++	_INIT_DCS_CMD(0x6E, 0x0A),
++	_INIT_DCS_CMD(0x6F, 0x00),
++	_INIT_DCS_CMD(0x70, 0x7F),
++	_INIT_DCS_CMD(0x71, 0x65),
++	_INIT_DCS_CMD(0x72, 0x52),
++	_INIT_DCS_CMD(0x73, 0x44),
++	_INIT_DCS_CMD(0x74, 0x3D),
++	_INIT_DCS_CMD(0x75, 0x2D),
++	_INIT_DCS_CMD(0x76, 0x2D),
++	_INIT_DCS_CMD(0x77, 0x14),
++	_INIT_DCS_CMD(0x78, 0x28),
++	_INIT_DCS_CMD(0x79, 0x25),
++	_INIT_DCS_CMD(0x7A, 0x23),
++	_INIT_DCS_CMD(0x7B, 0x3F),
++	_INIT_DCS_CMD(0x7C, 0x2D),
++	_INIT_DCS_CMD(0x7D, 0x34),
++	_INIT_DCS_CMD(0x7E, 0x27),
++	_INIT_DCS_CMD(0x7F, 0x24),
++	_INIT_DCS_CMD(0x80, 0x18),
++	_INIT_DCS_CMD(0x81, 0x0A),
++	_INIT_DCS_CMD(0x82, 0x00),
++	_INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x51),
++	_INIT_DCS_CMD(0x01, 0x55),
++	_INIT_DCS_CMD(0x02, 0x50),
++	_INIT_DCS_CMD(0x03, 0x51),
++	_INIT_DCS_CMD(0x04, 0x5F),
++	_INIT_DCS_CMD(0x05, 0x77),
++	_INIT_DCS_CMD(0x06, 0x57),
++	_INIT_DCS_CMD(0x07, 0x5F),
++	_INIT_DCS_CMD(0x08, 0x47),
++	_INIT_DCS_CMD(0x09, 0x46),
++	_INIT_DCS_CMD(0x0A, 0x45),
++	_INIT_DCS_CMD(0x0B, 0x44),
++	_INIT_DCS_CMD(0x0C, 0x4B),
++	_INIT_DCS_CMD(0x0D, 0x4A),
++	_INIT_DCS_CMD(0x0E, 0x49),
++	_INIT_DCS_CMD(0x0F, 0x48),
++	_INIT_DCS_CMD(0x10, 0x40),
++	_INIT_DCS_CMD(0x11, 0x41),
++	_INIT_DCS_CMD(0x12, 0x5F),
++	_INIT_DCS_CMD(0x13, 0x5F),
++	_INIT_DCS_CMD(0x14, 0x5F),
++	_INIT_DCS_CMD(0x15, 0x5F),
++	_INIT_DCS_CMD(0x16, 0x51),
++	_INIT_DCS_CMD(0x17, 0x55),
++	_INIT_DCS_CMD(0x18, 0x50),
++	_INIT_DCS_CMD(0x19, 0x51),
++	_INIT_DCS_CMD(0x1A, 0x5F),
++	_INIT_DCS_CMD(0x1B, 0x77),
++	_INIT_DCS_CMD(0x1C, 0x57),
++	_INIT_DCS_CMD(0x1D, 0x5F),
++	_INIT_DCS_CMD(0x1E, 0x47),
++	_INIT_DCS_CMD(0x1F, 0x46),
++	_INIT_DCS_CMD(0x20, 0x45),
++	_INIT_DCS_CMD(0x21, 0x44),
++	_INIT_DCS_CMD(0x22, 0x4B),
++	_INIT_DCS_CMD(0x23, 0x4A),
++	_INIT_DCS_CMD(0x24, 0x49),
++	_INIT_DCS_CMD(0x25, 0x48),
++	_INIT_DCS_CMD(0x26, 0x40),
++	_INIT_DCS_CMD(0x27, 0x41),
++	_INIT_DCS_CMD(0x28, 0x5F),
++	_INIT_DCS_CMD(0x29, 0x5F),
++	_INIT_DCS_CMD(0x2A, 0x5F),
++	_INIT_DCS_CMD(0x2B, 0x5F),
++	_INIT_DCS_CMD(0x2C, 0x11),
++	_INIT_DCS_CMD(0x2D, 0x1F),
++	_INIT_DCS_CMD(0x2E, 0x01),
++	_INIT_DCS_CMD(0x2F, 0x00),
++	_INIT_DCS_CMD(0x30, 0x15),
++	_INIT_DCS_CMD(0x31, 0x17),
++	_INIT_DCS_CMD(0x32, 0x17),
++	_INIT_DCS_CMD(0x33, 0x1F),
++	_INIT_DCS_CMD(0x34, 0x08),
++	_INIT_DCS_CMD(0x35, 0x09),
++	_INIT_DCS_CMD(0x36, 0x0A),
++	_INIT_DCS_CMD(0x37, 0x0B),
++	_INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x05),
++	_INIT_DCS_CMD(0x3A, 0x06),
++	_INIT_DCS_CMD(0x3B, 0x07),
++	_INIT_DCS_CMD(0x3C, 0x11),
++	_INIT_DCS_CMD(0x3D, 0x10),
++	_INIT_DCS_CMD(0x3E, 0x1F),
++	_INIT_DCS_CMD(0x3F, 0x1F),
++	_INIT_DCS_CMD(0x40, 0x1F),
++	_INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x11),
++	_INIT_DCS_CMD(0x43, 0x1F),
++	_INIT_DCS_CMD(0x44, 0x01),
++	_INIT_DCS_CMD(0x45, 0x00),
++	_INIT_DCS_CMD(0x46, 0x15),
++	_INIT_DCS_CMD(0x47, 0x17),
++	_INIT_DCS_CMD(0x48, 0x17),
++	_INIT_DCS_CMD(0x49, 0x1F),
++	_INIT_DCS_CMD(0x4A, 0x08),
++	_INIT_DCS_CMD(0x4B, 0x09),
++	_INIT_DCS_CMD(0x4C, 0x0A),
++	_INIT_DCS_CMD(0x4D, 0x0B),
++	_INIT_DCS_CMD(0x4E, 0x04),
++	_INIT_DCS_CMD(0x4F, 0x05),
++	_INIT_DCS_CMD(0x50, 0x06),
++	_INIT_DCS_CMD(0x51, 0x07),
++	_INIT_DCS_CMD(0x52, 0x11),
++	_INIT_DCS_CMD(0x53, 0x10),
++	_INIT_DCS_CMD(0x54, 0x1F),
++	_INIT_DCS_CMD(0x55, 0x1F),
++	_INIT_DCS_CMD(0x56, 0x1F),
++	_INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x5B, 0x10),
++	_INIT_DCS_CMD(0x5C, 0x07),
++	_INIT_DCS_CMD(0x5D, 0x40),
++	_INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02),
++	_INIT_DCS_CMD(0x60, 0x40),
++	_INIT_DCS_CMD(0x61, 0x01),
++	_INIT_DCS_CMD(0x62, 0x02),
++	_INIT_DCS_CMD(0x63, 0x06),
++	_INIT_DCS_CMD(0x64, 0x66),
++	_INIT_DCS_CMD(0x65, 0x55),
++	_INIT_DCS_CMD(0x66, 0x13),
++	_INIT_DCS_CMD(0x67, 0x73),
++	_INIT_DCS_CMD(0x68, 0x09),
++	_INIT_DCS_CMD(0x69, 0x06),
++	_INIT_DCS_CMD(0x6A, 0x66),
++	_INIT_DCS_CMD(0x6B, 0x08),
++	_INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04),
++	_INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88),
++	_INIT_DCS_CMD(0x75, 0xE3),
++	_INIT_DCS_CMD(0x76, 0x00),
++	_INIT_DCS_CMD(0x77, 0xD5),
++	_INIT_DCS_CMD(0x78, 0x2A),
++	_INIT_DCS_CMD(0x79, 0x21),
++	_INIT_DCS_CMD(0x7A, 0x00),
++	_INIT_DCS_CMD(0x7D, 0x06),
++	_INIT_DCS_CMD(0x7E, 0x66),
++	_INIT_DCS_CMD(0xE0, 0x04),
++	_INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3),
++	_INIT_DCS_CMD(0x09, 0x60),
++	_INIT_DCS_CMD(0x0E, 0x48),
++	_INIT_DCS_CMD(0x37, 0x58),
++	_INIT_DCS_CMD(0x2B, 0x0F),
++	_INIT_DCS_CMD(0xE0, 0x05),
++	_INIT_DCS_CMD(0x15, 0x1D),
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(5),
++	_INIT_DCS_CMD(0x35),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_10_1_b_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65),
++	_INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x01),
++	_INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00),
++	_INIT_DCS_CMD(0x01, 0x3D),
++	_INIT_DCS_CMD(0x03, 0x10),
++	_INIT_DCS_CMD(0x04, 0x3F),
++	_INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xBF),
++	_INIT_DCS_CMD(0x19, 0x01),
++	_INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xBF),
++	_INIT_DCS_CMD(0x1C, 0x01),
++	_INIT_DCS_CMD(0x24, 0xFE),
++	_INIT_DCS_CMD(0x37, 0x19),
++	_INIT_DCS_CMD(0x38, 0x05),
++	_INIT_DCS_CMD(0x39, 0x08),
++	_INIT_DCS_CMD(0x3A, 0x1F),
++	_INIT_DCS_CMD(0x3C, 0x74),
++	_INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0xFF),
++	_INIT_DCS_CMD(0x40, 0x04),
++	_INIT_DCS_CMD(0x41, 0xA0),
++	_INIT_DCS_CMD(0x42, 0x7E),
++	_INIT_DCS_CMD(0x43, 0x1A),
++	_INIT_DCS_CMD(0x44, 0x0F),
++	_INIT_DCS_CMD(0x45, 0x24),
++	_INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x57, 0xA9),
++	_INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x38),
++	_INIT_DCS_CMD(0x5B, 0x1A),
++	_INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x65),
++	_INIT_DCS_CMD(0x5F, 0x52),
++	_INIT_DCS_CMD(0x60, 0x44),
++	_INIT_DCS_CMD(0x61, 0x3D),
++	_INIT_DCS_CMD(0x62, 0x2D),
++	_INIT_DCS_CMD(0x63, 0x2D),
++	_INIT_DCS_CMD(0x64, 0x14),
++	_INIT_DCS_CMD(0x65, 0x28),
++	_INIT_DCS_CMD(0x66, 0x25),
++	_INIT_DCS_CMD(0x67, 0x23),
++	_INIT_DCS_CMD(0x68, 0x3F),
++	_INIT_DCS_CMD(0x69, 0x2D),
++	_INIT_DCS_CMD(0x6A, 0x34),
++	_INIT_DCS_CMD(0x6B, 0x27),
++	_INIT_DCS_CMD(0x6C, 0x24),
++	_INIT_DCS_CMD(0x6D, 0x18),
++	_INIT_DCS_CMD(0x6E, 0x0A),
++	_INIT_DCS_CMD(0x6F, 0x00),
++	_INIT_DCS_CMD(0x70, 0x7F),
++	_INIT_DCS_CMD(0x71, 0x65),
++	_INIT_DCS_CMD(0x72, 0x52),
++	_INIT_DCS_CMD(0x73, 0x44),
++	_INIT_DCS_CMD(0x74, 0x3D),
++	_INIT_DCS_CMD(0x75, 0x2D),
++	_INIT_DCS_CMD(0x76, 0x2D),
++	_INIT_DCS_CMD(0x77, 0x14),
++	_INIT_DCS_CMD(0x78, 0x28),
++	_INIT_DCS_CMD(0x79, 0x25),
++	_INIT_DCS_CMD(0x7A, 0x23),
++	_INIT_DCS_CMD(0x7B, 0x3F),
++	_INIT_DCS_CMD(0x7C, 0x2D),
++	_INIT_DCS_CMD(0x7D, 0x34),
++	_INIT_DCS_CMD(0x7E, 0x27),
++	_INIT_DCS_CMD(0x7F, 0x24),
++	_INIT_DCS_CMD(0x80, 0x18),
++	_INIT_DCS_CMD(0x81, 0x0A),
++	_INIT_DCS_CMD(0x82, 0x00),
++	_INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x51),
++	_INIT_DCS_CMD(0x01, 0x55),
++	_INIT_DCS_CMD(0x02, 0x50),
++	_INIT_DCS_CMD(0x03, 0x51),
++	_INIT_DCS_CMD(0x04, 0x5F),
++	_INIT_DCS_CMD(0x05, 0x77),
++	_INIT_DCS_CMD(0x06, 0x57),
++	_INIT_DCS_CMD(0x07, 0x5F),
++	_INIT_DCS_CMD(0x08, 0x47),
++	_INIT_DCS_CMD(0x09, 0x46),
++	_INIT_DCS_CMD(0x0A, 0x45),
++	_INIT_DCS_CMD(0x0B, 0x44),
++	_INIT_DCS_CMD(0x0C, 0x4B),
++	_INIT_DCS_CMD(0x0D, 0x4A),
++	_INIT_DCS_CMD(0x0E, 0x49),
++	_INIT_DCS_CMD(0x0F, 0x48),
++	_INIT_DCS_CMD(0x10, 0x40),
++	_INIT_DCS_CMD(0x11, 0x41),
++	_INIT_DCS_CMD(0x12, 0x5F),
++	_INIT_DCS_CMD(0x13, 0x5F),
++	_INIT_DCS_CMD(0x14, 0x5F),
++	_INIT_DCS_CMD(0x15, 0x5F),
++	_INIT_DCS_CMD(0x16, 0x51),
++	_INIT_DCS_CMD(0x17, 0x55),
++	_INIT_DCS_CMD(0x18, 0x50),
++	_INIT_DCS_CMD(0x19, 0x51),
++	_INIT_DCS_CMD(0x1A, 0x5F),
++	_INIT_DCS_CMD(0x1B, 0x77),
++	_INIT_DCS_CMD(0x1C, 0x57),
++	_INIT_DCS_CMD(0x1D, 0x5F),
++	_INIT_DCS_CMD(0x1E, 0x47),
++	_INIT_DCS_CMD(0x1F, 0x46),
++	_INIT_DCS_CMD(0x20, 0x45),
++	_INIT_DCS_CMD(0x21, 0x44),
++	_INIT_DCS_CMD(0x22, 0x4B),
++	_INIT_DCS_CMD(0x23, 0x4A),
++	_INIT_DCS_CMD(0x24, 0x49),
++	_INIT_DCS_CMD(0x25, 0x48),
++	_INIT_DCS_CMD(0x26, 0x40),
++	_INIT_DCS_CMD(0x27, 0x41),
++	_INIT_DCS_CMD(0x28, 0x5F),
++	_INIT_DCS_CMD(0x29, 0x5F),
++	_INIT_DCS_CMD(0x2A, 0x5F),
++	_INIT_DCS_CMD(0x2B, 0x5F),
++	_INIT_DCS_CMD(0x2C, 0x11),
++	_INIT_DCS_CMD(0x2D, 0x1F),
++	_INIT_DCS_CMD(0x2E, 0x01),
++	_INIT_DCS_CMD(0x2F, 0x00),
++	_INIT_DCS_CMD(0x30, 0x15),
++	_INIT_DCS_CMD(0x31, 0x17),
++	_INIT_DCS_CMD(0x32, 0x17),
++	_INIT_DCS_CMD(0x33, 0x1F),
++	_INIT_DCS_CMD(0x34, 0x08),
++	_INIT_DCS_CMD(0x35, 0x09),
++	_INIT_DCS_CMD(0x36, 0x0A),
++	_INIT_DCS_CMD(0x37, 0x0B),
++	_INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x05),
++	_INIT_DCS_CMD(0x3A, 0x06),
++	_INIT_DCS_CMD(0x3B, 0x07),
++	_INIT_DCS_CMD(0x3C, 0x11),
++	_INIT_DCS_CMD(0x3D, 0x10),
++	_INIT_DCS_CMD(0x3E, 0x1F),
++	_INIT_DCS_CMD(0x3F, 0x1F),
++	_INIT_DCS_CMD(0x40, 0x1F),
++	_INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x11),
++	_INIT_DCS_CMD(0x43, 0x1F),
++	_INIT_DCS_CMD(0x44, 0x01),
++	_INIT_DCS_CMD(0x45, 0x00),
++	_INIT_DCS_CMD(0x46, 0x15),
++	_INIT_DCS_CMD(0x47, 0x17),
++	_INIT_DCS_CMD(0x48, 0x17),
++	_INIT_DCS_CMD(0x49, 0x1F),
++	_INIT_DCS_CMD(0x4A, 0x08),
++	_INIT_DCS_CMD(0x4B, 0x09),
++	_INIT_DCS_CMD(0x4C, 0x0A),
++	_INIT_DCS_CMD(0x4D, 0x0B),
++	_INIT_DCS_CMD(0x4E, 0x04),
++	_INIT_DCS_CMD(0x4F, 0x05),
++	_INIT_DCS_CMD(0x50, 0x06),
++	_INIT_DCS_CMD(0x51, 0x07),
++	_INIT_DCS_CMD(0x52, 0x11),
++	_INIT_DCS_CMD(0x53, 0x10),
++	_INIT_DCS_CMD(0x54, 0x1F),
++	_INIT_DCS_CMD(0x55, 0x1F),
++	_INIT_DCS_CMD(0x56, 0x1F),
++	_INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x5B, 0x10),
++	_INIT_DCS_CMD(0x5C, 0x07),
++	_INIT_DCS_CMD(0x5D, 0x40),
++	_INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02),
++	_INIT_DCS_CMD(0x60, 0x40),
++	_INIT_DCS_CMD(0x61, 0x01),
++	_INIT_DCS_CMD(0x62, 0x02),
++	_INIT_DCS_CMD(0x63, 0x06),
++	_INIT_DCS_CMD(0x64, 0x66),
++	_INIT_DCS_CMD(0x65, 0x55),
++	_INIT_DCS_CMD(0x66, 0x13),
++	_INIT_DCS_CMD(0x67, 0x73),
++	_INIT_DCS_CMD(0x68, 0x09),
++	_INIT_DCS_CMD(0x69, 0x06),
++	_INIT_DCS_CMD(0x6A, 0x66),
++	_INIT_DCS_CMD(0x6B, 0x08),
++	_INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04),
++	_INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88),
++	_INIT_DCS_CMD(0x75, 0xE3),
++	_INIT_DCS_CMD(0x76, 0x00),
++	_INIT_DCS_CMD(0x77, 0xD5),
++	_INIT_DCS_CMD(0x78, 0x2A),
++	_INIT_DCS_CMD(0x79, 0x21),
++	_INIT_DCS_CMD(0x7A, 0x00),
++	_INIT_DCS_CMD(0x7D, 0x06),
++	_INIT_DCS_CMD(0x7E, 0x66),
++	_INIT_DCS_CMD(0xE0, 0x04),
++	_INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3),
++	_INIT_DCS_CMD(0x09, 0x60),
++	_INIT_DCS_CMD(0x0E, 0x48),
++	_INIT_DCS_CMD(0x37, 0x58),
++	_INIT_DCS_CMD(0x2B, 0x0F),
++	_INIT_DCS_CMD(0xE0, 0x05),
++	_INIT_DCS_CMD(0x15, 0x1D),
++	_INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(5),
++	_INIT_DCS_CMD(0x35),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_8_8_a_init[] = {
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(50),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_8_a_4lane_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65), _INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x03), _INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00), _INIT_DCS_CMD(0x01, 0x7E),
++	_INIT_DCS_CMD(0x03, 0x00), _INIT_DCS_CMD(0x04, 0x65),
++	_INIT_DCS_CMD(0x0C, 0x74), _INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xB7), _INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x00), _INIT_DCS_CMD(0x1B, 0xB7),
++	_INIT_DCS_CMD(0x1C, 0x00), _INIT_DCS_CMD(0x24, 0xFE),
++	_INIT_DCS_CMD(0x37, 0x19), _INIT_DCS_CMD(0x38, 0x05),
++	_INIT_DCS_CMD(0x39, 0x00), _INIT_DCS_CMD(0x3A, 0x01),
++	_INIT_DCS_CMD(0x3B, 0x01), _INIT_DCS_CMD(0x3C, 0x70),
++	_INIT_DCS_CMD(0x3D, 0xFF), _INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0xFF), _INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0xA0), _INIT_DCS_CMD(0x43, 0x1E),
++	_INIT_DCS_CMD(0x44, 0x0F), _INIT_DCS_CMD(0x45, 0x28),
++	_INIT_DCS_CMD(0x4B, 0x04), _INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x56, 0x01), _INIT_DCS_CMD(0x57, 0xA9),
++	_INIT_DCS_CMD(0x58, 0x0A), _INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x37), _INIT_DCS_CMD(0x5B, 0x19),
++	_INIT_DCS_CMD(0x5D, 0x78), _INIT_DCS_CMD(0x5E, 0x63),
++	_INIT_DCS_CMD(0x5F, 0x54), _INIT_DCS_CMD(0x60, 0x49),
++	_INIT_DCS_CMD(0x61, 0x45), _INIT_DCS_CMD(0x62, 0x38),
++	_INIT_DCS_CMD(0x63, 0x3D), _INIT_DCS_CMD(0x64, 0x28),
++	_INIT_DCS_CMD(0x65, 0x43), _INIT_DCS_CMD(0x66, 0x41),
++	_INIT_DCS_CMD(0x67, 0x43), _INIT_DCS_CMD(0x68, 0x62),
++	_INIT_DCS_CMD(0x69, 0x50), _INIT_DCS_CMD(0x6A, 0x57),
++	_INIT_DCS_CMD(0x6B, 0x49), _INIT_DCS_CMD(0x6C, 0x44),
++	_INIT_DCS_CMD(0x6D, 0x37), _INIT_DCS_CMD(0x6E, 0x23),
++	_INIT_DCS_CMD(0x6F, 0x10), _INIT_DCS_CMD(0x70, 0x78),
++	_INIT_DCS_CMD(0x71, 0x63), _INIT_DCS_CMD(0x72, 0x54),
++	_INIT_DCS_CMD(0x73, 0x49), _INIT_DCS_CMD(0x74, 0x45),
++	_INIT_DCS_CMD(0x75, 0x38), _INIT_DCS_CMD(0x76, 0x3D),
++	_INIT_DCS_CMD(0x77, 0x28), _INIT_DCS_CMD(0x78, 0x43),
++	_INIT_DCS_CMD(0x79, 0x41), _INIT_DCS_CMD(0x7A, 0x43),
++	_INIT_DCS_CMD(0x7B, 0x62), _INIT_DCS_CMD(0x7C, 0x50),
++	_INIT_DCS_CMD(0x7D, 0x57), _INIT_DCS_CMD(0x7E, 0x49),
++	_INIT_DCS_CMD(0x7F, 0x44), _INIT_DCS_CMD(0x80, 0x37),
++	_INIT_DCS_CMD(0x81, 0x23), _INIT_DCS_CMD(0x82, 0x10),
++	_INIT_DCS_CMD(0xE0, 0x02), _INIT_DCS_CMD(0x00, 0x47),
++	_INIT_DCS_CMD(0x01, 0x47), _INIT_DCS_CMD(0x02, 0x45),
++	_INIT_DCS_CMD(0x03, 0x45), _INIT_DCS_CMD(0x04, 0x4B),
++	_INIT_DCS_CMD(0x05, 0x4B), _INIT_DCS_CMD(0x06, 0x49),
++	_INIT_DCS_CMD(0x07, 0x49), _INIT_DCS_CMD(0x08, 0x41),
++	_INIT_DCS_CMD(0x09, 0x1F), _INIT_DCS_CMD(0x0A, 0x1F),
++	_INIT_DCS_CMD(0x0B, 0x1F), _INIT_DCS_CMD(0x0C, 0x1F),
++	_INIT_DCS_CMD(0x0D, 0x1F), _INIT_DCS_CMD(0x0E, 0x1F),
++	_INIT_DCS_CMD(0x0F, 0x5F), _INIT_DCS_CMD(0x10, 0x5F),
++	_INIT_DCS_CMD(0x11, 0x57), _INIT_DCS_CMD(0x12, 0x77),
++	_INIT_DCS_CMD(0x13, 0x35), _INIT_DCS_CMD(0x14, 0x1F),
++	_INIT_DCS_CMD(0x15, 0x1F), _INIT_DCS_CMD(0x16, 0x46),
++	_INIT_DCS_CMD(0x17, 0x46), _INIT_DCS_CMD(0x18, 0x44),
++	_INIT_DCS_CMD(0x19, 0x44), _INIT_DCS_CMD(0x1A, 0x4A),
++	_INIT_DCS_CMD(0x1B, 0x4A), _INIT_DCS_CMD(0x1C, 0x48),
++	_INIT_DCS_CMD(0x1D, 0x48), _INIT_DCS_CMD(0x1E, 0x40),
++	_INIT_DCS_CMD(0x1F, 0x1F), _INIT_DCS_CMD(0x20, 0x1F),
++	_INIT_DCS_CMD(0x21, 0x1F), _INIT_DCS_CMD(0x22, 0x1F),
++	_INIT_DCS_CMD(0x23, 0x1F), _INIT_DCS_CMD(0x24, 0x1F),
++	_INIT_DCS_CMD(0x25, 0x5F), _INIT_DCS_CMD(0x26, 0x5F),
++	_INIT_DCS_CMD(0x27, 0x57), _INIT_DCS_CMD(0x28, 0x77),
++	_INIT_DCS_CMD(0x29, 0x35), _INIT_DCS_CMD(0x2A, 0x1F),
++	_INIT_DCS_CMD(0x2B, 0x1F), _INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x59, 0x00), _INIT_DCS_CMD(0x5A, 0x00),
++	_INIT_DCS_CMD(0x5B, 0x10), _INIT_DCS_CMD(0x5C, 0x06),
++	_INIT_DCS_CMD(0x5D, 0x40), _INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02), _INIT_DCS_CMD(0x60, 0x30),
++	_INIT_DCS_CMD(0x61, 0x01), _INIT_DCS_CMD(0x62, 0x02),
++	_INIT_DCS_CMD(0x63, 0x03), _INIT_DCS_CMD(0x64, 0x6B),
++	_INIT_DCS_CMD(0x65, 0x05), _INIT_DCS_CMD(0x66, 0x0C),
++	_INIT_DCS_CMD(0x67, 0x73), _INIT_DCS_CMD(0x68, 0x09),
++	_INIT_DCS_CMD(0x69, 0x03), _INIT_DCS_CMD(0x6A, 0x56),
++	_INIT_DCS_CMD(0x6B, 0x08), _INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04), _INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88), _INIT_DCS_CMD(0x70, 0x00),
++	_INIT_DCS_CMD(0x71, 0x00), _INIT_DCS_CMD(0x72, 0x06),
++	_INIT_DCS_CMD(0x73, 0x7B), _INIT_DCS_CMD(0x74, 0x00),
++	_INIT_DCS_CMD(0x75, 0xF8), _INIT_DCS_CMD(0x76, 0x00),
++	_INIT_DCS_CMD(0x77, 0xD5), _INIT_DCS_CMD(0x78, 0x2E),
++	_INIT_DCS_CMD(0x79, 0x12), _INIT_DCS_CMD(0x7A, 0x03),
++	_INIT_DCS_CMD(0x7B, 0x00), _INIT_DCS_CMD(0x7C, 0x00),
++	_INIT_DCS_CMD(0x7D, 0x03), _INIT_DCS_CMD(0x7E, 0x7B),
++	_INIT_DCS_CMD(0xE0, 0x04), _INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3), _INIT_DCS_CMD(0x09, 0x60),
++	_INIT_DCS_CMD(0x0E, 0x2A), _INIT_DCS_CMD(0x36, 0x59),
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),	   _INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(60),	   {},
++};
++
++static const struct panel_init_cmd ws_panel_8_a_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65), _INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x01), _INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00), _INIT_DCS_CMD(0x01, 0x4E),
++	_INIT_DCS_CMD(0x03, 0x00), _INIT_DCS_CMD(0x04, 0x65),
++	_INIT_DCS_CMD(0x0C, 0x74), _INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0xB7), _INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x00), _INIT_DCS_CMD(0x1B, 0xB7),
++	_INIT_DCS_CMD(0x1C, 0x00), _INIT_DCS_CMD(0x24, 0xFE),
++	_INIT_DCS_CMD(0x37, 0x19), _INIT_DCS_CMD(0x38, 0x05),
++	_INIT_DCS_CMD(0x39, 0x00), _INIT_DCS_CMD(0x3A, 0x01),
++	_INIT_DCS_CMD(0x3B, 0x01), _INIT_DCS_CMD(0x3C, 0x70),
++	_INIT_DCS_CMD(0x3D, 0xFF), _INIT_DCS_CMD(0x3E, 0xFF),
++	_INIT_DCS_CMD(0x3F, 0xFF), _INIT_DCS_CMD(0x40, 0x06),
++	_INIT_DCS_CMD(0x41, 0xA0), _INIT_DCS_CMD(0x43, 0x1E),
++	_INIT_DCS_CMD(0x44, 0x0F), _INIT_DCS_CMD(0x45, 0x28),
++	_INIT_DCS_CMD(0x4B, 0x04), _INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x56, 0x01), _INIT_DCS_CMD(0x57, 0xA9),
++	_INIT_DCS_CMD(0x58, 0x0A), _INIT_DCS_CMD(0x59, 0x0A),
++	_INIT_DCS_CMD(0x5A, 0x37), _INIT_DCS_CMD(0x5B, 0x19),
++	_INIT_DCS_CMD(0x5D, 0x78), _INIT_DCS_CMD(0x5E, 0x63),
++	_INIT_DCS_CMD(0x5F, 0x54), _INIT_DCS_CMD(0x60, 0x49),
++	_INIT_DCS_CMD(0x61, 0x45), _INIT_DCS_CMD(0x62, 0x38),
++	_INIT_DCS_CMD(0x63, 0x3D), _INIT_DCS_CMD(0x64, 0x28),
++	_INIT_DCS_CMD(0x65, 0x43), _INIT_DCS_CMD(0x66, 0x41),
++	_INIT_DCS_CMD(0x67, 0x43), _INIT_DCS_CMD(0x68, 0x62),
++	_INIT_DCS_CMD(0x69, 0x50), _INIT_DCS_CMD(0x6A, 0x57),
++	_INIT_DCS_CMD(0x6B, 0x49), _INIT_DCS_CMD(0x6C, 0x44),
++	_INIT_DCS_CMD(0x6D, 0x37), _INIT_DCS_CMD(0x6E, 0x23),
++	_INIT_DCS_CMD(0x6F, 0x10), _INIT_DCS_CMD(0x70, 0x78),
++	_INIT_DCS_CMD(0x71, 0x63), _INIT_DCS_CMD(0x72, 0x54),
++	_INIT_DCS_CMD(0x73, 0x49), _INIT_DCS_CMD(0x74, 0x45),
++	_INIT_DCS_CMD(0x75, 0x38), _INIT_DCS_CMD(0x76, 0x3D),
++	_INIT_DCS_CMD(0x77, 0x28), _INIT_DCS_CMD(0x78, 0x43),
++	_INIT_DCS_CMD(0x79, 0x41), _INIT_DCS_CMD(0x7A, 0x43),
++	_INIT_DCS_CMD(0x7B, 0x62), _INIT_DCS_CMD(0x7C, 0x50),
++	_INIT_DCS_CMD(0x7D, 0x57), _INIT_DCS_CMD(0x7E, 0x49),
++	_INIT_DCS_CMD(0x7F, 0x44), _INIT_DCS_CMD(0x80, 0x37),
++	_INIT_DCS_CMD(0x81, 0x23), _INIT_DCS_CMD(0x82, 0x10),
++	_INIT_DCS_CMD(0xE0, 0x02), _INIT_DCS_CMD(0x00, 0x47),
++	_INIT_DCS_CMD(0x01, 0x47), _INIT_DCS_CMD(0x02, 0x45),
++	_INIT_DCS_CMD(0x03, 0x45), _INIT_DCS_CMD(0x04, 0x4B),
++	_INIT_DCS_CMD(0x05, 0x4B), _INIT_DCS_CMD(0x06, 0x49),
++	_INIT_DCS_CMD(0x07, 0x49), _INIT_DCS_CMD(0x08, 0x41),
++	_INIT_DCS_CMD(0x09, 0x1F), _INIT_DCS_CMD(0x0A, 0x1F),
++	_INIT_DCS_CMD(0x0B, 0x1F), _INIT_DCS_CMD(0x0C, 0x1F),
++	_INIT_DCS_CMD(0x0D, 0x1F), _INIT_DCS_CMD(0x0E, 0x1F),
++	_INIT_DCS_CMD(0x0F, 0x5F), _INIT_DCS_CMD(0x10, 0x5F),
++	_INIT_DCS_CMD(0x11, 0x57), _INIT_DCS_CMD(0x12, 0x77),
++	_INIT_DCS_CMD(0x13, 0x35), _INIT_DCS_CMD(0x14, 0x1F),
++	_INIT_DCS_CMD(0x15, 0x1F), _INIT_DCS_CMD(0x16, 0x46),
++	_INIT_DCS_CMD(0x17, 0x46), _INIT_DCS_CMD(0x18, 0x44),
++	_INIT_DCS_CMD(0x19, 0x44), _INIT_DCS_CMD(0x1A, 0x4A),
++	_INIT_DCS_CMD(0x1B, 0x4A), _INIT_DCS_CMD(0x1C, 0x48),
++	_INIT_DCS_CMD(0x1D, 0x48), _INIT_DCS_CMD(0x1E, 0x40),
++	_INIT_DCS_CMD(0x1F, 0x1F), _INIT_DCS_CMD(0x20, 0x1F),
++	_INIT_DCS_CMD(0x21, 0x1F), _INIT_DCS_CMD(0x22, 0x1F),
++	_INIT_DCS_CMD(0x23, 0x1F), _INIT_DCS_CMD(0x24, 0x1F),
++	_INIT_DCS_CMD(0x25, 0x5F), _INIT_DCS_CMD(0x26, 0x5F),
++	_INIT_DCS_CMD(0x27, 0x57), _INIT_DCS_CMD(0x28, 0x77),
++	_INIT_DCS_CMD(0x29, 0x35), _INIT_DCS_CMD(0x2A, 0x1F),
++	_INIT_DCS_CMD(0x2B, 0x1F), _INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x59, 0x00), _INIT_DCS_CMD(0x5A, 0x00),
++	_INIT_DCS_CMD(0x5B, 0x10), _INIT_DCS_CMD(0x5C, 0x06),
++	_INIT_DCS_CMD(0x5D, 0x40), _INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02), _INIT_DCS_CMD(0x60, 0x30),
++	_INIT_DCS_CMD(0x61, 0x01), _INIT_DCS_CMD(0x62, 0x02),
++	_INIT_DCS_CMD(0x63, 0x03), _INIT_DCS_CMD(0x64, 0x6B),
++	_INIT_DCS_CMD(0x65, 0x05), _INIT_DCS_CMD(0x66, 0x0C),
++	_INIT_DCS_CMD(0x67, 0x73), _INIT_DCS_CMD(0x68, 0x09),
++	_INIT_DCS_CMD(0x69, 0x03), _INIT_DCS_CMD(0x6A, 0x56),
++	_INIT_DCS_CMD(0x6B, 0x08), _INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04), _INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88), _INIT_DCS_CMD(0x70, 0x00),
++	_INIT_DCS_CMD(0x71, 0x00), _INIT_DCS_CMD(0x72, 0x06),
++	_INIT_DCS_CMD(0x73, 0x7B), _INIT_DCS_CMD(0x74, 0x00),
++	_INIT_DCS_CMD(0x75, 0xF8), _INIT_DCS_CMD(0x76, 0x00),
++	_INIT_DCS_CMD(0x77, 0xD5), _INIT_DCS_CMD(0x78, 0x2E),
++	_INIT_DCS_CMD(0x79, 0x12), _INIT_DCS_CMD(0x7A, 0x03),
++	_INIT_DCS_CMD(0x7B, 0x00), _INIT_DCS_CMD(0x7C, 0x00),
++	_INIT_DCS_CMD(0x7D, 0x03), _INIT_DCS_CMD(0x7E, 0x7B),
++	_INIT_DCS_CMD(0xE0, 0x04), _INIT_DCS_CMD(0x00, 0x0E),
++	_INIT_DCS_CMD(0x02, 0xB3), _INIT_DCS_CMD(0x09, 0x60),
++	_INIT_DCS_CMD(0x0E, 0x2A), _INIT_DCS_CMD(0x36, 0x59),
++	_INIT_DCS_CMD(0x37, 0x58), _INIT_DCS_CMD(0x2B, 0x0F),
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),	   _INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(60),	   {},
++};
++
++static const struct panel_init_cmd ws_panel_7_a_init[] = {
++	_INIT_DCS_CMD(0xFF, 0x98, 0x81, 0x03),
++	_INIT_DCS_CMD(0x01, 0x00),
++	_INIT_DCS_CMD(0x02, 0x00),
++	_INIT_DCS_CMD(0x03, 0x73),
++	_INIT_DCS_CMD(0x04, 0x00),
++	_INIT_DCS_CMD(0x05, 0x00),
++	_INIT_DCS_CMD(0x06, 0x0A),
++	_INIT_DCS_CMD(0x07, 0x00),
++	_INIT_DCS_CMD(0x08, 0x00),
++	_INIT_DCS_CMD(0x09, 0x61),
++	_INIT_DCS_CMD(0x0A, 0x00),
++	_INIT_DCS_CMD(0x0B, 0x00),
++	_INIT_DCS_CMD(0x0C, 0x01),
++	_INIT_DCS_CMD(0x0D, 0x00),
++	_INIT_DCS_CMD(0x0E, 0x00),
++	_INIT_DCS_CMD(0x0F, 0x61),
++	_INIT_DCS_CMD(0x10, 0x61),
++	_INIT_DCS_CMD(0x11, 0x00),
++	_INIT_DCS_CMD(0x12, 0x00),
++	_INIT_DCS_CMD(0x13, 0x00),
++	_INIT_DCS_CMD(0x14, 0x00),
++	_INIT_DCS_CMD(0x15, 0x00),
++	_INIT_DCS_CMD(0x16, 0x00),
++	_INIT_DCS_CMD(0x17, 0x00),
++	_INIT_DCS_CMD(0x18, 0x00),
++	_INIT_DCS_CMD(0x19, 0x00),
++	_INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0x00),
++	_INIT_DCS_CMD(0x1C, 0x00),
++	_INIT_DCS_CMD(0x1D, 0x00),
++	_INIT_DCS_CMD(0x1E, 0x40),
++	_INIT_DCS_CMD(0x1F, 0x80),
++	_INIT_DCS_CMD(0x20, 0x06),
++	_INIT_DCS_CMD(0x21, 0x01),
++	_INIT_DCS_CMD(0x22, 0x00),
++	_INIT_DCS_CMD(0x23, 0x00),
++	_INIT_DCS_CMD(0x24, 0x00),
++	_INIT_DCS_CMD(0x25, 0x00),
++	_INIT_DCS_CMD(0x26, 0x00),
++	_INIT_DCS_CMD(0x27, 0x00),
++	_INIT_DCS_CMD(0x28, 0x33),
++	_INIT_DCS_CMD(0x29, 0x03),
++	_INIT_DCS_CMD(0x2A, 0x00),
++	_INIT_DCS_CMD(0x2B, 0x00),
++	_INIT_DCS_CMD(0x2C, 0x00),
++	_INIT_DCS_CMD(0x2D, 0x00),
++	_INIT_DCS_CMD(0x2E, 0x00),
++	_INIT_DCS_CMD(0x2F, 0x00),
++	_INIT_DCS_CMD(0x30, 0x00),
++	_INIT_DCS_CMD(0x31, 0x00),
++	_INIT_DCS_CMD(0x32, 0x00),
++	_INIT_DCS_CMD(0x33, 0x00),
++	_INIT_DCS_CMD(0x34, 0x04),
++	_INIT_DCS_CMD(0x35, 0x00),
++	_INIT_DCS_CMD(0x36, 0x00),
++	_INIT_DCS_CMD(0x37, 0x00),
++	_INIT_DCS_CMD(0x38, 0x3C),
++	_INIT_DCS_CMD(0x39, 0x00),
++	_INIT_DCS_CMD(0x3A, 0x00),
++	_INIT_DCS_CMD(0x3B, 0x00),
++	_INIT_DCS_CMD(0x3C, 0x00),
++	_INIT_DCS_CMD(0x3D, 0x00),
++	_INIT_DCS_CMD(0x3E, 0x00),
++	_INIT_DCS_CMD(0x3F, 0x00),
++	_INIT_DCS_CMD(0x40, 0x00),
++	_INIT_DCS_CMD(0x41, 0x00),
++	_INIT_DCS_CMD(0x42, 0x00),
++	_INIT_DCS_CMD(0x43, 0x00),
++	_INIT_DCS_CMD(0x44, 0x00),
++	_INIT_DCS_CMD(0x50, 0x10),
++	_INIT_DCS_CMD(0x51, 0x32),
++	_INIT_DCS_CMD(0x52, 0x54),
++	_INIT_DCS_CMD(0x53, 0x76),
++	_INIT_DCS_CMD(0x54, 0x98),
++	_INIT_DCS_CMD(0x55, 0xBA),
++	_INIT_DCS_CMD(0x56, 0x10),
++	_INIT_DCS_CMD(0x57, 0x32),
++	_INIT_DCS_CMD(0x58, 0x54),
++	_INIT_DCS_CMD(0x59, 0x76),
++	_INIT_DCS_CMD(0x5A, 0x98),
++	_INIT_DCS_CMD(0x5B, 0xBA),
++	_INIT_DCS_CMD(0x5C, 0xDC),
++	_INIT_DCS_CMD(0x5D, 0xFE),
++	_INIT_DCS_CMD(0x5E, 0x00),
++	_INIT_DCS_CMD(0x5F, 0x0E),
++	_INIT_DCS_CMD(0x60, 0x0F),
++	_INIT_DCS_CMD(0x61, 0x0C),
++	_INIT_DCS_CMD(0x62, 0x0D),
++	_INIT_DCS_CMD(0x63, 0x06),
++	_INIT_DCS_CMD(0x64, 0x07),
++	_INIT_DCS_CMD(0x65, 0x02),
++	_INIT_DCS_CMD(0x66, 0x02),
++	_INIT_DCS_CMD(0x67, 0x02),
++	_INIT_DCS_CMD(0x68, 0x02),
++	_INIT_DCS_CMD(0x69, 0x01),
++	_INIT_DCS_CMD(0x6A, 0x00),
++	_INIT_DCS_CMD(0x6B, 0x02),
++	_INIT_DCS_CMD(0x6C, 0x15),
++	_INIT_DCS_CMD(0x6D, 0x14),
++	_INIT_DCS_CMD(0x6E, 0x02),
++	_INIT_DCS_CMD(0x6F, 0x02),
++	_INIT_DCS_CMD(0x70, 0x02),
++	_INIT_DCS_CMD(0x71, 0x02),
++	_INIT_DCS_CMD(0x72, 0x02),
++	_INIT_DCS_CMD(0x73, 0x02),
++	_INIT_DCS_CMD(0x74, 0x02),
++	_INIT_DCS_CMD(0x75, 0x0E),
++	_INIT_DCS_CMD(0x76, 0x0F),
++	_INIT_DCS_CMD(0x77, 0x0C),
++	_INIT_DCS_CMD(0x78, 0x0D),
++	_INIT_DCS_CMD(0x79, 0x06),
++	_INIT_DCS_CMD(0x7A, 0x07),
++	_INIT_DCS_CMD(0x7B, 0x02),
++	_INIT_DCS_CMD(0x7C, 0x02),
++	_INIT_DCS_CMD(0x7D, 0x02),
++	_INIT_DCS_CMD(0x7E, 0x02),
++	_INIT_DCS_CMD(0x7F, 0x01),
++	_INIT_DCS_CMD(0x80, 0x00),
++	_INIT_DCS_CMD(0x81, 0x02),
++	_INIT_DCS_CMD(0x82, 0x14),
++	_INIT_DCS_CMD(0x83, 0x15),
++	_INIT_DCS_CMD(0x84, 0x02),
++	_INIT_DCS_CMD(0x85, 0x02),
++	_INIT_DCS_CMD(0x86, 0x02),
++	_INIT_DCS_CMD(0x87, 0x02),
++	_INIT_DCS_CMD(0x88, 0x02),
++	_INIT_DCS_CMD(0x89, 0x02),
++	_INIT_DCS_CMD(0x8A, 0x02),
++	_INIT_DCS_CMD(0xFF, 0x98, 0x81, 0x04),
++	_INIT_DCS_CMD(0x38, 0x01),
++	_INIT_DCS_CMD(0x39, 0x00),
++	_INIT_DCS_CMD(0x6C, 0x15),
++	_INIT_DCS_CMD(0x6E, 0x2A),
++	_INIT_DCS_CMD(0x6F, 0x33),
++	_INIT_DCS_CMD(0x3A, 0x94),
++	_INIT_DCS_CMD(0x8D, 0x14),
++	_INIT_DCS_CMD(0x87, 0xBA),
++	_INIT_DCS_CMD(0x26, 0x76),
++	_INIT_DCS_CMD(0xB2, 0xD1),
++	_INIT_DCS_CMD(0xB5, 0x06),
++	_INIT_DCS_CMD(0x3B, 0x98),
++	_INIT_DCS_CMD(0xFF, 0x98, 0x81, 0x01),
++	_INIT_DCS_CMD(0x22, 0x0A),
++	_INIT_DCS_CMD(0x31, 0x00),
++	_INIT_DCS_CMD(0x53, 0x71),
++	_INIT_DCS_CMD(0x55, 0x8F),
++	_INIT_DCS_CMD(0x40, 0x33),
++	_INIT_DCS_CMD(0x50, 0x96),
++	_INIT_DCS_CMD(0x51, 0x96),
++	_INIT_DCS_CMD(0x60, 0x23),
++	_INIT_DCS_CMD(0xA0, 0x08),
++	_INIT_DCS_CMD(0xA1, 0x1D),
++	_INIT_DCS_CMD(0xA2, 0x2A),
++	_INIT_DCS_CMD(0xA3, 0x10),
++	_INIT_DCS_CMD(0xA4, 0x15),
++	_INIT_DCS_CMD(0xA5, 0x28),
++	_INIT_DCS_CMD(0xA6, 0x1C),
++	_INIT_DCS_CMD(0xA7, 0x1D),
++	_INIT_DCS_CMD(0xA8, 0x7E),
++	_INIT_DCS_CMD(0xA9, 0x1D),
++	_INIT_DCS_CMD(0xAA, 0x29),
++	_INIT_DCS_CMD(0xAB, 0x6B),
++	_INIT_DCS_CMD(0xAC, 0x1A),
++	_INIT_DCS_CMD(0xAD, 0x18),
++	_INIT_DCS_CMD(0xAE, 0x4B),
++	_INIT_DCS_CMD(0xAF, 0x20),
++	_INIT_DCS_CMD(0xB0, 0x27),
++	_INIT_DCS_CMD(0xB1, 0x50),
++	_INIT_DCS_CMD(0xB2, 0x64),
++	_INIT_DCS_CMD(0xB3, 0x39),
++	_INIT_DCS_CMD(0xC0, 0x08),
++	_INIT_DCS_CMD(0xC1, 0x1D),
++	_INIT_DCS_CMD(0xC2, 0x2A),
++	_INIT_DCS_CMD(0xC3, 0x10),
++	_INIT_DCS_CMD(0xC4, 0x15),
++	_INIT_DCS_CMD(0xC5, 0x28),
++	_INIT_DCS_CMD(0xC6, 0x1C),
++	_INIT_DCS_CMD(0xC7, 0x1D),
++	_INIT_DCS_CMD(0xC8, 0x7E),
++	_INIT_DCS_CMD(0xC9, 0x1D),
++	_INIT_DCS_CMD(0xCA, 0x29),
++	_INIT_DCS_CMD(0xCB, 0x6B),
++	_INIT_DCS_CMD(0xCC, 0x1A),
++	_INIT_DCS_CMD(0xCD, 0x18),
++	_INIT_DCS_CMD(0xCE, 0x4B),
++	_INIT_DCS_CMD(0xCF, 0x20),
++	_INIT_DCS_CMD(0xD0, 0x27),
++	_INIT_DCS_CMD(0xD1, 0x50),
++	_INIT_DCS_CMD(0xD2, 0x64),
++	_INIT_DCS_CMD(0xD3, 0x39),
++	_INIT_DCS_CMD(0xFF, 0x98, 0x81, 0x00),
++	_INIT_DCS_CMD(0x3A, 0x77),
++	_INIT_DCS_CMD(0x36, 0x00),
++	_INIT_DCS_CMD(0x35, 0x00),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(60),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_5_5_a_init[] = {
++	_INIT_DCS_CMD(0xB9, 0xFF, 0x83, 0x94),
++	_INIT_DCS_CMD(0xBA, 0x61, 0x03, 0x68, 0x6B, 0xB2, 0xC0),
++	_INIT_DCS_CMD(0xB1, 0x48, 0x12, 0x72, 0x09, 0x32, 0x54, 0x71, 0x71,
++		      0x57, 0x47),
++	_INIT_DCS_CMD(0xB2, 0x00, 0x80, 0x64, 0x0C, 0x0D, 0x2F),
++	_INIT_DCS_CMD(0xB4, 0x73, 0x74, 0x73, 0x74, 0x73, 0x74, 0x01, 0x0C,
++		      0x86, 0x75, 0x00, 0x3F, 0x73, 0x74, 0x73, 0x74, 0x73,
++		      0x74, 0x01, 0x0C, 0x86),
++	_INIT_DCS_CMD(0xB6, 0x86, 0x86),
++	_INIT_DCS_CMD(0xD3, 0x00, 0x00, 0x07, 0x07, 0x40, 0x07, 0x0C, 0x00,
++		      0x08, 0x10, 0x08, 0x00, 0x08, 0x54, 0x15, 0x0A, 0x05,
++		      0x0A, 0x02, 0x15, 0x06, 0x05, 0x06, 0x47, 0x44, 0x0A,
++		      0x0A, 0x4B, 0x10, 0x07, 0x07, 0x0C, 0x40),
++	_INIT_DCS_CMD(0xD5, 0x1C, 0x1C, 0x1D, 0x1D, 0x00, 0x01, 0x02, 0x03,
++		      0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x24,
++		      0x25, 0x18, 0x18, 0x26, 0x27, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x20, 0x21, 0x18, 0x18, 0x18, 0x18),
++	_INIT_DCS_CMD(0xD6, 0x1C, 0x1C, 0x1D, 0x1D, 0x07, 0x06, 0x05, 0x04,
++		      0x03, 0x02, 0x01, 0x00, 0x0B, 0x0A, 0x09, 0x08, 0x21,
++		      0x20, 0x18, 0x18, 0x27, 0x26, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x25, 0x24, 0x18, 0x18, 0x18, 0x18),
++	_INIT_DCS_CMD(0xE0, 0x00, 0x13, 0x21, 0x28, 0x2B, 0x2E, 0x32, 0x2F,
++		      0x61, 0x6E, 0x7E, 0x7B, 0x80, 0x8F, 0x91, 0x93, 0x9D,
++		      0x9D, 0x97, 0xA4, 0xB1, 0x57, 0x55, 0x58, 0x5D, 0x60,
++		      0x67, 0x74, 0x7F, 0x00, 0x13, 0x21, 0x28, 0x2B, 0x2E,
++		      0x32, 0x2F, 0x61, 0x6E, 0x7D, 0x7B, 0x7F, 0x8E, 0x90,
++		      0x93, 0x9C, 0x9D, 0x98, 0xA4, 0xB1, 0x58, 0x55, 0x59,
++		      0x5E, 0x61, 0x68, 0x76, 0x7F),
++	_INIT_DCS_CMD(0xC0, 0x1F, 0x31),
++	_INIT_DCS_CMD(0xCC, 0x07),
++	_INIT_DCS_CMD(0xD4, 0x02),
++	_INIT_DCS_CMD(0xBD, 0x02),
++	_INIT_DCS_CMD(0xD8, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
++		      0xFF, 0xFF, 0xFF, 0xFF),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xBD, 0x01),
++	_INIT_DCS_CMD(0xB1, 0x00),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xC6, 0xED),
++	_INIT_DCS_CMD(0xC7, 0x00, 0xC0),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(50),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_5_a_init[] = {
++	_INIT_DCS_CMD(0xB9, 0xFF, 0x83, 0x94),
++	_INIT_DCS_CMD(0xB1, 0x48, 0x0A, 0x6A, 0x09, 0x33, 0x54, 0x71, 0x71,
++		      0x2E, 0x45),
++	_INIT_DCS_CMD(0xBA, 0x61, 0x03, 0x68, 0x6B, 0xB2, 0xC0),
++	_INIT_DCS_CMD(0xB2, 0x00, 0x80, 0x64, 0x0C, 0x06, 0x2F),
++	_INIT_DCS_CMD(0xB4, 0x1C, 0x78, 0x1C, 0x78, 0x1C, 0x78, 0x01, 0x0C,
++		      0x86, 0x75, 0x00, 0x3F, 0x1C, 0x78, 0x1C, 0x78, 0x1C,
++		      0x78, 0x01, 0x0C, 0x86),
++	_INIT_DCS_CMD(0xD3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08,
++		      0x32, 0x10, 0x05, 0x00, 0x05, 0x32, 0x13, 0xC1, 0x00,
++		      0x01, 0x32, 0x10, 0x08, 0x00, 0x00, 0x37, 0x03, 0x07,
++		      0x07, 0x37, 0x05, 0x05, 0x37, 0x0C, 0x40),
++	_INIT_DCS_CMD(0xD5, 0x18, 0x18, 0x18, 0x18, 0x22, 0x23, 0x20, 0x21,
++		      0x04, 0x05, 0x06, 0x07, 0x00, 0x01, 0x02, 0x03, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x19, 0x19, 0x19, 0x19),
++	_INIT_DCS_CMD(0xD6, 0x18, 0x18, 0x19, 0x19, 0x21, 0x20, 0x23, 0x22,
++		      0x03, 0x02, 0x01, 0x00, 0x07, 0x06, 0x05, 0x04, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18,
++		      0x18, 0x18, 0x18, 0x18, 0x18, 0x19, 0x19, 0x18, 0x18),
++	_INIT_DCS_CMD(0xE0, 0x07, 0x08, 0x09, 0x0D, 0x10, 0x14, 0x16, 0x13,
++		      0x24, 0x36, 0x48, 0x4A, 0x58, 0x6F, 0x76, 0x80, 0x97,
++		      0xA5, 0xA8, 0xB5, 0xC6, 0x62, 0x63, 0x68, 0x6F, 0x72,
++		      0x78, 0x7F, 0x7F, 0x00, 0x02, 0x08, 0x0D, 0x0C, 0x0E,
++		      0x0F, 0x10, 0x24, 0x36, 0x48, 0x4A, 0x58, 0x6F, 0x78,
++		      0x82, 0x99, 0xA4, 0xA0, 0xB1, 0xC0, 0x5E, 0x5E, 0x64,
++		      0x6B, 0x6C, 0x73, 0x7F, 0x7F),
++	_INIT_DCS_CMD(0xCC, 0x0B),
++	_INIT_DCS_CMD(0xC0, 0x1F, 0x73),
++	_INIT_DCS_CMD(0xB6, 0x6B, 0x6B),
++	_INIT_DCS_CMD(0xD4, 0x02),
++	_INIT_DCS_CMD(0xBD, 0x01),
++	_INIT_DCS_CMD(0xB1, 0x00),
++	_INIT_DCS_CMD(0xBD, 0x00),
++	_INIT_DCS_CMD(0xBF, 0x40, 0x81, 0x50, 0x00, 0x1A, 0xFC, 0x01),
++	_INIT_DCS_CMD(0x11),
++	_INIT_DELAY_CMD(200),
++	_INIT_DCS_CMD(0xB2, 0x00, 0x80, 0x64, 0x0C, 0x06, 0x2F, 0x00, 0x00,
++		      0x00, 0x00, 0xC0, 0x18),
++	_INIT_DCS_CMD(0x29),
++	_INIT_DELAY_CMD(80),
++	{},
++};
++
++static const struct panel_init_cmd ws_panel_4_c_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65), _INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x01), _INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00), _INIT_DCS_CMD(0x01, 0x41),
++	_INIT_DCS_CMD(0x03, 0x10), _INIT_DCS_CMD(0x04, 0x44),
++	_INIT_DCS_CMD(0x17, 0x00), _INIT_DCS_CMD(0x18, 0xD0),
++	_INIT_DCS_CMD(0x19, 0x00), _INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xD0), _INIT_DCS_CMD(0x1C, 0x00),
++	_INIT_DCS_CMD(0x24, 0xFE), _INIT_DCS_CMD(0x35, 0x26),
++	_INIT_DCS_CMD(0x37, 0x09), _INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x08), _INIT_DCS_CMD(0x3A, 0x0A),
++	_INIT_DCS_CMD(0x3C, 0x78), _INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF), _INIT_DCS_CMD(0x3F, 0xFF),
++	_INIT_DCS_CMD(0x40, 0x04), _INIT_DCS_CMD(0x41, 0x64),
++	_INIT_DCS_CMD(0x42, 0xC7), _INIT_DCS_CMD(0x43, 0x18),
++	_INIT_DCS_CMD(0x44, 0x0B), _INIT_DCS_CMD(0x45, 0x14),
++	_INIT_DCS_CMD(0x55, 0x02), _INIT_DCS_CMD(0x57, 0x49),
++	_INIT_DCS_CMD(0x59, 0x0A), _INIT_DCS_CMD(0x5A, 0x1B),
++	_INIT_DCS_CMD(0x5B, 0x19), _INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x56), _INIT_DCS_CMD(0x5F, 0x43),
++	_INIT_DCS_CMD(0x60, 0x37), _INIT_DCS_CMD(0x61, 0x33),
++	_INIT_DCS_CMD(0x62, 0x25), _INIT_DCS_CMD(0x63, 0x2A),
++	_INIT_DCS_CMD(0x64, 0x16), _INIT_DCS_CMD(0x65, 0x30),
++	_INIT_DCS_CMD(0x66, 0x2F), _INIT_DCS_CMD(0x67, 0x32),
++	_INIT_DCS_CMD(0x68, 0x53), _INIT_DCS_CMD(0x69, 0x43),
++	_INIT_DCS_CMD(0x6A, 0x4C), _INIT_DCS_CMD(0x6B, 0x40),
++	_INIT_DCS_CMD(0x6C, 0x3D), _INIT_DCS_CMD(0x6D, 0x31),
++	_INIT_DCS_CMD(0x6E, 0x20), _INIT_DCS_CMD(0x6F, 0x0F),
++	_INIT_DCS_CMD(0x70, 0x7F), _INIT_DCS_CMD(0x71, 0x56),
++	_INIT_DCS_CMD(0x72, 0x43), _INIT_DCS_CMD(0x73, 0x37),
++	_INIT_DCS_CMD(0x74, 0x33), _INIT_DCS_CMD(0x75, 0x25),
++	_INIT_DCS_CMD(0x76, 0x2A), _INIT_DCS_CMD(0x77, 0x16),
++	_INIT_DCS_CMD(0x78, 0x30), _INIT_DCS_CMD(0x79, 0x2F),
++	_INIT_DCS_CMD(0x7A, 0x32), _INIT_DCS_CMD(0x7B, 0x53),
++	_INIT_DCS_CMD(0x7C, 0x43), _INIT_DCS_CMD(0x7D, 0x4C),
++	_INIT_DCS_CMD(0x7E, 0x40), _INIT_DCS_CMD(0x7F, 0x3D),
++	_INIT_DCS_CMD(0x80, 0x31), _INIT_DCS_CMD(0x81, 0x20),
++	_INIT_DCS_CMD(0x82, 0x0F), _INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x5F), _INIT_DCS_CMD(0x01, 0x5F),
++	_INIT_DCS_CMD(0x02, 0x5E), _INIT_DCS_CMD(0x03, 0x5E),
++	_INIT_DCS_CMD(0x04, 0x50), _INIT_DCS_CMD(0x05, 0x48),
++	_INIT_DCS_CMD(0x06, 0x48), _INIT_DCS_CMD(0x07, 0x4A),
++	_INIT_DCS_CMD(0x08, 0x4A), _INIT_DCS_CMD(0x09, 0x44),
++	_INIT_DCS_CMD(0x0A, 0x44), _INIT_DCS_CMD(0x0B, 0x46),
++	_INIT_DCS_CMD(0x0C, 0x46), _INIT_DCS_CMD(0x0D, 0x5F),
++	_INIT_DCS_CMD(0x0E, 0x5F), _INIT_DCS_CMD(0x0F, 0x57),
++	_INIT_DCS_CMD(0x10, 0x57), _INIT_DCS_CMD(0x11, 0x77),
++	_INIT_DCS_CMD(0x12, 0x77), _INIT_DCS_CMD(0x13, 0x40),
++	_INIT_DCS_CMD(0x14, 0x42), _INIT_DCS_CMD(0x15, 0x5F),
++	_INIT_DCS_CMD(0x16, 0x5F), _INIT_DCS_CMD(0x17, 0x5F),
++	_INIT_DCS_CMD(0x18, 0x5E), _INIT_DCS_CMD(0x19, 0x5E),
++	_INIT_DCS_CMD(0x1A, 0x50), _INIT_DCS_CMD(0x1B, 0x49),
++	_INIT_DCS_CMD(0x1C, 0x49), _INIT_DCS_CMD(0x1D, 0x4B),
++	_INIT_DCS_CMD(0x1E, 0x4B), _INIT_DCS_CMD(0x1F, 0x45),
++	_INIT_DCS_CMD(0x20, 0x45), _INIT_DCS_CMD(0x21, 0x47),
++	_INIT_DCS_CMD(0x22, 0x47), _INIT_DCS_CMD(0x23, 0x5F),
++	_INIT_DCS_CMD(0x24, 0x5F), _INIT_DCS_CMD(0x25, 0x57),
++	_INIT_DCS_CMD(0x26, 0x57), _INIT_DCS_CMD(0x27, 0x77),
++	_INIT_DCS_CMD(0x28, 0x77), _INIT_DCS_CMD(0x29, 0x41),
++	_INIT_DCS_CMD(0x2A, 0x43), _INIT_DCS_CMD(0x2B, 0x5F),
++	_INIT_DCS_CMD(0x2C, 0x1E), _INIT_DCS_CMD(0x2D, 0x1E),
++	_INIT_DCS_CMD(0x2E, 0x1F), _INIT_DCS_CMD(0x2F, 0x1F),
++	_INIT_DCS_CMD(0x30, 0x10), _INIT_DCS_CMD(0x31, 0x07),
++	_INIT_DCS_CMD(0x32, 0x07), _INIT_DCS_CMD(0x33, 0x05),
++	_INIT_DCS_CMD(0x34, 0x05), _INIT_DCS_CMD(0x35, 0x0B),
++	_INIT_DCS_CMD(0x36, 0x0B), _INIT_DCS_CMD(0x37, 0x09),
++	_INIT_DCS_CMD(0x38, 0x09), _INIT_DCS_CMD(0x39, 0x1F),
++	_INIT_DCS_CMD(0x3A, 0x1F), _INIT_DCS_CMD(0x3B, 0x17),
++	_INIT_DCS_CMD(0x3C, 0x17), _INIT_DCS_CMD(0x3D, 0x17),
++	_INIT_DCS_CMD(0x3E, 0x17), _INIT_DCS_CMD(0x3F, 0x03),
++	_INIT_DCS_CMD(0x40, 0x01), _INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x1E), _INIT_DCS_CMD(0x43, 0x1E),
++	_INIT_DCS_CMD(0x44, 0x1F), _INIT_DCS_CMD(0x45, 0x1F),
++	_INIT_DCS_CMD(0x46, 0x10), _INIT_DCS_CMD(0x47, 0x06),
++	_INIT_DCS_CMD(0x48, 0x06), _INIT_DCS_CMD(0x49, 0x04),
++	_INIT_DCS_CMD(0x4A, 0x04), _INIT_DCS_CMD(0x4B, 0x0A),
++	_INIT_DCS_CMD(0x4C, 0x0A), _INIT_DCS_CMD(0x4D, 0x08),
++	_INIT_DCS_CMD(0x4E, 0x08), _INIT_DCS_CMD(0x4F, 0x1F),
++	_INIT_DCS_CMD(0x50, 0x1F), _INIT_DCS_CMD(0x51, 0x17),
++	_INIT_DCS_CMD(0x52, 0x17), _INIT_DCS_CMD(0x53, 0x17),
++	_INIT_DCS_CMD(0x54, 0x17), _INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x56, 0x00), _INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0xE0, 0x02), _INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x59, 0x00), _INIT_DCS_CMD(0x5A, 0x00),
++	_INIT_DCS_CMD(0x5B, 0x30), _INIT_DCS_CMD(0x5C, 0x01),
++	_INIT_DCS_CMD(0x5D, 0x30), _INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02), _INIT_DCS_CMD(0x60, 0x30),
++	_INIT_DCS_CMD(0x61, 0x03), _INIT_DCS_CMD(0x62, 0x04),
++	_INIT_DCS_CMD(0x63, 0x04), _INIT_DCS_CMD(0x64, 0xA6),
++	_INIT_DCS_CMD(0x65, 0x43), _INIT_DCS_CMD(0x66, 0x30),
++	_INIT_DCS_CMD(0x67, 0x73), _INIT_DCS_CMD(0x68, 0x05),
++	_INIT_DCS_CMD(0x69, 0x04), _INIT_DCS_CMD(0x6A, 0x7F),
++	_INIT_DCS_CMD(0x6B, 0x08), _INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04), _INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88), _INIT_DCS_CMD(0x75, 0xD9),
++	_INIT_DCS_CMD(0x76, 0x00), _INIT_DCS_CMD(0x77, 0x33),
++	_INIT_DCS_CMD(0x78, 0x43), _INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0x11),	   _INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),	   _INIT_DELAY_CMD(5),
++	_INIT_DCS_CMD(0x35, 0x00), {},
++};
++
++static const struct panel_init_cmd ws_panel_3_4_c_init[] = {
++	_INIT_DCS_CMD(0xE0, 0x00), _INIT_DCS_CMD(0xE1, 0x93),
++	_INIT_DCS_CMD(0xE2, 0x65), _INIT_DCS_CMD(0xE3, 0xF8),
++	_INIT_DCS_CMD(0x80, 0x01), _INIT_DCS_CMD(0xE0, 0x01),
++	_INIT_DCS_CMD(0x00, 0x00), _INIT_DCS_CMD(0x01, 0x41),
++	_INIT_DCS_CMD(0x03, 0x10), _INIT_DCS_CMD(0x04, 0x44),
++	_INIT_DCS_CMD(0x17, 0x00), _INIT_DCS_CMD(0x18, 0xD0),
++	_INIT_DCS_CMD(0x19, 0x00), _INIT_DCS_CMD(0x1A, 0x00),
++	_INIT_DCS_CMD(0x1B, 0xD0), _INIT_DCS_CMD(0x1C, 0x00),
++	_INIT_DCS_CMD(0x24, 0xFE), _INIT_DCS_CMD(0x35, 0x26),
++	_INIT_DCS_CMD(0x37, 0x09), _INIT_DCS_CMD(0x38, 0x04),
++	_INIT_DCS_CMD(0x39, 0x08), _INIT_DCS_CMD(0x3A, 0x0A),
++	_INIT_DCS_CMD(0x3C, 0x78), _INIT_DCS_CMD(0x3D, 0xFF),
++	_INIT_DCS_CMD(0x3E, 0xFF), _INIT_DCS_CMD(0x3F, 0xFF),
++	_INIT_DCS_CMD(0x40, 0x00), _INIT_DCS_CMD(0x41, 0x64),
++	_INIT_DCS_CMD(0x42, 0xC7), _INIT_DCS_CMD(0x43, 0x18),
++	_INIT_DCS_CMD(0x44, 0x0B), _INIT_DCS_CMD(0x45, 0x14),
++	_INIT_DCS_CMD(0x55, 0x02), _INIT_DCS_CMD(0x57, 0x49),
++	_INIT_DCS_CMD(0x59, 0x0A), _INIT_DCS_CMD(0x5A, 0x1B),
++	_INIT_DCS_CMD(0x5B, 0x19), _INIT_DCS_CMD(0x5D, 0x7F),
++	_INIT_DCS_CMD(0x5E, 0x56), _INIT_DCS_CMD(0x5F, 0x43),
++	_INIT_DCS_CMD(0x60, 0x37), _INIT_DCS_CMD(0x61, 0x33),
++	_INIT_DCS_CMD(0x62, 0x25), _INIT_DCS_CMD(0x63, 0x2A),
++	_INIT_DCS_CMD(0x64, 0x16), _INIT_DCS_CMD(0x65, 0x30),
++	_INIT_DCS_CMD(0x66, 0x2F), _INIT_DCS_CMD(0x67, 0x32),
++	_INIT_DCS_CMD(0x68, 0x53), _INIT_DCS_CMD(0x69, 0x43),
++	_INIT_DCS_CMD(0x6A, 0x4C), _INIT_DCS_CMD(0x6B, 0x40),
++	_INIT_DCS_CMD(0x6C, 0x3D), _INIT_DCS_CMD(0x6D, 0x31),
++	_INIT_DCS_CMD(0x6E, 0x20), _INIT_DCS_CMD(0x6F, 0x0F),
++	_INIT_DCS_CMD(0x70, 0x7F), _INIT_DCS_CMD(0x71, 0x56),
++	_INIT_DCS_CMD(0x72, 0x43), _INIT_DCS_CMD(0x73, 0x37),
++	_INIT_DCS_CMD(0x74, 0x33), _INIT_DCS_CMD(0x75, 0x25),
++	_INIT_DCS_CMD(0x76, 0x2A), _INIT_DCS_CMD(0x77, 0x16),
++	_INIT_DCS_CMD(0x78, 0x30), _INIT_DCS_CMD(0x79, 0x2F),
++	_INIT_DCS_CMD(0x7A, 0x32), _INIT_DCS_CMD(0x7B, 0x53),
++	_INIT_DCS_CMD(0x7C, 0x43), _INIT_DCS_CMD(0x7D, 0x4C),
++	_INIT_DCS_CMD(0x7E, 0x40), _INIT_DCS_CMD(0x7F, 0x3D),
++	_INIT_DCS_CMD(0x80, 0x31), _INIT_DCS_CMD(0x81, 0x20),
++	_INIT_DCS_CMD(0x82, 0x0F), _INIT_DCS_CMD(0xE0, 0x02),
++	_INIT_DCS_CMD(0x00, 0x5F), _INIT_DCS_CMD(0x01, 0x5F),
++	_INIT_DCS_CMD(0x02, 0x5E), _INIT_DCS_CMD(0x03, 0x5E),
++	_INIT_DCS_CMD(0x04, 0x50), _INIT_DCS_CMD(0x05, 0x48),
++	_INIT_DCS_CMD(0x06, 0x48), _INIT_DCS_CMD(0x07, 0x4A),
++	_INIT_DCS_CMD(0x08, 0x4A), _INIT_DCS_CMD(0x09, 0x44),
++	_INIT_DCS_CMD(0x0A, 0x44), _INIT_DCS_CMD(0x0B, 0x46),
++	_INIT_DCS_CMD(0x0C, 0x46), _INIT_DCS_CMD(0x0D, 0x5F),
++	_INIT_DCS_CMD(0x0E, 0x5F), _INIT_DCS_CMD(0x0F, 0x57),
++	_INIT_DCS_CMD(0x10, 0x57), _INIT_DCS_CMD(0x11, 0x77),
++	_INIT_DCS_CMD(0x12, 0x77), _INIT_DCS_CMD(0x13, 0x40),
++	_INIT_DCS_CMD(0x14, 0x42), _INIT_DCS_CMD(0x15, 0x5F),
++	_INIT_DCS_CMD(0x16, 0x5F), _INIT_DCS_CMD(0x17, 0x5F),
++	_INIT_DCS_CMD(0x18, 0x5E), _INIT_DCS_CMD(0x19, 0x5E),
++	_INIT_DCS_CMD(0x1A, 0x50), _INIT_DCS_CMD(0x1B, 0x49),
++	_INIT_DCS_CMD(0x1C, 0x49), _INIT_DCS_CMD(0x1D, 0x4B),
++	_INIT_DCS_CMD(0x1E, 0x4B), _INIT_DCS_CMD(0x1F, 0x45),
++	_INIT_DCS_CMD(0x20, 0x45), _INIT_DCS_CMD(0x21, 0x47),
++	_INIT_DCS_CMD(0x22, 0x47), _INIT_DCS_CMD(0x23, 0x5F),
++	_INIT_DCS_CMD(0x24, 0x5F), _INIT_DCS_CMD(0x25, 0x57),
++	_INIT_DCS_CMD(0x26, 0x57), _INIT_DCS_CMD(0x27, 0x77),
++	_INIT_DCS_CMD(0x28, 0x77), _INIT_DCS_CMD(0x29, 0x41),
++	_INIT_DCS_CMD(0x2A, 0x43), _INIT_DCS_CMD(0x2B, 0x5F),
++	_INIT_DCS_CMD(0x2C, 0x1E), _INIT_DCS_CMD(0x2D, 0x1E),
++	_INIT_DCS_CMD(0x2E, 0x1F), _INIT_DCS_CMD(0x2F, 0x1F),
++	_INIT_DCS_CMD(0x30, 0x10), _INIT_DCS_CMD(0x31, 0x07),
++	_INIT_DCS_CMD(0x32, 0x07), _INIT_DCS_CMD(0x33, 0x05),
++	_INIT_DCS_CMD(0x34, 0x05), _INIT_DCS_CMD(0x35, 0x0B),
++	_INIT_DCS_CMD(0x36, 0x0B), _INIT_DCS_CMD(0x37, 0x09),
++	_INIT_DCS_CMD(0x38, 0x09), _INIT_DCS_CMD(0x39, 0x1F),
++	_INIT_DCS_CMD(0x3A, 0x1F), _INIT_DCS_CMD(0x3B, 0x17),
++	_INIT_DCS_CMD(0x3C, 0x17), _INIT_DCS_CMD(0x3D, 0x17),
++	_INIT_DCS_CMD(0x3E, 0x17), _INIT_DCS_CMD(0x3F, 0x03),
++	_INIT_DCS_CMD(0x40, 0x01), _INIT_DCS_CMD(0x41, 0x1F),
++	_INIT_DCS_CMD(0x42, 0x1E), _INIT_DCS_CMD(0x43, 0x1E),
++	_INIT_DCS_CMD(0x44, 0x1F), _INIT_DCS_CMD(0x45, 0x1F),
++	_INIT_DCS_CMD(0x46, 0x10), _INIT_DCS_CMD(0x47, 0x06),
++	_INIT_DCS_CMD(0x48, 0x06), _INIT_DCS_CMD(0x49, 0x04),
++	_INIT_DCS_CMD(0x4A, 0x04), _INIT_DCS_CMD(0x4B, 0x0A),
++	_INIT_DCS_CMD(0x4C, 0x0A), _INIT_DCS_CMD(0x4D, 0x08),
++	_INIT_DCS_CMD(0x4E, 0x08), _INIT_DCS_CMD(0x4F, 0x1F),
++	_INIT_DCS_CMD(0x50, 0x1F), _INIT_DCS_CMD(0x51, 0x17),
++	_INIT_DCS_CMD(0x52, 0x17), _INIT_DCS_CMD(0x53, 0x17),
++	_INIT_DCS_CMD(0x54, 0x17), _INIT_DCS_CMD(0x55, 0x02),
++	_INIT_DCS_CMD(0x56, 0x00), _INIT_DCS_CMD(0x57, 0x1F),
++	_INIT_DCS_CMD(0xE0, 0x02), _INIT_DCS_CMD(0x58, 0x40),
++	_INIT_DCS_CMD(0x59, 0x00), _INIT_DCS_CMD(0x5A, 0x00),
++	_INIT_DCS_CMD(0x5B, 0x30), _INIT_DCS_CMD(0x5C, 0x01),
++	_INIT_DCS_CMD(0x5D, 0x30), _INIT_DCS_CMD(0x5E, 0x01),
++	_INIT_DCS_CMD(0x5F, 0x02), _INIT_DCS_CMD(0x60, 0x30),
++	_INIT_DCS_CMD(0x61, 0x03), _INIT_DCS_CMD(0x62, 0x04),
++	_INIT_DCS_CMD(0x63, 0x04), _INIT_DCS_CMD(0x64, 0xA6),
++	_INIT_DCS_CMD(0x65, 0x43), _INIT_DCS_CMD(0x66, 0x30),
++	_INIT_DCS_CMD(0x67, 0x73), _INIT_DCS_CMD(0x68, 0x05),
++	_INIT_DCS_CMD(0x69, 0x04), _INIT_DCS_CMD(0x6A, 0x7F),
++	_INIT_DCS_CMD(0x6B, 0x08), _INIT_DCS_CMD(0x6C, 0x00),
++	_INIT_DCS_CMD(0x6D, 0x04), _INIT_DCS_CMD(0x6E, 0x04),
++	_INIT_DCS_CMD(0x6F, 0x88), _INIT_DCS_CMD(0x75, 0xD9),
++	_INIT_DCS_CMD(0x76, 0x00), _INIT_DCS_CMD(0x77, 0x33),
++	_INIT_DCS_CMD(0x78, 0x43), _INIT_DCS_CMD(0xE0, 0x00),
++	_INIT_DCS_CMD(0x11),	   _INIT_DELAY_CMD(120),
++	_INIT_DCS_CMD(0x29),	   _INIT_DELAY_CMD(5),
++	_INIT_DCS_CMD(0x35, 0x00), {},
++};
++
++static inline struct ws_panel *panel_to_ws(struct drm_panel *panel)
++{
++	return container_of(panel, struct ws_panel, panel);
++}
++
++static int ws_panel_init_dcs_cmd(struct ws_panel *ts)
++{
++	struct mipi_dsi_device *dsi = ts->dsi;
++	struct drm_panel *panel = &ts->panel;
++	int i, err = 0;
++
++	if (ts->desc->init) {
++		const struct panel_init_cmd *init_cmds = ts->desc->init;
++
++		for (i = 0; init_cmds[i].len != 0; i++) {
++			const struct panel_init_cmd *cmd = &init_cmds[i];
++
++			switch (cmd->type) {
++			case DELAY_CMD:
++				msleep(cmd->data[0]);
++				err = 0;
++				break;
++
++			case INIT_DCS_CMD:
++				err = mipi_dsi_dcs_write(
++					dsi, cmd->data[0],
++					cmd->len <= 1 ? NULL : &cmd->data[1],
++					cmd->len - 1);
++				break;
++
++			default:
++				err = -EINVAL;
++			}
++
++			if (err < 0) {
++				dev_err(panel->dev,
++					"failed to write command %u\n", i);
++				return err;
++			}
++		}
++	}
++	return 0;
++}
++
++static int ws_panel_prepare(struct drm_panel *panel)
++{
++	struct ws_panel *ctx = panel_to_ws(panel);
++	int ret;
++
++	if (ctx->iovcc) {
++		gpiod_set_value_cansleep(ctx->iovcc, 1);
++		msleep(20);
++	}
++
++	if (ctx->avdd) {
++		gpiod_set_value_cansleep(ctx->avdd, 1);
++		msleep(20);
++	}
++
++	/* And reset it */
++	if (ctx->reset) {
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(60);
++		gpiod_set_value_cansleep(ctx->reset, 1);
++		msleep(60);
++	}
++
++	ret = ws_panel_init_dcs_cmd(ctx);
++	if (ret < 0)
++		dev_err(panel->dev, "failed to init panel: %d\n", ret);
++
++	return 0;
++}
++
++static int ws_panel_unprepare(struct drm_panel *panel)
++{
++	struct ws_panel *ctx = panel_to_ws(panel);
++
++	mipi_dsi_dcs_set_display_off(ctx->dsi);
++	mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
++
++	if (ctx->reset) {
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(20);
++	}
++
++	if (ctx->avdd) {
++		gpiod_set_value_cansleep(ctx->avdd, 0);
++		msleep(20);
++	}
++
++	if (ctx->iovcc) {
++		gpiod_set_value_cansleep(ctx->iovcc, 0);
++		msleep(20);
++	}
++
++	return 0;
++}
++
++static const struct drm_display_mode ws_panel_12_3_a_4lane_mode = {
++	.clock = 95000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 10,
++	.hsync_end = 720 + 10 + 10,
++	.htotal = 720 + 10 + 10 + 12,
++	.vdisplay = 1920,
++	.vsync_start = 1920 + 64,
++	.vsync_end = 1920 + 64 + 18,
++	.vtotal = 1920 + 64 + 18 + 4,
++	.width_mm = 109,
++	.height_mm = 292,
++};
++
++static const struct drm_display_mode ws_panel_10_1_a_mode = {
++	.clock = 70000,
++	.hdisplay = 800,
++	.hsync_start = 800 + 40,
++	.hsync_end = 800 + 40 + 20,
++	.htotal = 800 + 40 + 20 + 20,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 20,
++	.vsync_end = 1280 + 20 + 20,
++	.vtotal = 1280 + 20 + 20 + 4,
++	.width_mm = 135,
++	.height_mm = 216,
++};
++
++static const struct drm_display_mode ws_panel_10_1_b_4lane_mode = {
++	.clock = 66000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 60,
++	.hsync_end = 720 + 60 + 60,
++	.htotal = 720 + 60 + 60 + 4,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 16,
++	.vsync_end = 1280 + 16 + 12,
++	.vtotal = 1280 + 16 + 12 + 4,
++	.width_mm = 125,
++	.height_mm = 222,
++};
++
++static const struct drm_display_mode ws_panel_10_1_b_mode = {
++	.clock = 69000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 50,
++	.hsync_end = 720 + 50 + 50,
++	.htotal = 720 + 50 + 50 + 50,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 26,
++	.vsync_end = 1280 + 26 + 12,
++	.vtotal = 1280 + 26 + 12 + 4,
++	.width_mm = 125,
++	.height_mm = 222,
++};
++
++static const struct drm_display_mode ws_panel_9_b_4lane_mode = {
++	.clock = 66000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 60,
++	.hsync_end = 720 + 60 + 60,
++	.htotal = 720 + 60 + 60 + 4,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 16,
++	.vsync_end = 1280 + 16 + 12,
++	.vtotal = 1280 + 16 + 12 + 4,
++	.width_mm = 114,
++	.height_mm = 196,
++};
++
++static const struct drm_display_mode ws_panel_9_b_mode = {
++	.clock = 69000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 50,
++	.hsync_end = 720 + 50 + 50,
++	.htotal = 720 + 50 + 50 + 50,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 26,
++	.vsync_end = 1280 + 26 + 12,
++	.vtotal = 1280 + 26 + 12 + 4,
++	.width_mm = 114,
++	.height_mm = 196,
++};
++
++static const struct drm_display_mode ws_panel_8_8_a_mode = {
++	.clock = 75000,
++	.hdisplay = 480,
++	.hsync_start = 480 + 50,
++	.hsync_end = 480 + 50 + 50,
++	.htotal = 480 + 50 + 50 + 50,
++	.vdisplay = 1920,
++	.vsync_start = 1920 + 20,
++	.vsync_end = 1920 + 20 + 20,
++	.vtotal = 1920 + 20 + 20 + 20,
++	.width_mm = 68,
++	.height_mm = 219,
++};
++
++static const struct drm_display_mode ws_panel_8_a_mode = {
++	.clock = 70000,
++	.hdisplay = 800,
++	.hsync_start = 800 + 40,
++	.hsync_end = 800 + 40 + 20,
++	.htotal = 800 + 40 + 20 + 20,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 30,
++	.vsync_end = 1280 + 30 + 12,
++	.vtotal = 1280 + 30 + 12 + 4,
++	.width_mm = 107,
++	.height_mm = 172,
++};
++
++static const struct drm_display_mode ws_panel_7_a_mode = {
++	.clock = 83333,
++	.hdisplay = 720,
++	.hsync_start = 720 + 120,
++	.hsync_end = 720 + 120 + 100,
++	.htotal = 720 + 120 + 100 + 100,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 10,
++	.vsync_end = 1280 + 10 + 10,
++	.vtotal = 1280 + 10 + 10 + 10,
++	.width_mm = 85,
++	.height_mm = 154,
++};
++
++static const struct drm_display_mode ws_panel_5_5_a_mode = {
++	.clock = 65000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 50,
++	.hsync_end = 720 + 50 + 50,
++	.htotal = 720 + 50 + 50 + 10,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 15,
++	.vsync_end = 1280 + 15 + 12,
++	.vtotal = 1280 + 15 + 12 + 4,
++	.width_mm = 62,
++	.height_mm = 110,
++};
++
++static const struct drm_display_mode ws_panel_5_a_mode = {
++	.clock = 70000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 40,
++	.hsync_end = 720 + 40 + 20,
++	.htotal = 720 + 40 + 20 + 20,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 30,
++	.vsync_end = 1280 + 30 + 10,
++	.vtotal = 1280 + 30 + 10 + 4,
++	.width_mm = 62,
++	.height_mm = 110,
++};
++
++static const struct drm_display_mode ws_panel_4_c_mode = {
++	.clock = 36500,
++	.hdisplay = 720,
++	.hsync_start = 720 + 40,
++	.hsync_end = 720 + 40 + 20,
++	.htotal = 720 + 40 + 20 + 20,
++	.vdisplay = 720,
++	.vsync_start = 720 + 24,
++	.vsync_end = 720 + 24 + 4,
++	.vtotal = 720 + 24 + 4 + 12,
++	.width_mm = 88,
++	.height_mm = 88,
++};
++
++static const struct drm_display_mode ws_panel_3_4_c_mode = {
++	.clock = 44300,
++	.hdisplay = 800,
++	.hsync_start = 800 + 40,
++	.hsync_end = 800 + 40 + 20,
++	.htotal = 800 + 40 + 20 + 20,
++	.vdisplay = 800,
++	.vsync_start = 800 + 24,
++	.vsync_end = 800 + 24 + 4,
++	.vtotal = 800 + 24 + 4 + 12,
++	.width_mm = 88,
++	.height_mm = 88,
++};
++
++static int ws_panel_get_modes(struct drm_panel *panel,
++			      struct drm_connector *connector)
++{
++	struct ws_panel *ctx = panel_to_ws(panel);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, ctx->desc->mode);
++	if (!mode) {
++		dev_err(&ctx->dsi->dev, "failed to add mode %ux%ux@%u\n",
++			ctx->desc->mode->hdisplay, ctx->desc->mode->vdisplay,
++			drm_mode_vrefresh(ctx->desc->mode));
++		return -ENOMEM;
++	}
++
++	drm_mode_set_name(mode);
++
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.width_mm = mode->width_mm;
++	connector->display_info.height_mm = mode->height_mm;
++
++	drm_connector_set_panel_orientation(connector, ctx->orientation);
++
++	return 1;
++}
++
++static enum drm_panel_orientation
++ws_panel_get_orientation(struct drm_panel *panel)
++{
++	struct ws_panel *ctx = panel_to_ws(panel);
++
++	return ctx->orientation;
++}
++
++static const struct drm_panel_funcs ws_panel_funcs = {
++	.prepare = ws_panel_prepare,
++	.unprepare = ws_panel_unprepare,
++	.get_modes = ws_panel_get_modes,
++	.get_orientation = ws_panel_get_orientation,
++};
++
++static int ws_panel_dsi_probe(struct mipi_dsi_device *dsi)
++{
++	struct ws_panel *ctx;
++	int ret;
++
++	dev_info(&dsi->dev, "dsi panel: %s\n",
++		 (char *)of_get_property(dsi->dev.of_node, "compatible", NULL));
++
++	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	mipi_dsi_set_drvdata(dsi, ctx);
++	ctx->dsi = dsi;
++	ctx->desc = of_device_get_match_data(&dsi->dev);
++
++	ctx->panel.prepare_prev_first = true;
++	drm_panel_init(&ctx->panel, &dsi->dev, &ws_panel_funcs,
++		       DRM_MODE_CONNECTOR_DSI);
++
++	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->reset))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
++				     "Couldn't get our reset GPIO\n");
++
++	ctx->iovcc = devm_gpiod_get_optional(&dsi->dev, "iovcc", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->iovcc))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->iovcc),
++				     "Couldn't get our iovcc GPIO\n");
++
++	ctx->avdd = devm_gpiod_get_optional(&dsi->dev, "avdd", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->avdd))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->avdd),
++				     "Couldn't get our avdd GPIO\n");
++
++	ret = of_drm_get_panel_orientation(dsi->dev.of_node, &ctx->orientation);
++	if (ret) {
++		dev_err(&dsi->dev, "%pOF: failed to get orientation: %d\n",
++			dsi->dev.of_node, ret);
++		return ret;
++	}
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return ret;
++
++	drm_panel_add(&ctx->panel);
++
++	dsi->mode_flags = ctx->desc->mode_flags;
++	dsi->format = ctx->desc->format;
++	dsi->lanes = ctx->desc->lanes;
++	dev_info(&dsi->dev, "lanes: %d\n", dsi->lanes);
++
++	ret = mipi_dsi_attach(dsi);
++	if (ret)
++		drm_panel_remove(&ctx->panel);
++
++	return ret;
++}
++
++static void ws_panel_dsi_remove(struct mipi_dsi_device *dsi)
++{
++	struct ws_panel *ctx = mipi_dsi_get_drvdata(dsi);
++
++	mipi_dsi_detach(dsi);
++	drm_panel_remove(&ctx->panel);
++	if (ctx->reset) {
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(20);
++	}
++
++	if (ctx->avdd) {
++		gpiod_set_value_cansleep(ctx->avdd, 0);
++		msleep(20);
++	}
++
++	if (ctx->iovcc) {
++		gpiod_set_value_cansleep(ctx->iovcc, 0);
++		msleep(20);
++	}
++}
++
++static void ws_panel_dsi_shutdown(struct mipi_dsi_device *dsi)
++{
++	struct ws_panel *ctx = mipi_dsi_get_drvdata(dsi);
++
++	if (ctx->reset) {
++		dev_info(&dsi->dev, "shutdown\n");
++		gpiod_set_value_cansleep(ctx->reset, 0);
++		msleep(20);
++	}
++
++	if (ctx->avdd) {
++		gpiod_set_value_cansleep(ctx->avdd, 0);
++		msleep(20);
++	}
++
++	if (ctx->iovcc) {
++		gpiod_set_value_cansleep(ctx->iovcc, 0);
++		msleep(20);
++	}
++}
++
++static const struct ws_panel_desc ws_panel_12_3_inch_a_4lane_desc = {
++	.init = ws_panel_12_3_a_4lane_init,
++	.mode = &ws_panel_12_3_a_4lane_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_10_1_inch_a_4lane_desc = {
++	.init = ws_panel_10_1_a_4lane_init,
++	.mode = &ws_panel_10_1_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_10_1_inch_a_desc = {
++	.init = ws_panel_10_1_a_init,
++	.mode = &ws_panel_10_1_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_10_1_inch_b_4lane_desc = {
++	.init = ws_panel_10_1_b_4lane_init,
++	.mode = &ws_panel_10_1_b_4lane_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_10_1_inch_b_desc = {
++	.init = ws_panel_10_1_b_init,
++	.mode = &ws_panel_10_1_b_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_9_inch_b_4lane_desc = {
++	.init = ws_panel_10_1_b_4lane_init,
++	.mode = &ws_panel_9_b_4lane_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_9_inch_b_desc = {
++	.init = ws_panel_10_1_b_init,
++	.mode = &ws_panel_9_b_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_8_8_inch_a_desc = {
++	.init = ws_panel_8_8_a_init,
++	.mode = &ws_panel_8_8_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_8_inch_a_4lane_desc = {
++	.init = ws_panel_8_a_4lane_init,
++	.mode = &ws_panel_8_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 4,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_8_inch_a_desc = {
++	.init = ws_panel_8_a_init,
++	.mode = &ws_panel_8_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_7_inch_a_desc = {
++	.init = ws_panel_7_a_init,
++	.mode = &ws_panel_7_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_5_5_inch_a_desc = {
++	.init = ws_panel_5_5_a_init,
++	.mode = &ws_panel_5_5_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_5_inch_a_desc = {
++	.init = ws_panel_5_a_init,
++	.mode = &ws_panel_5_a_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_4_inch_c_desc = {
++	.init = ws_panel_4_c_init,
++	.mode = &ws_panel_4_c_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct ws_panel_desc ws_panel_3_4_inch_c_desc = {
++	.init = ws_panel_3_4_c_init,
++	.mode = &ws_panel_3_4_c_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO |
++		      MIPI_DSI_MODE_LPM | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++	.lanes = 2,
++	.format = MIPI_DSI_FMT_RGB888,
++};
++
++static const struct of_device_id ws_panel_of_match[] = {
++	{ .compatible = "waveshare,12.3-dsi-touch-a,4lane",
++	  &ws_panel_12_3_inch_a_4lane_desc },
++	{ .compatible = "waveshare,10.1-dsi-touch-a-4lane",
++	  &ws_panel_10_1_inch_a_4lane_desc },
++	{ .compatible = "waveshare,10.1-dsi-touch-a",
++	  &ws_panel_10_1_inch_a_desc },
++	{ .compatible = "waveshare,10.1-dsi-touch-b,4lane",
++	  &ws_panel_10_1_inch_b_4lane_desc },
++	{ .compatible = "waveshare,10.1-dsi-touch-b",
++	  &ws_panel_10_1_inch_b_desc },
++	{ .compatible = "waveshare,9.0-dsi-touch-b,4lane",
++	  &ws_panel_9_inch_b_4lane_desc },
++	{ .compatible = "waveshare,9.0-dsi-touch-b", &ws_panel_9_inch_b_desc },
++	{ .compatible = "waveshare,8.8-dsi-touch-a",
++	  &ws_panel_8_8_inch_a_desc },
++	{ .compatible = "waveshare,8.0-dsi-touch-a-4lane",
++	  &ws_panel_8_inch_a_4lane_desc },
++	{ .compatible = "waveshare,8.0-dsi-touch-a", &ws_panel_8_inch_a_desc },
++	{ .compatible = "waveshare,7.0-dsi-touch-a", &ws_panel_7_inch_a_desc },
++	{ .compatible = "waveshare,7.0-dsi-touch-b", &ws_panel_7_inch_a_desc },
++	{ .compatible = "waveshare,5.5-dsi-touch-a",
++	  &ws_panel_5_5_inch_a_desc },
++	{ .compatible = "waveshare,5.0-dsi-touch-a", &ws_panel_5_inch_a_desc },
++	{ .compatible = "waveshare,4.0-dsi-touch-c", &ws_panel_4_inch_c_desc },
++	{ .compatible = "waveshare,3.4-dsi-touch-c",
++	  &ws_panel_3_4_inch_c_desc },
++	{}
++};
++MODULE_DEVICE_TABLE(of, ws_panel_of_match);
++
++static struct mipi_dsi_driver ws_panel_dsi_driver = {
++	.probe		= ws_panel_dsi_probe,
++	.remove		= ws_panel_dsi_remove,
++	.shutdown	= ws_panel_dsi_shutdown,
++	.driver = {
++		.name		= "waveshare-dsi",
++		.of_match_table	= ws_panel_of_match,
++	},
++};
++module_mipi_dsi_driver(ws_panel_dsi_driver);
++
++MODULE_AUTHOR("Waveshare Team <support@waveshare.com>");
++MODULE_DESCRIPTION("Waveshare DSI panel driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-waveshare-dsi.c
+@@ -0,0 +1,633 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright © 2023 Raspberry Pi Ltd
++ *
++ * Based on panel-raspberrypi-touchscreen by Broadcom
++ */
++
++#include <linux/backlight.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/fb.h>
++#include <linux/i2c.h>
++#include <linux/media-bus-format.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/of_graph.h>
++#include <linux/pm.h>
++
++#include <drm/drm_crtc.h>
++#include <drm/drm_device.h>
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_panel.h>
++
++#define WS_DSI_DRIVER_NAME "ws-ts-dsi"
++
++struct ws_panel {
++	struct drm_panel base;
++	struct mipi_dsi_device *dsi;
++	struct i2c_client *i2c;
++	const struct drm_display_mode *mode;
++	enum drm_panel_orientation orientation;
++};
++
++struct ws_panel_data {
++	const struct drm_display_mode *mode;
++	int lanes;
++	unsigned long mode_flags;
++};
++
++/* 2.8inch 480x640
++ * https://www.waveshare.com/product/raspberry-pi/displays/2.8inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_2_8_mode = {
++	.clock = 50000,
++	.hdisplay = 480,
++	.hsync_start = 480 + 150,
++	.hsync_end = 480 + 150 + 50,
++	.htotal = 480 + 150 + 50 + 150,
++	.vdisplay = 640,
++	.vsync_start = 640 + 150,
++	.vsync_end = 640 + 150 + 50,
++	.vtotal = 640 + 150 + 50 + 150,
++};
++
++static const struct ws_panel_data ws_panel_2_8_data = {
++	.mode = &ws_panel_2_8_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 3.4inch 800x800 Round
++ * https://www.waveshare.com/product/displays/lcd-oled/3.4inch-dsi-lcd-c.htm
++ */
++static const struct drm_display_mode ws_panel_3_4_mode = {
++	.clock = 50000,
++	.hdisplay = 800,
++	.hsync_start = 800 + 32,
++	.hsync_end = 800 + 32 + 6,
++	.htotal = 800 + 32 + 6 + 120,
++	.vdisplay = 800,
++	.vsync_start = 800 + 8,
++	.vsync_end = 800 + 8 + 4,
++	.vtotal = 800 + 8 + 4 + 16,
++};
++
++static const struct ws_panel_data ws_panel_3_4_data = {
++	.mode = &ws_panel_3_4_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 4.0inch 480x800
++ * https://www.waveshare.com/product/raspberry-pi/displays/4inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_4_0_mode = {
++	.clock = 50000,
++	.hdisplay = 480,
++	.hsync_start = 480 + 150,
++	.hsync_end = 480 + 150 + 100,
++	.htotal = 480 + 150 + 100 + 150,
++	.vdisplay = 800,
++	.vsync_start = 800 + 20,
++	.vsync_end = 800 + 20 + 100,
++	.vtotal = 800 + 20 + 100 + 20,
++};
++
++static const struct ws_panel_data ws_panel_4_0_data = {
++	.mode = &ws_panel_4_0_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 7.0inch C 1024x600
++ * https://www.waveshare.com/product/raspberry-pi/displays/lcd-oled/7inch-dsi-lcd-c-with-case-a.htm
++ */
++static const struct drm_display_mode ws_panel_7_0_c_mode = {
++	.clock = 50000,
++	.hdisplay = 1024,
++	.hsync_start = 1024 + 100,
++	.hsync_end = 1024 + 100 + 100,
++	.htotal = 1024 + 100 + 100 + 100,
++	.vdisplay = 600,
++	.vsync_start = 600 + 10,
++	.vsync_end = 600 + 10 + 10,
++	.vtotal = 600 + 10 + 10 + 10,
++};
++
++static const struct ws_panel_data ws_panel_7_0_c_data = {
++	.mode = &ws_panel_7_0_c_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 7.9inch 400x1280
++ * https://www.waveshare.com/product/raspberry-pi/displays/7.9inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_7_9_mode = {
++	.clock = 50000,
++	.hdisplay = 400,
++	.hsync_start = 400 + 40,
++	.hsync_end = 400 + 40 + 30,
++	.htotal = 400 + 40 + 30 + 40,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 20,
++	.vsync_end = 1280 + 20 + 10,
++	.vtotal = 1280 + 20 + 10 + 20,
++};
++
++static const struct ws_panel_data ws_panel_7_9_data = {
++	.mode = &ws_panel_7_9_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 8.0inch or 10.1inch 1280x800
++ * https://www.waveshare.com/product/raspberry-pi/displays/8inch-dsi-lcd-c.htm
++ * https://www.waveshare.com/product/raspberry-pi/displays/10.1inch-dsi-lcd-c.htm
++ */
++static const struct drm_display_mode ws_panel_10_1_mode = {
++	.clock = 83333,
++	.hdisplay = 1280,
++	.hsync_start = 1280 + 156,
++	.hsync_end = 1280 + 156 + 20,
++	.htotal = 1280 + 156 + 20 + 40,
++	.vdisplay = 800,
++	.vsync_start = 800 + 40,
++	.vsync_end = 800 + 40 + 48,
++	.vtotal = 800 + 40 + 48 + 40,
++};
++
++static const struct ws_panel_data ws_panel_10_1_data = {
++	.mode = &ws_panel_10_1_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 11.9inch 320x1480
++ * https://www.waveshare.com/product/raspberry-pi/displays/11.9inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_11_9_mode = {
++	.clock = 50000,
++	.hdisplay = 320,
++	.hsync_start = 320 + 60,
++	.hsync_end = 320 + 60 + 60,
++	.htotal = 320 + 60 + 60 + 60,
++	.vdisplay = 1480,
++	.vsync_start = 1480 + 60,
++	.vsync_end = 1480 + 60 + 60,
++	.vtotal = 1480 + 60 + 60 + 60,
++};
++
++static const struct ws_panel_data ws_panel_11_9_data = {
++	.mode = &ws_panel_11_9_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++static const struct drm_display_mode ws_panel_4_mode = {
++	.clock = 50000,
++	.hdisplay = 720,
++	.hsync_start = 720 + 32,
++	.hsync_end = 720 + 32 + 200,
++	.htotal = 720 + 32 + 200 + 120,
++	.vdisplay = 720,
++	.vsync_start = 720 + 8,
++	.vsync_end = 720 + 8 + 4,
++	.vtotal = 720 + 8 + 4 + 16,
++};
++
++static const struct ws_panel_data ws_panel_4_data = {
++	.mode = &ws_panel_4_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 5.0inch 720x1280
++ * https://www.waveshare.com/5inch-dsi-lcd-d.htm
++ */
++static const struct drm_display_mode ws_panel_5_0_mode = {
++	.clock = 83333,
++	.hdisplay = 720,
++	.hsync_start = 720 + 100,
++	.hsync_end = 720 + 100 + 80,
++	.htotal = 720 + 100 + 80 + 100,
++	.vdisplay = 1280,
++	.vsync_start = 1280 + 20,
++	.vsync_end = 1280 + 20 + 20,
++	.vtotal = 1280 + 20 + 20 + 20,
++};
++
++static const struct ws_panel_data ws_panel_5_0_data = {
++	.mode = &ws_panel_5_0_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 6.25inch 720x1560
++ * https://www.waveshare.com/6.25inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_6_25_mode = {
++	.clock = 83333,
++	.hdisplay = 720,
++	.hsync_start = 720 + 50,
++	.hsync_end = 720 + 50 + 50,
++	.htotal = 720 + 50 + 50 + 50,
++	.vdisplay = 1560,
++	.vsync_start = 1560 + 20,
++	.vsync_end = 1560 + 20 + 20,
++	.vtotal = 1560 + 20 + 20 + 20,
++};
++
++static const struct ws_panel_data ws_panel_6_25_data = {
++	.mode = &ws_panel_6_25_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++/* 8.8inch 480x1920
++ * https://www.waveshare.com/8.8inch-dsi-lcd.htm
++ */
++static const struct drm_display_mode ws_panel_8_8_mode = {
++	.clock = 83333,
++	.hdisplay = 480,
++	.hsync_start = 480 + 50,
++	.hsync_end = 480 + 50 + 50,
++	.htotal = 480 + 50 + 50 + 50,
++	.vdisplay = 1920,
++	.vsync_start = 1920 + 20,
++	.vsync_end = 1920 + 20 + 20,
++	.vtotal = 1920 + 20 + 20 + 20,
++};
++
++static const struct ws_panel_data ws_panel_8_8_data = {
++	.mode = &ws_panel_8_8_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++static const struct drm_display_mode ws_panel_13_3_4lane_mode = {
++	.clock = 148500,
++	.hdisplay = 1920,
++	.hsync_start = 1920 + 88,
++	.hsync_end = 1920 + 88 + 44,
++	.htotal = 1920 + 88 + 44 + 148,
++	.vdisplay = 1080,
++	.vsync_start = 1080 + 4,
++	.vsync_end = 1080 + 4 + 5,
++	.vtotal = 1080 + 4 + 5 + 36,
++};
++
++static const struct ws_panel_data ws_panel_13_3_4lane_data = {
++	.mode = &ws_panel_13_3_4lane_mode,
++	.lanes = 4,
++	.mode_flags = MIPI_DSI_MODE_VIDEO  | MIPI_DSI_MODE_LPM,
++};
++
++static const struct drm_display_mode ws_panel_13_3_2lane_mode = {
++	.clock = 83333,
++	.hdisplay = 1920,
++	.hsync_start = 1920 + 88,
++	.hsync_end = 1920 + 88 + 44,
++	.htotal = 1920 + 88 + 44 + 148,
++	.vdisplay = 1080,
++	.vsync_start = 1080 + 4,
++	.vsync_end = 1080 + 4 + 5,
++	.vtotal = 1080 + 4 + 5 + 36,
++};
++
++static const struct ws_panel_data ws_panel_13_3_2lane_data = {
++	.mode = &ws_panel_13_3_2lane_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO  | MIPI_DSI_MODE_LPM,
++};
++
++/* 7.0inch 1280x720
++ * https://www.waveshare.com/7inch-dsi-lcd-h.htm
++ */
++static const struct drm_display_mode ws_panel_7_0_h_mode = {
++	.clock = 83333,
++	.hdisplay = 1280,
++	.hsync_start = 1280 + 64,
++	.hsync_end = 1280 + 64 + 64,
++	.htotal = 1280 + 64 + 64 + 64,
++	.vdisplay = 720,
++	.vsync_start = 720 + 64,
++	.vsync_end = 720 + 64 + 64,
++	.vtotal = 720 + 64 + 64 + 64,
++};
++
++static const struct ws_panel_data ws_panel_7_0_h_data = {
++	.mode = &ws_panel_7_0_h_mode,
++	.lanes = 2,
++	.mode_flags = MIPI_DSI_MODE_VIDEO_HSE | MIPI_DSI_MODE_VIDEO | MIPI_DSI_CLOCK_NON_CONTINUOUS,
++};
++
++static struct ws_panel *panel_to_ts(struct drm_panel *panel)
++{
++	return container_of(panel, struct ws_panel, base);
++}
++
++static void ws_panel_i2c_write(struct ws_panel *ts, u8 reg, u8 val)
++{
++	int ret;
++
++	ret = i2c_smbus_write_byte_data(ts->i2c, reg, val);
++	if (ret)
++		dev_err(&ts->i2c->dev, "I2C write failed: %d\n", ret);
++}
++
++static int ws_panel_disable(struct drm_panel *panel)
++{
++	struct ws_panel *ts = panel_to_ts(panel);
++
++	ws_panel_i2c_write(ts, 0xad, 0x00);
++
++	return 0;
++}
++
++static int ws_panel_unprepare(struct drm_panel *panel)
++{
++	return 0;
++}
++
++static int ws_panel_prepare(struct drm_panel *panel)
++{
++	return 0;
++}
++
++static int ws_panel_enable(struct drm_panel *panel)
++{
++	struct ws_panel *ts = panel_to_ts(panel);
++
++	if (ts->mode == &ws_panel_13_3_2lane_mode)
++		ws_panel_i2c_write(ts, 0xad, 0x02);
++	else
++		ws_panel_i2c_write(ts, 0xad, 0x01);
++
++	return 0;
++}
++
++static int ws_panel_get_modes(struct drm_panel *panel,
++			      struct drm_connector *connector)
++{
++	static const u32 bus_format = MEDIA_BUS_FMT_RGB888_1X24;
++	struct ws_panel *ts = panel_to_ts(panel);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, ts->mode);
++	if (!mode) {
++		dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
++			ts->mode->hdisplay,
++			ts->mode->vdisplay,
++			drm_mode_vrefresh(ts->mode));
++	}
++
++	mode->type |= DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++
++	drm_mode_set_name(mode);
++
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.bpc = 8;
++	connector->display_info.width_mm = 154;
++	connector->display_info.height_mm = 86;
++	drm_display_info_set_bus_formats(&connector->display_info,
++					 &bus_format, 1);
++
++	/*
++	 * TODO: Remove once all drm drivers call
++	 * drm_connector_set_orientation_from_panel()
++	 */
++	drm_connector_set_panel_orientation(connector, ts->orientation);
++
++	return 1;
++}
++
++static enum drm_panel_orientation ws_panel_get_orientation(struct drm_panel *panel)
++{
++	struct ws_panel *ts = panel_to_ts(panel);
++
++	return ts->orientation;
++}
++
++static const struct drm_panel_funcs ws_panel_funcs = {
++	.disable = ws_panel_disable,
++	.unprepare = ws_panel_unprepare,
++	.prepare = ws_panel_prepare,
++	.enable = ws_panel_enable,
++	.get_modes = ws_panel_get_modes,
++	.get_orientation = ws_panel_get_orientation,
++};
++
++static int ws_panel_bl_update_status(struct backlight_device *bl)
++{
++	struct ws_panel *ts = bl_get_data(bl);
++
++	ws_panel_i2c_write(ts, 0xab, 0xff - backlight_get_brightness(bl));
++	ws_panel_i2c_write(ts, 0xaa, 0x01);
++
++	return 0;
++}
++
++static const struct backlight_ops ws_panel_bl_ops = {
++	.update_status = ws_panel_bl_update_status,
++};
++
++static struct backlight_device *
++ws_panel_create_backlight(struct ws_panel *ts)
++{
++	struct device *dev = ts->base.dev;
++	const struct backlight_properties props = {
++		.type = BACKLIGHT_RAW,
++		.brightness = 255,
++		.max_brightness = 255,
++	};
++
++	return devm_backlight_device_register(dev, dev_name(dev), dev, ts,
++					      &ws_panel_bl_ops, &props);
++}
++
++static int ws_panel_probe(struct i2c_client *i2c)
++{
++	struct device *dev = &i2c->dev;
++	struct ws_panel *ts;
++	struct device_node *endpoint, *dsi_host_node;
++	struct mipi_dsi_host *host;
++	struct mipi_dsi_device_info info = {
++		.type = WS_DSI_DRIVER_NAME,
++		.channel = 0,
++		.node = NULL,
++	};
++	const struct ws_panel_data *_ws_panel_data;
++	int ret;
++
++	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
++	if (!ts)
++		return -ENOMEM;
++
++	_ws_panel_data = of_device_get_match_data(dev);
++	if (!_ws_panel_data)
++		return -EINVAL;
++
++	ts->mode = _ws_panel_data->mode;
++	if (!ts->mode)
++		return -EINVAL;
++
++	i2c_set_clientdata(i2c, ts);
++
++	ts->i2c = i2c;
++
++	ws_panel_i2c_write(ts, 0xc0, 0x01);
++	ws_panel_i2c_write(ts, 0xc2, 0x01);
++	ws_panel_i2c_write(ts, 0xac, 0x01);
++
++	ret = of_drm_get_panel_orientation(dev->of_node, &ts->orientation);
++	if (ret) {
++		dev_err(dev, "%pOF: failed to get orientation %d\n", dev->of_node, ret);
++		return ret;
++	}
++
++	/* Look up the DSI host.  It needs to probe before we do. */
++	endpoint = of_graph_get_next_endpoint(dev->of_node, NULL);
++	if (!endpoint)
++		return -ENODEV;
++
++	dsi_host_node = of_graph_get_remote_port_parent(endpoint);
++	if (!dsi_host_node)
++		goto error;
++
++	host = of_find_mipi_dsi_host_by_node(dsi_host_node);
++	of_node_put(dsi_host_node);
++	if (!host) {
++		of_node_put(endpoint);
++		return -EPROBE_DEFER;
++	}
++
++	info.node = of_graph_get_remote_port(endpoint);
++	if (!info.node)
++		goto error;
++
++	of_node_put(endpoint);
++
++	ts->dsi = devm_mipi_dsi_device_register_full(dev, host, &info);
++	if (IS_ERR(ts->dsi)) {
++		dev_err(dev, "DSI device registration failed: %ld\n",
++			PTR_ERR(ts->dsi));
++		return PTR_ERR(ts->dsi);
++	}
++
++	drm_panel_init(&ts->base, dev, &ws_panel_funcs,
++		       DRM_MODE_CONNECTOR_DSI);
++
++	ts->base.backlight = ws_panel_create_backlight(ts);
++	if (IS_ERR(ts->base.backlight)) {
++		ret = PTR_ERR(ts->base.backlight);
++		dev_err(dev, "Failed to create backlight: %d\n", ret);
++		return ret;
++	}
++
++	/* This appears last, as it's what will unblock the DSI host
++	 * driver's component bind function.
++	 */
++	drm_panel_add(&ts->base);
++
++	ts->dsi->mode_flags = _ws_panel_data->mode_flags;
++	ts->dsi->format = MIPI_DSI_FMT_RGB888;
++	ts->dsi->lanes = _ws_panel_data->lanes;
++
++	ret = devm_mipi_dsi_attach(dev, ts->dsi);
++
++	if (ret)
++		dev_err(dev, "failed to attach dsi to host: %d\n", ret);
++
++	return 0;
++
++error:
++	of_node_put(endpoint);
++	return -ENODEV;
++}
++
++static void ws_panel_remove(struct i2c_client *i2c)
++{
++	struct ws_panel *ts = i2c_get_clientdata(i2c);
++
++	ws_panel_disable(&ts->base);
++
++	drm_panel_remove(&ts->base);
++}
++
++static void ws_panel_shutdown(struct i2c_client *i2c)
++{
++	struct ws_panel *ts = i2c_get_clientdata(i2c);
++
++	ws_panel_disable(&ts->base);
++}
++
++static const struct of_device_id ws_panel_of_ids[] = {
++	{
++		.compatible = "waveshare,2.8inch-panel",
++		.data = &ws_panel_2_8_data,
++	}, {
++		.compatible = "waveshare,3.4inch-panel",
++		.data = &ws_panel_3_4_data,
++	}, {
++		.compatible = "waveshare,4.0inch-panel",
++		.data = &ws_panel_4_0_data,
++	}, {
++		.compatible = "waveshare,7.0inch-c-panel",
++		.data = &ws_panel_7_0_c_data,
++	}, {
++		.compatible = "waveshare,7.9inch-panel",
++		.data = &ws_panel_7_9_data,
++	}, {
++		.compatible = "waveshare,8.0inch-panel",
++		.data = &ws_panel_10_1_data,
++	}, {
++		.compatible = "waveshare,10.1inch-panel",
++		.data = &ws_panel_10_1_data,
++	}, {
++		.compatible = "waveshare,11.9inch-panel",
++		.data = &ws_panel_11_9_data,
++	}, {
++		.compatible = "waveshare,4inch-panel",
++		.data = &ws_panel_4_data,
++	}, {
++		.compatible = "waveshare,5.0inch-panel",
++		.data = &ws_panel_5_0_data,
++	}, {
++		.compatible = "waveshare,6.25inch-panel",
++		.data = &ws_panel_6_25_data,
++	}, {
++		.compatible = "waveshare,8.8inch-panel",
++		.data = &ws_panel_8_8_data,
++	}, {
++		.compatible = "waveshare,13.3inch-4lane-panel",
++		.data = &ws_panel_13_3_4lane_data,
++	}, {
++		.compatible = "waveshare,13.3inch-2lane-panel",
++		.data = &ws_panel_13_3_2lane_data,
++	}, {
++		.compatible = "waveshare,7.0inch-h-panel",
++		.data = &ws_panel_7_0_h_data,
++	}, {
++		/* sentinel */
++	}
++};
++MODULE_DEVICE_TABLE(of, ws_panel_of_ids);
++
++static struct i2c_driver ws_panel_driver = {
++	.driver = {
++		.name = "ws_touchscreen",
++		.of_match_table = ws_panel_of_ids,
++	},
++	.probe = ws_panel_probe,
++	.remove = ws_panel_remove,
++	.shutdown = ws_panel_shutdown,
++};
++module_i2c_driver(ws_panel_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("Waveshare DSI panel driver");
++MODULE_LICENSE("GPL");

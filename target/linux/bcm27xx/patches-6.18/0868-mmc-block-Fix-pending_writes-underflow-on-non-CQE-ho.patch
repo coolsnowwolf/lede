@@ -1,0 +1,67 @@
+From eacf886641f744bb0ba4afdb26bccb2de86fb7e7 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Thu, 16 Jul 2026 10:04:16 -0300
+Subject: [PATCH] mmc: block: Fix pending_writes underflow on non-CQE hosts
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The posted-write accounting mirrors in_flight[], but on the plain blk-mq
+completion path (hosts with neither CQE nor HSQ) pending_writes is
+decremented twice per write: once in mmc_blk_mq_complete_rq() and again
+in mmc_blk_mq_dec_in_flight(). Both run for a single request, since
+mmc_blk_mq_post_req() first triggers the .complete callback via
+blk_mq_complete_request() and then calls mmc_blk_mq_dec_in_flight().
+As in_flight[] is only decremented in the latter, pending_writes drifts
+one below in_flight[] for every completed write and underflows.
+
+This stayed hidden on the CQE/HSQ hosts the feature targets, where
+completion goes solely through mmc_blk_cqe_complete_rq() and decrements
+once. It surfaces on plain-mq hosts such as the bcm2835-sdhost, tripping
+the WARN_ON_ONCE() on the first write once the rootfs is remounted
+read-write:
+
+  ------------[ cut here ]------------
+  WARNING: CPU: 0 PID: 84 at drivers/mmc/core/queue.c:350 mmc_mq_queue_rq+0x2a0/0x2f8
+  Modules linked in: sch_fq_codel uinput i2c_dev zram lz4_compress fuse drm drm_panel_orientation_quirks backlight nfnetlink ipv6 libsha1
+  CPU: 0 UID: 0 PID: 84 Comm: kworker/0:1H Not tainted 6.18.38-v8-tile-alloc-256-32+ #15 PREEMPT
+  Hardware name: Raspberry Pi 3 Model B Plus Rev 1.3 (DT)
+  Workqueue: kblockd blk_mq_requeue_work
+  pstate: 20000005 (nzCv daif -PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+  pc : mmc_mq_queue_rq+0x2a0/0x2f8
+  lr : mmc_mq_queue_rq+0x284/0x2f8
+  Call trace:
+   mmc_mq_queue_rq+0x2a0/0x2f8 (P)
+   blk_mq_dispatch_rq_list+0x2c8/0x718
+   __blk_mq_sched_dispatch_requests+0xec/0x570
+   blk_mq_sched_dispatch_requests+0x3c/0x88
+   blk_mq_run_hw_queue+0xf4/0x128
+   blk_mq_run_hw_queues+0xc4/0x140
+   blk_mq_requeue_work+0x188/0x1c0
+   process_scheduled_works+0x180/0x3d0
+   worker_thread+0x268/0x3e8
+   kthread+0x140/0x250
+   ret_from_fork+0x10/0x20
+  ---[ end trace 0000000000000000 ]---
+
+Decrement pending_writes only where in_flight[] is decremented, dropping
+the redundant decrement in mmc_blk_mq_complete_rq() so the counter tracks
+in_flight[] exactly. The CQE path is unaffected.
+
+Fixes: e6c1e862b2b8 ("mmc: restrict posted write counts for SD cards in CQ mode")
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/mmc/core/block.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -2129,8 +2129,6 @@ static void mmc_blk_mq_complete_rq(struc
+ 	struct mmc_queue_req *mqrq = req_to_mmc_queue_req(req);
+ 	unsigned int nr_bytes = mqrq->brq.data.bytes_xfered;
+ 
+-	if (req_op(req) == REQ_OP_WRITE)
+-		mq->pending_writes--;
+ 	if (nr_bytes) {
+ 		if (blk_update_request(req, BLK_STS_OK, nr_bytes))
+ 			blk_mq_requeue_request(req, true);

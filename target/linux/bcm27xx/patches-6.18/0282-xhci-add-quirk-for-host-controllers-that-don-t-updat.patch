@@ -1,0 +1,96 @@
+From 7dd290a74745fbd53c97b858086be566021ba514 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 7 Mar 2022 16:18:55 +0000
+Subject: [PATCH] xhci: add quirk for host controllers that don't update
+ endpoint DCS
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Seen on a VLI VL805 PCIe to USB controller. For non-stream endpoints
+at least, if the xHC halts on a particular TRB due to an error then
+the DCS field in the Out Endpoint Context maintained by the hardware
+is not updated with the current cycle state.
+
+Using the quirk XHCI_EP_CTX_BROKEN_DCS and instead fetch the DCS bit
+from the TRB that the xHC stopped on.
+
+[ bjorn: rebased to v5.14-rc2 ]
+
+Link: https://github.com/raspberrypi/linux/issues/3060
+Cc: stable@vger.kernel.org
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.org>
+Signed-off-by: Bjørn Mork <bjorn@mork.no>
+Signed-off-by: Mathias Nyman <mathias.nyman@linux.intel.com>
+Link: https://lore.kernel.org/r/20211008092547.3996295-3-mathias.nyman@linux.intel.com
+Signed-off-by: Greg Kroah-Hartman <gregkh@linuxfoundation.org>
+---
+ drivers/net/ethernet/broadcom/genet/bcmmii.c |  4 +---
+ drivers/usb/host/xhci-pci.c                  |  1 +
+ drivers/usb/host/xhci-ring.c                 | 23 +++++++++++++++++++-
+ 3 files changed, 24 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/broadcom/genet/bcmmii.c
++++ b/drivers/net/ethernet/broadcom/genet/bcmmii.c
+@@ -306,9 +306,7 @@ int bcmgenet_mii_probe(struct net_device
+ 	struct device_node *dn = kdev->of_node;
+ 	phy_interface_t phy_iface = priv->phy_interface;
+ 	struct phy_device *phydev;
+-	u32 phy_flags = PHY_BRCM_AUTO_PWRDWN_ENABLE |
+-			PHY_BRCM_DIS_TXCRXC_NOENRGY |
+-			PHY_BRCM_IDDQ_SUSPEND;
++	u32 phy_flags = 0;
+ 	int ret;
+ 
+ 	/* Communicate the integrated PHY revision */
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -448,6 +448,7 @@ static void xhci_pci_quirks(struct devic
+ 	if (pdev->vendor == PCI_VENDOR_ID_VIA && pdev->device == PCI_DEVICE_ID_VIA_VL805) {
+ 		xhci->quirks |= XHCI_LPM_SUPPORT;
+ 		xhci->quirks |= XHCI_TRB_OVERFETCH;
++		xhci->quirks |= XHCI_EP_CTX_BROKEN_DCS;
+ 		xhci->dma_mask_bits = 36;
+ 	}
+ 
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -694,8 +694,11 @@ static int xhci_move_dequeue_past_td(str
+ 	struct xhci_ring *ep_ring;
+ 	struct xhci_command *cmd;
+ 	struct xhci_segment *new_seg;
++	struct xhci_segment *halted_seg = NULL;
+ 	union xhci_trb *new_deq;
+ 	int new_cycle;
++	union xhci_trb *halted_trb;
++	int index = 0;
+ 	dma_addr_t addr;
+ 	u64 hw_dequeue;
+ 	bool hw_dequeue_found = false;
+@@ -714,7 +717,25 @@ static int xhci_move_dequeue_past_td(str
+ 	hw_dequeue = xhci_get_hw_deq(xhci, dev, ep_index, stream_id) & TR_DEQ_PTR_MASK;
+ 	new_seg = ep_ring->deq_seg;
+ 	new_deq = ep_ring->dequeue;
+-	new_cycle = le32_to_cpu(td->end_trb->generic.field[3]) & TRB_CYCLE;
++
++	/*
++	 * Quirk: xHC write-back of the DCS field in the hardware dequeue
++	 * pointer is wrong - use the cycle state of the TRB pointed to by
++	 * the dequeue pointer.
++	 */
++	if (xhci->quirks & XHCI_EP_CTX_BROKEN_DCS &&
++	    !(ep->ep_state & EP_HAS_STREAMS))
++		halted_seg = trb_in_td(td, hw_dequeue & ~0xf);
++	if (halted_seg) {
++		index = ((dma_addr_t)(hw_dequeue & ~0xf) - halted_seg->dma) /
++			 sizeof(*halted_trb);
++		halted_trb = &halted_seg->trbs[index];
++		new_cycle = halted_trb->generic.field[3] & 0x1;
++		xhci_dbg(xhci, "Endpoint DCS = %d TRB index = %d cycle = %d\n",
++			 (u8)(hw_dequeue & 0x1), index, new_cycle);
++	} else {
++		new_cycle = le32_to_cpu(td->end_trb->generic.field[3]) & TRB_CYCLE;
++	}
+ 
+ 	/*
+ 	 * Walk the ring until both the next TRB and hw_dequeue are found (don't

@@ -1,0 +1,882 @@
+From abf7b07bc88b384342402eecc2d59febe0e79ebf Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 15 Jul 2026 16:13:59 +0100
+Subject: [PATCH] serial: Add rp1-pio-uart - a PIO-based UART
+
+This is a tty driver that implements a UART using RP1's PIO block,
+ported from pico-examples/pio/uart_dma. Like that example, it is
+limited to 8N1, with no hardware flow control.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/tty/serial/Kconfig        |  13 +
+ drivers/tty/serial/Makefile       |   2 +
+ drivers/tty/serial/rp1-pio-uart.c | 809 ++++++++++++++++++++++++++++++
+ include/uapi/linux/serial_core.h  |   3 +
+ 4 files changed, 827 insertions(+)
+ create mode 100644 drivers/tty/serial/rp1-pio-uart.c
+
+--- a/drivers/tty/serial/Kconfig
++++ b/drivers/tty/serial/Kconfig
+@@ -1630,6 +1630,19 @@ config SERIAL_RPI_FW
+ 
+ 	  If unsure, say N.
+ 
++config SERIAL_RP1_PIO_UART
++	tristate "Raspberry Pi RP1 PIO UART support"
++	depends on RP1_PIO || COMPILE_TEST
++	select SERIAL_CORE
++	help
++	  This selects a software UART implemented using the RP1 PIO block,
++	  with DMA moving data in and out of the PIO FIFOs and a PIO
++	  interrupt used for break detection. Only 8N1 with no hardware
++	  flow control is supported. Only useful on Raspberry Pi 5 and
++	  newer platforms that have an RP1 southbridge.
++
++	  If unsure, say N.
++
+ endmenu
+ 
+ config SERIAL_MCTRL_GPIO
+--- a/drivers/tty/serial/Makefile
++++ b/drivers/tty/serial/Makefile
+@@ -11,6 +11,7 @@ obj-$(CONFIG_SERIAL_EARLYCON_SEMIHOST) +
+ obj-$(CONFIG_SERIAL_EARLYCON_RISCV_SBI) += earlycon-riscv-sbi.o
+ 
+ obj-$(CONFIG_SERIAL_RPI_FW) 		+= rpi-fw-uart.o
++obj-$(CONFIG_SERIAL_RP1_PIO_UART)	+= rp1-pio-uart.o
+ # These Sparc drivers have to appear before others such as 8250
+ # which share ttySx minor node space.  Otherwise console device
+ # names change and other unplesantries.
+@@ -73,6 +74,7 @@ obj-$(CONFIG_SERIAL_QE)			+= ucc_uart.o
+ obj-$(CONFIG_SERIAL_RDA)		+= rda-uart.o
+ obj-$(CONFIG_SERIAL_RP2)		+= rp2.o
+ obj-$(CONFIG_SERIAL_RPI_FW) 		+= rpi-fw-uart.o
++obj-$(CONFIG_SERIAL_RP1_PIO_UART)	+= rp1-pio-uart.o
+ obj-$(CONFIG_SERIAL_RSCI)		+= rsci.o
+ obj-$(CONFIG_SERIAL_SA1100)		+= sa1100.o
+ obj-$(CONFIG_SERIAL_SAMSUNG)		+= samsung_tty.o
+--- /dev/null
++++ b/drivers/tty/serial/rp1-pio-uart.c
+@@ -0,0 +1,809 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * RP1 PIO-based UART driver
++ *
++ * Copyright (c) 2026, Raspberry Pi Ltd.  All rights reserved.
++ *
++ * Implements a UART entirely in the RP1 PIO block: one state machine
++ * bit-bangs TX, another bit-bangs RX, and DMA moves the data in and out of
++ * their FIFOs. Ported from the pico-examples "pio/uart_dma" demo (BSD
++ * 3-Clause licensed), turning its one-shot bare-metal transfer into a
++ * continuous tty stream.
++ *
++ * Every per-SM register access exposed by rp1-pio (put/get/fifo_state/
++ * interrupt_clear/...) is a synchronous RP1 firmware mailbox round trip, not
++ * a register read/write, so unlike the demo this driver can *only* move
++ * data via DMA: there is no affordable way to poll or push/pop the PIO
++ * FIFOs a byte at a time from the CPU. The one primitive that *is* cheap
++ * and hardirq-capable is the PIO interrupt itself, so that is reserved for
++ * something DMA cannot express: break detection.
++ *
++ * The PIO TX/RX FIFOs are 32 bits wide and rp1-pio's DMA path always moves
++ * data 32 bits at a time, but each of our PIO programs only cares about one
++ * byte per FIFO word (the TX program pulls a fresh word per start bit; the
++ * RX program pushes a fresh word per stop bit). So bytes are expanded to
++ * 32-bit words before transmission and picked back out of 32-bit words on
++ * reception -- see rp1_pio_uart_pack_tx()/rp1_pio_uart_unpack_rx().
++ */
++
++#include <linux/bits.h>
++#include <linux/gpio/consumer.h>
++#include <linux/jiffies.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/pio_rp1.h>
++#include <linux/platform_device.h>
++#include <linux/serial.h>
++#include <linux/serial_core.h>
++#include <linux/slab.h>
++#include <linux/timer.h>
++#include <linux/tty.h>
++#include <linux/tty_flip.h>
++#include <linux/workqueue.h>
++
++#define DRIVER_NAME "rp1-pio-uart"
++
++/* ---- PIO programs, translated from pico-examples/pio/uart_tx and uart_rx ---- */
++
++#define UART_TX_WRAP_TARGET	0
++#define UART_TX_WRAP		3
++
++static const u16 uart_tx_program_instructions[] = {
++	0x9fa0, //  0: pull   block           side 1 [7]
++	0xf727, //  1: set    x, 7            side 0 [7]
++	0x6001, //  2: out    pins, 1
++	0x0642, //  3: jmp    x--, 2                 [6]
++};
++
++/*
++ * The full uart_rx program, not the 4-instruction "mini" variant the demo
++ * uses for its DMA path: the extra instructions detect a break or framing
++ * error and raise a PIO interrupt instead of silently pushing a corrupt
++ * byte.
++ */
++#define UART_RX_WRAP_TARGET	0
++#define UART_RX_WRAP		8
++
++static const u16 uart_rx_program_instructions[] = {
++	0x2020, //  0: wait   0 pin, 0
++	0xea27, //  1: set    x, 7                   [10]
++	0x4001, //  2: in     pins, 1
++	0x0642, //  3: jmp    x--, 2                 [6]
++	0x00c8, //  4: jmp    pin, 8
++	0xc010, //  5: irq    nowait 0 rel
++	0x20a0, //  6: wait   1 pin, 0
++	0x0000, //  7: jmp    0
++	0x8020, //  8: push   block
++};
++
++static const struct pio_program uart_tx_program = {
++	.instructions = uart_tx_program_instructions,
++	.length = ARRAY_SIZE(uart_tx_program_instructions),
++	.origin = -1,
++};
++
++static const struct pio_program uart_rx_program = {
++	.instructions = uart_rx_program_instructions,
++	.length = ARRAY_SIZE(uart_rx_program_instructions),
++	.origin = -1,
++};
++
++/* Only 8N1 is implemented by the PIO programs above */
++#define RP1_PIO_UART_MIN_BAUD	400
++#define RP1_PIO_UART_MAX_BAUD	3000000
++#define RP1_PIO_UART_DEF_BAUD	115200
++
++/*
++ * TX: one 64-char chunk in flight at a time. RX: several small chunks kept
++ * pipelined so the PIO RX FIFO is always being drained. RX_CHUNK_CHARS
++ * bounds how long a burst of received bytes waits before being handed to
++ * the tty layer (a DMA chunk only "completes" once full) -- 8 chars is a
++ * throughput/latency compromise; lower it (down to 1) for lower latency at
++ * the cost of one DMA transaction per byte.
++ */
++#define RP1_PIO_UART_TX_CHUNK_CHARS	64
++#define RP1_PIO_UART_TX_CHUNK_BYTES	(RP1_PIO_UART_TX_CHUNK_CHARS * 4)
++
++#define RP1_PIO_UART_RX_CHUNK_CHARS	8
++#define RP1_PIO_UART_RX_CHUNK_BYTES	(RP1_PIO_UART_RX_CHUNK_CHARS * 4)
++#define RP1_PIO_UART_RX_SLOTS		4
++
++struct rp1_pio_uart;
++
++struct rp1_pio_uart_rx_slot {
++	struct rp1_pio_uart	*rfu;
++	u8			*buf; /* RP1_PIO_UART_RX_CHUNK_BYTES, x4-packed */
++};
++
++struct rp1_pio_uart {
++	struct uart_driver	driver;
++	struct uart_port	port;
++
++	struct gpio_desc	*tx_gpiod;
++	struct gpio_desc	*rx_gpiod;
++	unsigned int		tx_hwnum;
++	unsigned int		rx_hwnum;
++
++	PIO			pio;
++	unsigned int		sm_tx;
++	unsigned int		sm_rx;
++	unsigned int		offset_tx;
++	unsigned int		offset_rx;
++	int			irq_index;
++
++	bool			shutting_down;
++
++	/* TX: one chunk in flight at a time */
++	bool			tx_busy;
++	u8			*tx_buf; /* RP1_PIO_UART_TX_CHUNK_BYTES, x4-packed */
++	struct work_struct	tx_work;
++
++	/* RX: several chunks pipelined */
++	struct rp1_pio_uart_rx_slot rx_slots[RP1_PIO_UART_RX_SLOTS];
++	unsigned long		rx_rearm_pending;
++	bool			rx_stopped;
++	struct work_struct	rx_rearm_work;
++
++	/* RX: CPU fallback for characters stuck below the DMA threshold */
++	struct timer_list	rx_timeout;
++	struct work_struct	rx_timeout_work;
++
++	struct work_struct	break_work;
++};
++
++static inline struct rp1_pio_uart *port_to_rfu(struct uart_port *port)
++{
++	return container_of(port, struct rp1_pio_uart, port);
++}
++
++static void rp1_pio_uart_pack_tx(u8 *dst, const u8 *src, unsigned int count)
++{
++	unsigned int i;
++
++	for (i = 0; i < count; i++) {
++		dst[4 * i + 0] = src[i];
++		dst[4 * i + 1] = 0;
++		dst[4 * i + 2] = 0;
++		dst[4 * i + 3] = 0;
++	}
++}
++
++static void rp1_pio_uart_unpack_rx(const u8 *src, unsigned int count, u8 *dst)
++{
++	unsigned int i;
++
++	for (i = 0; i < count; i++)
++		dst[i] = src[4 * i + 3];
++}
++
++/* ---------------------------------- RX ---------------------------------- */
++
++static void rp1_pio_uart_rx_arm(struct rp1_pio_uart_rx_slot *slot);
++
++/*
++ * rp1_pio_sm_config_xfer_internal() (drivers/misc/rp1-pio.c) programs the RX
++ * SM's DREQ threshold to RP1_PIO_UART_RX_CHUNK_CHARS words, i.e. the joined,
++ * 8-deep RX FIFO is only drained by DMA once a full chunk has piled up in
++ * it. So if the sender goes quiet mid-chunk, the last few characters just
++ * sit in the FIFO forever -- DMA has nothing to trigger on and never comes
++ * back for them. rx_timeout notices the quiet spell and, since it runs in
++ * process context (see rp1_pio_uart_rx_timeout_work()), can afford to pop
++ * them out with pio_sm_get() instead.
++ */
++static unsigned long rp1_pio_uart_rx_timeout_jiffies(struct uart_port *port)
++{
++	u64 ns = (u64)READ_ONCE(port->frame_time) * RP1_PIO_UART_RX_CHUNK_CHARS;
++
++	/* Slop for scheduling/mailbox latency, and a floor for silly baud rates */
++	ns += 20 * NSEC_PER_MSEC;
++
++	return max(nsecs_to_jiffies(ns), 1UL);
++}
++
++/* DMA completion callback: context is whatever rp1-pio's dmaengine backend
++ * uses (tasklet/softirq in practice) -- do the context-safe part (deliver
++ * to the tty flip buffer) directly, defer the re-arm (which can allocate)
++ * to a workqueue.
++ */
++static void rp1_pio_uart_rx_complete(void *param)
++{
++	struct rp1_pio_uart_rx_slot *slot = param;
++	struct rp1_pio_uart *rfu = slot->rfu;
++	u8 chars[RP1_PIO_UART_RX_CHUNK_CHARS];
++	unsigned long flags;
++	bool stopped;
++
++	rp1_pio_uart_unpack_rx(slot->buf, RP1_PIO_UART_RX_CHUNK_CHARS, chars);
++	tty_insert_flip_string(&rfu->port.state->port, chars, RP1_PIO_UART_RX_CHUNK_CHARS);
++	tty_flip_buffer_push(&rfu->port.state->port);
++
++	spin_lock_irqsave(&rfu->port.lock, flags);
++	rfu->port.icount.rx += RP1_PIO_UART_RX_CHUNK_CHARS;
++	stopped = rfu->shutting_down || rfu->rx_stopped;
++	if (!stopped)
++		set_bit(slot - rfu->rx_slots, &rfu->rx_rearm_pending);
++	spin_unlock_irqrestore(&rfu->port.lock, flags);
++
++	if (!stopped) {
++		queue_work(system_highpri_wq, &rfu->rx_rearm_work);
++
++		/* A chunk just completed, so the FIFO isn't backed up: push the
++		 * deadline for the CPU fallback back out.
++		 */
++		mod_timer(&rfu->rx_timeout, jiffies + rp1_pio_uart_rx_timeout_jiffies(&rfu->port));
++	}
++}
++
++static void rp1_pio_uart_rx_arm(struct rp1_pio_uart_rx_slot *slot)
++{
++	struct rp1_pio_uart *rfu = slot->rfu;
++	int ret;
++
++	ret = pio_sm_xfer_data(rfu->pio, rfu->sm_rx, PIO_DIR_FROM_SM,
++			       RP1_PIO_UART_RX_CHUNK_BYTES, slot->buf, 0,
++			       rp1_pio_uart_rx_complete, slot);
++	if (ret)
++		dev_err_ratelimited(rfu->port.dev, "RX DMA submit failed (%d)\n", ret);
++}
++
++static void rp1_pio_uart_rx_rearm_work(struct work_struct *work)
++{
++	struct rp1_pio_uart *rfu = container_of(work, struct rp1_pio_uart, rx_rearm_work);
++	unsigned long flags;
++	int i;
++
++	for (i = 0; i < RP1_PIO_UART_RX_SLOTS; i++) {
++		bool go;
++
++		spin_lock_irqsave(&rfu->port.lock, flags);
++		go = test_and_clear_bit(i, &rfu->rx_rearm_pending) &&
++		     !rfu->shutting_down && !rfu->rx_stopped;
++		spin_unlock_irqrestore(&rfu->port.lock, flags);
++
++		if (go)
++			rp1_pio_uart_rx_arm(&rfu->rx_slots[i]);
++	}
++}
++
++/* Runs in process context so it can make the mailbox calls that pio_sm_get()
++ * and pio_sm_rx_fifo_level() require -- unlike the DMA completion path,
++ * there is no way to do this straight out of the timer callback.
++ */
++static void rp1_pio_uart_rx_timeout_work(struct work_struct *work)
++{
++	struct rp1_pio_uart *rfu = container_of(work, struct rp1_pio_uart, rx_timeout_work);
++	u8 chars[RP1_PIO_UART_RX_CHUNK_CHARS];
++	unsigned long flags;
++	bool stopped;
++	int level;
++	int i;
++
++	spin_lock_irqsave(&rfu->port.lock, flags);
++	stopped = rfu->shutting_down || rfu->rx_stopped;
++	spin_unlock_irqrestore(&rfu->port.lock, flags);
++	if (stopped)
++		return;
++
++	if (pio_sm_rx_fifo_level(rfu->pio, rfu->sm_rx) > 0) {
++		/*
++		 * Stop the RX SM so it cannot push any more words into the
++		 * FIFO while we drain it by hand: otherwise a fresh arrival
++		 * could push the level past the DMA threshold mid-drain and
++		 * race the DMA engine for the same words. A byte that is
++		 * mid-reception at this exact instant can be lost, but that
++		 * is the cost of doing this from a quiet-line timeout at all.
++		 */
++		pio_sm_set_enabled(rfu->pio, rfu->sm_rx, false);
++
++		level = pio_sm_rx_fifo_level(rfu->pio, rfu->sm_rx);
++		/* Every FIFO word carries one byte of data in its top 8 bits,
++		 * the rest is padding -- see rp1_pio_uart_unpack_rx().
++		 */
++		for (i = 0; i < level; i++)
++			chars[i] = pio_sm_get(rfu->pio, rfu->sm_rx) >> 24;
++
++		pio_sm_set_enabled(rfu->pio, rfu->sm_rx, true);
++
++		if (level > 0) {
++			tty_insert_flip_string(&rfu->port.state->port, chars, level);
++			tty_flip_buffer_push(&rfu->port.state->port);
++
++			spin_lock_irqsave(&rfu->port.lock, flags);
++			rfu->port.icount.rx += level;
++			spin_unlock_irqrestore(&rfu->port.lock, flags);
++		}
++	}
++
++	mod_timer(&rfu->rx_timeout, jiffies + rp1_pio_uart_rx_timeout_jiffies(&rfu->port));
++}
++
++/* Timer callback: softirq context, so just hand off to the workqueue */
++static void rp1_pio_uart_rx_timeout(struct timer_list *t)
++{
++	struct rp1_pio_uart *rfu = timer_container_of(rfu, t, rx_timeout);
++
++	queue_work(system_highpri_wq, &rfu->rx_timeout_work);
++}
++
++/* ---------------------------------- TX ---------------------------------- */
++
++static void rp1_pio_uart_tx_complete(void *param)
++{
++	struct rp1_pio_uart *rfu = param;
++	unsigned long flags;
++	bool more;
++
++	spin_lock_irqsave(&rfu->port.lock, flags);
++	rfu->tx_busy = false;
++	more = !rfu->shutting_down && !kfifo_is_empty(&rfu->port.state->port.xmit_fifo);
++	spin_unlock_irqrestore(&rfu->port.lock, flags);
++
++	if (more)
++		queue_work(system_highpri_wq, &rfu->tx_work);
++	else
++		uart_write_wakeup(&rfu->port);
++}
++
++static void rp1_pio_uart_tx_work(struct work_struct *work)
++{
++	struct rp1_pio_uart *rfu = container_of(work, struct rp1_pio_uart, tx_work);
++	struct uart_port *port = &rfu->port;
++	struct tty_port *tport = &port->state->port;
++	unsigned long flags;
++	unsigned char *tail;
++	unsigned int count;
++	int ret;
++
++	spin_lock_irqsave(&port->lock, flags);
++	if (rfu->tx_busy || rfu->shutting_down) {
++		spin_unlock_irqrestore(&port->lock, flags);
++		return;
++	}
++
++	count = kfifo_out_linear_ptr(&tport->xmit_fifo, &tail, RP1_PIO_UART_TX_CHUNK_CHARS);
++	if (!count) {
++		spin_unlock_irqrestore(&port->lock, flags);
++		return;
++	}
++
++	rp1_pio_uart_pack_tx(rfu->tx_buf, tail, count);
++	uart_xmit_advance(port, count);
++	rfu->tx_busy = true;
++	spin_unlock_irqrestore(&port->lock, flags);
++
++	ret = pio_sm_xfer_data(rfu->pio, rfu->sm_tx, PIO_DIR_TO_SM, count * 4, rfu->tx_buf, 0,
++			       rp1_pio_uart_tx_complete, rfu);
++	if (ret) {
++		dev_err_ratelimited(port->dev, "TX DMA submit failed (%d)\n", ret);
++		spin_lock_irqsave(&port->lock, flags);
++		rfu->tx_busy = false;
++		spin_unlock_irqrestore(&port->lock, flags);
++	}
++
++	uart_write_wakeup(port);
++}
++
++/* Called with port->lock held */
++static void rp1_pio_uart_start_tx(struct uart_port *port)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++
++	if (rfu->tx_busy || rfu->shutting_down)
++		return;
++
++	queue_work(system_highpri_wq, &rfu->tx_work);
++}
++
++static void rp1_pio_uart_stop_tx(struct uart_port *port)
++{
++	/*
++	 * Nothing exposed by pio_rp1.h can abort a DMA transfer already
++	 * submitted to the PIO FIFO -- any in-flight chunk simply finishes.
++	 */
++}
++
++static void rp1_pio_uart_stop_rx(struct uart_port *port)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++
++	rfu->rx_stopped = true;
++}
++
++/* -------------------------------- Break IRQ ------------------------------ */
++
++static void rp1_pio_uart_break_work(struct work_struct *work)
++{
++	struct rp1_pio_uart *rfu = container_of(work, struct rp1_pio_uart, break_work);
++	struct uart_port *port = &rfu->port;
++	unsigned long flags;
++	bool down;
++	uint intn;
++
++	intn = pio_interrupt_rel(rfu->sm_rx, 0);
++	pio_interrupt_clear(rfu->pio, intn);
++
++	spin_lock_irqsave(&port->lock, flags);
++	down = rfu->shutting_down;
++	if (!down)
++		port->icount.brk++;
++	spin_unlock_irqrestore(&port->lock, flags);
++
++	if (down)
++		return;
++
++	if (!uart_handle_break(port)) {
++		tty_insert_flip_char(&port->state->port, 0, TTY_BREAK);
++		tty_flip_buffer_push(&port->state->port);
++	}
++}
++
++/* Hardirq context: called directly from rp1-pio's own interrupt handler.
++ * pio_interrupt_clear() is a firmware mailbox call and must not run here.
++ */
++static void rp1_pio_uart_break_irq(void *context)
++{
++	struct rp1_pio_uart *rfu = context;
++
++	queue_work(system_highpri_wq, &rfu->break_work);
++}
++
++/* ------------------------------- uart_ops -------------------------------- */
++
++static unsigned int rp1_pio_uart_tx_empty(struct uart_port *port)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++	unsigned long flags;
++	bool empty;
++
++	spin_lock_irqsave(&port->lock, flags);
++	empty = !rfu->tx_busy && kfifo_is_empty(&port->state->port.xmit_fifo);
++	spin_unlock_irqrestore(&port->lock, flags);
++
++	return empty ? TIOCSER_TEMT : 0;
++}
++
++static void rp1_pio_uart_set_mctrl(struct uart_port *port, unsigned int mctrl)
++{
++	/* No hardware flow control */
++}
++
++static unsigned int rp1_pio_uart_get_mctrl(struct uart_port *port)
++{
++	return TIOCM_CTS;
++}
++
++static void rp1_pio_uart_break_ctl(struct uart_port *port, int ctl)
++{
++}
++
++static void rp1_pio_uart_set_baud(struct rp1_pio_uart *rfu, unsigned int baud)
++{
++	struct fp24_8 div = make_fp24_8(clock_get_hz(clk_sys), 8 * baud);
++
++	pio_sm_set_clkdiv(rfu->pio, rfu->sm_tx, div);
++	pio_sm_set_clkdiv(rfu->pio, rfu->sm_rx, div);
++}
++
++static void rp1_pio_uart_set_termios(struct uart_port *port, struct ktermios *new,
++				     const struct ktermios *old)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++	unsigned long flags;
++	unsigned int baud;
++
++	baud = uart_get_baud_rate(port, new, old, RP1_PIO_UART_MIN_BAUD, RP1_PIO_UART_MAX_BAUD);
++
++	/* Only 8N1, no flow control: that is all the PIO programs implement */
++	new->c_cflag &= ~(CSIZE | CSTOPB | PARENB | CRTSCTS);
++	new->c_cflag |= CS8;
++
++	spin_lock_irqsave(&port->lock, flags);
++	uart_update_timeout(port, new->c_cflag, baud);
++	spin_unlock_irqrestore(&port->lock, flags);
++
++	rp1_pio_uart_set_baud(rfu, baud);
++}
++
++static int rp1_pio_uart_startup(struct uart_port *port)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++	pio_sm_config cfg;
++	uint intn;
++	int ret, i;
++
++	rfu->pio = pio_open();
++	if (IS_ERR(rfu->pio)) {
++		ret = PTR_ERR(rfu->pio);
++		rfu->pio = NULL;
++		dev_err(port->dev, "Could not open PIO (%d)\n", ret);
++		return ret;
++	}
++
++	ret = pio_claim_unused_sm(rfu->pio, false);
++	if (ret < 0) {
++		ret = -EBUSY;
++		goto err_close;
++	}
++	rfu->sm_tx = ret;
++
++	ret = pio_claim_unused_sm(rfu->pio, false);
++	if (ret < 0) {
++		ret = -EBUSY;
++		goto err_close;
++	}
++	rfu->sm_rx = ret;
++
++	ret = pio_add_program(rfu->pio, &uart_tx_program);
++	if (ret == PIO_ORIGIN_INVALID) {
++		ret = -EBUSY;
++		goto err_close;
++	}
++	rfu->offset_tx = ret;
++
++	ret = pio_add_program(rfu->pio, &uart_rx_program);
++	if (ret == PIO_ORIGIN_INVALID) {
++		ret = -EBUSY;
++		goto err_close;
++	}
++	rfu->offset_rx = ret;
++
++	/* TX SM: side-set drives the start/stop bits, OUT drives data bits */
++	pio_sm_set_pins_with_mask(rfu->pio, rfu->sm_tx, BIT(rfu->tx_hwnum), BIT(rfu->tx_hwnum));
++	pio_sm_set_consecutive_pindirs(rfu->pio, rfu->sm_tx, rfu->tx_hwnum, 1, true);
++	pio_gpio_init(rfu->pio, rfu->tx_hwnum);
++
++	cfg = pio_get_default_sm_config();
++	sm_config_set_wrap(&cfg, rfu->offset_tx + UART_TX_WRAP_TARGET,
++			   rfu->offset_tx + UART_TX_WRAP);
++	sm_config_set_sideset(&cfg, 2, true, false);
++	sm_config_set_out_shift(&cfg, true, false, 32);
++	sm_config_set_out_pins(&cfg, rfu->tx_hwnum, 1);
++	sm_config_set_sideset_pins(&cfg, rfu->tx_hwnum);
++	sm_config_set_fifo_join(&cfg, PIO_FIFO_JOIN_TX);
++	pio_sm_init(rfu->pio, rfu->sm_tx, rfu->offset_tx, &cfg);
++
++	/* RX SM */
++	pio_sm_set_consecutive_pindirs(rfu->pio, rfu->sm_rx, rfu->rx_hwnum, 1, false);
++	pio_gpio_init(rfu->pio, rfu->rx_hwnum);
++	pio_gpio_pull_up(rfu->pio, rfu->rx_hwnum);
++
++	cfg = pio_get_default_sm_config();
++	sm_config_set_wrap(&cfg, rfu->offset_rx + UART_RX_WRAP_TARGET,
++			   rfu->offset_rx + UART_RX_WRAP);
++	sm_config_set_in_pins(&cfg, rfu->rx_hwnum);
++	sm_config_set_jmp_pin(&cfg, rfu->rx_hwnum);
++	sm_config_set_in_shift(&cfg, true, false, 32);
++	sm_config_set_fifo_join(&cfg, PIO_FIFO_JOIN_RX);
++	pio_sm_init(rfu->pio, rfu->sm_rx, rfu->offset_rx, &cfg);
++
++	rp1_pio_uart_set_baud(rfu, RP1_PIO_UART_DEF_BAUD);
++
++	/* Break detection: hooked to PIO IRQ 0, resolved relative to sm_rx */
++	ret = pio_get_irq_num(rfu->pio, 0);
++	if (ret < 0) {
++		if (ret == -ENODEV)
++			dev_err(port->dev, "No PIO interrupts - old EEPROM?\n");
++		else if (ret == -EBUSY)
++			dev_err(port->dev, "No free PIO interrupts\n");
++		goto err_close;
++	}
++	rfu->irq_index = ret;
++	irq_add_handler(rfu->pio, rfu->irq_index, rp1_pio_uart_break_irq, rfu);
++	intn = pio_interrupt_rel(rfu->sm_rx, 0);
++	pio_set_irqn_source_enabled(rfu->pio, 0, PIS_INTERRUPT0 + intn, true);
++	irq_set_enabled(rfu->pio, rfu->irq_index, true);
++
++	pio_interrupt_clear(rfu->pio, intn);
++
++	pio_sm_set_enabled(rfu->pio, rfu->sm_tx, true);
++	pio_sm_set_enabled(rfu->pio, rfu->sm_rx, true);
++
++	/* Request rp1-pio's internal DMA bounce buffers -- see the file
++	 * comment on why a client can't just dma_alloc_coherent its own.
++	 */
++	ret = pio_sm_config_xfer(rfu->pio, rfu->sm_tx, PIO_DIR_TO_SM,
++				 RP1_PIO_UART_TX_CHUNK_BYTES, 1);
++	if (ret)
++		goto err_close;
++
++	ret = pio_sm_config_xfer(rfu->pio, rfu->sm_rx, PIO_DIR_FROM_SM,
++				 RP1_PIO_UART_RX_CHUNK_BYTES, RP1_PIO_UART_RX_SLOTS);
++	if (ret)
++		goto err_close;
++
++	rfu->shutting_down = false;
++	rfu->tx_busy = false;
++	rfu->rx_stopped = false;
++	rfu->rx_rearm_pending = 0;
++
++	/* Keep every RX slot's DMA request outstanding at all times */
++	for (i = 0; i < RP1_PIO_UART_RX_SLOTS; i++)
++		rp1_pio_uart_rx_arm(&rfu->rx_slots[i]);
++
++	mod_timer(&rfu->rx_timeout, jiffies + rp1_pio_uart_rx_timeout_jiffies(&rfu->port));
++
++	return 0;
++
++err_close:
++	/* pio_close() unclaims any SMs/instructions/DMA this client claimed */
++	pio_close(rfu->pio);
++	rfu->pio = NULL;
++	return ret;
++}
++
++static void rp1_pio_uart_shutdown(struct uart_port *port)
++{
++	struct rp1_pio_uart *rfu = port_to_rfu(port);
++	unsigned long flags;
++
++	spin_lock_irqsave(&port->lock, flags);
++	rfu->shutting_down = true;
++	spin_unlock_irqrestore(&port->lock, flags);
++
++	if (rfu->irq_index >= 0) {
++		uint intn = pio_interrupt_rel(rfu->sm_rx, 0);
++
++		irq_set_enabled(rfu->pio, rfu->irq_index, false);
++		pio_set_irqn_source_enabled(rfu->pio, 0, PIS_INTERRUPT0 + intn, false);
++		pio_interrupt_clear(rfu->pio, intn);
++		rfu->irq_index = -1;
++	}
++
++	cancel_work_sync(&rfu->tx_work);
++	cancel_work_sync(&rfu->rx_rearm_work);
++	timer_delete_sync(&rfu->rx_timeout);
++	cancel_work_sync(&rfu->rx_timeout_work);
++	cancel_work_sync(&rfu->break_work);
++
++	pio_sm_set_enabled(rfu->pio, rfu->sm_tx, false);
++	pio_sm_set_enabled(rfu->pio, rfu->sm_rx, false);
++	pio_remove_program(rfu->pio, &uart_tx_program, rfu->offset_tx);
++	pio_remove_program(rfu->pio, &uart_rx_program, rfu->offset_rx);
++	pio_sm_unclaim(rfu->pio, rfu->sm_tx);
++	pio_sm_unclaim(rfu->pio, rfu->sm_rx);
++	pio_close(rfu->pio);
++	rfu->pio = NULL;
++}
++
++static const struct uart_ops rp1_pio_uart_ops = {
++	.tx_empty = rp1_pio_uart_tx_empty,
++	.set_mctrl = rp1_pio_uart_set_mctrl,
++	.get_mctrl = rp1_pio_uart_get_mctrl,
++	.stop_tx = rp1_pio_uart_stop_tx,
++	.start_tx = rp1_pio_uart_start_tx,
++	.stop_rx = rp1_pio_uart_stop_rx,
++	.break_ctl = rp1_pio_uart_break_ctl,
++	.startup = rp1_pio_uart_startup,
++	.shutdown = rp1_pio_uart_shutdown,
++	.set_termios = rp1_pio_uart_set_termios,
++};
++
++/* ------------------------------- Device setup ---------------------------- */
++
++static int rp1_pio_uart_get_gpio_hwnum(struct device *dev, const char *name)
++{
++	struct of_phandle_args of_args = { 0 };
++	char prop[16];
++	bool is_rp1_gpio;
++	int ret;
++
++	snprintf(prop, sizeof(prop), "%s-gpios", name);
++
++	ret = of_parse_phandle_with_args(dev->of_node, prop, "#gpio-cells", 0, &of_args);
++	if (ret)
++		return dev_err_probe(dev, ret, "can't parse %s\n", prop);
++
++	is_rp1_gpio = of_device_is_compatible(of_args.np, "raspberrypi,rp1-gpio");
++	of_node_put(of_args.np);
++	if (!is_rp1_gpio || of_args.args_count != 2)
++		return dev_err_probe(dev, -EINVAL, "%s is not an RP1 gpio\n", prop);
++
++	return of_args.args[0];
++}
++
++static int rp1_pio_uart_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rp1_pio_uart *rfu;
++	int ret, i;
++
++	rfu = devm_kzalloc(dev, sizeof(*rfu), GFP_KERNEL);
++	if (!rfu)
++		return -ENOMEM;
++
++	rfu->tx_gpiod = devm_gpiod_get(dev, "tx", GPIOD_OUT_HIGH);
++	if (IS_ERR(rfu->tx_gpiod))
++		return PTR_ERR(rfu->tx_gpiod);
++
++	rfu->rx_gpiod = devm_gpiod_get(dev, "rx", GPIOD_IN);
++	if (IS_ERR(rfu->rx_gpiod))
++		return PTR_ERR(rfu->rx_gpiod);
++
++	ret = rp1_pio_uart_get_gpio_hwnum(dev, "tx");
++	if (ret < 0)
++		return ret;
++	rfu->tx_hwnum = ret;
++
++	ret = rp1_pio_uart_get_gpio_hwnum(dev, "rx");
++	if (ret < 0)
++		return ret;
++	rfu->rx_hwnum = ret;
++
++	rfu->tx_buf = devm_kzalloc(dev, RP1_PIO_UART_TX_CHUNK_BYTES, GFP_KERNEL);
++	if (!rfu->tx_buf)
++		return -ENOMEM;
++
++	for (i = 0; i < RP1_PIO_UART_RX_SLOTS; i++) {
++		rfu->rx_slots[i].rfu = rfu;
++		rfu->rx_slots[i].buf = devm_kzalloc(dev, RP1_PIO_UART_RX_CHUNK_BYTES, GFP_KERNEL);
++		if (!rfu->rx_slots[i].buf)
++			return -ENOMEM;
++	}
++
++	INIT_WORK(&rfu->tx_work, rp1_pio_uart_tx_work);
++	INIT_WORK(&rfu->rx_rearm_work, rp1_pio_uart_rx_rearm_work);
++	INIT_WORK(&rfu->rx_timeout_work, rp1_pio_uart_rx_timeout_work);
++	timer_setup(&rfu->rx_timeout, rp1_pio_uart_rx_timeout, 0);
++	INIT_WORK(&rfu->break_work, rp1_pio_uart_break_work);
++	rfu->irq_index = -1;
++
++	rfu->driver.owner = THIS_MODULE;
++	rfu->driver.driver_name = DRIVER_NAME;
++	rfu->driver.dev_name = "ttyPIO";
++	rfu->driver.nr = 1;
++
++	ret = uart_register_driver(&rfu->driver);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register UART driver\n");
++
++	spin_lock_init(&rfu->port.lock);
++	rfu->port.dev = dev;
++	rfu->port.type = PORT_RP1_PIO;
++	rfu->port.ops = &rp1_pio_uart_ops;
++	rfu->port.fifosize = RP1_PIO_UART_TX_CHUNK_CHARS;
++	rfu->port.iotype = UPIO_MEM;
++	rfu->port.flags = UPF_BOOT_AUTOCONF;
++	rfu->port.private_data = rfu;
++
++	ret = uart_add_one_port(&rfu->driver, &rfu->port);
++	if (ret) {
++		dev_err(dev, "failed to add UART port: %d\n", ret);
++		goto err_unregister;
++	}
++
++	platform_set_drvdata(pdev, rfu);
++	dev_info(dev, "PIO UART on GPIOs tx %u rx %u\n", rfu->tx_hwnum, rfu->rx_hwnum);
++	return 0;
++
++err_unregister:
++	uart_unregister_driver(&rfu->driver);
++	return ret;
++}
++
++static void rp1_pio_uart_remove(struct platform_device *pdev)
++{
++	struct rp1_pio_uart *rfu = platform_get_drvdata(pdev);
++
++	uart_remove_one_port(&rfu->driver, &rfu->port);
++	uart_unregister_driver(&rfu->driver);
++}
++
++static const struct of_device_id rp1_pio_uart_match[] = {
++	{ .compatible = "raspberrypi,rp1-pio-uart" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, rp1_pio_uart_match);
++
++static struct platform_driver rp1_pio_uart_driver = {
++	.driver = {
++		.name = DRIVER_NAME,
++		.of_match_table = rp1_pio_uart_match,
++	},
++	.probe = rp1_pio_uart_probe,
++	.remove = rp1_pio_uart_remove,
++};
++module_platform_driver(rp1_pio_uart_driver);
++
++MODULE_AUTHOR("Raspberry Pi Ltd.");
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("RP1 PIO-based UART driver");
+--- a/include/uapi/linux/serial_core.h
++++ b/include/uapi/linux/serial_core.h
+@@ -234,6 +234,9 @@
+ /* RPi firmware UART */
+ #define PORT_RPI_FW	124
+ 
++/* RP1 PIO UART */
++#define PORT_RP1_PIO	125
++
+ /* Generic type identifier for ports which type is not important to userspace. */
+ #define PORT_GENERIC	(-1)
+ 

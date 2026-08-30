@@ -1,0 +1,55 @@
+From ead0a299761ea17229f93ef009d238a6c2779ad3 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Wed, 15 Jul 2026 11:32:13 +0100
+Subject: [PATCH] mailbox: rp1: Don't poll for TX completion
+
+The RP1 mailbox + firmware interface is currently synchronous, with
+only one outstanding message at a time and the same buffer used for the
+reply. It is therefore of no use to know when the transmit has
+completed, only that the reply is ready. This is TXDONE_BY_ACK mode,
+which is automatically selected if neither txdone_irq nor txdone_poll
+are provided.
+
+This change increases performance and reduces hrtimer usage
+significantly, but it requires the mailbox client to call
+mbox_client_txdone after each transmission.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/mailbox/rp1-mailbox.c | 14 --------------
+ 1 file changed, 14 deletions(-)
+
+--- a/drivers/mailbox/rp1-mailbox.c
++++ b/drivers/mailbox/rp1-mailbox.c
+@@ -101,22 +101,10 @@ static void rp1_shutdown(struct mbox_cha
+ 	writel(event, mbox->regs + SYSCFG_HOST_EVENT_IRQ_EN + HW_CLR_BITS);
+ }
+ 
+-static bool rp1_last_tx_done(struct mbox_chan *chan)
+-{
+-	struct rp1_mbox *mbox = rp1_chan_mbox(chan);
+-	unsigned int event = rp1_chan_event(chan);
+-	unsigned int evs;
+-
+-	evs = readl(mbox->regs + SYSCFG_HOST_EVENT_IRQ);
+-
+-	return !(evs & event);
+-}
+-
+ static const struct mbox_chan_ops rp1_mbox_chan_ops = {
+ 	.send_data	= rp1_send_data,
+ 	.startup	= rp1_startup,
+ 	.shutdown	= rp1_shutdown,
+-	.last_tx_done	= rp1_last_tx_done
+ };
+ 
+ static struct mbox_chan *rp1_mbox_xlate(struct mbox_controller *mbox,
+@@ -168,8 +156,6 @@ static int rp1_mbox_probe(struct platfor
+ 	if (!chans)
+ 		return -ENOMEM;
+ 
+-	mbox->controller.txdone_poll = true;
+-	mbox->controller.txpoll_period = 5;
+ 	mbox->controller.ops = &rp1_mbox_chan_ops;
+ 	mbox->controller.of_xlate = &rp1_mbox_xlate;
+ 	mbox->controller.dev = dev;

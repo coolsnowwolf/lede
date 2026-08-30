@@ -12,6 +12,7 @@ FEATURES:=audio boot-part display ext4 fpu gpio rootfs-part rtc squashfs usb usb
 SUBTARGETS:=bcm2708 bcm2709 bcm2710 bcm2711 bcm2712
 
 KERNEL_PATCHVER:=6.12
+KERNEL_TESTING_PATCHVER:=6.18
 
 define Target/Description
 	Build firmware image for Broadcom BCM27xx SoC devices.
@@ -22,9 +23,7 @@ include $(INCLUDE_DIR)/target.mk
 
 DEFAULT_PACKAGES := $(filter-out urngd,$(DEFAULT_PACKAGES))
 DEFAULT_PACKAGES += \
-	bcm27xx-gpu-fw bcm27xx-utils \
-	kmod-usb-hid \
-	kmod-sound-core kmod-sound-arm-bcm2835 \
+	$(if $(CONFIG_TARGET_bcm27xx_bcm2712),,bcm27xx-gpu-fw) bcm27xx-utils \
 	kmod-fs-vfat kmod-nls-cp437 kmod-nls-iso8859-1 \
 	partx-utils mkf2fs e2fsprogs
 

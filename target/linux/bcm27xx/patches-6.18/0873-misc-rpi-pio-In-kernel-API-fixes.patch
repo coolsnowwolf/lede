@@ -1,0 +1,107 @@
+From bcca3ae088c51f39b8e1adcdbfbeedaa24d4e097 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 13 Jul 2026 15:50:22 +0100
+Subject: [PATCH] misc: rpi-pio: In-kernel API fixes
+
+Fix a few issues discovered after testing the kernel API with a port of
+the userspace apitest app.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/misc/rp1-pio.c  | 23 ++++++++++++++++++++---
+ include/linux/pio_rp1.h |  4 ++--
+ 2 files changed, 22 insertions(+), 5 deletions(-)
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -67,6 +67,9 @@ struct dma_xfer_state {
+ 	struct dma_info *dma;
+ 	void (*callback)(void *param);
+ 	void *callback_param;
++	struct dma_buf_info *dbi;
++	void *data;
++	size_t data_bytes;
+ };
+ 
+ struct dma_buf_info {
+@@ -225,7 +228,7 @@ int rp1_pio_can_add_program(struct rp1_p
+ 	offset = rp1_pio_find_program(pio, args);
+ 	mutex_unlock(&pio->instr_mutex);
+ 	if (offset >= 0)
+-		return offset;
++		return 1;
+ 
+ 	/* Don't send the instructions, just the header */
+ 	return rp1_pio_message(pio, PIO_CAN_ADD_PROGRAM, args,
+@@ -584,6 +587,9 @@ static void rp1_pio_sm_kernel_dma_callba
+ {
+ 	struct dma_xfer_state *dxs = param;
+ 
++	if (dxs->dbi)
++		memcpy(dxs->data, dxs->dbi->buf, dxs->data_bytes);
++
+ 	dxs->dma->tail_idx++;
+ 	up(&dxs->dma->buf_sem);
+ 
+@@ -949,19 +955,25 @@ int rp1_pio_sm_xfer_data(struct rp1_pio_
+ 
+ 	if (!dma_addr) {
+ 		dxs = kmalloc(sizeof(*dxs), GFP_KERNEL);
++		if (!dxs)
++			return -ENOMEM;
+ 		dxs->dma = dma;
+ 		dxs->callback = callback;
+ 		dxs->callback_param = param;
++		dxs->dbi = NULL;
+ 		callback = rp1_pio_sm_kernel_dma_callback;
+ 		param = dxs;
+ 
+-		if (!dma->buf_count || data_bytes > dma->buf_size)
++		if (!dma->buf_count || data_bytes > dma->buf_size) {
++			kfree(dxs);
+ 			return -EINVAL;
++		}
+ 
+ 		/* Grab a dma buffer */
+ 		if (dma->head_idx - dma->tail_idx == dma->buf_count) {
+ 			if (down_timeout(&dma->buf_sem, msecs_to_jiffies(1000))) {
+ 				dev_err(dev, "DMA wait timed out\n");
++				kfree(dxs);
+ 				return -ETIMEDOUT;
+ 			}
+ 		}
+@@ -969,8 +981,13 @@ int rp1_pio_sm_xfer_data(struct rp1_pio_
+ 		dbi = &dma->bufs[dma->head_idx % dma->buf_count];
+ 		dma_addr = dbi->dma_addr;
+ 
+-		if (dir == PIO_DIR_TO_SM)
++		if (dir == PIO_DIR_TO_SM) {
+ 			memcpy(dbi->buf, data, data_bytes);
++		} else {
++			dxs->dbi = dbi;
++			dxs->data = data;
++			dxs->data_bytes = data_bytes;
++		}
+ 	}
+ 
+ 	sg_init_table(&sg, 1);
+--- a/include/linux/pio_rp1.h
++++ b/include/linux/pio_rp1.h
+@@ -300,7 +300,7 @@ static inline bool pio_can_add_program_a
+ 	args.num_instrs = program->length;
+ 
+ 	memcpy(args.instrs, program->instructions, args.num_instrs * sizeof(args.instrs[0]));
+-	return !rp1_pio_can_add_program(client, &args);
++	return rp1_pio_can_add_program(client, &args);
+ }
+ 
+ static inline uint pio_add_program(struct rp1_pio_client *client, const pio_program_t *program)
+@@ -517,7 +517,7 @@ static inline int pio_sm_set_pindirs_wit
+ 
+ 	if (bad_params_if(client, sm >= NUM_PIO_STATE_MACHINES ||
+ 			      (pin_dirs & GPIOS_MASK) != pin_dirs ||
+-			      (pin_mask & pin_mask) != pin_mask))
++			      (pin_mask & GPIOS_MASK) != pin_mask))
+ 		return -EINVAL;
+ 	return rp1_pio_sm_set_pindirs(client, &args);
+ }

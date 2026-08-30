@@ -1,0 +1,572 @@
+From 6d4adb6bfea64581dff1c670a17333b63b8ba05d Mon Sep 17 00:00:00 2001
+From: Waveshare_Team <support@waveshare.com>
+Date: Thu, 16 Jul 2026 10:01:44 +0800
+Subject: [PATCH] input: touchscreen: Add Sitronix ST7123 support
+
+Add a minimal I2C touchscreen driver for the Sitronix ST7123 controller
+used by the Waveshare 6.25-DSI-TOUCH-A panel.
+
+The driver implements the functionality needed for normal input support:
+reset handling, coordinate reads, multitouch reporting, optional IRQ
+operation, input-core polling fallback, and system suspend/resume.
+
+Firmware update, factory-test, rawdata, monitor-thread, and vendor debug
+interfaces are left out because they are not required for panel
+enablement.
+
+Keep the driver as a single source file under drivers/input/touchscreen/,
+matching the pattern used by other small touchscreen drivers.
+
+Signed-off-by: Waveshare_Team <support@waveshare.com>
+---
+ MAINTAINERS                        |   6 +
+ drivers/input/touchscreen/Kconfig  |  12 +
+ drivers/input/touchscreen/Makefile |   1 +
+ drivers/input/touchscreen/st7123.c | 495 +++++++++++++++++++++++++++++
+ 4 files changed, 514 insertions(+)
+ create mode 100644 drivers/input/touchscreen/st7123.c
+
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -23728,6 +23728,12 @@ S:	Maintained
+ W:	http://www.winischhofer.at/linuxsisusbvga.shtml
+ F:	drivers/usb/misc/sisusbvga/
+ 
++SITRONIX ST7123 TOUCHSCREEN DRIVER
++M:	Waveshare Team <support@waveshare.com>
++L:	linux-input@vger.kernel.org
++S:	Maintained
++F:	drivers/input/touchscreen/st7123.c
++
+ SL28 CPLD MFD DRIVER
+ M:	Michael Walle <mwalle@kernel.org>
+ S:	Maintained
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -1251,6 +1251,18 @@ config TOUCHSCREEN_SIS_I2C
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called sis_i2c.
+ 
++config TOUCHSCREEN_ST7123
++	tristate "Sitronix ST7123 touchscreen controllers"
++	depends on I2C
++	help
++	  Say Y here if you want to support the Sitronix ST7123
++	  touchscreen controller.
++
++	  If unsure, say N.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called st7123.
++
+ config TOUCHSCREEN_ST1232
+ 	tristate "Sitronix ST1232 or ST1633 touchscreen controllers"
+ 	depends on I2C
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -83,6 +83,7 @@ obj-$(CONFIG_TOUCHSCREEN_RM_TS)		+= rayd
+ obj-$(CONFIG_TOUCHSCREEN_S6SY761)	+= s6sy761.o
+ obj-$(CONFIG_TOUCHSCREEN_SILEAD)	+= silead.o
+ obj-$(CONFIG_TOUCHSCREEN_SIS_I2C)	+= sis_i2c.o
++obj-$(CONFIG_TOUCHSCREEN_ST7123)	+= st7123.o
+ obj-$(CONFIG_TOUCHSCREEN_ST1232)	+= st1232.o
+ obj-$(CONFIG_TOUCHSCREEN_STMFTS)	+= stmfts.o
+ obj-$(CONFIG_TOUCHSCREEN_STMPE)		+= stmpe-ts.o
+--- /dev/null
++++ b/drivers/input/touchscreen/st7123.c
+@@ -0,0 +1,495 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Sitronix ST7123 touchscreen controller driver
++ *
++ * Copyright (C) 2018 Sitronix Technology Co., Ltd.
++ * Copyright (C) 2026 Waveshare International Limited
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/input/touchscreen.h>
++#include <linux/interrupt.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++
++#define ST7123_TS_NAME			"st7123"
++
++#define ST7123_STATUS_REG		0x0001
++#define ST7123_DEVICE_CONTROL_REG	0x0002
++#define ST7123_X_RESOLUTION_HIGH	0x0005
++#define ST7123_MAX_NUM_TOUCHES		0x0009
++#define ST7123_TOUCH_INFO		0x0010
++#define ST7123_MISC_INFO		0x00f0
++#define ST7123_CHIP_ID			0x00f4
++
++#define ST7123_CHIP_ID_VALUE		0x83
++#define ST7123_MISC_COORD_CHKSUM	BIT(4)
++#define ST7123_MAX_SUPPORTED_TOUCHES	10
++#define ST7123_DEFAULT_MAX_TOUCHES	10
++#define ST7123_DEFAULT_X_RES		720
++#define ST7123_DEFAULT_Y_RES		1560
++#define ST7123_POLL_INTERVAL_MS		17
++#define ST7123_TOUCH_STRIDE		7
++#define ST7123_TOUCH_HEADER_LEN		4
++#define ST7123_CHECKSUM_SEED		0x5a
++
++struct st7123_ts_data {
++	struct i2c_client *client;
++	struct input_dev *input;
++	struct gpio_desc *reset_gpio;
++	struct touchscreen_properties prop;
++	/* Serializes register access from IRQ/polling and PM paths. */
++	struct mutex lock;
++	u8 max_touches;
++	bool has_coord_checksum;
++	bool suspended;
++	u8 coord_buf[ST7123_TOUCH_HEADER_LEN +
++		     ST7123_MAX_SUPPORTED_TOUCHES * ST7123_TOUCH_STRIDE + 1];
++};
++
++static int st7123_read(struct st7123_ts_data *ts, u16 reg, void *buf, u16 len)
++{
++	struct i2c_client *client = ts->client;
++	u8 addr[2] = { reg >> 8, reg & 0xff };
++	struct i2c_msg msg[] = {
++		{
++			.addr = client->addr,
++			.len = sizeof(addr),
++			.buf = addr,
++		},
++		{
++			.addr = client->addr,
++			.flags = I2C_M_RD,
++			.len = len,
++			.buf = buf,
++		},
++	};
++	int ret;
++
++	ret = i2c_transfer(client->adapter, msg, ARRAY_SIZE(msg));
++	if (ret != ARRAY_SIZE(msg))
++		return ret < 0 ? ret : -EIO;
++
++	return 0;
++}
++
++static int st7123_write(struct st7123_ts_data *ts, u16 reg, const void *buf,
++			u16 len)
++{
++	struct i2c_client *client = ts->client;
++	u8 *data;
++	int ret;
++
++	data = kmalloc(len + 2, GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++
++	data[0] = reg >> 8;
++	data[1] = reg & 0xff;
++	memcpy(&data[2], buf, len);
++
++	ret = i2c_master_send(client, data, len + 2);
++	kfree(data);
++
++	if (ret != len + 2)
++		return ret < 0 ? ret : -EIO;
++
++	return 0;
++}
++
++static u8 st7123_checksum(const u8 *buf, int len)
++{
++	u16 checksum = ST7123_CHECKSUM_SEED;
++	u8 low;
++	int i;
++
++	for (i = 0; i < len; i++) {
++		checksum += buf[i];
++		low = checksum & 0xff;
++		low = (low >> 7) | (low << 1);
++		checksum = (checksum & 0xff00) | low;
++	}
++
++	return checksum & 0xff;
++}
++
++static void st7123_reset(struct st7123_ts_data *ts)
++{
++	if (!ts->reset_gpio)
++		return;
++
++	gpiod_set_value_cansleep(ts->reset_gpio, 1);
++	fsleep(10000);
++	gpiod_set_value_cansleep(ts->reset_gpio, 0);
++	msleep(150);
++}
++
++static int st7123_read_resolution(struct st7123_ts_data *ts, u16 *x, u16 *y)
++{
++	u8 buf[4];
++	int ret;
++
++	ret = st7123_read(ts, ST7123_X_RESOLUTION_HIGH, buf, sizeof(buf));
++	if (ret)
++		return ret;
++
++	*x = ((buf[0] & 0x3f) << 8) | buf[1];
++	*y = ((buf[2] & 0x3f) << 8) | buf[3];
++
++	if (!*x || !*y)
++		return -EINVAL;
++
++	return 0;
++}
++
++static int st7123_read_max_touches(struct st7123_ts_data *ts)
++{
++	u8 max_touches;
++	int ret;
++
++	ret = st7123_read(ts, ST7123_MAX_NUM_TOUCHES, &max_touches,
++			  sizeof(max_touches));
++	if (ret)
++		return ret;
++
++	if (!max_touches || max_touches > ST7123_MAX_SUPPORTED_TOUCHES)
++		max_touches = ST7123_DEFAULT_MAX_TOUCHES;
++
++	ts->max_touches = max_touches;
++
++	return 0;
++}
++
++static int st7123_read_misc_info(struct st7123_ts_data *ts)
++{
++	u8 misc;
++	int ret;
++
++	ret = st7123_read(ts, ST7123_MISC_INFO, &misc, sizeof(misc));
++	if (ret)
++		return ret;
++
++	ts->has_coord_checksum = misc & ST7123_MISC_COORD_CHKSUM;
++
++	return 0;
++}
++
++static int st7123_check_id(struct st7123_ts_data *ts)
++{
++	struct device *dev = &ts->client->dev;
++	u8 chip_id;
++	int ret;
++
++	ret = st7123_read(ts, ST7123_CHIP_ID, &chip_id, sizeof(chip_id));
++	if (ret)
++		return ret;
++
++	if (chip_id != ST7123_CHIP_ID_VALUE)
++		dev_warn(dev, "unexpected chip id 0x%02x\n", chip_id);
++
++	return 0;
++}
++
++static int st7123_wait_ready(struct st7123_ts_data *ts)
++{
++	u8 status;
++	int ret;
++	int i;
++
++	for (i = 0; i < 100; i++) {
++		ret = st7123_read(ts, ST7123_STATUS_REG, &status,
++				  sizeof(status));
++		if (!ret && ((status & 0x0f) == 0x00 || (status & 0x0f) == 0x04))
++			return 0;
++
++		usleep_range(1000, 2000);
++	}
++
++	return ret ?: -ETIMEDOUT;
++}
++
++static void st7123_report_all_up(struct st7123_ts_data *ts)
++{
++	int i;
++
++	for (i = 0; i < ts->max_touches; i++) {
++		input_mt_slot(ts->input, i);
++		input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, false);
++	}
++
++	input_mt_sync_frame(ts->input);
++	input_sync(ts->input);
++}
++
++static int st7123_report_touch_data(struct st7123_ts_data *ts)
++{
++	struct device *dev = &ts->client->dev;
++	int read_len;
++	int ret;
++	int i;
++
++	read_len = ST7123_TOUCH_HEADER_LEN +
++		   ts->max_touches * ST7123_TOUCH_STRIDE;
++	if (ts->has_coord_checksum)
++		read_len++;
++
++	ret = st7123_read(ts, ST7123_TOUCH_INFO, ts->coord_buf, read_len);
++	if (ret) {
++		dev_warn(dev, "failed to read touch data: %d\n", ret);
++		return ret;
++	}
++
++	if (ts->coord_buf[0] & BIT(7)) {
++		dev_warn(dev, "controller requested reset\n");
++		st7123_report_all_up(ts);
++		st7123_reset(ts);
++		return -EIO;
++	}
++
++	if (ts->has_coord_checksum) {
++		u8 checksum;
++
++		checksum = st7123_checksum(ts->coord_buf, read_len - 1);
++		if (checksum != ts->coord_buf[read_len - 1]) {
++			dev_warn(dev, "touch checksum mismatch\n");
++			return -EIO;
++		}
++	}
++
++	for (i = 0; i < ts->max_touches; i++) {
++		u8 *p = &ts->coord_buf[ST7123_TOUCH_HEADER_LEN +
++				       i * ST7123_TOUCH_STRIDE];
++		u16 x;
++		u16 y;
++
++		input_mt_slot(ts->input, i);
++
++		if (!(p[0] & BIT(7))) {
++			input_mt_report_slot_state(ts->input, MT_TOOL_FINGER,
++						   false);
++			continue;
++		}
++
++		x = ((p[0] & 0x3f) << 8) | p[1];
++		y = ((p[2] & 0x3f) << 8) | p[3];
++
++		input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, true);
++		touchscreen_report_pos(ts->input, &ts->prop, x, y, true);
++		input_report_abs(ts->input, ABS_MT_TOUCH_MAJOR, max_t(u8, p[4], 1));
++	}
++
++	input_mt_sync_frame(ts->input);
++	input_sync(ts->input);
++
++	return 0;
++}
++
++static void st7123_poll(struct input_dev *input)
++{
++	struct st7123_ts_data *ts = input_get_drvdata(input);
++
++	mutex_lock(&ts->lock);
++	if (!ts->suspended)
++		st7123_report_touch_data(ts);
++	mutex_unlock(&ts->lock);
++}
++
++static irqreturn_t st7123_irq_thread(int irq, void *dev_id)
++{
++	struct st7123_ts_data *ts = dev_id;
++
++	mutex_lock(&ts->lock);
++	if (!ts->suspended)
++		st7123_report_touch_data(ts);
++	mutex_unlock(&ts->lock);
++
++	return IRQ_HANDLED;
++}
++
++static int st7123_powerdown(struct st7123_ts_data *ts, bool powerdown)
++{
++	u8 ctrl;
++	int ret;
++
++	ret = st7123_read(ts, ST7123_DEVICE_CONTROL_REG, &ctrl, sizeof(ctrl));
++	if (ret)
++		return ret;
++
++	if (powerdown)
++		ctrl |= BIT(1);
++	else
++		ctrl &= ~BIT(1);
++
++	return st7123_write(ts, ST7123_DEVICE_CONTROL_REG, &ctrl, sizeof(ctrl));
++}
++
++static int st7123_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct st7123_ts_data *ts;
++	struct input_dev *input;
++	u16 max_x = ST7123_DEFAULT_X_RES;
++	u16 max_y = ST7123_DEFAULT_Y_RES;
++	int ret;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
++		return dev_err_probe(dev, -EIO, "I2C transfers not supported\n");
++
++	ts = devm_kzalloc(dev, sizeof(*ts), GFP_KERNEL);
++	if (!ts)
++		return -ENOMEM;
++
++	input = devm_input_allocate_device(dev);
++	if (!input)
++		return -ENOMEM;
++
++	ts->client = client;
++	ts->input = input;
++	ts->max_touches = ST7123_DEFAULT_MAX_TOUCHES;
++	mutex_init(&ts->lock);
++	i2c_set_clientdata(client, ts);
++
++	ts->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ts->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(ts->reset_gpio),
++				     "failed to request reset GPIO\n");
++
++	st7123_reset(ts);
++
++	ret = st7123_wait_ready(ts);
++	if (ret)
++		return dev_err_probe(dev, ret, "controller not ready\n");
++
++	ret = st7123_check_id(ts);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read chip id\n");
++
++	ret = st7123_read_resolution(ts, &max_x, &max_y);
++	if (ret)
++		dev_warn(dev, "using default resolution: %d\n", ret);
++
++	ret = st7123_read_max_touches(ts);
++	if (ret)
++		dev_warn(dev, "using default touch count: %d\n", ret);
++
++	ret = st7123_read_misc_info(ts);
++	if (ret)
++		dev_warn(dev, "failed to read misc info: %d\n", ret);
++
++	input->name = "Sitronix ST7123 Touchscreen";
++	input->id.bustype = BUS_I2C;
++	input->dev.parent = dev;
++	input_set_drvdata(input, ts);
++
++	input_set_abs_params(input, ABS_MT_POSITION_X, 0, max_x - 1, 0, 0);
++	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, max_y - 1, 0, 0);
++	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);
++	touchscreen_parse_properties(input, true, &ts->prop);
++
++	ret = input_mt_init_slots(input, ts->max_touches,
++				  INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to initialize MT slots\n");
++
++	if (client->irq) {
++		ret = devm_request_threaded_irq(dev, client->irq, NULL,
++						st7123_irq_thread,
++						IRQF_ONESHOT,
++						client->name, ts);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to request IRQ\n");
++	} else {
++		ret = input_setup_polling(input, st7123_poll);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to set up polling\n");
++
++		input_set_poll_interval(input, ST7123_POLL_INTERVAL_MS);
++	}
++
++	ret = input_register_device(input);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register input\n");
++
++	return 0;
++}
++
++static int st7123_suspend(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct st7123_ts_data *ts = i2c_get_clientdata(client);
++	bool wakeup = device_may_wakeup(dev);
++
++	if (client->irq) {
++		if (wakeup)
++			enable_irq_wake(client->irq);
++		else
++			disable_irq(client->irq);
++	}
++
++	mutex_lock(&ts->lock);
++	ts->suspended = true;
++	st7123_report_all_up(ts);
++	if (!wakeup)
++		st7123_powerdown(ts, true);
++	mutex_unlock(&ts->lock);
++
++	return 0;
++}
++
++static int st7123_resume(struct device *dev)
++{
++	struct i2c_client *client = to_i2c_client(dev);
++	struct st7123_ts_data *ts = i2c_get_clientdata(client);
++	bool wakeup = device_may_wakeup(dev);
++
++	mutex_lock(&ts->lock);
++	if (!wakeup) {
++		st7123_powerdown(ts, false);
++		st7123_reset(ts);
++	}
++	ts->suspended = false;
++	mutex_unlock(&ts->lock);
++
++	if (client->irq) {
++		if (wakeup)
++			disable_irq_wake(client->irq);
++		else
++			enable_irq(client->irq);
++	}
++
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(st7123_pm_ops, st7123_suspend, st7123_resume);
++
++static const struct i2c_device_id st7123_id[] = {
++	{ "st7123" },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, st7123_id);
++
++static const struct of_device_id st7123_of_match[] = {
++	{ .compatible = "sitronix,st7123" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, st7123_of_match);
++
++static struct i2c_driver st7123_driver = {
++	.probe = st7123_probe,
++	.id_table = st7123_id,
++	.driver = {
++		.name = ST7123_TS_NAME,
++		.of_match_table = st7123_of_match,
++		.pm = pm_sleep_ptr(&st7123_pm_ops),
++		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
++	},
++};
++module_i2c_driver(st7123_driver);
++
++MODULE_AUTHOR("Sitronix Technology Co., Ltd.");
++MODULE_DESCRIPTION("Sitronix ST7123 touchscreen controller driver");
++MODULE_LICENSE("GPL");

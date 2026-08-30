@@ -1,0 +1,80 @@
+From 8a61264722a08914e2037a04bbd7b3fbcff77894 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 12 May 2026 16:47:32 +0100
+Subject: [PATCH] media: imx355: Make V4L2_CID_HBLANK controllable
+
+V4L2_CID_HBLANK / LLP was a read-only control that set min/
+max/default all to the same value.
+
+The datasheet does state "H-sync timing is fixed in order to
+avoid the sensor internal interference (FPN) in IMX355 by
+line_length". No interference has currently been observed,
+and the default is always to leave it at the minimum (and
+approved) value. Allowing it to be controllable therefore
+has no effect unless a frame period longer than can be
+achieved just through VBLANK is requested.
+
+Exposure times up to 14.9s/frame can be achieved when combined
+with the max FLL / VBLANK value.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx355.c | 25 ++++++++++++-------------
+ 1 file changed, 12 insertions(+), 13 deletions(-)
+
+--- a/drivers/media/i2c/imx355.c
++++ b/drivers/media/i2c/imx355.c
+@@ -636,6 +636,11 @@ static int imx355_set_ctrl(struct v4l2_c
+ 		ret = cci_write(imx355->regmap, IMX355_REG_FLL,
+ 				format->height + ctrl->val, NULL);
+ 		break;
++	case V4L2_CID_HBLANK:
++		ret = cci_write(imx355->regmap, IMX355_REG_LLP,
++				format->width + ctrl->val,
++				NULL);
++		break;
+ 	case V4L2_CID_TEST_PATTERN:
+ 		ret = cci_write(imx355->regmap, IMX355_REG_TEST_PATTERN,
+ 				ctrl->val, NULL);
+@@ -753,12 +758,10 @@ imx355_set_pad_format(struct v4l2_subdev
+ 
+ 		h_blank = mode->llp - mode->width;
+ 
+-		/*
+-		 * Currently hblank is not changeable.
+-		 * So FPS control is done only by vblank.
+-		 */
+ 		__v4l2_ctrl_modify_range(imx355->hblank, h_blank,
+-					 h_blank, 1, h_blank);
++					 IMX355_LLP_MAX - mode->width, 1,
++					 h_blank);
++		__v4l2_ctrl_s_ctrl(imx355->hblank, h_blank);
+ 	}
+ 
+ 	return 0;
+@@ -868,10 +871,6 @@ static int imx355_start_streaming(struct
+ 	/* set digital gain control to all color mode */
+ 	cci_write(imx355->regmap, IMX355_REG_DPGA_USE_GLOBAL_GAIN, 1, &ret);
+ 
+-	/* set line length */
+-	cci_write(imx355->regmap, IMX355_REG_LLP,
+-		  imx355->hblank->val + fmt->width, &ret);
+-
+ 	/* Apply customized values from user */
+ 	if (!ret)
+ 		ret = __v4l2_ctrl_handler_setup(imx355->sd.ctrl_handler);
+@@ -1056,10 +1055,10 @@ static int imx355_init_controls(struct i
+ 					   1, vblank_def);
+ 
+ 	hblank = mode->llp - mode->width;
+-	imx355->hblank = v4l2_ctrl_new_std(ctrl_hdlr, NULL, V4L2_CID_HBLANK,
+-					   hblank, hblank, 1, hblank);
+-	if (imx355->hblank)
+-		imx355->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
++	imx355->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &imx355_ctrl_ops,
++					   V4L2_CID_HBLANK, hblank,
++					   IMX355_LLP_MAX - mode->width, 1,
++					   hblank);
+ 
+ 	/* fll >= exposure time + adjust parameter (default value is 10) */
+ 	exposure_max = mode->fll_def - IMX355_EXPOSURE_OFFSET;

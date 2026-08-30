@@ -1,0 +1,2252 @@
+From 2777ebb08aef9e8fe0f07905fdb58a2d7070fe1b Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Tue, 19 Sep 2023 17:51:49 +0100
+Subject: [PATCH] drm: Add RP1 DPI driver
+
+Add support for the RP1 DPI hardware.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm/rp1: depends on, instead of select, MFD_RP1
+
+According to kconfig-language.txt [1], select should be used only for
+"non-visible symbols ... and for symbols with no dependencies". Since
+MFD_RP1 both is visible and has a dependency, "select" should not be
+used and "depends on" should be used instead.
+
+In particular, this fixes the build of this kernel tree on NixOS, where
+its kernel config system will try to answer 'M' to as many config as
+possible.
+
+[1] https://www.kernel.org/doc/html/latest/kbuild/kconfig-language.html
+
+Signed-off-by: Ratchanan Srirattanamet <peathot@hotmail.com>
+
+drm: rp1: VEC and DPI drivers: Fix bug #5901
+
+Rework probe() to use devm_drm_dev_alloc(), embedding the DRM
+device in the DPI or VEC device as now seems to be recommended.
+
+Change order of resource allocation and driver initialization.
+This prevents it trying to write to an unmapped register during
+clean-up, which previously could crash.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm: rp1: dpi: Add support for MEDIA_BUS_FMT_RGB565_1X24_CPADHI
+
+This new format corresponds to the Raspberry Pi legacy DPI mode 3.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm: rp1: rp1-dpi: Add DRM_FORMAT_ARGB8888 and DRM_FORMAT_ABGR8888
+
+Android requires this.
+As the underlying hardware doesn't support alpha blending,
+we ignore the alpha value.
+
+Signed-off-by: Jan Kehren <jan.kehren@emteria.com>
+
+drm: rp1: rp1-dpi: Add interlaced modes and PIO program to fix VSYNC
+
+Implement interlaced modes by wobbling the base pointer and VFP width
+for every field. This results in correct pixels but incorrect VSYNC.
+
+Now use PIO to generate a fixed-up VSYNC by sampling DE and HSYNC.
+This requires DPI's DE output to be mapped to GPIO1, which we check.
+
+When DE is not exposed, the internal fixup is disabled. VSYNC/GPIO2
+becomes a modified signal, designed to help an external device or
+PIO program synthesize CSYNC or VSYNC.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm: rp1: rp1-dpi: Fix optional dependency on RP1_PIO
+
+Add optional dependency to Kconfig, and conditionally compile
+PIO-dependent code. Add a mode validation function to reject
+interlaced modes when RP1_PIO is not present.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm: rp1: rp1-dpi: Add "rgb_order" property (to match VC4 DPI)
+
+As on VC4, the OF property overrides the order implied by media
+bus format. Only 4 of the 6 possible orders are supported. New
+add-on hardware designs should not rely on this "legacy" feature.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm/rp1: DPI interlace: Improve precision of PIO-generated VSYNC
+
+Instead of trying to minimize the delay between seeing HSYNC edge
+and asserting VSYNC, try to predict the next HSYNC edge precisely.
+This eliminates the round-trip delay but introduces mode-dependent
+rounding error. HSYNC->VSYNC lag reduced from ~30ns to -5ns..+10ns
+(plus up to 5ns synchronization jitter as before).
+
+This may benefit e.g. SCART HATs, particularly those that generate
+Composite Sync using a XNOR gate.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+drm/rp1-dpi: Run DRM default client setup
+
+Call drm_client_setup() to run the kernel's default client setup
+for DRM. Set fbdev_probe in struct drm_driver, so that the client
+setup can start the common fbdev client.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+
+drm/rp1/rp1_dpi: Move Composite Sync generation into the kernel
+
+Move RP1 DPI's PIO-assisted Composite Sync generation code,
+previously released as a separate utility, into the kernel driver.
+There are 3 variants for progressive, generic interlaced and TV-
+style interlaced CSync, alongside the existing VSync fixup.
+
+Check that all of GPIOs 1-3 are mapped to DPI, so PIO won't try
+to snoop on a missing output, or override another device's pins.
+
+Add "force_csync" module parameter, for convenience of testing,
+as few tools can set DRM_MODE_FLAG_CSYNC.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+drm: rp1: Enable VEC->GPIO output; cosmetic change to registers
+
+In the VEC driver, enable mapping VEC (not DPI) to DPI GPIOs.
+This is to support VEC output over GPIO on Raspberry Pi CM5.
+It is harmless as DPI and VEC could not be used concurrently,
+and the output is anyway conditional on pinctrl.
+
+Also, tweak the style of VIDEO_OUT_CFG register definitions
+(in both DPI and VEC drivers) to be more Linux-friendly.
+
+Signed-off-by: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+
+Fixup rp1-dpi Kconfig
+---
+ drivers/gpu/drm/rp1/rp1-dpi/Kconfig       |  14 +
+ drivers/gpu/drm/rp1/rp1-dpi/Makefile      |   5 +
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c     | 497 ++++++++++++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h     |  95 +++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c | 192 +++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c  | 668 ++++++++++++++++++++++
+ drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c | 614 ++++++++++++++++++++
+ 7 files changed, 2085 insertions(+)
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/Kconfig
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/Makefile
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+ create mode 100644 drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
+
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/Kconfig
+@@ -0,0 +1,14 @@
++# SPDX-License-Identifier: GPL-2.0-only
++config DRM_RP1_DPI
++	tristate "DRM Support for RP1 DPI"
++	depends on DRM && MFD_RP1
++	select DRM_CLIENT_SELECTION
++	select DRM_GEM_DMA_HELPER
++	select DRM_KMS_HELPER
++	depends on RP1_PIO || !RP1_PIO
++	help
++	  Choose this option to enable DPI output on Raspberry Pi RP1
++
++	  There is an optional dependency on RP1_PIO, as the PIO block
++	  must be used to fix up interlaced sync. Interlaced DPI modes
++	  will be unavailable when RP1_PIO is not selected.
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-only
++
++drm-rp1-dpi-y := rp1_dpi.o rp1_dpi_hw.o rp1_dpi_cfg.o rp1_dpi_pio.o
++
++obj-$(CONFIG_DRM_RP1_DPI) += drm-rp1-dpi.o
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.c
+@@ -0,0 +1,497 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/string.h>
++#include <linux/slab.h>
++#include <linux/mm.h>
++#include <linux/fb.h>
++#include <linux/init.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/ioport.h>
++#include <linux/list.h>
++#include <linux/platform_device.h>
++#include <linux/clk.h>
++#include <linux/printk.h>
++#include <linux/console.h>
++#include <linux/debugfs.h>
++#include <linux/uaccess.h>
++#include <linux/io.h>
++#include <linux/dma-mapping.h>
++#include <linux/cred.h>
++#include <linux/media-bus-format.h>
++#include <linux/pinctrl/consumer.h>
++#include <drm/clients/drm_client_setup.h>
++#include <drm/drm_drv.h>
++#include <drm/drm_mm.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_gem_atomic_helper.h>
++#include <drm/drm_gem_dma_helper.h>
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_managed.h>
++#include <drm/drm_crtc.h>
++#include <drm/drm_crtc_helper.h>
++#include <drm/drm_encoder.h>
++#include <drm/drm_fb_helper.h>
++#include <drm/drm_fbdev_dma.h>
++#include <drm/drm_framebuffer.h>
++#include <drm/drm_gem.h>
++#include <drm/drm_gem_framebuffer_helper.h>
++#include <drm/drm_simple_kms_helper.h>
++#include <drm/drm_probe_helper.h>
++#include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_vblank.h>
++#include <drm/drm_of.h>
++
++#include "rp1_dpi.h"
++
++/*
++ * Default bus format, where not specified by a connector/bridge
++ * and not overridden by the OF property "default_bus_fmt".
++ * This value is for compatibility with vc4 and VGA666-style boards,
++ * even though RP1 hardware cannot achieve the full 18-bit depth
++ * with that pinout (MEDIA_BUS_FMT_RGB666_1X24_CPADHI is preferred).
++ */
++static unsigned int default_bus_fmt = MEDIA_BUS_FMT_RGB666_1X18;
++module_param(default_bus_fmt, uint, 0644);
++
++/*
++ * Override DRM mode flags to force the use of Composite Sync on GPIO1.
++ * This is mostly for testing, as neither panel-timing nor command-line
++ * arguments nor utilities such as "kmstest" can set DRM_MODE_FLAG_CSYNC.
++ * Sampled on each enable/mode-switch. Default polarity will be -ve.
++ * (Setting this may break Vertical Sync on GPIO2 for interlaced modes.)
++ */
++static bool force_csync;
++module_param(force_csync, bool, 0644);
++
++/* -------------------------------------------------------------- */
++
++static void rp1dpi_pipe_update(struct drm_simple_display_pipe *pipe,
++			       struct drm_plane_state *old_state)
++{
++	struct drm_pending_vblank_event *event;
++	unsigned long flags;
++	struct drm_framebuffer *fb = pipe->plane.state->fb;
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
++	struct drm_gem_dma_object *dma_obj = gem ? to_drm_gem_dma_obj(gem) : NULL;
++	bool can_update = fb && dma_obj && dpi && dpi->pipe_enabled;
++
++	/* (Re-)start DPI-DMA where required; and update FB address */
++	if (can_update) {
++		if (!dpi->dpi_running || fb->format->format != dpi->cur_fmt) {
++			if (dpi->dpi_running &&
++			    fb->format->format != dpi->cur_fmt) {
++				rp1dpi_hw_stop(dpi);
++				rp1dpi_pio_stop(dpi);
++				dpi->dpi_running = false;
++			}
++			if (!dpi->dpi_running) {
++				rp1dpi_hw_setup(dpi,
++						fb->format->format,
++						dpi->bus_fmt,
++						dpi->de_inv,
++						&pipe->crtc.state->mode);
++				rp1dpi_pio_start(dpi, &pipe->crtc.state->mode,
++						 force_csync);
++				dpi->dpi_running = true;
++			}
++			dpi->cur_fmt = fb->format->format;
++			drm_crtc_vblank_on(&pipe->crtc);
++		}
++		rp1dpi_hw_update(dpi, dma_obj->dma_addr, fb->offsets[0], fb->pitches[0]);
++	}
++
++	/* Arm VBLANK event (or call it immediately in some error cases) */
++	spin_lock_irqsave(&pipe->crtc.dev->event_lock, flags);
++	event = pipe->crtc.state->event;
++	if (event) {
++		pipe->crtc.state->event = NULL;
++		if (can_update && drm_crtc_vblank_get(&pipe->crtc) == 0)
++			drm_crtc_arm_vblank_event(&pipe->crtc, event);
++		else
++			drm_crtc_send_vblank_event(&pipe->crtc, event);
++	}
++	spin_unlock_irqrestore(&pipe->crtc.dev->event_lock, flags);
++}
++
++static void rp1dpi_pipe_enable(struct drm_simple_display_pipe *pipe,
++			       struct drm_crtc_state *crtc_state,
++			      struct drm_plane_state *plane_state)
++{
++	static const unsigned int M = 1000000;
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++	struct drm_connector *conn;
++	struct drm_connector_list_iter conn_iter;
++	unsigned int fpix, fdiv, fvco;
++	int ret;
++
++	/* Look up the connector attached to DPI so we can get the
++	 * bus_format.  Ideally the bridge would tell us the
++	 * bus_format we want, but it doesn't yet, so assume that it's
++	 * uniform throughout the bridge chain.
++	 */
++	dev_info(&dpi->pdev->dev, __func__);
++	drm_connector_list_iter_begin(pipe->encoder.dev, &conn_iter);
++	drm_for_each_connector_iter(conn, &conn_iter) {
++		if (conn->encoder == &pipe->encoder) {
++			dpi->de_inv = !!(conn->display_info.bus_flags &
++							DRM_BUS_FLAG_DE_LOW);
++			dpi->clk_inv = !!(conn->display_info.bus_flags &
++						DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE);
++			if (conn->display_info.num_bus_formats)
++				dpi->bus_fmt = conn->display_info.bus_formats[0];
++			break;
++		}
++	}
++	drm_connector_list_iter_end(&conn_iter);
++
++	/* Set DPI clock to desired frequency. Currently (experimentally)
++	 * we take control of the VideoPLL, to ensure we can generate it
++	 * accurately. NB: this prevents concurrent use of DPI and VEC!
++	 * Magic numbers ensure the parent clock is within [100MHz, 200MHz]
++	 * with VCO in [1GHz, 1.33GHz]. The initial divide is by 6, 8 or 10.
++	 */
++	fpix = 1000 * pipe->crtc.state->mode.clock;
++	fpix = clamp(fpix, 1 * M, 200 * M);
++	fdiv = fpix;
++	while (fdiv < 100 * M)
++		fdiv *= 2;
++	fvco = fdiv * 2 * DIV_ROUND_UP(500 * M, fdiv);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_PLLCORE], fvco);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set PLL VCO to %u (%d)", fvco, ret);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_PLLDIV], fdiv);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set PLL output to %u (%d)", fdiv, ret);
++	ret = clk_set_rate(dpi->clocks[RP1DPI_CLK_DPI], fpix);
++	if (ret)
++		dev_err(&dpi->pdev->dev, "Failed to set DPI clock to %u (%d)", fpix, ret);
++
++	rp1dpi_vidout_setup(dpi, dpi->clk_inv);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_PLLCORE]);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_PLLDIV]);
++	pinctrl_pm_select_default_state(&dpi->pdev->dev);
++	clk_prepare_enable(dpi->clocks[RP1DPI_CLK_DPI]);
++	dev_info(&dpi->pdev->dev, "Want %u /%u %u /%u %u; got VCO=%lu DIV=%lu DPI=%lu",
++		 fvco, fvco / fdiv, fdiv, fdiv / fpix, fpix,
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_PLLCORE]),
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_PLLDIV]),
++		 clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]));
++
++	/* Start DPI-DMA. pipe already has the new crtc and plane state. */
++	dpi->pipe_enabled = true;
++	dpi->cur_fmt = 0xdeadbeef;
++	rp1dpi_pipe_update(pipe, 0);
++}
++
++static void rp1dpi_pipe_disable(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	dev_info(&dpi->pdev->dev, __func__);
++	drm_crtc_vblank_off(&pipe->crtc);
++	if (dpi->dpi_running) {
++		rp1dpi_hw_stop(dpi);
++		rp1dpi_pio_stop(dpi);
++		dpi->dpi_running = false;
++	}
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_DPI]);
++	pinctrl_pm_select_sleep_state(&dpi->pdev->dev);
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_PLLDIV]);
++	clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_PLLCORE]);
++	dpi->pipe_enabled = false;
++}
++
++static int rp1dpi_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	if (dpi)
++		rp1dpi_hw_vblank_ctrl(dpi, 1);
++
++	return 0;
++}
++
++static void rp1dpi_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
++{
++	struct rp1_dpi *dpi = pipe->crtc.dev->dev_private;
++
++	if (dpi)
++		rp1dpi_hw_vblank_ctrl(dpi, 0);
++}
++
++static enum drm_mode_status rp1dpi_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
++						   const struct drm_display_mode *mode)
++{
++#if !IS_REACHABLE(CONFIG_RP1_PIO)
++	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
++		return MODE_NO_INTERLACE;
++#endif
++	if (mode->clock < 1000) /* 1 MHz */
++		return MODE_CLOCK_LOW;
++	if (mode->clock > 200000) /* 200 MHz */
++		return MODE_CLOCK_HIGH;
++
++	return MODE_OK;
++}
++
++static const struct drm_simple_display_pipe_funcs rp1dpi_pipe_funcs = {
++	.enable	    = rp1dpi_pipe_enable,
++	.update	    = rp1dpi_pipe_update,
++	.disable    = rp1dpi_pipe_disable,
++	.enable_vblank	= rp1dpi_pipe_enable_vblank,
++	.disable_vblank = rp1dpi_pipe_disable_vblank,
++	.mode_valid = rp1dpi_pipe_mode_valid,
++};
++
++static const struct drm_mode_config_funcs rp1dpi_mode_funcs = {
++	.fb_create = drm_gem_fb_create,
++	.atomic_check = drm_atomic_helper_check,
++	.atomic_commit = drm_atomic_helper_commit,
++};
++
++static void rp1dpi_stopall(struct drm_device *drm)
++{
++	if (drm->dev_private) {
++		struct rp1_dpi *dpi = drm->dev_private;
++
++		if (dpi->dpi_running || rp1dpi_hw_busy(dpi)) {
++			rp1dpi_hw_stop(dpi);
++			clk_disable_unprepare(dpi->clocks[RP1DPI_CLK_DPI]);
++			rp1dpi_pio_stop(dpi);
++			dpi->dpi_running = false;
++		}
++		rp1dpi_vidout_poweroff(dpi);
++		pinctrl_pm_select_sleep_state(&dpi->pdev->dev);
++	}
++}
++
++DEFINE_DRM_GEM_DMA_FOPS(rp1dpi_fops);
++
++static struct drm_driver rp1dpi_driver = {
++	.driver_features	= DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
++	.fops			= &rp1dpi_fops,
++	.name			= "drm-rp1-dpi",
++	.desc			= "drm-rp1-dpi",
++	.major			= 1,
++	.minor			= 0,
++	DRM_GEM_DMA_DRIVER_OPS,
++	DRM_FBDEV_DMA_DRIVER_OPS,
++	.release		= rp1dpi_stopall,
++};
++
++static const u32 rp1dpi_formats[] = {
++	DRM_FORMAT_XRGB8888,
++	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_ARGB8888,
++	DRM_FORMAT_ABGR8888,
++	DRM_FORMAT_RGB888,
++	DRM_FORMAT_BGR888,
++	DRM_FORMAT_RGB565
++};
++
++static int rp1dpi_platform_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct rp1_dpi *dpi;
++	struct drm_bridge *bridge = NULL;
++	const char *rgb_order = NULL;
++	struct drm_panel *panel;
++	u32 missing_gpios;
++	int i, j, ret;
++
++	dev_info(dev, __func__);
++	ret = drm_of_find_panel_or_bridge(pdev->dev.of_node, 0, 0,
++					  &panel, &bridge);
++	if (ret) {
++		dev_info(dev, "%s: bridge not found\n", __func__);
++		return -EPROBE_DEFER;
++	}
++	if (panel) {
++		bridge = devm_drm_panel_bridge_add(dev, panel);
++		if (IS_ERR(bridge))
++			return PTR_ERR(bridge);
++	}
++
++	dpi = devm_drm_dev_alloc(dev, &rp1dpi_driver, struct rp1_dpi, drm);
++	if (IS_ERR(dpi)) {
++		ret = PTR_ERR(dpi);
++		dev_err(dev, "%s devm_drm_dev_alloc %d", __func__, ret);
++		return ret;
++	}
++	dpi->pdev = pdev;
++	spin_lock_init(&dpi->hw_lock);
++
++	dpi->bus_fmt = default_bus_fmt;
++	ret = of_property_read_u32(dev->of_node, "default_bus_fmt", &dpi->bus_fmt);
++
++	for (i = 0; i < RP1DPI_NUM_HW_BLOCKS; i++) {
++		dpi->hw_base[i] =
++			devm_ioremap_resource(dev,
++					      platform_get_resource(dpi->pdev, IORESOURCE_MEM, i));
++		if (IS_ERR(dpi->hw_base[i])) {
++			dev_err(dev, "Error memory mapping regs[%d]\n", i);
++			return PTR_ERR(dpi->hw_base[i]);
++		}
++	}
++	ret = platform_get_irq(dpi->pdev, 0);
++	if (ret > 0)
++		ret = devm_request_irq(dev, ret, rp1dpi_hw_isr,
++				       IRQF_SHARED, "rp1-dpi", dpi);
++	if (ret) {
++		dev_err(dev, "Unable to request interrupt\n");
++		return -EINVAL;
++	}
++
++	for (i = 0; i < RP1DPI_NUM_CLOCKS; i++) {
++		static const char * const myclocknames[RP1DPI_NUM_CLOCKS] = {
++			"dpiclk", "plldiv", "pllcore"
++		};
++		dpi->clocks[i] = devm_clk_get(dev, myclocknames[i]);
++		if (IS_ERR(dpi->clocks[i])) {
++			dev_err(dev, "Unable to request clock %s\n", myclocknames[i]);
++			return PTR_ERR(dpi->clocks[i]);
++		}
++	}
++
++	ret = drmm_mode_config_init(&dpi->drm);
++	if (ret)
++		goto done_err;
++
++	/* RGB order property - to match VC4 */
++	dpi->rgb_order_override = RP1DPI_ORDER_UNCHANGED;
++	if (!of_property_read_string(dev->of_node, "rgb_order", &rgb_order)) {
++		if (!strcmp(rgb_order, "rgb"))
++			dpi->rgb_order_override = RP1DPI_ORDER_RGB;
++		else if (!strcmp(rgb_order, "bgr"))
++			dpi->rgb_order_override = RP1DPI_ORDER_BGR;
++		else if (!strcmp(rgb_order, "grb"))
++			dpi->rgb_order_override = RP1DPI_ORDER_GRB;
++		else if (!strcmp(rgb_order, "brg"))
++			dpi->rgb_order_override = RP1DPI_ORDER_BRG;
++		else
++			DRM_ERROR("Invalid dpi order %s - ignored\n", rgb_order);
++	}
++
++	/* Check if all of GPIOs 1, 2 and 3 are assigned to DPI */
++	missing_gpios = BIT(1) | BIT(2) | BIT(3);
++	for (i = 0; missing_gpios; i++) {
++		u32 p = 0;
++		const char *str = NULL;
++		struct device_node *np1 = of_parse_phandle(dev->of_node, "pinctrl-0", i);
++
++		if (!np1)
++			break;
++
++		if (!of_property_read_string(np1, "function", &str) && !strcmp(str, "dpi")) {
++			for (j = 0; missing_gpios; j++) {
++				if (of_property_read_string_index(np1, "pins", j, &str))
++					break;
++				if (!strcmp(str, "gpio1"))
++					missing_gpios &= ~BIT(1);
++				else if (!strcmp(str, "gpio2"))
++					missing_gpios &= ~BIT(2);
++				else if (!strcmp(str, "gpio3"))
++					missing_gpios &= ~BIT(3);
++			}
++			for (j = 0; missing_gpios; j++) {
++				if (of_property_read_u32_index(np1, "brcm,pins", j, &p))
++					break;
++				if (p < 32)
++					missing_gpios &= ~(1 << p);
++			}
++		}
++		of_node_put(np1);
++	}
++	dpi->sync_gpios_mapped = !missing_gpios;
++
++	/* Now we have all our resources, finish driver initialization */
++	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
++	init_completion(&dpi->finished);
++	dpi->drm.dev_private = dpi;
++	platform_set_drvdata(pdev, &dpi->drm);
++
++	dpi->drm.mode_config.max_width  = 4096;
++	dpi->drm.mode_config.max_height = 4096;
++	dpi->drm.mode_config.preferred_depth = 32;
++	dpi->drm.mode_config.prefer_shadow   = 0;
++	dpi->drm.mode_config.quirk_addfb_prefer_host_byte_order = true;
++	dpi->drm.mode_config.funcs = &rp1dpi_mode_funcs;
++	drm_vblank_init(&dpi->drm, 1);
++
++	ret = drm_simple_display_pipe_init(&dpi->drm,
++					   &dpi->pipe,
++					   &rp1dpi_pipe_funcs,
++					   rp1dpi_formats,
++					   ARRAY_SIZE(rp1dpi_formats),
++					   NULL, NULL);
++	if (!ret)
++		ret = drm_simple_display_pipe_attach_bridge(&dpi->pipe, bridge);
++	if (ret)
++		goto done_err;
++
++	drm_mode_config_reset(&dpi->drm);
++
++	ret = drm_dev_register(&dpi->drm, 0);
++	if (ret)
++		return ret;
++
++	drm_client_setup(&dpi->drm, NULL);
++	return ret;
++
++done_err:
++	dev_err(dev, "%s fail %d\n", __func__, ret);
++	return ret;
++}
++
++static void rp1dpi_platform_remove(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	rp1dpi_stopall(drm);
++	drm_dev_unregister(drm);
++	drm_atomic_helper_shutdown(drm);
++	drm_dev_put(drm);
++}
++
++static void rp1dpi_platform_shutdown(struct platform_device *pdev)
++{
++	struct drm_device *drm = platform_get_drvdata(pdev);
++
++	rp1dpi_stopall(drm);
++}
++
++static const struct of_device_id rp1dpi_of_match[] = {
++	{
++		.compatible = "raspberrypi,rp1dpi",
++	},
++	{ /* sentinel */ },
++};
++
++MODULE_DEVICE_TABLE(of, rp1dpi_of_match);
++
++static struct platform_driver rp1dpi_platform_driver = {
++	.probe		= rp1dpi_platform_probe,
++	.remove		= rp1dpi_platform_remove,
++	.shutdown	= rp1dpi_platform_shutdown,
++	.driver		= {
++		.name	= DRIVER_NAME,
++		.owner	= THIS_MODULE,
++		.of_match_table = rp1dpi_of_match,
++	},
++};
++
++module_platform_driver(rp1dpi_platform_driver);
++
++MODULE_AUTHOR("Nick Hollinghurst");
++MODULE_DESCRIPTION("DRM driver for DPI output on Raspberry Pi RP1");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi.h
+@@ -0,0 +1,95 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * DRM Driver for DSI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/types.h>
++#include <linux/io.h>
++#include <linux/clk.h>
++#include <drm/drm_device.h>
++#include <drm/drm_simple_kms_helper.h>
++
++#define MODULE_NAME "drm-rp1-dpi"
++#define DRIVER_NAME "drm-rp1-dpi"
++
++/* ---------------------------------------------------------------------- */
++
++#define RP1DPI_HW_BLOCK_DPI   0
++#define RP1DPI_HW_BLOCK_CFG   1
++#define RP1DPI_NUM_HW_BLOCKS  2
++
++#define RP1DPI_CLK_DPI      0
++#define RP1DPI_CLK_PLLDIV   1
++#define RP1DPI_CLK_PLLCORE  2
++#define RP1DPI_NUM_CLOCKS   3
++
++/* Codes (in LE byte order) used for S/W permutation */
++#define RP1DPI_ORDER_UNCHANGED 0
++#define RP1DPI_ORDER_RGB       0x020100
++#define RP1DPI_ORDER_BGR       0x000102
++#define RP1DPI_ORDER_GRB       0x020001
++#define RP1DPI_ORDER_BRG       0x010002
++
++/* ---------------------------------------------------------------------- */
++
++struct rp1_dpi {
++	/* DRM base and platform device pointer */
++	struct drm_device drm;
++	struct platform_device *pdev;
++
++	/* Framework and helper objects */
++	struct drm_simple_display_pipe pipe;
++	struct drm_connector connector;
++
++	/* Clocks: Video PLL, its primary divider, and DPI clock. */
++	struct clk *clocks[RP1DPI_NUM_CLOCKS];
++
++	/* Block (DPI, VOCFG) base addresses, and current state */
++	void __iomem *hw_base[RP1DPI_NUM_HW_BLOCKS];
++	u32 cur_fmt;
++	u32 bus_fmt;
++	bool de_inv, clk_inv;
++	bool dpi_running, pipe_enabled;
++	unsigned int rgb_order_override;
++	struct completion finished;
++
++	/* The following are for Interlace and CSYNC support using PIO */
++	struct rp1_pio_client *pio;
++	bool sync_gpios_mapped;
++
++	spinlock_t hw_lock; /* the following are used in line-match ISR */
++	dma_addr_t last_dma_addr;
++	u32 last_stride;
++	u32 shorter_front_porch;
++	bool interlaced;
++	bool lower_field_flag;
++};
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the DPI/DMA block				  */
++
++void rp1dpi_hw_setup(struct rp1_dpi *dpi,
++		     u32 in_format,
++		     u32 bus_format,
++		     bool de_inv,
++		     struct drm_display_mode const *mode);
++void rp1dpi_hw_update(struct rp1_dpi *dpi, dma_addr_t addr, u32 offset, u32 stride);
++void rp1dpi_hw_stop(struct rp1_dpi *dpi);
++int rp1dpi_hw_busy(struct rp1_dpi *dpi);
++irqreturn_t rp1dpi_hw_isr(int irq, void *dev);
++void rp1dpi_hw_vblank_ctrl(struct rp1_dpi *dpi, int enable);
++
++/* ---------------------------------------------------------------------- */
++/* Functions to control the VIDEO OUT CFG block and check RP1 platform	  */
++
++void rp1dpi_vidout_setup(struct rp1_dpi *dpi, bool drive_negedge);
++void rp1dpi_vidout_poweroff(struct rp1_dpi *dpi);
++
++/* ---------------------------------------------------------------------- */
++/* PIO control -- we need PIO to generate VSync (from DE) when interlaced */
++
++int rp1dpi_pio_start(struct rp1_dpi *dpi, const struct drm_display_mode *mode,
++		     bool force_csync);
++void rp1dpi_pio_stop(struct rp1_dpi *dpi);
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_cfg.c
+@@ -0,0 +1,192 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ * Functions to set up VIDEO_OUT_CFG registers
++ * Copyright (c) 2023-2025 Raspberry Pi Limited.
++ */
++
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/mm.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <linux/rp1_platform.h>
++
++#include "rp1_dpi.h"
++
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_SEL
++// Description : Selects source: 0 => DPI, 1 =>VEC; optionally invert clock
++#define VIDEO_OUT_CFG_SEL                    0x0000
++#define VIDEO_OUT_CFG_SEL_BITS               0x00000013
++#define VIDEO_OUT_CFG_SEL_RESET              0x00000000
++#define VIDEO_OUT_CFG_SEL_PCLK_INV           BIT(4)
++#define VIDEO_OUT_CFG_SEL_PAD_MUX            BIT(1)
++#define VIDEO_OUT_CFG_SEL_VDAC_MUX           BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_VDAC_CFG
++// Description : Configure SNPS VDAC
++#define VIDEO_OUT_CFG_VDAC_CFG               0x0004
++#define VIDEO_OUT_CFG_VDAC_CFG_BITS          0x1fffffff
++#define VIDEO_OUT_CFG_VDAC_CFG_RESET         0x0003ffff
++#define VIDEO_OUT_CFG_VDAC_CFG_ENCTR         GENMASK(28, 26)
++#define VIDEO_OUT_CFG_VDAC_CFG_ENSC          GENMASK(25, 23)
++#define VIDEO_OUT_CFG_VDAC_CFG_ENDAC         GENMASK(22, 20)
++#define VIDEO_OUT_CFG_VDAC_CFG_ENVBG         BIT(19)
++#define VIDEO_OUT_CFG_VDAC_CFG_ENEXTREF      BIT(18)
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC2GC        GENMASK(17, 12)
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC1GC        GENMASK(11, 6)
++#define VIDEO_OUT_CFG_VDAC_CFG_DAC0GC        GENMASK(5, 0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_VDAC_STATUS
++// Description : Read VDAC status
++#define VIDEO_OUT_CFG_VDAC_STATUS            0x0008
++#define VIDEO_OUT_CFG_VDAC_STATUS_BITS       0x00000017
++#define VIDEO_OUT_CFG_VDAC_STATUS_RESET      0x00000000
++#define VIDEO_OUT_CFG_VDAC_STATUS_ENCTR3     BIT(4)
++#define VIDEO_OUT_CFG_VDAC_STATUS_CABLEOUT   GENMASK(2, 0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_MEM_PD
++// Description : Control memory power down
++#define VIDEO_OUT_CFG_MEM_PD                 0x000c
++#define VIDEO_OUT_CFG_MEM_PD_BITS            0x00000003
++#define VIDEO_OUT_CFG_MEM_PD_RESET           0x00000000
++#define VIDEO_OUT_CFG_MEM_PD_VEC             BIT(1)
++#define VIDEO_OUT_CFG_MEM_PD_DPI             BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_TEST_OVERRIDE
++// Description : Allow forcing of output values
++#define VIDEO_OUT_CFG_TEST_OVERRIDE          0x0010
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_BITS     0xffffffff
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RESET    0x00000000
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_PAD      BIT(31)
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC     BIT(30)
++#define VIDEO_OUT_CFG_TEST_OVERRIDE_RGBVAL   GENMASK(29, 0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTR
++// Description : Raw Interrupts
++#define VIDEO_OUT_CFG_INTR                   0x0014
++#define VIDEO_OUT_CFG_INTR_BITS              0x00000003
++#define VIDEO_OUT_CFG_INTR_RESET             0x00000000
++#define VIDEO_OUT_CFG_INTR_DPI               BIT(1)
++#define VIDEO_OUT_CFG_INTR_VEC               BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTE
++// Description : Interrupt Enable
++#define VIDEO_OUT_CFG_INTE                   0x0018
++#define VIDEO_OUT_CFG_INTE_BITS              0x00000003
++#define VIDEO_OUT_CFG_INTE_RESET             0x00000000
++#define VIDEO_OUT_CFG_INTE_DPI               BIT(1)
++#define VIDEO_OUT_CFG_INTE_VEC               BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTF
++// Description : Interrupt Force
++#define VIDEO_OUT_CFG_INTF                   0x001c
++#define VIDEO_OUT_CFG_INTF_BITS              0x00000003
++#define VIDEO_OUT_CFG_INTF_RESET             0x00000000
++#define VIDEO_OUT_CFG_INTF_DPI               BIT(1)
++#define VIDEO_OUT_CFG_INTF_VEC               BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INTS
++// Description : Interrupt status after masking & forcing
++#define VIDEO_OUT_CFG_INTS                   0x0020
++#define VIDEO_OUT_CFG_INTS_BITS              0x00000003
++#define VIDEO_OUT_CFG_INTS_RESET             0x00000000
++#define VIDEO_OUT_CFG_INTS_DPI               BIT(1)
++#define VIDEO_OUT_CFG_INTS_VEC               BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_BLOCK_ID
++// Description : Block Identifier
++//               Hexadecimal representation of "VOCF"
++#define VIDEO_OUT_CFG_BLOCK_ID               0x0024
++#define VIDEO_OUT_CFG_BLOCK_ID_BITS          0xffffffff
++#define VIDEO_OUT_CFG_BLOCK_ID_RESET         0x564f4346
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_INSTANCE_ID
++// Description : Block Instance Identifier
++#define VIDEO_OUT_CFG_INSTANCE_ID            0x0028
++#define VIDEO_OUT_CFG_INSTANCE_ID_BITS       0x0000000f
++#define VIDEO_OUT_CFG_INSTANCE_ID_RESET      0x00000000
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_AUTO
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO            0x002c
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BITS       0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_RESET      0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_VEC        BIT(2)
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_DPI        BIT(1)
++#define VIDEO_OUT_CFG_RSTSEQ_AUTO_BUSADAPTER BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_PARALLEL
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL        0x0030
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BITS   0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_RESET  0x00000006
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_VEC    BIT(2)
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_DPI    BIT(1)
++#define VIDEO_OUT_CFG_RSTSEQ_PARALLEL_BUSADAPTER BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_CTRL
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL            0x0034
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BITS       0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_RESET      0x00000000
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_VEC        BIT(2)
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_DPI        BIT(1)
++#define VIDEO_OUT_CFG_RSTSEQ_CTRL_BUSADAPTER BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_TRIG
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG            0x0038
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BITS       0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_RESET      0x00000000
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_VEC        BIT(2)
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_DPI        BIT(1)
++#define VIDEO_OUT_CFG_RSTSEQ_TRIG_BUSADAPTER BIT(0)
++// =============================================================================
++// Register    : VIDEO_OUT_CFG_RSTSEQ_DONE
++// Description : None
++#define VIDEO_OUT_CFG_RSTSEQ_DONE            0x003c
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BITS       0x00000007
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_RESET      0x00000000
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_VEC        BIT(2)
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_DPI        BIT(1)
++#define VIDEO_OUT_CFG_RSTSEQ_DONE_BUSADAPTER BIT(0)
++// =============================================================================
++
++#define CFG_WRITE(reg, val)  writel((val),  dpi->hw_base[RP1DPI_HW_BLOCK_CFG] + (reg))
++#define CFG_READ(reg)        readl(dpi->hw_base[RP1DPI_HW_BLOCK_CFG] + (reg))
++
++void rp1dpi_vidout_setup(struct rp1_dpi *dpi, bool drive_negedge)
++{
++	/*
++	 * We assume DPI and VEC can't be used at the same time (due to
++	 * clashing requirements for PLL_VIDEO, and potentially for VDAC).
++	 * We therefore leave VEC memories powered down.
++	 */
++	CFG_WRITE(VIDEO_OUT_CFG_MEM_PD, VIDEO_OUT_CFG_MEM_PD_VEC);
++	CFG_WRITE(VIDEO_OUT_CFG_TEST_OVERRIDE,
++		  VIDEO_OUT_CFG_TEST_OVERRIDE_VDAC);
++
++	/* DPI->Pads; DPI->VDAC; optionally flip PCLK polarity */
++	CFG_WRITE(VIDEO_OUT_CFG_SEL,
++		  drive_negedge ? VIDEO_OUT_CFG_SEL_PCLK_INV : 0);
++
++	/* disable VDAC */
++	CFG_WRITE(VIDEO_OUT_CFG_VDAC_CFG, 0);
++
++	/* enable DPI interrupt */
++	CFG_WRITE(VIDEO_OUT_CFG_INTE, VIDEO_OUT_CFG_INTE_DPI);
++}
++
++void rp1dpi_vidout_poweroff(struct rp1_dpi *dpi)
++{
++	/* disable DPI interrupt */
++	CFG_WRITE(VIDEO_OUT_CFG_INTE, 0);
++
++	/* Ensure VDAC is turned off; power down DPI,VEC memories */
++	CFG_WRITE(VIDEO_OUT_CFG_VDAC_CFG, 0);
++	CFG_WRITE(VIDEO_OUT_CFG_MEM_PD, VIDEO_OUT_CFG_MEM_PD_BITS);
++}
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_hw.c
+@@ -0,0 +1,668 @@
++// SPDX-License-Identifier: GPL-2.0-or-later
++/*
++ * DRM Driver for DPI output on Raspberry Pi RP1
++ *
++ * Copyright (c) 2023 Raspberry Pi Limited.
++ */
++
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/mm.h>
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/media-bus-format.h>
++#include <linux/platform_device.h>
++#include <linux/printk.h>
++#include <drm/drm_fourcc.h>
++#include <drm/drm_print.h>
++#include <drm/drm_vblank.h>
++
++#include "rp1_dpi.h"
++
++// --- DPI DMA REGISTERS ---
++
++// Control
++#define DPI_DMA_CONTROL				      0x0
++#define DPI_DMA_CONTROL_ARM_SHIFT		      0
++#define DPI_DMA_CONTROL_ARM_MASK		      BIT(DPI_DMA_CONTROL_ARM_SHIFT)
++#define DPI_DMA_CONTROL_ALIGN16_SHIFT		      2
++#define DPI_DMA_CONTROL_ALIGN16_MASK		      BIT(DPI_DMA_CONTROL_ALIGN16_SHIFT)
++#define DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT	      1
++#define DPI_DMA_CONTROL_AUTO_REPEAT_MASK	      BIT(DPI_DMA_CONTROL_AUTO_REPEAT_SHIFT)
++#define DPI_DMA_CONTROL_HIGH_WATER_SHIFT	      3
++#define DPI_DMA_CONTROL_HIGH_WATER_MASK		      (0x1FF << DPI_DMA_CONTROL_HIGH_WATER_SHIFT)
++#define DPI_DMA_CONTROL_DEN_POL_SHIFT		      12
++#define DPI_DMA_CONTROL_DEN_POL_MASK		      BIT(DPI_DMA_CONTROL_DEN_POL_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_POL_SHIFT		      13
++#define DPI_DMA_CONTROL_HSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_POL_SHIFT		      14
++#define DPI_DMA_CONTROL_VSYNC_POL_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_POL_SHIFT)
++#define DPI_DMA_CONTROL_COLORM_SHIFT		      15
++#define DPI_DMA_CONTROL_COLORM_MASK		      BIT(DPI_DMA_CONTROL_COLORM_SHIFT)
++#define DPI_DMA_CONTROL_SHUTDN_SHIFT		      16
++#define DPI_DMA_CONTROL_SHUTDN_MASK		      BIT(DPI_DMA_CONTROL_SHUTDN_SHIFT)
++#define DPI_DMA_CONTROL_HBP_EN_SHIFT		      17
++#define DPI_DMA_CONTROL_HBP_EN_MASK		      BIT(DPI_DMA_CONTROL_HBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HFP_EN_SHIFT		      18
++#define DPI_DMA_CONTROL_HFP_EN_MASK		      BIT(DPI_DMA_CONTROL_HFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VBP_EN_SHIFT		      19
++#define DPI_DMA_CONTROL_VBP_EN_MASK		      BIT(DPI_DMA_CONTROL_VBP_EN_SHIFT)
++#define DPI_DMA_CONTROL_VFP_EN_SHIFT		      20
++#define DPI_DMA_CONTROL_VFP_EN_MASK		      BIT(DPI_DMA_CONTROL_VFP_EN_SHIFT)
++#define DPI_DMA_CONTROL_HSYNC_EN_SHIFT		      21
++#define DPI_DMA_CONTROL_HSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_HSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_VSYNC_EN_SHIFT		      22
++#define DPI_DMA_CONTROL_VSYNC_EN_MASK		      BIT(DPI_DMA_CONTROL_VSYNC_EN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_IMMED_SHIFT	      23
++#define DPI_DMA_CONTROL_FORCE_IMMED_MASK	      BIT(DPI_DMA_CONTROL_FORCE_IMMED_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT	      24
++#define DPI_DMA_CONTROL_FORCE_DRAIN_MASK	      BIT(DPI_DMA_CONTROL_FORCE_DRAIN_SHIFT)
++#define DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT	      25
++#define DPI_DMA_CONTROL_FORCE_EMPTY_MASK	      BIT(DPI_DMA_CONTROL_FORCE_EMPTY_SHIFT)
++
++// IRQ_ENABLES
++#define DPI_DMA_IRQ_EN				      0x04
++#define DPI_DMA_IRQ_EN_DMA_READY_SHIFT		      0
++#define DPI_DMA_IRQ_EN_DMA_READY_MASK		      BIT(DPI_DMA_IRQ_EN_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT		      1
++#define DPI_DMA_IRQ_EN_UNDERFLOW_MASK		      BIT(DPI_DMA_IRQ_EN_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_EN_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_EN_FRAME_START_MASK		      BIT(DPI_DMA_IRQ_EN_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_EN_AFIFO_EMPTY_MASK		      BIT(DPI_DMA_IRQ_EN_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_EN_TE_SHIFT			      4
++#define DPI_DMA_IRQ_EN_TE_MASK			      BIT(DPI_DMA_IRQ_EN_TE_SHIFT)
++#define DPI_DMA_IRQ_EN_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_EN_ERROR_MASK		      BIT(DPI_DMA_IRQ_EN_ERROR_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_EN_MATCH_MASK		      BIT(DPI_DMA_IRQ_EN_MATCH_SHIFT)
++#define DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT		      16
++#define DPI_DMA_IRQ_EN_MATCH_LINE_MASK		      (0xFFF << DPI_DMA_IRQ_EN_MATCH_LINE_SHIFT)
++
++// IRQ_FLAGS
++#define DPI_DMA_IRQ_FLAGS			      0x08
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT	      0
++#define DPI_DMA_IRQ_FLAGS_DMA_READY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_DMA_READY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT	      1
++#define DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK	      BIT(DPI_DMA_IRQ_FLAGS_UNDERFLOW_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT	      2
++#define DPI_DMA_IRQ_FLAGS_FRAME_START_MASK	      BIT(DPI_DMA_IRQ_FLAGS_FRAME_START_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT	      3
++#define DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK	      BIT(DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_TE_SHIFT		      4
++#define DPI_DMA_IRQ_FLAGS_TE_MASK		      BIT(DPI_DMA_IRQ_FLAGS_TE_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_ERROR_SHIFT		      5
++#define DPI_DMA_IRQ_FLAGS_ERROR_MASK		      BIT(DPI_DMA_IRQ_FLAGS_ERROR_SHIFT)
++#define DPI_DMA_IRQ_FLAGS_MATCH_SHIFT		      6
++#define DPI_DMA_IRQ_FLAGS_MATCH_MASK		      BIT(DPI_DMA_IRQ_FLAGS_MATCH_SHIFT)
++
++// QOS
++#define DPI_DMA_QOS				      0xC
++#define DPI_DMA_QOS_DQOS_SHIFT			      0
++#define DPI_DMA_QOS_DQOS_MASK			      (0xF << DPI_DMA_QOS_DQOS_SHIFT)
++#define DPI_DMA_QOS_ULEV_SHIFT			      4
++#define DPI_DMA_QOS_ULEV_MASK			      (0xF << DPI_DMA_QOS_ULEV_SHIFT)
++#define DPI_DMA_QOS_UQOS_SHIFT			      8
++#define DPI_DMA_QOS_UQOS_MASK			      (0xF << DPI_DMA_QOS_UQOS_SHIFT)
++#define DPI_DMA_QOS_LLEV_SHIFT			      12
++#define DPI_DMA_QOS_LLEV_MASK			      (0xF << DPI_DMA_QOS_LLEV_SHIFT)
++#define DPI_DMA_QOS_LQOS_SHIFT			      16
++#define DPI_DMA_QOS_LQOS_MASK			      (0xF << DPI_DMA_QOS_LQOS_SHIFT)
++
++// Panics
++#define DPI_DMA_PANICS				     0x38
++#define DPI_DMA_PANICS_UPPER_COUNT_SHIFT	     0
++#define DPI_DMA_PANICS_UPPER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_UPPER_COUNT_SHIFT)
++#define DPI_DMA_PANICS_LOWER_COUNT_SHIFT	     16
++#define DPI_DMA_PANICS_LOWER_COUNT_MASK		     \
++				(0x0000FFFF << DPI_DMA_PANICS_LOWER_COUNT_SHIFT)
++
++// DMA Address Lower:
++#define DPI_DMA_DMA_ADDR_L			     0x10
++
++// DMA Address Upper:
++#define DPI_DMA_DMA_ADDR_H			     0x40
++
++// DMA stride
++#define DPI_DMA_DMA_STRIDE			     0x14
++
++// Visible Area
++#define DPI_DMA_VISIBLE_AREA			     0x18
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT     0
++#define DPI_DMA_VISIBLE_AREA_ROWSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_ROWSM1_SHIFT)
++#define DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT    16
++#define DPI_DMA_VISIBLE_AREA_COLSM1_MASK     (0x0FFF << DPI_DMA_VISIBLE_AREA_COLSM1_SHIFT)
++
++// Sync width
++#define DPI_DMA_SYNC_WIDTH   0x1C
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT	 0
++#define DPI_DMA_SYNC_WIDTH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_ROWSM1_SHIFT)
++#define DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT	 16
++#define DPI_DMA_SYNC_WIDTH_COLSM1_MASK	 (0x0FFF << DPI_DMA_SYNC_WIDTH_COLSM1_SHIFT)
++
++// Back porch
++#define DPI_DMA_BACK_PORCH   0x20
++#define DPI_DMA_BACK_PORCH_ROWSM1_SHIFT	 0
++#define DPI_DMA_BACK_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_BACK_PORCH_COLSM1_SHIFT	 16
++#define DPI_DMA_BACK_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_BACK_PORCH_COLSM1_SHIFT)
++
++// Front porch
++#define DPI_DMA_FRONT_PORCH  0x24
++#define DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT     0
++#define DPI_DMA_FRONT_PORCH_ROWSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_ROWSM1_SHIFT)
++#define DPI_DMA_FRONT_PORCH_COLSM1_SHIFT     16
++#define DPI_DMA_FRONT_PORCH_COLSM1_MASK	 (0x0FFF << DPI_DMA_FRONT_PORCH_COLSM1_SHIFT)
++
++// Input masks
++#define DPI_DMA_IMASK	 0x2C
++#define DPI_DMA_IMASK_R_SHIFT	 0
++#define DPI_DMA_IMASK_R_MASK	 (0x3FF << DPI_DMA_IMASK_R_SHIFT)
++#define DPI_DMA_IMASK_G_SHIFT	 10
++#define DPI_DMA_IMASK_G_MASK	 (0x3FF << DPI_DMA_IMASK_G_SHIFT)
++#define DPI_DMA_IMASK_B_SHIFT	 20
++#define DPI_DMA_IMASK_B_MASK	 (0x3FF << DPI_DMA_IMASK_B_SHIFT)
++
++// Output Masks
++#define DPI_DMA_OMASK	 0x30
++#define DPI_DMA_OMASK_R_SHIFT	 0
++#define DPI_DMA_OMASK_R_MASK	 (0x3FF << DPI_DMA_OMASK_R_SHIFT)
++#define DPI_DMA_OMASK_G_SHIFT	 10
++#define DPI_DMA_OMASK_G_MASK	 (0x3FF << DPI_DMA_OMASK_G_SHIFT)
++#define DPI_DMA_OMASK_B_SHIFT	 20
++#define DPI_DMA_OMASK_B_MASK	 (0x3FF << DPI_DMA_OMASK_B_SHIFT)
++
++// Shifts
++#define DPI_DMA_SHIFT	 0x28
++#define DPI_DMA_SHIFT_IR_SHIFT	 0
++#define DPI_DMA_SHIFT_IR_MASK	 (0x1F << DPI_DMA_SHIFT_IR_SHIFT)
++#define DPI_DMA_SHIFT_IG_SHIFT	 5
++#define DPI_DMA_SHIFT_IG_MASK	 (0x1F << DPI_DMA_SHIFT_IG_SHIFT)
++#define DPI_DMA_SHIFT_IB_SHIFT	 10
++#define DPI_DMA_SHIFT_IB_MASK	 (0x1F << DPI_DMA_SHIFT_IB_SHIFT)
++#define DPI_DMA_SHIFT_OR_SHIFT	 15
++#define DPI_DMA_SHIFT_OR_MASK	 (0x1F << DPI_DMA_SHIFT_OR_SHIFT)
++#define DPI_DMA_SHIFT_OG_SHIFT	 20
++#define DPI_DMA_SHIFT_OG_MASK	 (0x1F << DPI_DMA_SHIFT_OG_SHIFT)
++#define DPI_DMA_SHIFT_OB_SHIFT	 25
++#define DPI_DMA_SHIFT_OB_MASK	 (0x1F << DPI_DMA_SHIFT_OB_SHIFT)
++
++// Scaling
++#define DPI_DMA_RGBSZ	 0x34
++#define DPI_DMA_RGBSZ_BPP_SHIFT	 16
++#define DPI_DMA_RGBSZ_BPP_MASK	 (0x3 << DPI_DMA_RGBSZ_BPP_SHIFT)
++#define DPI_DMA_RGBSZ_R_SHIFT	 0
++#define DPI_DMA_RGBSZ_R_MASK	 (0xF << DPI_DMA_RGBSZ_R_SHIFT)
++#define DPI_DMA_RGBSZ_G_SHIFT	 4
++#define DPI_DMA_RGBSZ_G_MASK	 (0xF << DPI_DMA_RGBSZ_G_SHIFT)
++#define DPI_DMA_RGBSZ_B_SHIFT	 8
++#define DPI_DMA_RGBSZ_B_MASK	 (0xF << DPI_DMA_RGBSZ_B_SHIFT)
++
++// Status
++#define DPI_DMA_STATUS  0x3c
++
++#define BITS(field, val) FIELD_PREP((field ## _MASK), val)
++
++static unsigned int rp1dpi_hw_read(struct rp1_dpi *dpi, unsigned int reg)
++{
++	void __iomem *addr = dpi->hw_base[RP1DPI_HW_BLOCK_DPI] + reg;
++
++	return readl(addr);
++}
++
++static void rp1dpi_hw_write(struct rp1_dpi *dpi, unsigned int reg, unsigned int val)
++{
++	void __iomem *addr = dpi->hw_base[RP1DPI_HW_BLOCK_DPI] + reg;
++
++	writel(val, addr);
++}
++
++int rp1dpi_hw_busy(struct rp1_dpi *dpi)
++{
++	return (rp1dpi_hw_read(dpi, DPI_DMA_STATUS) & 0xF8F) ? 1 : 0;
++}
++
++/*
++ * Table of supported input (in-memory/DMA) pixel formats.
++ *
++ * RP1 DPI describes RGB components in terms of their MS bit position, a 10-bit
++ * left-aligned bit-mask, and an optional right-shift-and-OR used for scaling.
++ * To make it easier to permute R, G and B components, we re-pack these fields
++ * into 32-bit code-words, which don't themselves correspond to any register.
++ */
++
++#define RGB_CODE(scale, shift, mask) (((scale) << 24) | ((shift) << 16) | (mask))
++#define RGB_SCALE(c) ((c) >> 24)
++#define RGB_SHIFT(c) (((c) >> 16) & 31)
++#define RGB_MASK(c) ((c) & 0x3ff)
++
++struct rp1dpi_ipixfmt {
++	u32 format;       /* DRM format code                          */
++	u32 rgb_code[3];  /* (width&7), MS bit position, 10-bit mask  */
++	u32 bpp;          /* Bytes per pixel minus one                */
++};
++
++static const struct rp1dpi_ipixfmt my_formats[] = {
++	{
++		.format = DRM_FORMAT_XRGB8888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_XBGR8888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_ARGB8888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_ABGR8888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 3,
++	},
++	{
++		.format = DRM_FORMAT_RGB888,
++		.rgb_code = {
++			RGB_CODE(0, 23, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 7, 0x3fc),
++		},
++		.bpp = 2,
++	},
++	{
++		.format = DRM_FORMAT_BGR888,
++		.rgb_code = {
++			RGB_CODE(0, 7, 0x3fc),
++			RGB_CODE(0, 15, 0x3fc),
++			RGB_CODE(0, 23, 0x3fc),
++		},
++		.bpp = 2,
++	},
++	{
++		.format = DRM_FORMAT_RGB565,
++		.rgb_code = {
++			RGB_CODE(5, 15, 0x3e0),
++			RGB_CODE(6, 10, 0x3f0),
++			RGB_CODE(5, 4, 0x3e0),
++		},
++		.bpp = 1,
++	},
++};
++
++#define IMASK_RGB(r, g, b)  (FIELD_PREP_CONST(DPI_DMA_IMASK_R_MASK, r)  | \
++			     FIELD_PREP_CONST(DPI_DMA_IMASK_G_MASK, g)  | \
++			     FIELD_PREP_CONST(DPI_DMA_IMASK_B_MASK, b))
++#define OMASK_RGB(r, g, b)  (FIELD_PREP_CONST(DPI_DMA_OMASK_R_MASK, r)  | \
++			     FIELD_PREP_CONST(DPI_DMA_OMASK_G_MASK, g)  | \
++			     FIELD_PREP_CONST(DPI_DMA_OMASK_B_MASK, b))
++#define ISHIFT_RGB(r, g, b) (FIELD_PREP_CONST(DPI_DMA_SHIFT_IR_MASK, r) | \
++			     FIELD_PREP_CONST(DPI_DMA_SHIFT_IG_MASK, g) | \
++			     FIELD_PREP_CONST(DPI_DMA_SHIFT_IB_MASK, b))
++#define OSHIFT_RGB(r, g, b) (FIELD_PREP_CONST(DPI_DMA_SHIFT_OR_MASK, r) | \
++			     FIELD_PREP_CONST(DPI_DMA_SHIFT_OG_MASK, g) | \
++			     FIELD_PREP_CONST(DPI_DMA_SHIFT_OB_MASK, b))
++
++/*
++ * Function to update *shift with output positions, and return output RGB masks.
++ * By the time we get here, RGB order has been normalized to RGB (R most significant).
++ * Note that an internal bus is 30 bits wide: bits [21:20], [11:10], [1:0] are dropped.
++ * This makes the packed RGB5656 and RGB666 formats problematic, as colour components
++ * need to straddle the gaps; we mitigate this by hijacking input masks and scaling.
++ */
++static u32 set_output_format(u32 bus_format, u32 *shift, u32 *imask, u32 *rgbsz)
++{
++	switch (bus_format) {
++	case MEDIA_BUS_FMT_RGB565_1X16:
++		if (*shift == ISHIFT_RGB(15, 10, 4)) {
++			/* When framebuffer is RGB565, we can output RGB565 */
++			*shift = ISHIFT_RGB(15, 7, 0) | OSHIFT_RGB(19, 9, 0);
++			*imask = IMASK_RGB(0x3fc, 0x3fc, 0);
++			*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
++			return OMASK_RGB(0x3fc, 0x3fc, 0);
++		}
++
++		/* due to a HW limitation, bit-depth is effectively RGB535 */
++		*shift |= OSHIFT_RGB(19, 14, 6);
++		*imask &= IMASK_RGB(0x3e0, 0x380, 0x3e0);
++		*rgbsz = BITS(DPI_DMA_RGBSZ_G, 5) | (*rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
++		return OMASK_RGB(0x3e0, 0x39c, 0x3e0);
++
++	case MEDIA_BUS_FMT_RGB666_1X18:
++	case MEDIA_BUS_FMT_BGR666_1X18:
++		/* due to a HW limitation, bit-depth is effectively RGB444 */
++		*shift |= OSHIFT_RGB(23, 15, 7);
++		*imask = IMASK_RGB(0x3c0, 0x3c0, 0x3c0);
++		*rgbsz = BITS(DPI_DMA_RGBSZ_R, 2) | (*rgbsz & DPI_DMA_RGBSZ_BPP_MASK);
++		return OMASK_RGB(0x330, 0x3c0, 0x3c0);
++
++	case MEDIA_BUS_FMT_RGB888_1X24:
++	case MEDIA_BUS_FMT_BGR888_1X24:
++	case MEDIA_BUS_FMT_RGB101010_1X30:
++		/* The full 24 bits can be output. Note that RP1's internal wiring means
++		 * that 8.8.8 to GPIO pads can share with 10.10.10 to the onboard VDAC.
++		 */
++		*shift |= OSHIFT_RGB(29, 19, 9);
++		return OMASK_RGB(0x3fc, 0x3fc, 0x3fc);
++
++	case MEDIA_BUS_FMT_RGB565_1X24_CPADHI:
++		/* This should match Raspberry Pi legacy "mode 3" */
++		*shift |= OSHIFT_RGB(26, 17, 6);
++		*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
++		return OMASK_RGB(0x3e0, 0x3f0, 0x3e0);
++
++	default:
++		/* RGB666_1x24_CPADHI, BGR666_1X24_CPADHI and "mode 4" formats */
++		*shift |= OSHIFT_RGB(27, 17, 7);
++		*rgbsz &= DPI_DMA_RGBSZ_BPP_MASK;
++		return OMASK_RGB(0x3f0, 0x3f0, 0x3f0);
++	}
++}
++
++#define BUS_FMT_IS_BGR(fmt) (				       \
++		((fmt) == MEDIA_BUS_FMT_BGR666_1X18)        || \
++		((fmt) == MEDIA_BUS_FMT_BGR666_1X24_CPADHI) || \
++		((fmt) == MEDIA_BUS_FMT_BGR888_1X24))
++
++void rp1dpi_hw_setup(struct rp1_dpi *dpi,
++		     u32 in_format, u32 bus_format, bool de_inv,
++		    struct drm_display_mode const *mode)
++{
++	u32 shift, imask, omask, rgbsz, vctrl;
++	u32 rgb_code[3];
++	int order, i;
++
++	drm_info(&dpi->drm,
++		 "in_fmt=\'%c%c%c%c\' bus_fmt=0x%x mode=%dx%d total=%dx%d%s %dkHz %cH%cV%cDE%cCK",
++		 in_format, in_format >> 8, in_format >> 16, in_format >> 24, bus_format,
++		 mode->hdisplay, mode->vdisplay,
++		 mode->htotal, mode->vtotal,
++		 (mode->flags & DRM_MODE_FLAG_INTERLACE) ? "i" : "",
++		 mode->clock,
++		 (mode->flags & DRM_MODE_FLAG_NHSYNC) ? '-' : '+',
++		 (mode->flags & DRM_MODE_FLAG_NVSYNC) ? '-' : '+',
++		 de_inv ? '-' : '+',
++		 dpi->clk_inv ? '-' : '+');
++
++	/* Look up the input (in-memory) pixel format */
++	for (i = 0; i < ARRAY_SIZE(my_formats); ++i) {
++		if (my_formats[i].format == in_format)
++			break;
++	}
++	if (i >= ARRAY_SIZE(my_formats)) {
++		pr_err("%s: bad input format\n", __func__);
++		i = ARRAY_SIZE(my_formats) - 1;
++	}
++
++	/*
++	 * Although these RGB orderings refer to the output (DPI bus) format,
++	 * here we permute the *input* components. After this point, "Red"
++	 * will be most significant (highest numbered GPIOs), regardless
++	 * of rgb_order or bus_format. This simplifies later workarounds.
++	 */
++	order = dpi->rgb_order_override;
++	if (order == RP1DPI_ORDER_UNCHANGED)
++		order = BUS_FMT_IS_BGR(bus_format) ? RP1DPI_ORDER_BGR : RP1DPI_ORDER_RGB;
++	rgb_code[0] = my_formats[i].rgb_code[order & 3];
++	rgb_code[1] = my_formats[i].rgb_code[(order >> 8) & 3];
++	rgb_code[2] = my_formats[i].rgb_code[(order >> 16) & 3];
++	rgbsz = FIELD_PREP(DPI_DMA_RGBSZ_BPP_MASK, my_formats[i].bpp) |
++		FIELD_PREP(DPI_DMA_RGBSZ_R_MASK, RGB_SCALE(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_RGBSZ_G_MASK, RGB_SCALE(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_RGBSZ_B_MASK, RGB_SCALE(rgb_code[2]));
++	shift = FIELD_PREP(DPI_DMA_SHIFT_IR_MASK, RGB_SHIFT(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_SHIFT_IG_MASK, RGB_SHIFT(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_SHIFT_IB_MASK, RGB_SHIFT(rgb_code[2]));
++	imask = FIELD_PREP(DPI_DMA_IMASK_R_MASK, RGB_MASK(rgb_code[0])) |
++		FIELD_PREP(DPI_DMA_IMASK_G_MASK, RGB_MASK(rgb_code[1])) |
++		FIELD_PREP(DPI_DMA_IMASK_B_MASK, RGB_MASK(rgb_code[2]));
++	omask = set_output_format(bus_format, &shift, &imask, &rgbsz);
++
++	/*
++	 * Configure all DPI/DMA block registers, except base address.
++	 * DMA will not actually start until a FB base address is specified
++	 * using rp1dpi_hw_update().
++	 */
++	rp1dpi_hw_write(dpi, DPI_DMA_IMASK, imask);
++	rp1dpi_hw_write(dpi, DPI_DMA_OMASK, omask);
++	rp1dpi_hw_write(dpi, DPI_DMA_SHIFT, shift);
++	rp1dpi_hw_write(dpi, DPI_DMA_RGBSZ, rgbsz);
++
++	rp1dpi_hw_write(dpi, DPI_DMA_QOS,
++			BITS(DPI_DMA_QOS_DQOS, 0x0) |
++			BITS(DPI_DMA_QOS_ULEV, 0xb) |
++			BITS(DPI_DMA_QOS_UQOS, 0x2) |
++			BITS(DPI_DMA_QOS_LLEV, 0x8) |
++			BITS(DPI_DMA_QOS_LQOS, 0x7));
++
++	if (!(mode->flags & DRM_MODE_FLAG_INTERLACE)) {
++		rp1dpi_hw_write(dpi, DPI_DMA_VISIBLE_AREA,
++				BITS(DPI_DMA_VISIBLE_AREA_ROWSM1, mode->vdisplay - 1) |
++				BITS(DPI_DMA_VISIBLE_AREA_COLSM1, mode->hdisplay - 1));
++
++		rp1dpi_hw_write(dpi, DPI_DMA_SYNC_WIDTH,
++				BITS(DPI_DMA_SYNC_WIDTH_ROWSM1,
++				     mode->vsync_end - mode->vsync_start - 1) |
++				BITS(DPI_DMA_SYNC_WIDTH_COLSM1,
++				     mode->hsync_end - mode->hsync_start - 1));
++
++		/* In these registers, "back porch" time includes sync width */
++		rp1dpi_hw_write(dpi, DPI_DMA_BACK_PORCH,
++				BITS(DPI_DMA_BACK_PORCH_ROWSM1,
++				     mode->vtotal - mode->vsync_start - 1) |
++				BITS(DPI_DMA_BACK_PORCH_COLSM1,
++				     mode->htotal - mode->hsync_start - 1));
++
++		rp1dpi_hw_write(dpi, DPI_DMA_FRONT_PORCH,
++				BITS(DPI_DMA_FRONT_PORCH_ROWSM1,
++				     mode->vsync_start - mode->vdisplay - 1) |
++				BITS(DPI_DMA_FRONT_PORCH_COLSM1,
++				     mode->hsync_start - mode->hdisplay - 1));
++
++		vctrl = BITS(DPI_DMA_CONTROL_VSYNC_POL, !!(mode->flags & DRM_MODE_FLAG_NVSYNC)) |
++			BITS(DPI_DMA_CONTROL_VBP_EN, (mode->vtotal != mode->vsync_start))       |
++			BITS(DPI_DMA_CONTROL_VFP_EN, (mode->vsync_start != mode->vdisplay))     |
++			BITS(DPI_DMA_CONTROL_VSYNC_EN, (mode->vsync_end != mode->vsync_start));
++
++		dpi->interlaced = false;
++	} else {
++		/*
++		 * Experimental interlace support
++		 *
++		 * RP1 DPI hardware wasn't designed to support interlace, but lets us change
++		 * both the VFP line count and the next DMA address while running. That allows
++		 * pixel data to be correctly timed for interlace, but VSYNC remains wrong.
++		 *
++		 * It is necessary to use external hardware (such as PIO) to regenerate VSYNC
++		 * based on HSYNC, DE (which *must* both be mapped to GPIOs 1, 3 respectively).
++		 * This driver includes a PIO program to do that, when DE is enabled.
++		 *
++		 * An alternative fixup is to synthesize CSYNC from HSYNC and modified-VSYNC.
++		 * We can't do this and make VSYNC at the same time; DPI's VSYNC is replaced
++		 * by a "helper signal" that pulses low for 1 or 2 scan-lines, starting 2.0 or
++		 * 2.5 scan-lines respectively before nominal VSYNC start.
++		 */
++		int vact  = mode->vdisplay >> 1; /* visible lines per field. Can't do half-lines */
++		int vtot0 = mode->vtotal >> 1;   /* vtotal should always be odd when interlaced. */
++		int vfp0  = (mode->vsync_start >= mode->vdisplay + 4) ?
++			((mode->vsync_start - mode->vdisplay - 2) >> 1) : 1;
++		int vbp   = max(0, vtot0 - vact - vfp0);
++
++		rp1dpi_hw_write(dpi, DPI_DMA_VISIBLE_AREA,
++				BITS(DPI_DMA_VISIBLE_AREA_ROWSM1, vact - 1) |
++				BITS(DPI_DMA_VISIBLE_AREA_COLSM1, mode->hdisplay - 1));
++
++		rp1dpi_hw_write(dpi, DPI_DMA_SYNC_WIDTH,
++				BITS(DPI_DMA_SYNC_WIDTH_ROWSM1, vtot0 - 2) |
++				BITS(DPI_DMA_SYNC_WIDTH_COLSM1,
++				     mode->hsync_end - mode->hsync_start - 1));
++
++		rp1dpi_hw_write(dpi, DPI_DMA_BACK_PORCH,
++				BITS(DPI_DMA_BACK_PORCH_ROWSM1, vbp - 1) |
++				BITS(DPI_DMA_BACK_PORCH_COLSM1,
++				     mode->htotal - mode->hsync_start - 1));
++
++		dpi->shorter_front_porch =
++			BITS(DPI_DMA_FRONT_PORCH_ROWSM1, vfp0 - 1) |
++			BITS(DPI_DMA_FRONT_PORCH_COLSM1,
++			     mode->hsync_start - mode->hdisplay - 1);
++		rp1dpi_hw_write(dpi, DPI_DMA_FRONT_PORCH, dpi->shorter_front_porch);
++
++		vctrl = BITS(DPI_DMA_CONTROL_VSYNC_POL, 0)      |
++			BITS(DPI_DMA_CONTROL_VBP_EN, (vbp > 0)) |
++			BITS(DPI_DMA_CONTROL_VFP_EN, 1)         |
++			BITS(DPI_DMA_CONTROL_VSYNC_EN, 1);
++
++		dpi->interlaced = true;
++	}
++	dpi->lower_field_flag = false;
++	dpi->last_dma_addr = 0;
++
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_FLAGS, -1);
++	rp1dpi_hw_vblank_ctrl(dpi, 1);
++
++	i = rp1dpi_hw_busy(dpi);
++	if (i)
++		pr_warn("%s: Unexpectedly busy at start!", __func__);
++
++	rp1dpi_hw_write(dpi, DPI_DMA_CONTROL,
++			vctrl                                  |
++			BITS(DPI_DMA_CONTROL_ARM,          !i) |
++			BITS(DPI_DMA_CONTROL_AUTO_REPEAT,   1) |
++			BITS(DPI_DMA_CONTROL_HIGH_WATER,  448) |
++			BITS(DPI_DMA_CONTROL_DEN_POL,  de_inv) |
++			BITS(DPI_DMA_CONTROL_HSYNC_POL, !!(mode->flags & DRM_MODE_FLAG_NHSYNC)) |
++			BITS(DPI_DMA_CONTROL_HBP_EN,    (mode->htotal != mode->hsync_end))      |
++			BITS(DPI_DMA_CONTROL_HFP_EN,    (mode->hsync_start != mode->hdisplay))  |
++			BITS(DPI_DMA_CONTROL_HSYNC_EN,  (mode->hsync_end != mode->hsync_start)));
++}
++
++void rp1dpi_hw_update(struct rp1_dpi *dpi, dma_addr_t addr, u32 offset, u32 stride)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&dpi->hw_lock, flags);
++
++	/*
++	 * Update STRIDE, DMAH and DMAL only. When called after rp1dpi_hw_setup(),
++	 * DMA starts immediately; if already running, the buffer will flip at
++	 * the next vertical sync event. In interlaced mode, we need to adjust
++	 * the address and stride to display only the current field, saving
++	 * the original address (so it can be flipped for subsequent fields).
++	 */
++	addr += offset;
++	dpi->last_dma_addr = addr;
++	dpi->last_stride = stride;
++	if (dpi->interlaced) {
++		if (dpi->lower_field_flag)
++			addr += stride;
++		stride *= 2;
++	}
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_STRIDE, stride);
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_H, addr >> 32);
++	rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_L, addr & 0xFFFFFFFFu);
++
++	spin_unlock_irqrestore(&dpi->hw_lock, flags);
++}
++
++void rp1dpi_hw_stop(struct rp1_dpi *dpi)
++{
++	u32 ctrl;
++	unsigned long flags;
++
++	/*
++	 * Stop DMA by turning off Auto-Repeat (and disable S/W field-flip),
++	 * then wait up to 100ms for the current and any queued frame to end.
++	 * (There is a "force drain" flag, but it can leave DPI in a broken
++	 * state which prevents it from restarting; it's safer to wait.)
++	 */
++	spin_lock_irqsave(&dpi->hw_lock, flags);
++	dpi->last_dma_addr = 0;
++	reinit_completion(&dpi->finished);
++	ctrl = rp1dpi_hw_read(dpi, DPI_DMA_CONTROL);
++	ctrl &= ~(DPI_DMA_CONTROL_ARM_MASK | DPI_DMA_CONTROL_AUTO_REPEAT_MASK);
++	rp1dpi_hw_write(dpi, DPI_DMA_CONTROL, ctrl);
++	spin_unlock_irqrestore(&dpi->hw_lock, flags);
++
++	if (!wait_for_completion_timeout(&dpi->finished, HZ / 10))
++		drm_err(&dpi->drm, "%s: timed out waiting for idle\n", __func__);
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_EN, 0);
++}
++
++void rp1dpi_hw_vblank_ctrl(struct rp1_dpi *dpi, int enable)
++{
++	rp1dpi_hw_write(dpi, DPI_DMA_IRQ_EN,
++			BITS(DPI_DMA_IRQ_EN_AFIFO_EMPTY, 1)         |
++			BITS(DPI_DMA_IRQ_EN_UNDERFLOW, 1)           |
++			BITS(DPI_DMA_IRQ_EN_DMA_READY, !!enable)    |
++			BITS(DPI_DMA_IRQ_EN_MATCH, dpi->interlaced) |
++			BITS(DPI_DMA_IRQ_EN_MATCH_LINE, 32));
++}
++
++irqreturn_t rp1dpi_hw_isr(int irq, void *dev)
++{
++	struct rp1_dpi *dpi = dev;
++	u32 u = rp1dpi_hw_read(dpi, DPI_DMA_IRQ_FLAGS);
++
++	if (u) {
++		rp1dpi_hw_write(dpi, DPI_DMA_IRQ_FLAGS, u);
++		if (dpi) {
++			if (u & DPI_DMA_IRQ_FLAGS_UNDERFLOW_MASK)
++				drm_err_ratelimited(&dpi->drm,
++						    "Underflow! (panics=0x%08x)\n",
++						    rp1dpi_hw_read(dpi, DPI_DMA_PANICS));
++			if (u & DPI_DMA_IRQ_FLAGS_DMA_READY_MASK)
++				drm_crtc_handle_vblank(&dpi->pipe.crtc);
++			if (u & DPI_DMA_IRQ_FLAGS_AFIFO_EMPTY_MASK)
++				complete(&dpi->finished);
++
++			/*
++			 * Added for interlace support: We use this mid-frame interrupt to
++			 * wobble the VFP between fields, re-submitting the next-buffer address
++			 * with an offset to display the opposite field. NB: rp1dpi_hw_update()
++			 * may be called at any time, before or after, so locking is needed.
++			 * H/W Auto-update is no longer needed (unless this IRQ is lost).
++			 */
++			if ((u & DPI_DMA_IRQ_FLAGS_MATCH_MASK) && dpi->interlaced) {
++				unsigned long flags;
++				dma_addr_t a;
++
++				spin_lock_irqsave(&dpi->hw_lock, flags);
++				dpi->lower_field_flag = !dpi->lower_field_flag;
++				rp1dpi_hw_write(dpi, DPI_DMA_FRONT_PORCH,
++						dpi->shorter_front_porch +
++						BITS(DPI_DMA_FRONT_PORCH_ROWSM1,
++						     dpi->lower_field_flag));
++				a = dpi->last_dma_addr;
++				if (a) {
++					if (dpi->lower_field_flag)
++						a += dpi->last_stride;
++					rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_H, a >> 32);
++					rp1dpi_hw_write(dpi, DPI_DMA_DMA_ADDR_L, a & 0xFFFFFFFFu);
++				}
++				spin_unlock_irqrestore(&dpi->hw_lock, flags);
++			}
++		}
++	}
++
++	return u ? IRQ_HANDLED : IRQ_NONE;
++}
+--- /dev/null
++++ b/drivers/gpu/drm/rp1/rp1-dpi/rp1_dpi_pio.c
+@@ -0,0 +1,614 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * PIO code for Raspberry Pi RP1 DPI driver
++ *
++ * Copyright (c) 2024 Raspberry Pi Limited.
++ */
++
++/*
++ * RP1 DPI can't generate any composite sync, and in interlaced modes
++ * its native vertical sync output will be an incorrect/modified signal.
++ *
++ * So we need to use PIO *either* to generate CSYNC in both progressive
++ * and interlaced modes, *or* to fix up VSYNC for interlaced modes only.
++ * It can't do both: interlaced modes can have only one of CSYNC, VSYNC.
++ * All these cases require GPIOs 1, 2 and 3 to be declared as outputs.
++ *
++ * Note that PIO's VSYNC or CSYNC output is not synchronous to DPICLK
++ * and may suffer up to +/-5ns of jitter.
++ */
++
++#include <linux/kernel.h>
++#include <linux/errno.h>
++#include <linux/of.h>
++#include <linux/pinctrl/consumer.h>
++#include <linux/platform_device.h>
++#include <drm/drm_print.h>
++
++#include "rp1_dpi.h"
++
++#if IS_REACHABLE(CONFIG_RP1_PIO)
++
++#include <linux/pio_rp1.h>
++
++/*
++ * Start a PIO SM to generate two interrupts for each horizontal line.
++ * The first occurs shortly before the middle of the line. The second
++ * is timed such that after receiving the IRQ plus 1 extra delay cycle,
++ * another SM's output will align with the next HSYNC within -5ns .. +10ns.
++ * To achieve this, we need an accurate measure of (cycles per line) / 2.
++ *
++ * Measured GPIO -> { wait gpio ; irq set | irq wait ; sideset } -> GPIO
++ * round-trip delay is about 8 cycles when pins are not heavily loaded.
++ *
++ * PIO code           ; Notional time % 1000-cycle period
++ * --------           ; ---------------------------------
++ * 0: wait 1 gpio 3   ;   0..  8
++ * 1: mov x, y        ;   8..  9
++ * 2: jmp x--, 2      ;   9..499    (Y should be T/2 - 11)
++ * 3: irq set 1       ; 499..500
++ * 4: mov x, y    [8] ; 500..509
++ * 5: jmp x--, 5      ; 509..999
++ * 6: irq set 1       ; 999..1000
++ */
++
++static int rp1dpi_pio_start_timer_both(struct rp1_dpi *dpi, u32 flags, u32 tc)
++{
++	static const u16 instructions[2][7] = {
++		{ 0x2083, 0xa022, 0x0042, 0xc001, 0xa822, 0x0045, 0xc001 }, /* +H */
++		{ 0x2003, 0xa022, 0x0042, 0xc001, 0xa822, 0x0045, 0xc001 }, /* -H */
++	};
++	const struct pio_program prog = {
++		.instructions = instructions[(flags & DRM_MODE_FLAG_NHSYNC) ? 1 : 0],
++		.length = ARRAY_SIZE(instructions[0]),
++		.origin = -1
++	};
++	int offset, sm;
++
++	sm = pio_claim_unused_sm(dpi->pio, true);
++	if (sm < 0)
++		return -EBUSY;
++
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY) {
++		pio_sm_unclaim(dpi->pio, sm);
++		return -EBUSY;
++	}
++
++	pio_sm_config cfg = pio_get_default_sm_config();
++
++	pio_sm_set_enabled(dpi->pio, sm, false);
++	sm_config_set_wrap(&cfg, offset, offset + 6);
++	pio_sm_init(dpi->pio, sm, offset, &cfg);
++
++	pio_sm_put(dpi->pio, sm, tc - 11);
++	pio_sm_exec(dpi->pio, sm, pio_encode_pull(false, false));
++	pio_sm_exec(dpi->pio, sm, pio_encode_out(pio_y, 32));
++	pio_sm_set_enabled(dpi->pio, sm, true);
++
++	return 0;
++}
++
++/*
++ * Snoop on DE, HSYNC to count half-lines in the vertical blanking interval
++ * to determine when the VSYNC pulse should start and finish. Then, at a
++ * suitable moment (which should be an odd number of half-lines since the
++ * last active line), sample DE again to detect field phase.
++ *
++ * This version assumes VFP length is within 2..256 half-lines for any field
++ * (one half-line delay is needed to sample DE; we always wait for the next
++ * half-line boundary to improve VSync start accuracy) and VBP in 1..255.
++ */
++
++static int rp1dpi_pio_vsync_ilace(struct rp1_dpi *dpi,
++				  struct drm_display_mode const *mode)
++{
++	u16 instructions[] = {  /* This is mutable */
++		//      .wrap_target
++		0xa0e6, //  0: mov    osr, isr    side 0     ; top: rewind parameters
++		0x2081, //  1: wait   1 gpio, 1   side 0     ; main: while (!DE) wait;
++		0x2783, //  2: wait   1 gpio, 3   side 0 [7] ;  do { @HSync
++		0xc041, //  3: irq    clear 1     side 0     ;   flush stale IRQs
++		0x20c1, //  4: wait   1 irq, 1    side 0     ;   @midline
++		0x00c2, //  5: jmp    pin, 2      side 0     ;  } while (DE)
++		0x0007, //  6: jmp    7           side 0     ;  <modify for -DE fixup>
++		0x6028, //  7: out    x, 8        side 0     ;  x = VFPlen - 2
++		0x20c1, //  8: wait   1 irq, 1    side 0     ;  do { @halfline
++		0x0048, //  9: jmp    x--, 8      side 0     ;  } while (x--)
++		0xb022, // 10: mov    x, y        side 1     ;  VSYNC=1; x = VSyncLen
++		0x30c1, // 11: wait   1 irq, 1    side 1     ;  VSYNC=1; do { @halfline
++		0x104b, // 12: jmp    x--, 11     side 1     ;  VSYNC=1; } while (x--)
++		0x6028, // 13: out    x, 8        side 0     ;  VSYNC=0; x = VBPLen - 1
++		0x20c1, // 14: wait   1 irq, 1    side 0     ;  do { @halfline
++		0x004e, // 15: jmp    x--, 14     side 0     ;  } while (x--)
++		0x00c0, // 16: jmp    pin, 0      side 0     ;  if (DE) reset phase
++		0x0012, // 17: jmp    18          side 0     ;  <modify for -DE fixup>
++		0x00e1, // 18: jmp    !osre, 1    side 0     ;  if (!phase) goto main
++		//     .wrap                                 ;  goto top
++	};
++	struct pio_program prog = {
++		.instructions = instructions,
++		.length = ARRAY_SIZE(instructions),
++		.origin = -1
++	};
++	pio_sm_config cfg = pio_get_default_sm_config();
++	unsigned int i, offset;
++	u32 tc, vfp, vbp;
++	int sm = pio_claim_unused_sm(dpi->pio, true);
++
++	if (sm < 0)
++		return -EBUSY;
++
++	/*
++	 * Compute half-line time constant (round uppish so that VSync should
++	 * switch never > 5ns before DPICLK, while defeating roundoff errors)
++	 * and start the timer SM.
++	 */
++	tc = (u32)clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]);
++	if (!tc)
++		tc = 1000u * mode->clock;
++	tc = ((u64)mode->htotal * (u64)clock_get_hz(clk_sys) + ((7ul * tc) >> 2)) /
++		(u64)(2ul * tc);
++	if (rp1dpi_pio_start_timer_both(dpi, mode->flags, tc) < 0) {
++		pio_sm_unclaim(dpi->pio, sm);
++		return -EBUSY;
++	}
++
++	/* Adapt program code according to DE and Sync polarity; configure program */
++	pio_sm_set_enabled(dpi->pio, sm, false);
++	if (dpi->de_inv) {
++		instructions[1] ^= 0x0080;
++		instructions[5]  = 0x00c7;
++		instructions[6]  = 0x0002;
++		instructions[16] = 0x00d2;
++		instructions[17] = 0x0000;
++	}
++	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
++		instructions[2] ^= 0x0080;
++	if (mode->flags & DRM_MODE_FLAG_NVSYNC) {
++		for (i = 0; i < ARRAY_SIZE(instructions); i++)
++			instructions[i] ^= 0x1000;
++	}
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY)
++		return -EBUSY;
++
++	/* Configure pins and SM */
++	sm_config_set_wrap(&cfg, offset, offset + ARRAY_SIZE(instructions) - 1);
++	sm_config_set_sideset(&cfg, 1, false, false);
++	sm_config_set_sideset_pins(&cfg, 2); /* PIO produces VSync on GPIO2 */
++	pio_gpio_init(dpi->pio, 2);
++	sm_config_set_jmp_pin(&cfg, 1); /* DE on GPIO1 */
++	pio_sm_init(dpi->pio, sm, offset, &cfg);
++	pio_sm_set_consecutive_pindirs(dpi->pio, sm, 2, 1, true);
++
++	/* Compute vertical times, remembering how we rounded vdisplay, vtotal */
++	vfp = mode->vsync_start - (mode->vdisplay & ~1);
++	vbp = (mode->vtotal | 1) - mode->vsync_end;
++	if (vfp > 256) {
++		vbp += vfp - 256;
++		vfp = 256;
++	} else if (vfp < 3) {
++		vbp = (vbp > 3 - vfp) ? (vbp - 3 + vfp) : 1;
++		vfp = 3;
++	}
++
++	pio_sm_put(dpi->pio, sm,
++		   (vfp - 2) + ((vbp - 1) << 8) +
++		   ((vfp - 3) << 16) + (vbp << 24));
++	pio_sm_put(dpi->pio, sm, mode->vsync_end - mode->vsync_start - 1);
++	pio_sm_exec(dpi->pio, sm, pio_encode_pull(false, false));
++	pio_sm_exec(dpi->pio, sm, pio_encode_out(pio_y, 32));
++	pio_sm_exec(dpi->pio, sm, pio_encode_in(pio_y, 32));
++	pio_sm_exec(dpi->pio, sm, pio_encode_pull(false, false));
++	pio_sm_exec(dpi->pio, sm, pio_encode_out(pio_y, 32));
++	pio_sm_set_enabled(dpi->pio, sm, true);
++
++	return 0;
++}
++
++/*
++ * COMPOSITE SYNC FOR PROGRESSIVE
++ *
++ * Copy HSYNC pulses to CSYNC (adding 1 cycle); then when VSYNC
++ * is asserted, extend each pulse by an additional Y + 1 cycles.
++ *
++ * The following time constant should be written to the FIFO:
++ *    (htotal - 2 * hsync_width) * sys_clock / dpi_clock - 2.
++ *
++ * The default configuration is +HSync, +VSync, -CSync; other
++ * polarities can be made by modifying the PIO program code.
++ */
++
++static int rp1dpi_pio_csync_prog(struct rp1_dpi *dpi,
++				 struct drm_display_mode const *mode)
++{
++	unsigned int i, tc, offset;
++	unsigned short instructions[] = {  /* This is mutable */
++		0x90a0, //  0: pull   block      side 1
++		0x7040, //  1: out    y, 32      side 1
++		//     .wrap_target
++		0xb322, //  2: mov    x, y       side 1 [3]
++		0x3083, //  3: wait   1 gpio, 3  side 1
++		0xa422, //  4: mov    x, y       side 0 [4]
++		0x2003, //  5: wait   0 gpio, 3  side 0
++		0x00c7, //  6: jmp    pin, 7     side 0    ; modify to flip VSync polarity
++		//     .wrap                               ; modify to flip VSync polarity
++		0x0047, //  7: jmp    x--, 7     side 0
++		0x1002, //  8: jmp    2          side 1
++	};
++	struct pio_program prog = {
++		.instructions = instructions,
++		.length = ARRAY_SIZE(instructions),
++		.origin = -1
++	};
++	pio_sm_config cfg = pio_get_default_sm_config();
++	int sm = pio_claim_unused_sm(dpi->pio, true);
++
++	if (sm < 0)
++		return -EBUSY;
++
++	/* Adapt program code for sync polarity; configure program */
++	pio_sm_set_enabled(dpi->pio, sm, false);
++	if (mode->flags & DRM_MODE_FLAG_NVSYNC)
++		instructions[6] = 0x00c2; /* jmp pin, 2 side 0 */
++	if (mode->flags & DRM_MODE_FLAG_NHSYNC) {
++		instructions[3] ^= 0x80;
++		instructions[5] ^= 0x80;
++	}
++	if (mode->flags & DRM_MODE_FLAG_PCSYNC) {
++		for (i = 0; i < ARRAY_SIZE(instructions); i++)
++			instructions[i] ^= 0x1000;
++	}
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY)
++		return -EBUSY;
++
++	/* Configure pins and SM */
++	sm_config_set_wrap(&cfg, offset + 2,
++			   offset + (mode->flags & DRM_MODE_FLAG_NVSYNC) ? 7 : 6);
++	sm_config_set_sideset(&cfg, 1, false, false);
++	sm_config_set_sideset_pins(&cfg, 1); /* PIO produces CSync on GPIO 1 */
++	pio_gpio_init(dpi->pio, 1);
++	sm_config_set_jmp_pin(&cfg, 2); /* VSync on GPIO 2 */
++	pio_sm_init(dpi->pio, sm, offset, &cfg);
++	pio_sm_set_consecutive_pindirs(dpi->pio, sm, 1, 1, true);
++
++	/* Place time constant into the FIFO; start the SM */
++	tc = (u32)clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]);
++	if (!tc)
++		tc = 1000u * mode->clock;
++	tc = ((u64)(mode->htotal - 2 * (mode->hsync_end - mode->hsync_start)) *
++	      (u64)clock_get_hz(clk_sys)) / (u64)tc;
++	pio_sm_put(dpi->pio, sm, tc - 2);
++	pio_sm_set_enabled(dpi->pio, sm, true);
++
++	return 0;
++}
++
++/*
++ * Claim all four SMs. Use SMs 1,2,3 to generate an interrupt:
++ * 1: At the end of the left "broad pulse"
++ * 2: In the middle of the scanline
++ * 3: At the end of the right "broad pulse"
++ */
++static int rp1dpi_pio_claim_all_start_timers(struct rp1_dpi *dpi,
++					     struct drm_display_mode const *mode)
++{
++	static const u16 instructions[2][4] = {
++		{ 0xa022, 0x2083, 0x0042, 0xc010 }, /* posedge */
++		{ 0xa022, 0x2003, 0x0042, 0xc010 }, /* negedge */
++	};
++	const struct pio_program prog = {
++		.instructions = instructions[(mode->flags & DRM_MODE_FLAG_NHSYNC) ? 1 : 0],
++		.length = ARRAY_SIZE(instructions[0]),
++		.origin = -1
++	};
++	u32 tc[3], sysclk, dpiclk;
++	int offset, i;
++
++	dpiclk = clk_get_rate(dpi->clocks[RP1DPI_CLK_DPI]);
++	if (!dpiclk)
++		dpiclk = 1000u * mode->clock;
++	sysclk = clock_get_hz(clk_sys);
++	tc[1] = ((u64)mode->htotal * (u64)sysclk) / (u64)(2ul * dpiclk);
++	tc[2] = ((u64)(mode->htotal + mode->hsync_start - mode->hsync_end) * (u64)sysclk) /
++		(u64)dpiclk;
++	tc[0] = tc[2] - tc[1];
++
++	i = pio_claim_sm_mask(dpi->pio, 0xF);
++	if (i != 0)
++		return -EBUSY;
++
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY)
++		return -EBUSY;
++
++	for (i = 0; i < 3; i++) {
++		pio_sm_config cfg = pio_get_default_sm_config();
++
++		pio_sm_set_enabled(dpi->pio, i + 1, false);
++		sm_config_set_wrap(&cfg, offset, offset + 3);
++		pio_sm_init(dpi->pio, i + 1, offset, &cfg);
++
++		pio_sm_put(dpi->pio, i + 1, tc[i] - 4);
++		pio_sm_exec(dpi->pio, i + 1, pio_encode_pull(false, false));
++		pio_sm_exec(dpi->pio, i + 1, pio_encode_out(pio_y, 32));
++		pio_sm_set_enabled(dpi->pio, i + 1, true);
++	}
++
++	return 0;
++}
++
++/*
++ * COMPOSITE SYNC FOR INTERLACED
++ *
++ * DPI VSYNC (GPIO2) must be a modified signal which is always active-low.
++ * It should go low for 1 or 2 scanlines, 2 or 2.5 lines before Vsync-start.
++ * Desired VSync width minus 1 (in half-lines) should be written to the FIFO.
++ *
++ * Three PIO SMs will be configured as timers, to fire at the end of a left
++ * broad pulse, the middle of a scanline, and the end of a right broad pulse.
++ *
++ * HSYNC->CSYNC latency is about 5 cycles, with a jitter of up to 1 cycle.
++ *
++ * Default program is compiled for +HSync, -CSync. The program may be
++ * modified for other polarities. GPIO2 polarity is always active low.
++ */
++
++static int rp1dpi_pio_csync_ilace(struct rp1_dpi *dpi,
++				  struct drm_display_mode const *mode)
++{
++	static const int wrap_target = 2;
++	static const int wrap = 23;
++	unsigned short instructions[] = {  /* This is mutable */
++		0x90a0, //  0: pull   block        side 1
++		0x7040, //  1: out    y, 32        side 1
++		//     .wrap_target                           ; while (true) {
++		0x3083, //  2: wait   1 gpio, 3    side 1     ;   do { @HSync
++		0xa422, //  3: mov    x, y         side 0 [4] ;   CSYNC: x = VSW - 1
++		0x2003, //  4: wait   0 gpio, 3    side 0     ;   CSYNC: HSync->CSync
++		0x12c2, //  5: jmp    pin, 2       side 1 [2] ;   } while (VSync)
++		0x3083, //  6: wait   1 gpio, 3    side 1     ;   @HSync
++		0xc442, //  7: irq    clear 2      side 0 [4] ;   CSYNC: flush IRQ
++		0x2003, //  8: wait   0 gpio, 3    side 0     ;   CSYNC: Hsync->CSync
++		0x30c2, //  9: wait   1 irq, 2     side 1     ;   @midline
++		0x10d4, // 10: jmp    pin, 20      side 1     ;   if (!VSync) goto sync_left;
++		0x3083, // 11: wait   1 gpio, 3    side 1     ;   @HSync
++		0xa442, // 12: nop                 side 0 [4] ;   CSYNC: delay
++		0x2003, // 13: wait   0 gpio, 3    side 0     ;   CSYNC: Hsync->CSync
++		0xd042, // 14: irq    clear 2      side 1     ;   do { flush IRQ
++		0xd043, // 15: irq    clear 3      side 1     ;     flush IRQ
++		0x30c2, // 16: wait   1 irq, 2     side 1     ;     @midline
++		0x20c3, // 17: wait   1 irq, 3     side 0     ;     CSYNC: @BroadRight
++		0x1054, // 18: jmp    x--, 20      side 1     ;     if (x-- == 0)
++		0x1002, // 19: jmp    2            side 1     ;       break;
++		0xd041, // 20: irq    clear 1      side 1     ; sync_left: flush IRQ
++		0x3083, // 21: wait   1 gpio, 3    side 1     ;     @HSync
++		0x20c1, // 22: wait   1 irq, 1     side 0     ;     CSYNC: @BroadLeft
++		0x104e, // 23: jmp    x--, 14      side 1     ;   } while (x--);
++		//     .wrap                                  ; }
++	};
++	struct pio_program prog = {
++		.instructions = instructions,
++		.length = ARRAY_SIZE(instructions),
++		.origin = -1
++	};
++	pio_sm_config cfg = pio_get_default_sm_config();
++	unsigned int i, offset;
++
++	/* Claim SM 0 and start timers on the other three SMs. */
++	i = rp1dpi_pio_claim_all_start_timers(dpi, mode);
++	if (i < 0)
++		return -EBUSY;
++
++	/* Adapt program code according to CSync polarity; configure program */
++	pio_sm_set_enabled(dpi->pio, 0, false);
++	for (i = 0; i < prog.length; i++) {
++		if (mode->flags & DRM_MODE_FLAG_PCSYNC)
++			instructions[i] ^= 0x1000;
++		if ((mode->flags & DRM_MODE_FLAG_NHSYNC) && (instructions[i] & 0xe07f) == 0x2003)
++			instructions[i] ^= 0x0080;
++	}
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY)
++		return -1;
++
++	/* Configure pins and SM; set VSync width; start the SM */
++	sm_config_set_wrap(&cfg, offset + wrap_target, offset + wrap);
++	sm_config_set_sideset(&cfg, 1, false, false);
++	sm_config_set_sideset_pins(&cfg, 1); /* PIO produces CSync on GPIO 1 */
++	pio_gpio_init(dpi->pio, 1);
++	sm_config_set_jmp_pin(&cfg, 2); /* DPI "helper signal" is GPIO 2 */
++	pio_sm_init(dpi->pio, 0, offset, &cfg);
++	pio_sm_set_consecutive_pindirs(dpi->pio, 0, 1, 1, true);
++	pio_sm_put(dpi->pio, 0, mode->vsync_end - mode->vsync_start - 1);
++	pio_sm_set_enabled(dpi->pio, 0, true);
++
++	return 0;
++}
++
++/*
++ * COMPOSITE SYNC (TV-STYLE) for 625/25i and 525/30i only.
++ *
++ * DPI VSYNC (GPIO2) must be a modified signal which is always active-low.
++ * It should go low for 1 or 2 scanlines, VSyncWidth/2.0 or (VSyncWidth+1)/2.0
++ * lines before Vsync-start, i.e. just after the last full active TV line
++ * (noting that RP1 DPI does not generate half-lines).
++ *
++ * This will push the image up by 1 line compared to customary DRM timings in
++ * "PAL" mode, or 2 lines in "NTSC" mode (which is arguably too low anyway),
++ * but avoids a collision between an active line and an equalizing pulse.
++ *
++ * Another wrinkle is that when the first equalizing pulse aligns with HSync,
++ * it becomes a normal-width sync pulse. This was a deliberate simplification.
++ * It is unlikely that any TV will notice or care.
++ */
++
++static int rp1dpi_pio_csync_tv(struct rp1_dpi *dpi,
++			       struct drm_display_mode const *mode)
++{
++	static const int wrap_target = 6;
++	static const int wrap = 27;
++	unsigned short instructions[] = {  /* This is mutable */
++		0x3703, //  0: wait  0 gpio, 3  side 1 [7] ; while (HSync) delay;
++		0x3083, //  1: wait  1 gpio, 3  side 1     ; do { @HSync
++		0xa7e6, //  2: mov   osr, isr   side 0 [7] ;   CSYNC: rewind sequence
++		0x2003, //  3: wait  0 gpio, 3  side 0     ;   CSYNC: HSync->CSync
++		0xb7e6, //  4: mov   osr, isr   side 1 [7] ;   delay
++		0x10c1, //  5: jmp   pin, 1     side 1     ; } while (VSync)
++		//     .wrap_target                        ; while (true) {
++		0xd042, //  6: irq   clear 2    side 1     ;   flush stale IRQ
++		0xd043, //  7: irq   clear 3    side 1     ;   flush stale IRQ
++		0xb022, //  8: mov   x, y       side 1     ;   X = EQWidth - 3
++		0x30c2, //  9: wait  1 irq, 2   side 1     ;   @midline
++		0x004a, // 10: jmp   x--, 10    side 0     ;   CSYNC: while (x--) ;
++		0x6021, // 11: out   x, 1       side 0     ;   CSYNC: next pulse broad?
++		0x002e, // 12: jmp   !x, 14     side 0     ;   CSYNC: if (broad)
++		0x20c3, // 13: wait  1 irq, 3   side 0     ;   CSYNC:   @BroadRight
++		0x7021, // 14: out   x, 1       side 1     ;   sequence not finished?
++		0x1020, // 15: jmp   !x, 0      side 1     ;   if (finished) break
++		0xd041, // 16: irq   clear 1    side 1     ;   flush stale IRQ
++		0xb022, // 17: mov   x, y       side 1     ;   X = EQWidth - 3
++		0x3083, // 18: wait  1 gpio, 3  side 1     ;   @HSync
++		0x0053, // 19: jmp   x--, 19    side 0     ;   CSYNC: while (x--) ;
++		0x6021, // 20: out   x, 1       side 0     ;   CSYNC: next pulse broad?
++		0x0037, // 21: jmp   !x, 23     side 0     ;   CSYNC: if (broad)
++		0x20c1, // 22: wait  1 irq, 1   side 0     ;   CSYNC:  @BroadLeft
++		0x7021, // 23: out   x, 1       side 1     ;   sequence not finished?
++		0x1020, // 24: jmp   !x, 0      side 1     ;   if (finished) break
++		0x10c6, // 25: jmp   pin, 6     side 1     ;   if (VSync) continue
++		0xb0e6, // 26: mov   osr, isr   side 1     ;   rewind sequence
++		0x7022, // 27: out   x, 2       side 1     ;   skip 2 bits
++		//     .wrap                               ; }
++	};
++	struct pio_program prog = {
++		.instructions = instructions,
++		.length = ARRAY_SIZE(instructions),
++		.origin = -1
++	};
++	pio_sm_config cfg = pio_get_default_sm_config();
++	unsigned int i, offset;
++
++	/* Claim SM 0 and start timers on the other three SMs. */
++	i = rp1dpi_pio_claim_all_start_timers(dpi, mode);
++	if (i < 0)
++		return -EBUSY;
++
++	/* Adapt program code according to CSync polarity; configure program */
++	pio_sm_set_enabled(dpi->pio, 0, false);
++	for (i = 0; i < ARRAY_SIZE(instructions); i++) {
++		if (mode->flags & DRM_MODE_FLAG_PCSYNC)
++			instructions[i] ^= 0x1000;
++		if ((mode->flags & DRM_MODE_FLAG_NHSYNC) && (instructions[i] & 0xe07f) == 0x2003)
++			instructions[i] ^= 0x0080;
++	}
++	offset = pio_add_program(dpi->pio, &prog);
++	if (offset == PIO_ORIGIN_ANY)
++		return -1;
++
++	/* Configure pins and SM */
++	sm_config_set_wrap(&cfg, offset + wrap_target, offset + wrap);
++	sm_config_set_sideset(&cfg, 1, false, false);
++	sm_config_set_sideset_pins(&cfg, 1); /* PIO produces CSync on GPIO 1 */
++	pio_gpio_init(dpi->pio, 1);
++	sm_config_set_jmp_pin(&cfg, 2); /* DPI VSync "helper" signal is GPIO 2 */
++	pio_sm_init(dpi->pio, 0, offset, &cfg);
++	pio_sm_set_consecutive_pindirs(dpi->pio, 0, 1, 1, true);
++
++	/* Load parameters (Vsync pattern; EQ pulse width) into ISR and Y */
++	i = (mode->vsync_end - mode->vsync_start <= 5);
++	pio_sm_put(dpi->pio, 0, i ? 0x02ABFFAA : 0xAABFFEAA);
++	pio_sm_put(dpi->pio, 0, clock_get_hz(clk_sys) / (i ? 425531 : 434782) - 3);
++	pio_sm_exec(dpi->pio, 0, pio_encode_pull(false, false));
++	pio_sm_exec(dpi->pio, 0, pio_encode_out(pio_y, 32));
++	pio_sm_exec(dpi->pio, 0, pio_encode_in(pio_y, 32));
++	pio_sm_exec(dpi->pio, 0, pio_encode_pull(false, false));
++	pio_sm_exec(dpi->pio, 0, pio_encode_out(pio_y, 32));
++
++	/* Start the SM */
++	pio_sm_set_enabled(dpi->pio, 0, true);
++
++	return 0;
++}
++
++int rp1dpi_pio_start(struct rp1_dpi *dpi, const struct drm_display_mode *mode,
++		     bool force_csync)
++{
++	int r;
++
++	/*
++	 * Check if PIO is needed *and* we have an appropriate pin mapping
++	 * that allows all three Sync GPIOs to be snooped on or overridden.
++	 */
++	if (!(mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_CSYNC)) &&
++	    !force_csync)
++		return 0;
++	if (!dpi->sync_gpios_mapped) {
++		drm_warn(&dpi->drm, "DPI needs GPIOs 1-3 for Interlace or CSync\n");
++		return -EINVAL;
++	}
++
++	if (dpi->pio)
++		pio_close(dpi->pio);
++
++	dpi->pio = pio_open();
++	if (IS_ERR(dpi->pio)) {
++		drm_err(&dpi->drm, "Could not open PIO\n");
++		dpi->pio = NULL;
++		return -ENODEV;
++	}
++
++	if ((mode->flags & DRM_MODE_FLAG_CSYNC) || force_csync) {
++		drm_info(&dpi->drm, "Using PIO to generate CSync on GPIO1\n");
++		if (mode->flags & DRM_MODE_FLAG_INTERLACE) {
++			if (mode->clock > 15 * mode->htotal &&
++			    mode->clock < 16 * mode->htotal &&
++			    (mode->vtotal == 525 || mode->vtotal == 625))
++				r = rp1dpi_pio_csync_tv(dpi, mode);
++			else
++				r = rp1dpi_pio_csync_ilace(dpi, mode);
++		} else {
++			r = rp1dpi_pio_csync_prog(dpi, mode);
++		}
++	} else {
++		drm_info(&dpi->drm, "Using PIO to generate VSync on GPIO2\n");
++		r = rp1dpi_pio_vsync_ilace(dpi, mode);
++	}
++	if (r) {
++		drm_err(&dpi->drm, "Failed to initialize PIO\n");
++		rp1dpi_pio_stop(dpi);
++	}
++
++	return r;
++}
++
++void rp1dpi_pio_stop(struct rp1_dpi *dpi)
++{
++	if (dpi->pio) {
++		/* Return any "stolen" pins to DPI function */
++		pio_gpio_set_function(dpi->pio, 1, GPIO_FUNC_FSEL1);
++		pio_gpio_set_function(dpi->pio, 2, GPIO_FUNC_FSEL1);
++		pio_close(dpi->pio);
++		dpi->pio = NULL;
++	}
++}
++
++#else /* !IS_REACHABLE(CONFIG_RP1_PIO) */
++
++int rp1dpi_pio_start(struct rp1_dpi *dpi, const struct drm_display_mode *mode,
++		     bool force_csync)
++{
++	if (mode->flags & (DRM_MODE_FLAG_CSYNC | DRM_MODE_FLAG_INTERLACE) || force_csync) {
++		drm_warn(&dpi->drm, "DPI needs PIO support for Interlace or CSync\n");
++		return -ENODEV;
++	} else {
++		return 0;
++	}
++}
++
++void rp1dpi_pio_stop(struct rp1_dpi *dpi)
++{
++}
++
++#endif

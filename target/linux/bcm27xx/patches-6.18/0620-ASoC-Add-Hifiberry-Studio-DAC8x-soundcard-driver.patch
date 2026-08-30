@@ -1,0 +1,996 @@
+From faab06a90ec44da1453c9f7c155aa37a223794be Mon Sep 17 00:00:00 2001
+From: j-schambacher <joerg@hifiberry.com>
+Date: Thu, 15 Jan 2026 14:19:52 +0100
+Subject: [PATCH] ASoC:Add Hifiberry Studio DAC8x soundcard driver
+
+This adds a new driver for complex, multi-channel soundcards.
+The cards have their own management using an onboard MCU for clock
+generation and controls of various DACs or ADCs. Data provided by
+the MCU's register via I2C allows flexible configuration of a
+number of DAC and ADC channels, volumes, gain settings and other
+functions like mute and filter settings.
+
+Signed-off-by: j-schambacher <joerg@hifiberry.com>
+---
+ sound/soc/bcm/Kconfig                  |   8 +
+ sound/soc/bcm/Makefile                 |   2 +
+ sound/soc/bcm/hifiberry_studio_dac8x.c | 938 +++++++++++++++++++++++++
+ 3 files changed, 948 insertions(+)
+ create mode 100644 sound/soc/bcm/hifiberry_studio_dac8x.c
+
+--- a/sound/soc/bcm/Kconfig
++++ b/sound/soc/bcm/Kconfig
+@@ -102,6 +102,14 @@ config SND_BCM2708_SOC_HIFIBERRY_DACPLUS
+         help
+          Say Y or M if you want to add support for HifiBerry DSP-DAC.
+ 
++config SND_BCM2708_SOC_HIFIBERRY_STUDIO_DAC8X
++        tristate "Support for HifiBerry Studio DAC8x soundcards"
++        help
++         Say Y or M if you want to add support for
++	 HifiBerry Studio DAC8x soundcards.
++	 Supports mulit channel DAC and ADC combnations.
++	 Only available for Pi 5
++
+ config SND_BCM2708_SOC_HIFIBERRY_DIGI
+         tristate "Support for HifiBerry Digi"
+         select SND_SOC_WM8804
+--- a/sound/soc/bcm/Makefile
++++ b/sound/soc/bcm/Makefile
+@@ -24,6 +24,7 @@ snd-soc-hifiberry-dacplushd-objs := hifi
+ snd-soc-hifiberry-dacplusadc-objs := hifiberry_dacplusadc.o
+ snd-soc-hifiberry-dacplusadcpro-objs := hifiberry_dacplusadcpro.o
+ snd-soc-hifiberry-dacplusdsp-objs := hifiberry_dacplusdsp.o
++snd-soc-hifiberry-studio-dac8x-objs := hifiberry_studio_dac8x.o
+ snd-soc-justboom-both-objs := justboom-both.o
+ snd-soc-justboom-dac-objs := justboom-dac.o
+ snd-soc-rpi-cirrus-objs := rpi-cirrus.o
+@@ -58,6 +59,7 @@ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_D
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSADC) += snd-soc-hifiberry-dacplusadc.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSADCPRO) += snd-soc-hifiberry-dacplusadcpro.o
+ obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUSDSP) += snd-soc-hifiberry-dacplusdsp.o
++obj-$(CONFIG_SND_BCM2708_SOC_HIFIBERRY_STUDIO_DAC8X) += snd-soc-hifiberry-studio-dac8x.o
+ obj-$(CONFIG_SND_BCM2708_SOC_JUSTBOOM_BOTH) += snd-soc-justboom-both.o
+ obj-$(CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC) += snd-soc-justboom-dac.o
+ obj-$(CONFIG_SND_BCM2708_SOC_RPI_CIRRUS) += snd-soc-rpi-cirrus.o
+--- /dev/null
++++ b/sound/soc/bcm/hifiberry_studio_dac8x.c
+@@ -0,0 +1,938 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * hifiberry_studio_dac8x.c -- driver for more complex
++ * multichannel soundcards with own onboard firmware.
++ *
++ * Copyright (C) 2026 HiFiBerry
++ *
++ * Author: Joerg Schambacher <joerg@hifiberry.com>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2 as published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/i2c.h>
++#include <linux/regmap.h>
++#include <linux/of_device.h>
++#include <linux/platform_device.h>
++#include <sound/pcm.h>
++#include <sound/pcm_params.h>
++#include <sound/soc.h>
++#include <sound/tlv.h>
++#include <linux/uuid.h>
++#include <linux/slab.h>
++
++/* register definitions and firmware settings */
++#define FIRMWARE_MAJOR			0x00
++#define FIRMWARE_MINOR			0x01
++#define FIRMWARE_SUBVERSION		0x02
++#define HARDWARE_MAJOR			0x03
++#define HARDWARE_MINOR			0x04
++#define HARDWARE_SUBVERSION		0x05
++#define UUID				0x10
++#define SUPPORTED_RATES_0		0x20
++#define SUPPORTED_RATES_1		0x21
++#define SUPPORTED_RATES_2		0x22
++#define SUPPORTED_RATES_3		0x23
++#define SUPPORTED_FORMATS_0		0x24
++#define SUPPORTED_FORMATS_1		0x25
++#define SUPPORTED_FORMATS_2		0x26
++#define SUPPORTED_FORMATS_3		0x27
++#define NUM_OF_INPUT_CH			0x28
++#define NUM_OF_OUTPUT_CH		0x29
++#define CARD_RESET			0x2A
++#define CURRENT_RATE			0x2B
++#define CURRENT_FORMAT			0x2C
++#define MAX_VOLUME			0x2D
++#define MIN_VOLUME			0x2E
++#define VOLUME_STP			0x2F
++#define MAX_GAIN			0x30
++#define MIN_GAIN			0x31
++#define GAIN_STP			0x32
++#define CARD_BUSY			0x33
++#define CARD_NOERR			0x34
++#define CARD_CLK_OPTIONS		0x35
++#define CARD_CLOCK_MODE			0x36
++#define DAC_STATE			0x40
++#define DAC_CLOCK_SOURCE		0x41
++#define DAC_SYS_CLK			0x42
++#define DAC_SAMPLE_FORMAT		0x43
++#define DAC_FILTER_SETTING_0		0x44
++#define DAC_FILTER_SETTING_1		0x45
++#define DAC_FILTER_SETTING_2		0x46
++#define DAC_FILTER_SETTING_3		0x47
++#define DAC_OUTPUT_MODE			0x48
++#define MASTER_VOL			0x50
++#define VOL_CH0				0x51
++#define VOL_CH1				0x52
++#define VOL_CH2				0x53
++#define VOL_CH3				0x54
++#define VOL_CH4				0x55
++#define VOL_CH5				0x56
++#define VOL_CH6				0x57
++#define VOL_CH7				0x58
++#define MUTE_OUTPUTS			0x59
++#define ADC_INPUT_MODE			0x70
++#define ADC_STATE			0x70
++#define ADC_CLOCK_SOURCE		0x71
++#define ADC_SYS_CLK			0x72
++#define ADC_SAMPLE_FORMAT		0x73
++#define ADC_FILTER_SETTING_0		0x74
++#define ADC_FILTER_SETTING_1		0x75
++#define ADC_FILTER_SETTING_2		0x76
++#define ADC_FILTER_SETTING_3		0x77
++#define ADC_CLIPPING_ATT		0x78
++#define GAIN_CH0			0x81
++#define GAIN_CH1			0x82
++#define GAIN_CH2			0x83
++#define GAIN_CH3			0x84
++#define GAIN_CH4			0x85
++#define GAIN_CH5			0x86
++#define GAIN_CH6			0x87
++#define GAIN_CH7			0x88
++#define MUTE_INPUTS			0x89
++#define CLOCK_CONSUMER_MODE		0x00
++#define CLOCK_PROVIDER_MODE		0x01
++
++/* Mask encoding for provider frequency settings */
++#define MASK_5512			0x00
++#define MASK_8000			0x01
++#define MASK_11025			0x02
++#define MASK_16000			0x03
++#define MASK_22050			0x04
++#define MASK_32000			0x05
++#define MASK_44100			0x06
++#define MASK_48000			0x07
++#define MASK_64000			0x08
++#define MASK_88200			0x09
++#define MASK_96000			0x0A
++#define MASK_176400			0x0B
++#define MASK_192000			0x0C
++#define MASK_352800			0x0D
++#define MASK_384000			0x0E
++
++/* Mask encoding for sample formats */
++#define MASK_16_BIT_SF			0x01
++#define MASK_24_BIT_SF			0x02
++#define MASK_32_BIT_SF			0x03
++
++/* struct definition for easier access to firmware registers */
++struct hb_studio_dac8x_regs_t {
++	unsigned char firmware_major;
++	unsigned char firmware_minor;
++	unsigned char firmware_subversion;
++	unsigned char hardware_major;
++	unsigned char hardware_minor;
++	unsigned char hardware_subversion;
++	unsigned char res1[10];
++	uuid_t uuid;
++	unsigned int supported_rates;		// 0x20
++	unsigned int supported_formats;		// 0x24
++	unsigned char num_of_input_ch;		// 0x28
++	unsigned char num_of_output_ch;		// 0x29
++	unsigned char card_reset;		// 0x2a
++	unsigned char current_rate;		// 0x2b
++	unsigned char current_format;		// 0x2c
++	unsigned char max_volume;		// 0x2d
++	unsigned char min_volume;		// 0x2e
++	unsigned char volume_stp;		// 0x2f
++	unsigned char max_gain;			// 0x30
++	unsigned char min_gain;			// 0x31
++	unsigned char gain_stp;			// 0x32
++	unsigned char card_busy;		// 0x33
++	unsigned char card_noerr;		// 0x34
++	unsigned char card_clk_options;		// 0x35
++	unsigned char card_clk_mode;		// 0x36
++	unsigned char res3[9];			// 0x37
++	unsigned char dac_state;		// 0x40
++	unsigned char dac_clock_source;		// 0x41
++	unsigned char dac_sys_clk;		// 0x42
++	unsigned char dac_sample_format;
++	unsigned char dac_filter_setting_0;
++	unsigned char dac_filter_setting_1;
++	unsigned char dac_filter_setting_2;
++	unsigned char dac_filter_setting_3;
++	unsigned char dac_output_mode;		// 0x48
++	unsigned char res4[7];			// 0x49 - 0x4f
++	unsigned char master_vol;		// 0x50
++	unsigned char vol_ch0;			// 0x51
++	unsigned char vol_ch1;			// 0x52
++	unsigned char vol_ch2;			// 0x53
++	unsigned char vol_ch3;			// 0x54
++	unsigned char vol_ch4;			// 0x55
++	unsigned char vol_ch5;			// 0x56
++	unsigned char vol_ch6;			// 0x57
++	unsigned char vol_ch7;			// 0x58
++	unsigned char mute_outputs;		// 0x59
++	unsigned char res5[22];			// 0x5a- 0x6f
++	unsigned char adc_input_mode;		// 0x70
++	unsigned char adc_state;		// 0x70
++	unsigned char adc_clock_source;		// 0x71
++	unsigned char adc_sys_clk;		// 0x72
++	unsigned char adc_sample_format;	// 0x73
++	unsigned char adc_filter_setting_0;	// 0x74
++	unsigned char adc_filter_setting_1;	// 0x75
++	unsigned char adc_filter_setting_2;	// 0x76
++	unsigned char adc_filter_setting_3;	// 0x77
++	unsigned char adc_clipping_att;		// 0x78
++	unsigned char res6[7];			// 0x79- 0x7f
++	unsigned char res[1];			// 0x80
++	unsigned char gain_ch0;			// 0x81
++	unsigned char gain_ch1;			// 0x82
++	unsigned char gain_ch2;			// 0x83
++	unsigned char gain_ch3;			// 0x84
++	unsigned char gain_ch4;			// 0x85
++	unsigned char gain_ch5;			// 0x86
++	unsigned char gain_ch6;			// 0x87
++	unsigned char gain_ch7;			// 0x88
++	unsigned char mute_inputs;		// 0x89
++	};
++
++
++static struct snd_soc_card snd_rpi_hifiberry_studio_dac8x;
++static struct i2c_client *hb_uni_i2c_client;
++struct hb_uni_private {
++	struct regmap *regmap;
++	uuid_t uuid;
++	unsigned int sample_bits;
++	unsigned int current_rate;
++	struct hb_studio_dac8x_regs_t card_info;
++};
++
++static struct hb_uni_private *priv;
++static bool card_is_clk_provider;
++
++static bool hb_uni_volatile_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case CARD_BUSY:
++	case CARD_RESET:
++	case DAC_STATE:
++	case DAC_CLOCK_SOURCE:
++	case DAC_SYS_CLK:
++	case MASTER_VOL:
++	case VOL_CH0:
++	case VOL_CH1:
++	case VOL_CH2:
++	case VOL_CH3:
++	case VOL_CH4:
++	case VOL_CH5:
++	case VOL_CH6:
++	case VOL_CH7:
++	case GAIN_CH0:
++	case GAIN_CH1:
++	case GAIN_CH2:
++	case GAIN_CH3:
++	case GAIN_CH4:
++	case GAIN_CH5:
++	case GAIN_CH6:
++	case GAIN_CH7:
++		return true;
++	default:
++		return false;
++	}
++}
++
++static bool hb_uni_readable_reg(struct device *dev, unsigned int reg)
++{
++	switch (reg) {
++	case FIRMWARE_MAJOR:
++	case FIRMWARE_MINOR:
++	case FIRMWARE_SUBVERSION:
++	case HARDWARE_MAJOR:
++	case HARDWARE_MINOR:
++	case HARDWARE_SUBVERSION:
++	case NUM_OF_INPUT_CH:
++	case NUM_OF_OUTPUT_CH:
++	case SUPPORTED_RATES_0:
++	case SUPPORTED_RATES_1:
++	case SUPPORTED_RATES_2:
++	case SUPPORTED_RATES_3:
++	case SUPPORTED_FORMATS_0:
++	case SUPPORTED_FORMATS_1:
++	case SUPPORTED_FORMATS_2:
++	case SUPPORTED_FORMATS_3:
++	case UUID:
++	case DAC_STATE:
++	case CARD_BUSY:
++	case CARD_RESET:
++	case CARD_CLOCK_MODE:
++	case DAC_CLOCK_SOURCE:
++	case DAC_SYS_CLK:
++	case DAC_SAMPLE_FORMAT:
++	case DAC_FILTER_SETTING_0:
++	case DAC_FILTER_SETTING_1:
++	case DAC_FILTER_SETTING_2:
++	case DAC_FILTER_SETTING_3:
++	case DAC_OUTPUT_MODE:
++	case GAIN_CH0:
++	case GAIN_CH1:
++	case GAIN_CH2:
++	case GAIN_CH3:
++	case GAIN_CH4:
++	case GAIN_CH5:
++	case GAIN_CH6:
++	case GAIN_CH7:
++	case ADC_CLIPPING_ATT:
++		return true;
++	default:
++		return reg < 0xff;
++	}
++}
++
++static const struct regmap_config hb_uni_regmap = {
++	.reg_bits         = 8,
++	.val_bits         = 8,
++	.max_register     = 0xff,
++	.cache_type       = REGCACHE_RBTREE,
++	.volatile_reg     = hb_uni_volatile_reg,
++	.readable_reg     = hb_uni_readable_reg,
++};
++
++static const DECLARE_TLV_DB_MINMAX(adc_att_tlv, -600, -300);
++static const DECLARE_TLV_DB_MINMAX(gain_tlv, -1200, 4000);
++static const DECLARE_TLV_DB_MINMAX(volume_tlv, -10300, 2400);
++static const DECLARE_TLV_DB_MINMAX(spkr_tlv, -10300, 0);
++static const char * const pll_lock_texts[] = {"unlocked", "locked"};
++static const char * const mute_texts[] = {"unmuted", "muted"};
++static const char * const dac_filter_texts[] = {
++	"FIR w/ De-Emph.",
++	"Low Latency IIR w/ De-Emph.",
++	"High Att. w/ De-Emph.",
++	"Ringingless Low Latency FIR w/o Deemph.",
++	};
++static const char * const adc_att_texts[] = {
++	"Clip att. off", "-3dB", "-4dB", "-5dB", "-6dB",
++	};
++
++struct hb_uni_vol_control_single {
++	unsigned int reg;
++	unsigned int shift;
++	int min;
++	int max;
++	bool invert;
++	const unsigned int *tlv;
++};
++
++static int hb_uni_vol_info_single(struct snd_kcontrol *kcontrol,
++			  struct snd_ctl_elem_info *uinfo)
++{
++	struct hb_uni_vol_control_single *ctl = (void *)kcontrol->private_value;
++
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
++	uinfo->count = 1;  // mono
++	uinfo->value.integer.min = ctl->min;
++	uinfo->value.integer.max = ctl->max;
++	uinfo->value.integer.step = 1;
++	return 0;
++}
++
++static int hb_uni_vol_get_single(struct snd_kcontrol *kcontrol,
++			 struct snd_ctl_elem_value *ucontrol)
++{
++	struct hb_uni_vol_control_single *ctl = (void *)kcontrol->private_value;
++	unsigned int val;
++
++	regmap_read(priv->regmap, ctl->reg, &val);
++	val = (val >> ctl->shift) & 0xff;
++	if (ctl->invert)
++		val = ctl->max - val;
++	ucontrol->value.integer.value[0] = val;
++	return 0;
++}
++
++static int hb_uni_vol_put_single(struct snd_kcontrol *kcontrol,
++			 struct snd_ctl_elem_value *ucontrol)
++{
++	struct hb_uni_vol_control_single *ctl = (void *)kcontrol->private_value;
++	unsigned int val = ucontrol->value.integer.value[0];
++	unsigned int new;
++
++	if (ctl->invert)
++		val = ctl->max - val;
++	new = (val & 0xff) << ctl->shift;
++	regmap_write(priv->regmap, ctl->reg, new);
++	return 0;
++}
++
++struct hb_uni_enum_control {
++	unsigned int reg;
++	unsigned int shift;
++	unsigned int mask;
++	const char * const *texts;
++	unsigned int items;
++};
++
++static int hb_uni_enum_info(struct snd_kcontrol *kcontrol,
++			    struct snd_ctl_elem_info *uinfo)
++{
++	struct hb_uni_enum_control *ctl = (void *)kcontrol->private_value;
++
++	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
++	uinfo->count = 1;
++	uinfo->value.enumerated.items = ctl->items;
++
++	if (uinfo->value.enumerated.item >= ctl->items)
++		uinfo->value.enumerated.item = ctl->items - 1;
++
++	strscpy(uinfo->value.enumerated.name,
++		ctl->texts[uinfo->value.enumerated.item],
++		sizeof(uinfo->value.enumerated.name) - 1);
++
++	return 0;
++}
++
++static int hb_uni_enum_get(struct snd_kcontrol *kcontrol,
++			   struct snd_ctl_elem_value *ucontrol)
++{
++	struct hb_uni_enum_control *ctl = (void *)kcontrol->private_value;
++	unsigned int val;
++
++	regmap_read(priv->regmap, ctl->reg, &val);
++
++	val = (val >> ctl->shift) & ctl->mask;
++	if (val >= ctl->items)
++		val = 0;
++
++	ucontrol->value.enumerated.item[0] = val;
++
++	return 0;
++}
++
++static int hb_uni_enum_put(struct snd_kcontrol *kcontrol,
++			   struct snd_ctl_elem_value *ucontrol)
++{
++	struct hb_uni_enum_control *ctl = (void *)kcontrol->private_value;
++	unsigned int val = ucontrol->value.enumerated.item[0];
++
++	if (val >= ctl->items)
++		return -EINVAL;
++
++	regmap_update_bits(priv->regmap, ctl->reg,
++			   ctl->mask << ctl->shift,
++			   (val & ctl->mask) << ctl->shift);
++
++	return 0;
++}
++
++#define VOL_CTL_SINGLE(kname, controls, ktlv) {\
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
++	.name = kname, \
++	.access = SNDRV_CTL_ELEM_ACCESS_TLV_READ | \
++		  SNDRV_CTL_ELEM_ACCESS_READWRITE, \
++	.tlv.p = ktlv, \
++	.info = hb_uni_vol_info_single, \
++	.get = hb_uni_vol_get_single, \
++	.put = hb_uni_vol_put_single, \
++	.private_value = (unsigned long)&controls, }
++
++#define ENUM_CTL_SINGLE(kname, controls) {\
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
++	.name = kname, \
++	.info = hb_uni_enum_info, \
++	.get  = hb_uni_enum_get, \
++	.put  = hb_uni_enum_put, \
++	.private_value = (unsigned long)&controls, }
++
++#define ENUM_CTL_SINGLE_RO(kname, controls) {\
++	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
++	.name = kname, \
++	.info = hb_uni_enum_info, \
++	.get  = hb_uni_enum_get, \
++	.put  = NULL, \
++	.private_value = (unsigned long)&controls, }
++
++static const struct hb_uni_vol_control_single hb_uni_vol_ctls_single[] = {
++	{ MASTER_VOL, 0, 0, 254, true, volume_tlv },
++	{ VOL_CH0, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH1, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH2, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH3, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH4, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH5, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH6, 0, 0, 206, true, spkr_tlv },
++	{ VOL_CH7, 0, 0, 206, true, spkr_tlv },
++};
++
++static const struct hb_uni_vol_control_single hb_uni_gain_ctls_single[] = {
++	{ GAIN_CH0, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH1, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH2, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH3, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH4, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH5, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH6, 0, 0, 104, false, gain_tlv },
++	{ GAIN_CH7, 0, 0, 104, false, gain_tlv },
++};
++
++static const struct snd_kcontrol_new hb_uni_play_controls_single[] = {
++	VOL_CTL_SINGLE("Master Playback Volume",    hb_uni_vol_ctls_single[0], volume_tlv),
++	VOL_CTL_SINGLE("Output Ch0 Playback Volume", hb_uni_vol_ctls_single[1], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch1 Playback Volume", hb_uni_vol_ctls_single[2], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch2 Playback Volume", hb_uni_vol_ctls_single[3], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch3 Playback Volume", hb_uni_vol_ctls_single[4], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch4 Playback Volume", hb_uni_vol_ctls_single[5], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch5 Playback Volume", hb_uni_vol_ctls_single[6], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch6 Playback Volume", hb_uni_vol_ctls_single[7], spkr_tlv),
++	VOL_CTL_SINGLE("Output Ch7 Playback Volume", hb_uni_vol_ctls_single[8], spkr_tlv),
++};
++
++static const struct snd_kcontrol_new hb_uni_rec_controls_single[] = {
++	VOL_CTL_SINGLE("Input Ch0 Capture Volume", hb_uni_gain_ctls_single[0], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch1 Capture Volume", hb_uni_gain_ctls_single[1], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch2 Capture Volume", hb_uni_gain_ctls_single[2], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch3 Capture Volume", hb_uni_gain_ctls_single[3], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch4 Capture Volume", hb_uni_gain_ctls_single[4], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch5 Capture Volume", hb_uni_gain_ctls_single[5], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch6 Capture Volume", hb_uni_gain_ctls_single[6], gain_tlv),
++	VOL_CTL_SINGLE("Input Ch7 Capture Volume", hb_uni_gain_ctls_single[7], gain_tlv),
++};
++
++static const struct hb_uni_enum_control hb_uni_play_enum_ctls[] = {
++	{ DAC_STATE, 0, 0x1, pll_lock_texts, ARRAY_SIZE(pll_lock_texts) },
++	{ DAC_FILTER_SETTING_0, 0, 0x03, dac_filter_texts, ARRAY_SIZE(dac_filter_texts) },
++	{ MUTE_OUTPUTS, 0, 0x01, mute_texts, ARRAY_SIZE(mute_texts) },
++};
++
++static const struct hb_uni_enum_control hb_uni_rec_enum_ctls[] = {
++	{ ADC_CLIPPING_ATT, 0, 0x7, adc_att_texts, ARRAY_SIZE(adc_att_texts) },
++};
++
++static const struct snd_kcontrol_new hb_uni_gen_controls_single[] = {
++	ENUM_CTL_SINGLE("DAC Filter", hb_uni_play_enum_ctls[1]),
++	ENUM_CTL_SINGLE("DAC Mute", hb_uni_play_enum_ctls[2]),
++};
++
++static const struct snd_kcontrol_new adc_controls_single[] = {
++	ENUM_CTL_SINGLE("Clipping Attenuation Capture Volume", hb_uni_rec_enum_ctls[0]),
++};
++
++static int snd_rpi_hifiberry_studio_dac8x_hw_params(
++		struct snd_pcm_substream *substream,
++		struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = substream->private_data;
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct device *dev = rtd->dev;
++	unsigned char tmp;
++	int trials;
++	int busy;
++	int err;
++
++	priv->sample_bits = snd_pcm_format_width(params_format(params));
++	priv->sample_bits = priv->sample_bits <= 16 ? 16 : 32;
++
++	priv->current_rate = params_rate(params);
++	dev_info(dev, "using %ibits @ %isps\n",
++		priv->sample_bits, priv->current_rate);
++
++	/* write requested samplerate and word length back to card */
++	switch (priv->current_rate) {
++	case 5512:
++		tmp = MASK_5512;
++		break;
++	case 8000:
++		tmp = MASK_8000;
++		break;
++	case 11025:
++		tmp = MASK_11025;
++		break;
++	case 16000:
++		tmp = MASK_16000;
++		break;
++	case 22050:
++		tmp = MASK_22050;
++		break;
++	case 32000:
++		tmp = MASK_32000;
++		break;
++	case 44100:
++		tmp = MASK_44100;
++		break;
++	case 88200:
++		tmp = MASK_88200;
++		break;
++	case 176400:
++		tmp = MASK_176400;
++		break;
++	case 352800:
++		tmp = MASK_352800;
++		break;
++	case 48000:
++		tmp = MASK_48000;
++		break;
++	case 96000:
++		tmp = MASK_96000;
++		break;
++	case 192000:
++		tmp = MASK_192000;
++		break;
++	case 384000:
++		tmp = MASK_384000;
++		break;
++	default:
++		dev_info(dev, "rate not supported (%u)\n", priv->current_rate);
++		return -EINVAL;
++	}
++
++	err = regmap_write(priv->regmap, CURRENT_RATE, tmp);
++	if (err < 0)
++		return err;
++
++	switch (priv->sample_bits) {
++	case 16:
++		tmp = MASK_16_BIT_SF;
++		break;
++	case 24:
++		tmp = MASK_24_BIT_SF;
++		break;
++	case 32:
++		tmp = MASK_32_BIT_SF;
++		break;
++	default:
++		dev_info(dev, "word length not supported (%u)\n",
++		priv->sample_bits);
++		return -EINVAL;
++	}
++	err = regmap_write(priv->regmap, CURRENT_FORMAT, tmp);
++	if (err < 0)
++		return err;
++
++	/* If card provides clocks wait max. ~40ms for PLL */
++	if (card_is_clk_provider) {
++	/* trigger card to set new rate and format */
++		err = regmap_write(priv->regmap, CARD_CLOCK_MODE, 0x02);
++		if (err < 0)
++			return err;
++		trials = 10;
++		do {
++			usleep_range(3000, 4000);
++			regmap_read(priv->regmap, CARD_BUSY, &busy);
++		} while (busy && --trials);
++		if (!trials) {
++			dev_err(dev, "Card is unable to set clocks\n");
++			return -EINVAL;
++		}
++	}
++	/* always run with 64bit frames */
++	return snd_soc_dai_set_bclk_ratio(cpu_dai, 64);
++}
++
++static const struct snd_soc_ops snd_rpi_hifiberry_studio_dac8x_ops = {
++	.hw_params = snd_rpi_hifiberry_studio_dac8x_hw_params,
++};
++
++SND_SOC_DAILINK_DEFS(hifiberry_studio_dac8x,
++	DAILINK_COMP_ARRAY(COMP_EMPTY()),
++	DAILINK_COMP_ARRAY(COMP_CODEC("snd-soc-dummy", "snd-soc-dummy-dai")),
++	DAILINK_COMP_ARRAY(COMP_EMPTY()));
++
++static int hifiberry_studio_dac8x_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
++	struct snd_soc_card *card = rtd->card;
++
++	/* Configure playback */
++	codec_dai->driver->playback.channels_max =
++		priv->card_info.num_of_output_ch;
++	codec_dai->driver->playback.rates = priv->card_info.supported_rates;
++	codec_dai->driver->playback.formats = priv->card_info.supported_formats;
++
++	if (priv->card_info.num_of_input_ch) {
++		struct snd_soc_dai_link *dai = rtd->dai_link;
++
++		dev_info(card->dev, "inputs detected: capture enabled\n");
++		codec_dai->driver->symmetric_rate = 1;
++		codec_dai->driver->symmetric_sample_bits = 1;
++		codec_dai->driver->capture.formats =
++			priv->card_info.supported_formats;
++		codec_dai->driver->capture.rates =
++			priv->card_info.supported_rates;
++		codec_dai->driver->capture.channels_max =
++			priv->card_info.num_of_input_ch;
++		dai->name = "HiFiBerry Studio DAC8x-ADC8x";
++		dai->stream_name = "HiFiBerry Studio HiFi";
++	} else {
++		rtd->dai_link->playback_only = 1;  // Disable capture
++	}
++
++	if ((priv->card_info.card_clk_options & 0x02) && card_is_clk_provider) {
++		struct snd_soc_dai_link *dai = rtd->dai_link;
++
++		dai->stream_name = "HiFiBerry Studio Pro HiFi";
++		dai->dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF
++			| SND_SOC_DAIFMT_CBP_CFP;
++	}
++	dev_info(card->dev,
++		 "HiFiBerry Studio DAC8x successfully initialized\n");
++
++	return 0;
++}
++
++static struct snd_soc_dai_link snd_rpi_hifiberry_studio_dac8x_dai[] = {
++	{
++		.name           = "HiFiBerry Studio DAC8x",
++		.stream_name    = "HifiBerry Studio HiFi",
++		.dai_fmt        = SND_SOC_DAIFMT_I2S |
++					SND_SOC_DAIFMT_NB_NF |
++					SND_SOC_DAIFMT_CBC_CFC,
++		.init           = hifiberry_studio_dac8x_init,
++		.ops            = &snd_rpi_hifiberry_studio_dac8x_ops,
++		SND_SOC_DAILINK_REG(hifiberry_studio_dac8x),
++	},
++};
++
++/* audio machine driver */
++static struct snd_soc_card snd_rpi_hifiberry_studio_dac8x = {
++	.name         = "Hifiberry Studio DAC8x",
++	.driver_name  = "HifiberryStudio",
++	.owner        = THIS_MODULE,
++	.dai_link     = snd_rpi_hifiberry_studio_dac8x_dai,
++	.num_links    = ARRAY_SIZE(snd_rpi_hifiberry_studio_dac8x_dai),
++};
++
++static int hb_uni_read_card_info(struct platform_device *pdev)
++{
++	int ret;
++
++	/* read basic card info */
++	ret = regmap_bulk_read(priv->regmap, 0x00, &priv->card_info, 0x06);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to read card info: %d\n", ret);
++	return ret;
++	}
++
++	dev_info(&pdev->dev, "hardware V%d.%d.%d\n",
++		priv->card_info.hardware_major,
++		priv->card_info.hardware_minor,
++		priv->card_info.hardware_subversion
++		);
++
++	dev_info(&pdev->dev, "firmware V%d.%d.%d\n",
++		priv->card_info.firmware_major,
++		priv->card_info.firmware_minor,
++		priv->card_info.firmware_subversion
++		);
++
++	/* read card capabilities */
++	ret = regmap_bulk_read(priv->regmap, UUID, &priv->card_info.uuid, 0x20);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to read card info: %d\n", ret);
++		return ret;
++	}
++
++	dev_info(&pdev->dev, "UUID: %*phN\n",
++		(int)sizeof(priv->card_info.uuid.b), priv->card_info.uuid.b);
++	dev_info(&pdev->dev, "%i output channels reported\n",
++				priv->card_info.num_of_output_ch);
++	dev_dbg(&pdev->dev, "supported rates %08x\n",
++				priv->card_info.supported_rates);
++	dev_dbg(&pdev->dev, "supported formats %08x\n",
++				priv->card_info.supported_formats);
++
++	if (priv->card_info.num_of_output_ch > 8 ||
++	    priv->card_info.num_of_input_ch > 8) {
++		dev_err(&pdev->dev, "Maximum of 8 channels exceeded!\n");
++		return -EINVAL;
++	}
++
++	if (priv->card_info.num_of_input_ch > 0) {
++		dev_info(&pdev->dev,
++			"Inputs detected: %u channels\n",
++			priv->card_info.num_of_input_ch);
++	} else {
++		dev_info(&pdev->dev, "No inputs present, playback only\n");
++	}
++
++	ret = regmap_bulk_read(priv->regmap, CARD_BUSY,
++				&priv->card_info.card_busy, 20);
++	if (ret) {
++		dev_err(&pdev->dev, "Failed to read card info: %d\n", ret);
++		return ret;
++	}
++
++	if (card_is_clk_provider) {
++		if (priv->card_info.card_clk_options & 0x02) {
++			dev_info(&pdev->dev, "Card provides i2s clocks\n");
++		} else {
++			dev_err(&pdev->dev,
++				"Card cannot provide i2s clocks\n");
++			return -EINVAL;
++		}
++	} else {
++		if (priv->card_info.card_clk_options == 0x02) {
++			dev_err(&pdev->dev,
++				"Card cannot run as i2s clock consumer\n");
++			return -EINVAL;
++		}
++	}
++
++	switch (cpu_to_be32(*(unsigned int *)&priv->card_info.uuid)) {
++	case 0x74e7ae95:
++		if (card_is_clk_provider)
++			snd_rpi_hifiberry_studio_dac8x.name =
++						"HiFiBerry Studio DAC8x Pro";
++		else
++			snd_rpi_hifiberry_studio_dac8x.name =
++						"HiFiBerry Studio DAC8x";
++		break;
++	default:
++		break;
++	}
++
++
++	regcache_cache_only(priv->regmap, true);
++	ret = regmap_bulk_read(priv->regmap, MASTER_VOL,
++			&priv->card_info.master_vol, MUTE_OUTPUTS - MASTER_VOL);
++	regcache_cache_only(priv->regmap, false);
++
++	return 0;
++}
++
++static int hb_uni_add_card_controls(struct platform_device *pdev)
++{
++	int ret;
++
++	ret = snd_soc_add_card_controls(&snd_rpi_hifiberry_studio_dac8x,
++			hb_uni_gen_controls_single,
++			ARRAY_SIZE(hb_uni_gen_controls_single));
++	if (ret < 0) {
++		dev_err(&pdev->dev,
++			"snd_soc_add_card_controls() failed: %d\n", ret);
++		return ret;
++	}
++	ret = snd_soc_add_card_controls(&snd_rpi_hifiberry_studio_dac8x,
++			hb_uni_play_controls_single,
++			ARRAY_SIZE(hb_uni_play_controls_single) / 9 *
++					(priv->card_info.num_of_output_ch + 1));
++	if (ret < 0) {
++		dev_err(&pdev->dev,
++			"snd_soc_add_card_controls() failed: %d\n", ret);
++		return ret;
++	}
++
++	/* add optional ADC controls if inputs detected */
++	if (priv->card_info.num_of_input_ch > 0) {
++		ret = snd_soc_add_card_controls(&snd_rpi_hifiberry_studio_dac8x,
++			hb_uni_rec_controls_single,
++			ARRAY_SIZE(hb_uni_rec_controls_single) / 8 *
++					priv->card_info.num_of_input_ch);
++		if (ret < 0) {
++			dev_err(&pdev->dev,
++				"snd_soc_add_card_controls() failed: %d\n", ret);
++		}
++		ret = snd_soc_add_card_controls(&snd_rpi_hifiberry_studio_dac8x,
++			adc_controls_single,
++			ARRAY_SIZE(adc_controls_single));
++		if (ret < 0) {
++			dev_err(&pdev->dev,
++				"snd_soc_add_card_controls() failed: %d\n", ret);
++		}
++	}
++	return ret;
++}
++
++static int hb_controller_probe(struct platform_device *pdev)
++{
++	struct i2c_adapter *adap = i2c_get_adapter(1);
++	struct device_node *np = pdev->dev.of_node;
++	int ret;
++
++	if (!adap)
++		return -EPROBE_DEFER;   /* I2C module not yet available */
++
++	struct i2c_board_info info = {
++		I2C_BOARD_INFO("hb_controller", 0x10),
++	};
++
++	hb_uni_i2c_client = i2c_new_client_device(adap, &info);
++	if (IS_ERR(hb_uni_i2c_client))
++		return PTR_ERR(hb_uni_i2c_client);
++
++	priv = devm_kzalloc(&hb_uni_i2c_client->dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->regmap = devm_regmap_init_i2c(hb_uni_i2c_client, &hb_uni_regmap);
++	if (IS_ERR(priv->regmap))
++		return dev_err_probe(&hb_uni_i2c_client->dev,
++			PTR_ERR(priv->regmap), "Failed to init regmap\n");
++
++	if (np && of_property_read_bool(np, "clk-provider"))
++		card_is_clk_provider = true;
++
++	ret = hb_uni_read_card_info(pdev);
++	if (ret < 0) {
++		dev_err(&hb_uni_i2c_client->dev,
++			"Failed to read card info or wrong configuration!\n");
++	}
++
++	return ret;
++};
++
++static int snd_rpi_hifiberry_studio_dac8x_probe(struct platform_device *pdev)
++{
++	int ret = 0;
++
++	/* probe for controller */
++	ret = hb_controller_probe(pdev);
++	if (ret < 0)
++		return ret;
++
++	snd_rpi_hifiberry_studio_dac8x.dev = &pdev->dev;
++
++	if (pdev->dev.of_node) {
++		struct device_node *i2s_node;
++		struct snd_soc_dai_link *dai;
++
++		dai = &snd_rpi_hifiberry_studio_dac8x_dai[0];
++		i2s_node = of_parse_phandle(pdev->dev.of_node,
++			"i2s-controller", 0);
++
++		if (i2s_node) {
++			dai->cpus->dai_name = NULL;
++			dai->cpus->of_node = i2s_node;
++			dai->platforms->name = NULL;
++			dai->platforms->of_node = i2s_node;
++		}
++	}
++
++	ret = devm_snd_soc_register_card(&pdev->dev,
++			&snd_rpi_hifiberry_studio_dac8x);
++	if (ret && ret != -EPROBE_DEFER)
++		dev_err(&pdev->dev,
++			"devm_snd_soc_register_card() failed: %d\n", ret);
++
++	/* as we do not have components use card-controls */
++	ret = hb_uni_add_card_controls(pdev);
++
++	return ret;
++}
++
++static const struct of_device_id snd_rpi_hifiberry_studio_dac8x_of_match[] = {
++	{ .compatible = "hifiberry,hifiberry-studio-dac8x", },
++	{},
++};
++MODULE_DEVICE_TABLE(of, snd_rpi_hifiberry_studio_dac8x_of_match);
++
++static struct platform_driver snd_rpi_hifiberry_studio_dac8x_driver = {
++	.driver = {
++		.name   = "snd-rpi-hifiberry-studio-dac8x",
++		.owner  = THIS_MODULE,
++		.of_match_table = snd_rpi_hifiberry_studio_dac8x_of_match,
++	},
++	.probe  = snd_rpi_hifiberry_studio_dac8x_probe,
++};
++
++module_platform_driver(snd_rpi_hifiberry_studio_dac8x_driver);
++
++MODULE_AUTHOR("Joerg Schambacher <joerg@hifiberry.com>");
++MODULE_DESCRIPTION("HiFiBerry Studio DAC8x Soundcard Driver");
++MODULE_LICENSE("GPL");

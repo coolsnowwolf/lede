@@ -1,0 +1,810 @@
+From 4b88eb46bf443510c97e6a1becfe44f84b994139 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 8 Oct 2025 12:48:16 +0100
+Subject: [PATCH] input: touch: Add a driver for the Ilitek V3 touch
+ controllers
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/input/touchscreen/Kconfig            |  13 +
+ drivers/input/touchscreen/Makefile           |   1 +
+ drivers/input/touchscreen/ilitek_v3_ts_i2c.c | 761 +++++++++++++++++++
+ 3 files changed, 775 insertions(+)
+ create mode 100644 drivers/input/touchscreen/ilitek_v3_ts_i2c.c
+
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -515,6 +515,19 @@ config TOUCHSCREEN_ILITEK
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called ilitek_ts_i2c.
+ 
++config TOUCHSCREEN_ILITEK_V3
++	tristate "Ilitek I2C ILI79600 Series Touch ICs"
++	depends on I2C
++	help
++	  Say Y here if you have touchscreen with ILITEK "V3" touch IC,
++	  it supports 79600 and similar over I2C (the IC also supports
++	  SPI)
++
++	  If unsure, say N.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called ilitek_v3_ts_i2c.
++
+ config TOUCHSCREEN_IPROC
+ 	tristate "IPROC touch panel driver support"
+ 	depends on ARCH_BCM_IPROC || COMPILE_TEST
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -54,6 +54,7 @@ obj-$(CONFIG_TOUCHSCREEN_HYNITRON_CSTXXX
+ obj-$(CONFIG_TOUCHSCREEN_HYNITRON_CST816X)	+= hynitron-cst816x.o
+ obj-$(CONFIG_TOUCHSCREEN_ILI210X)	+= ili210x.o
+ obj-$(CONFIG_TOUCHSCREEN_ILITEK)	+= ilitek_ts_i2c.o
++obj-$(CONFIG_TOUCHSCREEN_ILITEK_V3)	+= ilitek_v3_ts_i2c.o
+ obj-$(CONFIG_TOUCHSCREEN_IMAGIS)	+= imagis.o
+ obj-$(CONFIG_TOUCHSCREEN_IMX6UL_TSC)	+= imx6ul_tsc.o
+ obj-$(CONFIG_TOUCHSCREEN_INEXIO)	+= inexio.o
+--- /dev/null
++++ b/drivers/input/touchscreen/ilitek_v3_ts_i2c.c
+@@ -0,0 +1,761 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2026 Raspberry Pi
++ *
++ * Based on edt-ft5x06 driver.
++ */
++
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/interrupt.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/input/touchscreen.h>
++#include <linux/irq.h>
++#include <linux/module.h>
++#include <linux/regulator/consumer.h>
++
++#include <drm/drm_panel.h>
++
++#define ILI_V3_NAME_LEN			23
++#define ILI_V3_NAME_PREFIX_LEN		8
++
++#define ILI_V3_POLL_INTERVAL		17	/* 60fps */
++#define ILI_V3_POLL_SLEEP_INTERVAL	300	/* 3.3fps */
++#define RESET_DELAY_MS			(65 + 85)
++
++#define ILI_V3_TOUCH_PACKET_LEN		72
++#define ILI_V3_GESTURE_PACKET_LEN	221
++#define P5_X_DEMO_MODE_PACKET_INFO_LEN	3
++#define TDDI_PID_ADDR					0x4009C
++#define TDDI_SECOND_PID_ADDR				0x40098
++#define TDDI_OTP_ID_ADDR				0x400A0
++#define TDDI_ANA_ID_ADDR				0x400A4
++
++#define P5_X_DEMO_AXIS_PACKET_ID			0x5B
++#define P5_X_GESTURE_PACKET_ID				0xAA
++
++#define P5_X_NEW_CONTROL_FORMAT				0xF2
++#define P5_X_READ_DATA_CTRL				0xF6
++ #define P5_X_GET_TP_INFORMATION				0x20
++ #define P5_X_GET_KEY_INFORMATION				0x27
++ #define P5_X_GET_TOOL_VERSION					0x28
++ #define P5_X_GET_PANEL_INFORMATION				0x29
++ #define P5_X_GET_FW_VERSION					0x21
++ #define P5_X_GET_PROTOCOL_VERSION				0x22
++ #define P5_X_GET_CORE_VERSION					0x23
++ #define P5_X_GET_CORE_VERSION_NEW				0x24
++ #define P5_X_GET_REPORT_INFORMATION				0x2B
++ #define P5_X_GET_ALL_INFORMATION				0x2F
++ #define P5_X_GET_REPORT_FORMAT					0x37
++ #define P5_X_GET_BLOCK_INFOMATION				0x38
++ #define P5_X_MODE_CONTROL					0xF0
++
++#define MIN_FW_VERSION 0x8c000600U	/* Minimum of 140.0.6.0 */
++
++#define MAX_TOUCH_NUM			10
++
++struct ili_v3_ts_data {
++	struct i2c_client *client;
++	struct i2c_client *slave_addr;
++	struct input_dev *input;
++	struct touchscreen_properties prop;
++	unsigned int panel_width;
++	unsigned int panel_height;
++	struct regulator *vcc;
++	struct regulator *iovcc;
++
++	struct gpio_desc *reset_gpio;
++	struct gpio_desc *wake_gpio;
++
++	struct drm_panel_follower panel_follower;
++
++	/* Mutex to prevent suspend/resume interacting with polling */
++	struct mutex mutex;
++	int max_support_points;
++
++	char name[ILI_V3_NAME_PREFIX_LEN + ILI_V3_NAME_LEN];
++
++	int finger;
++	int curt_touch[MAX_TOUCH_NUM];
++	int prev_touch[MAX_TOUCH_NUM];
++	u8 touch_num;
++	int last_touch;
++	bool asleep;
++};
++
++struct ili_v3_i2c_chip_data {
++	int  max_support_points;
++};
++
++struct ilitek_touch_info {
++	u16 id;
++	u16 x;
++	u16 y;
++	u16 pressure;
++};
++
++struct ilitek_fw_info {
++	u8 cmd;
++	u8 dummy1;
++	u8 min_x;
++	u8 min_y;
++	u16 max_x;
++	u16 max_y;
++	u8 xch_num;
++	u8 ych_num;
++	u8 dummy2;
++	u8 dummy3;
++	u8 stx;
++	u8 srx;
++	u8 dummy4;
++	u8 dummy5;
++	u8 fw_ver[4];	/* Offset 16-19 */
++	u8 fw_mp_ver[4];	/* Offset 20-23 */
++	u8 dummy6;
++	u8 core_ver[4];	/* Offset 25-28 */
++	u8 dummy6a;
++	u8 dummy6b;
++	u8 dummy6c;
++	u32 dummy7;	/* Offset 32-35 */
++	u32 dummy8;	/* Offset 36-39 */
++	u32 dummy9;	/* Offset 40-43 */
++	u8 dummy10;
++	u8 dummy10a;
++	u8 panel_info_cmd;	/* Offset 46 */
++	u8 panel_width_high;
++	u8 panel_width_low;
++	u8 panel_height_high;
++	u8 panel_height_low;
++	u8 panel_trans_xy;	/* Offset 51 */
++};
++
++static int ili_v3_i2c_transfer(struct i2c_client *client, u8 *write_buf,
++			       int write_len, u8 *read_buf, int read_len)
++{
++	struct i2c_msg msgs[2];
++	int ret = 0;
++
++	if (write_len && write_buf) {
++		msgs[0].flags = 0;
++		msgs[0].addr  = client->addr;
++		msgs[0].len   = write_len;
++		msgs[0].buf   = write_buf;
++		ret = i2c_transfer(client->adapter, msgs, 1);
++		if (ret >= 0)
++			ret = (ret == 1 ? 0 : -EIO);
++		fsleep(1000);
++	}
++
++	if (!ret && read_len && read_buf) {
++		msgs[0].flags = I2C_M_RD;
++		msgs[0].addr  = client->addr;
++		msgs[0].len   = read_len;
++		msgs[0].buf   = read_buf;
++		ret = i2c_transfer(client->adapter, msgs, 1);
++		if (ret >= 0)
++			ret = (ret == 1 ? 0 : -EIO);
++		fsleep(1000);
++	}
++
++	if (ret)
++		dev_dbg(&client->dev, "Error transferring %d / %d : %d\n",
++			write_len, read_len, ret);
++	return ret;
++}
++
++static int ili_v3_i2c_read_u32_reg(struct i2c_client *client, u32 reg, u32 *val)
++{
++	u8 wr_buf[4];
++	int ret;
++
++	wr_buf[0] = 0x25;
++	wr_buf[1] = (char)((reg & 0x000000FF) >> 0);
++	wr_buf[2] = (char)((reg & 0x0000FF00) >> 8);
++	wr_buf[3] = (char)((reg & 0x00FF0000) >> 16);
++
++	ret = ili_v3_i2c_transfer(client, wr_buf, sizeof(wr_buf), (u8 *)val,
++				  sizeof(*val));
++
++	return ret;
++}
++
++static int ili_v3_i2c_write_u32_reg(struct i2c_client *client, u32 reg, u32 val)
++{
++	u8 wr_buf[8];
++	int ret, i;
++
++	wr_buf[0] = 0x25;
++	wr_buf[1] = (u8)((reg & 0x000000FF) >> 0);
++	wr_buf[2] = (u8)((reg & 0x0000FF00) >> 8);
++	wr_buf[3] = (u8)((reg & 0x00FF0000) >> 16);
++
++	for (i = 0; i < 4; i++)
++		wr_buf[i + 4] = (u8)(val >> (8 * i));
++
++	ret = ili_v3_i2c_transfer(client, wr_buf, sizeof(wr_buf), NULL, 0);
++
++	return ret;
++}
++
++static u8 ili_v3_calc_checksum(const u8 *packet, int len)
++{
++	int i;
++	s32 sum = 0;
++
++	for (i = 0; i < len; i++)
++		sum += packet[i];
++
++	return (u8)((-sum) & 0xFF);
++}
++
++static void ili_v3_report_ap_mode(struct ili_v3_ts_data *tsdata, u8 *buf,
++				  int len)
++{
++	struct ilitek_touch_info touch_info[MAX_TOUCH_NUM] = {0};
++	int i = 0;
++	u32 xop = 0, yop = 0;
++
++	tsdata->finger = 0;
++
++	for (i = 0; i < MAX_TOUCH_NUM; i++) {
++		if (buf[5 * i + 1 + P5_X_DEMO_MODE_PACKET_INFO_LEN] == 0xFF &&
++		    buf[5 * i + 2 + P5_X_DEMO_MODE_PACKET_INFO_LEN] == 0xFF &&
++		    buf[5 * i + 3 + P5_X_DEMO_MODE_PACKET_INFO_LEN] == 0xFF &&
++		    buf[5 * i + 4 + P5_X_DEMO_MODE_PACKET_INFO_LEN] == 0xFF) {
++			tsdata->curt_touch[i] = 0;
++			continue;
++		}
++		xop = ((buf[5 * i + 1 + P5_X_DEMO_MODE_PACKET_INFO_LEN] << 8) |
++		       (buf[5 * i + 2 + P5_X_DEMO_MODE_PACKET_INFO_LEN]));
++		yop = ((buf[5 * i + 3 + P5_X_DEMO_MODE_PACKET_INFO_LEN] << 8) |
++		       (buf[5 * i + 4 + P5_X_DEMO_MODE_PACKET_INFO_LEN]));
++
++		touch_info[tsdata->finger].x = xop;
++		touch_info[tsdata->finger].y = yop;
++
++		touch_info[tsdata->finger].id = i;
++
++		touch_info[tsdata->finger].pressure = 1;
++
++		tsdata->finger++;
++		tsdata->curt_touch[i] = 1;
++	}
++
++	if (tsdata->finger) {
++		for (i = 0; i < tsdata->finger; i++) {
++			input_report_key(tsdata->input, BTN_TOUCH, 1);
++			input_mt_slot(tsdata->input, touch_info[i].id);
++			input_mt_report_slot_state(tsdata->input,
++						   MT_TOOL_FINGER, true);
++			touchscreen_report_pos(tsdata->input, &tsdata->prop,
++					       touch_info[i].x, touch_info[i].y,
++					       true);
++			input_report_key(tsdata->input, BTN_TOOL_FINGER, 1);
++		}
++		for (i = 0; i < MAX_TOUCH_NUM; i++) {
++			if (tsdata->curt_touch[i] == 0 &&
++			    tsdata->prev_touch[i] == 1) {
++				input_mt_slot(tsdata->input, i);
++				input_mt_report_slot_state(tsdata->input,
++							   MT_TOOL_FINGER,
++							   false);
++			}
++			tsdata->prev_touch[i] = tsdata->curt_touch[i];
++		}
++		input_sync(tsdata->input);
++		tsdata->last_touch = tsdata->finger;
++	} else {
++		if (tsdata->last_touch) {
++			for (i = 0; i < MAX_TOUCH_NUM; i++) {
++				if (tsdata->curt_touch[i] == 0 &&
++				    tsdata->prev_touch[i] == 1) {
++					input_mt_slot(tsdata->input, i);
++					input_mt_report_slot_state(tsdata->input,
++								   MT_TOOL_FINGER,
++								   false);
++				}
++				tsdata->prev_touch[i] = tsdata->curt_touch[i];
++			}
++			input_report_key(tsdata->input, BTN_TOUCH, 0);
++			input_report_key(tsdata->input, BTN_TOOL_FINGER, 0);
++			input_sync(tsdata->input);
++			tsdata->last_touch = 0;
++		}
++	}
++}
++
++static void ili_v3_handle_gesture(struct ili_v3_ts_data *tsdata)
++{
++	/*
++	 * Gestures are currently only being used in low power mode to wake up,
++	 * as this touch controller doesn't generate touch data whilst the
++	 * display is disabled.
++	 * Generate the most minimal event possible that should wake up the
++	 * display.
++	 */
++	input_report_key(tsdata->input, BTN_TOUCH, 1);
++	input_mt_slot(tsdata->input, 0);
++	input_mt_report_slot_state(tsdata->input,
++				   MT_TOOL_FINGER, true);
++	input_report_key(tsdata->input, BTN_TOOL_FINGER, 1);
++	input_sync(tsdata->input);
++
++	input_mt_slot(tsdata->input, 0);
++	input_mt_report_slot_state(tsdata->input,
++				   MT_TOOL_FINGER,
++				   false);
++	input_report_key(tsdata->input, BTN_TOUCH, 0);
++	input_report_key(tsdata->input, BTN_TOOL_FINGER, 0);
++	input_sync(tsdata->input);
++}
++
++static irqreturn_t ili_v3_ts_isr(int irq, void *dev_id)
++{
++	struct ili_v3_ts_data *tsdata = dev_id;
++	u8 checksum, len, expected_len;
++	u8 rdbuf[ILI_V3_GESTURE_PACKET_LEN];
++	u8 len_offset = 2;
++
++	mutex_lock(&tsdata->mutex);
++
++	len = tsdata->asleep ? ILI_V3_GESTURE_PACKET_LEN : ILI_V3_TOUCH_PACKET_LEN;
++	ili_v3_i2c_transfer(tsdata->client, NULL, 0, rdbuf, len);
++
++	switch (rdbuf[0]) {
++	case P5_X_DEMO_AXIS_PACKET_ID:
++		expected_len = ILI_V3_TOUCH_PACKET_LEN;
++		break;
++	case P5_X_GESTURE_PACKET_ID:
++		expected_len = ILI_V3_GESTURE_PACKET_LEN;
++		len_offset = 3;
++		break;
++
++	default:
++		goto out;
++	}
++
++	if (expected_len != rdbuf[len_offset])
++		dev_err(&tsdata->client->dev, "buffer len %u when %u was expected, cmd %02x\n",
++			rdbuf[len_offset], expected_len, rdbuf[0]);
++
++	checksum = ili_v3_calc_checksum(rdbuf, rdbuf[len_offset]);
++
++	if (checksum) {
++		dev_err(&tsdata->client->dev, "checksum failed cmd %02x len %u\n",
++			rdbuf[0], rdbuf[len_offset]);
++		goto out;
++	}
++
++	switch (rdbuf[0]) {
++	case P5_X_DEMO_AXIS_PACKET_ID:
++		ili_v3_report_ap_mode(tsdata, rdbuf, ILI_V3_TOUCH_PACKET_LEN);
++		break;
++	case P5_X_GESTURE_PACKET_ID:
++		if (!tsdata->asleep)
++			break;
++
++		ili_v3_handle_gesture(tsdata);
++		break;
++	}
++
++out:
++	mutex_unlock(&tsdata->mutex);
++
++	return IRQ_HANDLED;
++}
++
++static void ili_v3_ts_work_i2c_poll(struct input_dev *input)
++{
++	struct ili_v3_ts_data *tsdata = input_get_drvdata(input);
++
++	ili_v3_ts_isr(0, tsdata);
++}
++
++static int ili_v3_ts_identify(struct ili_v3_ts_data *tsdata)
++{
++	struct i2c_client *client = tsdata->client;
++	char *model_name = tsdata->name;
++
++	snprintf(model_name, ILI_V3_NAME_PREFIX_LEN + 1, "%s ",
++		 dev_name(&client->dev));
++	model_name += strlen(model_name);
++
++	snprintf(model_name, ILI_V3_NAME_LEN, "ili_v3");
++
++	return 0;
++}
++
++static int ili_v3_init(struct ili_v3_ts_data *tsdata)
++{
++	static u8 stop_msg[2] = { 0x10, 0x10 };
++	static u8 cmd_open_msg[4] = { 0x25, 0x62, 0x10, 0x18 };
++	static u8 slave_mode[5] = { 0x25, 0x00, 0x10, 0x04, 0x01};
++	static u8 slave_mode2[5] = { 0x25, 0x03, 0x10, 0x04, 0x00};
++	static u8 read_protocol_ver[2] = {P5_X_READ_DATA_CTRL,
++					  P5_X_GET_PROTOCOL_VERSION};
++	static u8 read_all_info[1] = {P5_X_GET_ALL_INFORMATION};
++	static u8 set_tp_data_len[3] = {P5_X_NEW_CONTROL_FORMAT, 0x00, 0x03};
++	struct i2c_client *master_client = tsdata->client;
++	struct i2c_client *slave_client = tsdata->slave_addr;
++	u8 rd_buf[97];
++	struct ilitek_fw_info *fw_info = (struct ilitek_fw_info *)rd_buf;
++	u32 value;
++
++	if (tsdata->reset_gpio) {
++		usleep_range(5000, 6000);
++		/* Come out of reset */
++		gpiod_set_value_cansleep(tsdata->reset_gpio, 0);
++		msleep(RESET_DELAY_MS);
++	}
++
++	ili_v3_i2c_transfer(master_client, stop_msg, sizeof(stop_msg), NULL, 0);
++
++	ili_v3_i2c_transfer(master_client, cmd_open_msg, sizeof(cmd_open_msg), NULL, 0);
++
++	ili_v3_i2c_transfer(slave_client, slave_mode, sizeof(slave_mode), NULL, 0);
++	ili_v3_i2c_transfer(slave_client, slave_mode2, sizeof(slave_mode2), NULL, 0);
++
++	ili_v3_i2c_transfer(master_client, cmd_open_msg, sizeof(cmd_open_msg), NULL, 0);
++
++	ili_v3_i2c_transfer(master_client, slave_mode, sizeof(slave_mode), NULL, 0);
++	ili_v3_i2c_transfer(master_client, slave_mode2, sizeof(slave_mode2), NULL, 0);
++
++	ili_v3_i2c_write_u32_reg(master_client, 0x051024, 0xa5a5a5a5);
++	ili_v3_i2c_read_u32_reg(master_client, 0x051024, &value);
++	if (value != 0xa5a5a5a5)
++		dev_err(&master_client->dev, "dummy read didn't match - %08x\n",
++			value);
++
++	ili_v3_i2c_read_u32_reg(slave_client, TDDI_PID_ADDR, &value);
++	dev_info(&master_client->dev, "Slave PIDADDR %08x\n", value);
++	ili_v3_i2c_read_u32_reg(slave_client, TDDI_SECOND_PID_ADDR, &value);
++	dev_info(&master_client->dev, "Slave TDDI_SECOND_PID_ADDR %08x\n", value);
++
++	ili_v3_i2c_read_u32_reg(master_client, TDDI_PID_ADDR, &value);
++	dev_info(&master_client->dev, "Master PIDADDR %08x\n", value);
++	ili_v3_i2c_read_u32_reg(master_client, TDDI_SECOND_PID_ADDR, &value);
++	dev_info(&master_client->dev, "Master TDDI_SECOND_PID_ADDR %08x\n", value);
++	ili_v3_i2c_read_u32_reg(master_client, TDDI_OTP_ID_ADDR, &value);
++	dev_info(&master_client->dev, "Master TDDI_OTP_ID_ADDR %08x\n", value);
++	ili_v3_i2c_read_u32_reg(master_client, TDDI_ANA_ID_ADDR, &value);
++	dev_info(&master_client->dev, "Master TDDI_ANA_ID_ADDR %08x\n", value);
++
++	if (tsdata->reset_gpio) {
++		mdelay(1);
++		gpiod_set_value_cansleep(tsdata->reset_gpio, 1);
++		mdelay(5);
++		gpiod_set_value_cansleep(tsdata->reset_gpio, 0);
++		msleep(RESET_DELAY_MS);
++	}
++
++	ili_v3_i2c_transfer(master_client, read_protocol_ver, 2, NULL, 0);
++	ili_v3_i2c_transfer(master_client, &read_protocol_ver[1], 1, rd_buf, 4);
++	dev_info(&master_client->dev, "protocol version is %08x\n",
++		 *((u32 *)rd_buf));
++
++	ili_v3_i2c_transfer(master_client, read_all_info, 1, rd_buf, 97);
++
++	if (be32_to_cpu(*(unsigned int *)fw_info->fw_ver) < MIN_FW_VERSION)
++		dev_err(&master_client->dev, "Firmware version %u.%u.%u.%u is older than expected. Minimum %u.%u.%u.%u\n",
++			fw_info->fw_ver[0], fw_info->fw_ver[1],
++			fw_info->fw_ver[2], fw_info->fw_ver[3],
++			(MIN_FW_VERSION >> 24) & 0xff, (MIN_FW_VERSION >> 16) & 0xff,
++			(MIN_FW_VERSION >> 8) & 0xff, MIN_FW_VERSION & 0xff);
++
++	dev_info(&master_client->dev, "FW AP Version %u.%u.%u.%u\n",
++		 fw_info->fw_ver[0], fw_info->fw_ver[1], fw_info->fw_ver[2],
++		 fw_info->fw_ver[3]);
++	dev_info(&master_client->dev, "FW MP Version %u.%u.%u.%u\n",
++		 fw_info->fw_mp_ver[0], fw_info->fw_mp_ver[1],
++		 fw_info->fw_mp_ver[2], fw_info->fw_mp_ver[3]);
++	dev_info(&master_client->dev, "Core Version %u.%u.%u.%u\n",
++		 fw_info->core_ver[0], fw_info->core_ver[1],
++		 fw_info->core_ver[2], fw_info->core_ver[3]);
++
++	if (fw_info->panel_info_cmd == P5_X_GET_PANEL_INFORMATION) {
++		tsdata->panel_width = (fw_info->panel_width_high << 8) |
++				      fw_info->panel_width_low;
++		tsdata->panel_height = (fw_info->panel_height_high << 8) |
++				       fw_info->panel_height_low;
++
++		dev_info(&master_client->dev, "Configured size %u x %u%s\n",
++			 tsdata->panel_width, tsdata->panel_height,
++			 fw_info->panel_trans_xy ? " swapxy" : "");
++	}
++
++	ili_v3_i2c_transfer(master_client, set_tp_data_len, sizeof(set_tp_data_len),
++			    NULL, 0);
++
++	ili_v3_ts_identify(tsdata);
++
++	return 0;
++}
++
++static void ili_v3_disable_regulators(void *arg)
++{
++	struct ili_v3_ts_data *data = arg;
++
++	regulator_disable(data->vcc);
++	regulator_disable(data->iovcc);
++}
++
++static int ili_v3_ts_suspend(struct drm_panel_follower *follower)
++{
++	struct ili_v3_ts_data *tsdata = container_of(follower,
++						     struct ili_v3_ts_data,
++						     panel_follower);
++	static u8 pll_wakeup[] = { 0xA3 };
++	static u8 gesture_symbol_msg[] = { 0x01, 0x0a, 0x08, 0xff, 0xff, 0xff };
++	static u8 gesture_msg[] = { 0x01, 0x0a, 0x02 };
++
++	mutex_lock(&tsdata->mutex);
++
++	input_set_poll_interval(tsdata->input, ILI_V3_POLL_SLEEP_INTERVAL);
++
++	ili_v3_i2c_transfer(tsdata->client, pll_wakeup, sizeof(pll_wakeup),
++			    NULL, 0);
++
++	ili_v3_i2c_transfer(tsdata->client, gesture_symbol_msg,
++			    sizeof(gesture_symbol_msg), NULL, 0);
++	ili_v3_i2c_transfer(tsdata->client, gesture_msg, sizeof(gesture_msg),
++			    NULL, 0);
++
++	tsdata->asleep = true;
++	mutex_unlock(&tsdata->mutex);
++
++	return 0;
++}
++
++static int ili_v3_ts_resume(struct drm_panel_follower *follower)
++{
++	struct ili_v3_ts_data *tsdata = container_of(follower,
++						     struct ili_v3_ts_data,
++						     panel_follower);
++	mutex_lock(&tsdata->mutex);
++
++	tsdata->asleep = false;
++
++	gpiod_set_value_cansleep(tsdata->reset_gpio, 0);
++	mdelay(1);
++	gpiod_set_value_cansleep(tsdata->reset_gpio, 1);
++	mdelay(5);
++	gpiod_set_value_cansleep(tsdata->reset_gpio, 0);
++	msleep(RESET_DELAY_MS);
++
++	input_set_poll_interval(tsdata->input, ILI_V3_POLL_INTERVAL);
++
++	mutex_unlock(&tsdata->mutex);
++
++	return 0;
++}
++
++static const struct drm_panel_follower_funcs ili_v3_follower_funcs = {
++	.panel_prepared = ili_v3_ts_resume,
++	.panel_unpreparing = ili_v3_ts_suspend,
++};
++
++static int ili_v3_ts_probe(struct i2c_client *client)
++{
++	const struct i2c_device_id *id = i2c_client_get_device_id(client);
++	const struct ili_v3_i2c_chip_data *chip_data;
++	struct ili_v3_ts_data *tsdata;
++	struct input_dev *input;
++	unsigned long irq_flags;
++	int error;
++
++	tsdata = devm_kzalloc(&client->dev, sizeof(*tsdata), GFP_KERNEL);
++	if (!tsdata)
++		return -ENOMEM;
++
++	tsdata->client = client;
++	i2c_set_clientdata(client, tsdata);
++
++	chip_data = device_get_match_data(&client->dev);
++	if (!chip_data)
++		chip_data = (const struct ili_v3_i2c_chip_data *)id->driver_data;
++	if (!chip_data || !chip_data->max_support_points) {
++		dev_err(&client->dev, "invalid or missing chip data\n");
++		return -EINVAL;
++	}
++
++	tsdata->max_support_points = chip_data->max_support_points;
++
++	tsdata->vcc = devm_regulator_get(&client->dev, "vcc");
++	if (IS_ERR(tsdata->vcc))
++		return dev_err_probe(&client->dev, PTR_ERR(tsdata->vcc),
++				     "failed to request regulator\n");
++
++	tsdata->iovcc = devm_regulator_get(&client->dev, "iovcc");
++	if (IS_ERR(tsdata->iovcc)) {
++		error = PTR_ERR(tsdata->iovcc);
++		if (error != -EPROBE_DEFER)
++			dev_err(&client->dev,
++				"failed to request iovcc regulator: %d\n", error);
++		return error;
++	}
++
++	tsdata->slave_addr = i2c_new_dummy_device(client->adapter, 0x4f);
++	if (IS_ERR(tsdata->slave_addr))
++		return PTR_ERR(tsdata->slave_addr);
++
++	error = regulator_enable(tsdata->iovcc);
++	if (error < 0) {
++		dev_err(&client->dev, "failed to enable iovcc: %d\n", error);
++		goto fail_release_i2c;
++	}
++
++	/* Delay enabling VCC for > 10us (T_ivd) after IOVCC */
++	usleep_range(10, 100);
++
++	error = regulator_enable(tsdata->vcc);
++	if (error < 0) {
++		dev_err(&client->dev, "failed to enable vcc: %d\n", error);
++		regulator_disable(tsdata->iovcc);
++		goto fail_release_i2c;
++	}
++	msleep(100);
++	error = devm_add_action_or_reset(&client->dev,
++					 ili_v3_disable_regulators,
++					 tsdata);
++	if (error) {
++		regulator_disable(tsdata->iovcc);
++		regulator_disable(tsdata->vcc);
++		goto fail_release_i2c;
++	}
++
++	tsdata->reset_gpio = devm_gpiod_get_optional(&client->dev,
++						     "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(tsdata->reset_gpio)) {
++		error = PTR_ERR(tsdata->reset_gpio);
++		dev_err(&client->dev,
++			"Failed to request GPIO reset pin, error %d\n", error);
++		goto fail_release_i2c;
++	}
++
++	mutex_init(&tsdata->mutex);
++	tsdata->client = client;
++	i2c_set_clientdata(client, tsdata);
++
++	error = ili_v3_init(tsdata);
++	if (error) {
++		dev_err(&client->dev, "touchscreen probe failed\n");
++		goto fail_release_i2c;
++	}
++
++	tsdata->panel_follower.funcs = &ili_v3_follower_funcs;
++
++	input = devm_input_allocate_device(&client->dev);
++	if (!input) {
++		dev_err(&client->dev, "failed to allocate input device.\n");
++		error = -ENOMEM;
++		goto fail_reset_gpio;
++	}
++	tsdata->input = input;
++
++	input->name = tsdata->name;
++	input->id.bustype = BUS_I2C;
++	input->dev.parent = &client->dev;
++	input_set_drvdata(input, tsdata);
++
++	input_set_abs_params(input, ABS_MT_POSITION_X,
++			     0, tsdata->panel_width - 1, 0, 0);
++	input_set_abs_params(input, ABS_MT_POSITION_Y,
++			     0, tsdata->panel_height - 1, 0, 0);
++
++	touchscreen_parse_properties(input, true, &tsdata->prop);
++
++	error = input_mt_init_slots(input, tsdata->max_support_points,
++				    INPUT_MT_DIRECT);
++	if (error) {
++		dev_err(&client->dev, "Unable to init MT slots.\n");
++		goto fail_reset_gpio;
++	}
++
++	if (client->irq) {
++		irq_flags = irq_get_trigger_type(client->irq);
++		if (irq_flags == IRQF_TRIGGER_NONE)
++			irq_flags = IRQF_TRIGGER_FALLING;
++		irq_flags |= IRQF_ONESHOT;
++
++		error = devm_request_threaded_irq(&client->dev, client->irq,
++						  NULL, ili_v3_ts_isr,
++						  irq_flags, client->name,
++						  tsdata);
++		if (error) {
++			dev_err(&client->dev, "Unable to request touchscreen IRQ.\n");
++			goto fail_reset_gpio;
++		}
++	} else {
++		error = input_setup_polling(input, ili_v3_ts_work_i2c_poll);
++		if (error) {
++			dev_err(&client->dev, "could not set up polling mode, %d\n",
++				error);
++			goto fail_reset_gpio;
++		}
++
++		input_set_poll_interval(input, ILI_V3_POLL_INTERVAL);
++	}
++
++	error = input_register_device(input);
++	if (error)
++		goto fail_reset_gpio;
++
++	error = drm_panel_add_follower(&client->dev, &tsdata->panel_follower);
++	if (error) {
++		dev_err(&client->dev, "Failed to add panel follower - %d\n", error);
++		goto fail_reset_gpio;
++	}
++
++	return 0;
++
++fail_reset_gpio:
++	gpiod_set_value_cansleep(tsdata->reset_gpio, 1);
++fail_release_i2c:
++	i2c_unregister_device(tsdata->slave_addr);
++
++	return error;
++}
++
++static void ili_v3_remove(struct i2c_client *client)
++{
++	struct ili_v3_ts_data *tsdata = i2c_get_clientdata(client);
++
++	gpiod_set_value_cansleep(tsdata->reset_gpio, 1);
++	drm_panel_remove_follower(&tsdata->panel_follower);
++	i2c_unregister_device(tsdata->slave_addr);
++}
++
++static const struct ili_v3_i2c_chip_data ili_v3_data = {
++	.max_support_points = 10,
++};
++
++static const struct i2c_device_id ili_v3_ts_id[] = {
++	{ .name = "ili79600a", .driver_data = (long)&ili_v3_data },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(i2c, ili_v3_ts_id);
++
++static const struct of_device_id ili_v3_of_match[] = {
++	{ .compatible = "ilitek,ili79600a", .data = &ili_v3_data },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, ili_v3_of_match);
++
++static struct i2c_driver ili_v3_ts_driver = {
++	.driver = {
++		.name = "ilitek_v3",
++		.of_match_table = ili_v3_of_match,
++		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
++	},
++	.id_table = ili_v3_ts_id,
++	.probe    = ili_v3_ts_probe,
++	.remove   = ili_v3_remove,
++};
++
++module_i2c_driver(ili_v3_ts_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("Ilitek V3 I2C Touchscreen Driver");
++MODULE_LICENSE("GPL");

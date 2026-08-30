@@ -1,0 +1,50 @@
+From 560624d8e8947ad3bc6c0ade6f655535ab83df71 Mon Sep 17 00:00:00 2001
+From: Nicolai Buchwitz <nb@tipi-net.de>
+Date: Fri, 3 Jul 2026 13:03:14 +0200
+Subject: [PATCH] Revert "net: macb: re-check ISR after IER re-enable in
+ macb_tx_poll"
+
+This reverts commit ff6914e97386f9a7d37468c79996dc6c34172cfb.
+
+Signed-off-by: Nicolai Buchwitz <nb@tipi-net.de>
+---
+ drivers/net/ethernet/cadence/macb_main.c | 27 +++++++++---------------
+ 1 file changed, 10 insertions(+), 17 deletions(-)
+
+--- a/drivers/net/ethernet/cadence/macb_main.c
++++ b/drivers/net/ethernet/cadence/macb_main.c
+@@ -2000,24 +2000,17 @@ static int macb_tx_poll(struct napi_stru
+ 	if (work_done < budget && napi_complete_done(napi, work_done)) {
+ 		queue_writel(queue, IER, MACB_BIT(TCOMP));
+ 
+-		/* TCOMP events that fire while the interrupt is masked do
+-		 * not re-fire when IER is re-enabled.  Catch this two ways
+-		 * to avoid losing a wakeup:
+-		 *
+-		 *   (1) Read ISR -- catches completions the hardware flagged
+-		 *       but that we did not see as an interrupt.  The MMIO
+-		 *       read doubles as a PCIe read barrier, flushing any
+-		 *       in-flight descriptor TX_USED DMA writes into memory.
+-		 *   (2) macb_tx_complete_pending() inspects the ring after
+-		 *       that flush, catching a descriptor whose TX_USED is
+-		 *       now visible as a result of the barrier.
+-		 *
+-		 * This can race with the interrupt handler taking the same
+-		 * path if an interrupt fires just after the IER write;
+-		 * rescheduling NAPI in that case is harmless.
++		/* Packet completions only seem to propagate to raise
++		 * interrupts when interrupts are enabled at the time, so if
++		 * packets were sent while interrupts were disabled,
++		 * they will not cause another interrupt to be generated when
++		 * interrupts are re-enabled.
++		 * Check for this case here to avoid losing a wakeup. This can
++		 * potentially race with the interrupt handler doing the same
++		 * actions if an interrupt is raised just after enabling them,
++		 * but this should be harmless.
+ 		 */
+-		if ((queue_readl(queue, ISR) & MACB_BIT(TCOMP)) ||
+-		    macb_tx_complete_pending(queue)) {
++		if (macb_tx_complete_pending(queue)) {
+ 			queue_writel(queue, IDR, MACB_BIT(TCOMP));
+ 			if (bp->caps & MACB_CAPS_ISR_CLEAR_ON_WRITE)
+ 				queue_writel(queue, ISR, MACB_BIT(TCOMP));

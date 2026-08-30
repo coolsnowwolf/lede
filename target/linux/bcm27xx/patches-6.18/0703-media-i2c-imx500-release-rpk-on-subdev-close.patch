@@ -1,0 +1,63 @@
+From e538839e3dcc75a477bd7ed0b4fe0e61bd666497 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Tue, 21 Apr 2026 10:10:00 +0000
+Subject: [PATCH] media: i2c: imx500: release rpk on subdev close
+
+The pm_runtime reference is held for as long as imx500->fw_network is
+populated.  This means the cached rpk (plus the pm reference that blocks
+autosuspend) is present in the device state past userspace closing the
+subdev fd, until the next VIDIOC_S_CTRL cleared or replaced it.
+
+Add a .close internal op that calls imx500_clear_fw_network() when the
+last userspace handle on the subdev is released.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/imx500.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+--- a/drivers/media/i2c/imx500.c
++++ b/drivers/media/i2c/imx500.c
+@@ -22,6 +22,7 @@
+ #include <media/v4l2-ctrls.h>
+ #include <media/v4l2-device.h>
+ #include <media/v4l2-event.h>
++#include <media/v4l2-fh.h>
+ #include <media/v4l2-fwnode.h>
+ #include <media/v4l2-mediabus.h>
+ 
+@@ -2331,6 +2332,26 @@ static const struct v4l2_ctrl_ops imx500
+ 	.s_ctrl = imx500_set_ctrl,
+ };
+ 
++static int imx500_subdev_close(struct v4l2_subdev *sd,
++			       struct v4l2_subdev_fh *fh)
++{
++	struct imx500 *imx500 = to_imx500(sd);
++	/*
++	 * Release the cached rpk when the last userspace handle on the subdev
++	 * is closed. This also drops the pm_runtime reference ta taken in the
++	 * NETWORK_FW_FD branch of imx500_set_ctrl(), so the device can
++	 * autosuspend between sessions.
++	 */
++	if (v4l2_fh_is_singular(&fh->vfh))
++		imx500_clear_fw_network(imx500);
++
++	return 0;
++}
++
++static const struct v4l2_subdev_internal_ops imx500_internal_ops = {
++	.close = imx500_subdev_close,
++};
++
+ static const struct v4l2_ctrl_config imx500_notify_gains_ctrl = {
+ 	.ops = &imx500_ctrl_ops,
+ 	.id = V4L2_CID_NOTIFY_GAINS,
+@@ -3632,6 +3653,7 @@ static int imx500_probe(struct i2c_clien
+ 		goto error_power_off;
+ 
+ 	/* Initialize subdev */
++	imx500->sd.internal_ops = &imx500_internal_ops;
+ 	imx500->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE |
+ 			    V4L2_SUBDEV_FL_HAS_EVENTS;
+ 	imx500->sd.entity.function = MEDIA_ENT_F_CAM_SENSOR;

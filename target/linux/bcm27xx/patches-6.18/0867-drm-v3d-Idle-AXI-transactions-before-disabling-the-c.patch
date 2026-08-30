@@ -1,0 +1,85 @@
+From fcb324363479844c8bed1649122b3bd01a657f24 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Wed, 15 Jul 2026 08:59:28 -0300
+Subject: [PATCH] drm/v3d: Idle AXI transactions before disabling the clock on
+ suspend
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Currently, v3d_power_suspend() removes the GPU clock without first
+quiescing the GPU's memory interface (AXI). If the clock is cut while the
+core still has outstanding AXI transactions in flight, the hardware is
+frozen mid-transaction. That corrupted state survives the power cycle, and
+the first job submitted after the next resume will cause a GPU hang
+accompanied by an L2T "pte invalid" MMU fault.
+
+The hardware already provides a safe-powerdown sequence for this: request
+the GMP to stop and wait for outstanding reads/writes to drain
+(v3d_idle_axi()), plus the GCA safe shutdown on pre-4.1 cores
+(v3d_idle_gca()). The driver implements both, but the runtime PM support
+added later never invoked them when powering the GPU down.
+
+Perform the safe-powerdown sequence in v3d_power_suspend() before
+disabling the clock, while the core is still powered.
+
+Cc: stable@vger.kernel.org
+Link: https://github.com/raspberrypi/linux/issues/7443
+Link: https://github.com/raspberrypi/linux/issues/7488
+Fixes: 17af1d14deaf ("drm/v3d: Introduce Runtime Power Management")
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/v3d_drv.h   | 2 ++
+ drivers/gpu/drm/v3d/v3d_gem.c   | 4 ++--
+ drivers/gpu/drm/v3d/v3d_power.c | 7 +++++++
+ 3 files changed, 11 insertions(+), 2 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -578,6 +578,8 @@ int v3d_gem_init(struct drm_device *dev)
+ void v3d_gem_destroy(struct drm_device *dev);
+ void v3d_reset_sms(struct v3d_dev *v3d);
+ void v3d_reset(struct v3d_dev *v3d);
++void v3d_idle_axi(struct v3d_dev *v3d, int core);
++void v3d_idle_gca(struct v3d_dev *v3d);
+ void v3d_invalidate_caches(struct v3d_dev *v3d);
+ void v3d_clean_caches(struct v3d_dev *v3d);
+ 
+--- a/drivers/gpu/drm/v3d/v3d_gem.c
++++ b/drivers/gpu/drm/v3d/v3d_gem.c
+@@ -36,7 +36,7 @@ v3d_init_core(struct v3d_dev *v3d, int c
+ 	V3D_CORE_WRITE(core, V3D_CTL_L2TFLEND, ~0);
+ }
+ 
+-static void
++void
+ v3d_idle_axi(struct v3d_dev *v3d, int core)
+ {
+ 	if (v3d->ver >= V3D_GEN_71) {
+@@ -61,7 +61,7 @@ v3d_idle_axi(struct v3d_dev *v3d, int co
+ 	}
+ }
+ 
+-static void
++void
+ v3d_idle_gca(struct v3d_dev *v3d)
+ {
+ 	if (v3d->ver >= V3D_GEN_41)
+--- a/drivers/gpu/drm/v3d/v3d_power.c
++++ b/drivers/gpu/drm/v3d/v3d_power.c
+@@ -55,8 +55,15 @@ int v3d_power_suspend(struct device *dev
+ 	/* Always clean V3D caches on shutdown. */
+ 	v3d_clean_caches(v3d);
+ 
++	/* Wait until V3D has no active or pending AXI transactions. */
++	v3d_idle_axi(v3d, 0);
++	v3d_idle_gca(v3d);
++
+ 	ret = v3d_suspend_sms(v3d);
+ 	if (ret) {
++		/* Staying active: undo the GMP STOP_REQ from v3d_idle_axi(). */
++		V3D_WRITE(V3D_GMP_CFG(v3d->ver),
++			  V3D_READ(V3D_GMP_CFG(v3d->ver)) & ~V3D_GMP_CFG_STOP_REQ);
+ 		v3d_irq_enable(v3d);
+ 		return ret;
+ 	}

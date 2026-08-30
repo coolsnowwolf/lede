@@ -1,0 +1,43 @@
+From 5f32af2928f2b24a65e891550490f4aac63a83dd Mon Sep 17 00:00:00 2001
+From: by <by@by-online.de>
+Date: Fri, 3 Apr 2026 19:05:36 +0200
+Subject: [PATCH] mfd: rp1: fix IRQ thread affinity on PREEMPT_RT
+
+rp1_irq_set_affinity() delegates to msi_domain_set_affinity() but
+does not call irq_data_update_effective_affinity() and does not
+return IRQ_SET_MASK_OK_DONE. Without this, the generic IRQ core
+never calls irq_set_thread_affinity(), so on PREEMPT_RT the
+force-threaded handler remains pinned to its original CPU even
+though the hardware interrupt is steered correctly.
+
+This causes PPS timestamps to be captured on a non-isolated CPU,
+adding variable latency to precision timing applications.
+
+Fix by updating the effective affinity and returning
+IRQ_SET_MASK_OK_DONE on success.
+
+Fixes: https://github.com/raspberrypi/linux/issues/7301
+
+Signed-off-by: Michael Byczkowski <by@by-online.de>
+---
+ drivers/mfd/rp1.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+--- a/drivers/mfd/rp1.c
++++ b/drivers/mfd/rp1.c
+@@ -145,8 +145,14 @@ static int rp1_irq_set_affinity(struct i
+ {
+ 	struct rp1_dev *rp1 = irqd->domain->host_data;
+ 	struct irq_data *pcie_irqd = rp1->pcie_irqds[irqd->hwirq];
++	int ret;
+ 
+-	return msi_domain_set_affinity(pcie_irqd, dest, force);
++	ret = msi_domain_set_affinity(pcie_irqd, dest, force);
++	if (ret >= 0) {
++		irq_data_update_effective_affinity(irqd, dest);
++		return IRQ_SET_MASK_OK_DONE;
++	}
++	return ret;
+ }
+ 
+ static struct irq_chip rp1_irq_chip = {

@@ -23,7 +23,7 @@ define Build/boot-common
 	rm -f $@.boot
 	mkfs.fat -n boot -C $@.boot $(FAT32_BLOCKS)
 	mcopy -i $@.boot $(KDIR)/COPYING.linux ::
-	mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::
+	$(if $(CONFIG_PACKAGE_bcm27xx-gpu-fw),mcopy -i $@.boot $(KDIR)/LICENCE.broadcom ::,)
 	mcopy -i $@.boot $@-cmdline.txt ::cmdline.txt
 	mcopy -i $@.boot config.txt ::
 	mcopy -i $@.boot distroconfig.txt ::
@@ -39,18 +39,22 @@ define Build/boot-2708
 	mcopy -i $@.boot $(KDIR)/bootcode.bin ::
 	mcopy -i $@.boot $(KDIR)/start.elf ::
 	mcopy -i $@.boot $(KDIR)/start_cd.elf ::
+	mcopy -i $@.boot $(KDIR)/start_db.elf ::
 	mcopy -i $@.boot $(KDIR)/start_x.elf ::
 	mcopy -i $@.boot $(KDIR)/fixup.dat ::
 	mcopy -i $@.boot $(KDIR)/fixup_cd.dat ::
+	mcopy -i $@.boot $(KDIR)/fixup_db.dat ::
 	mcopy -i $@.boot $(KDIR)/fixup_x.dat ::
 endef
 
 define Build/boot-2711
 	mcopy -i $@.boot $(KDIR)/start4.elf ::
 	mcopy -i $@.boot $(KDIR)/start4cd.elf ::
+	mcopy -i $@.boot $(KDIR)/start4db.elf ::
 	mcopy -i $@.boot $(KDIR)/start4x.elf ::
 	mcopy -i $@.boot $(KDIR)/fixup4.dat ::
 	mcopy -i $@.boot $(KDIR)/fixup4cd.dat ::
+	mcopy -i $@.boot $(KDIR)/fixup4db.dat ::
 	mcopy -i $@.boot $(KDIR)/fixup4x.dat ::
 endef
 
@@ -59,6 +63,12 @@ define Build/sdcard-img
 	./gen_rpi_sdcard_img.sh $@ $@.boot $(IMAGE_ROOTFS) \
 		$(CONFIG_TARGET_KERNEL_PARTSIZE) $(CONFIG_TARGET_ROOTFS_PARTSIZE)
 endef
+
+### Shared device package groups ###
+WIFI_43430_FW := cypress-firmware-43430-sdio brcmfmac-nvram-43430-sdio
+WIFI_43455_FW := cypress-firmware-43455-sdio brcmfmac-nvram-43455-sdio
+BRCM_WIFI_DRIVER := kmod-brcmfmac wpad-basic-mbedtls
+LAN_DRIVERS := kmod-usb-net-lan78xx kmod-usb-net-rtl8152 kmod-r8169
 
 ### Devices ###
 define Device/Default
@@ -73,8 +83,8 @@ endef
 define Device/rpi
   DEVICE_MODEL := A/A+/B/B+/CM/Zero/ZeroW
   DEVICE_DTS := \
-	broadcom/bcm2708-rpi-b broadcom/bcm2708-rpi-b-rev1 broadcom/bcm2708-rpi-b-plus \
-	broadcom/bcm2708-rpi-cm \
+	broadcom/bcm2708-rpi-b broadcom/bcm2708-rpi-b-rev1 \
+	broadcom/bcm2708-rpi-b-plus broadcom/bcm2708-rpi-cm \
 	broadcom/bcm2708-rpi-zero broadcom/bcm2708-rpi-zero-w
   SUPPORTED_DEVICES := \
 	rpi-a rpi-a-plus \
@@ -86,11 +96,8 @@ define Device/rpi
 	raspberrypi,compute-module raspberrypi,compute-module-1 \
 	raspberrypi,model-zero raspberrypi,model-zero-w
   DEVICE_PACKAGES := \
-	cypress-firmware-43430-sdio \
-	brcmfmac-nvram-43430-sdio \
-	kmod-brcmfmac wpad-basic-mbedtls \
-	kmod-i2c-bcm2835 kmod-spi-bcm2835 \
-	kmod-spi-bcm2835-aux
+	$(WIFI_43430_FW) \
+	$(BRCM_WIFI_DRIVER)
 endef
 ifeq ($(SUBTARGET),bcm2708)
   TARGET_DEVICES += rpi
@@ -100,38 +107,36 @@ define Device/rpi-2
   DEVICE_MODEL := 2B/2B 1.2
   DEVICE_VARIANT := (32bit)
   DEVICE_ALT0_VENDOR := Raspberry Pi
-  DEVICE_ALT0_MODEL := 3A+/3B/3B+/CM3/Zero2/Zero2W
+  DEVICE_ALT0_MODEL := 3A+/3B/3B+/CM3/Zero2/Zero2W/CM0
   DEVICE_ALT0_VARIANT := (32bit)
   DEVICE_ALT1_VENDOR := Raspberry Pi
-  DEVICE_ALT1_MODEL := 4B/400/CM4
+  DEVICE_ALT1_MODEL := 4B/400/CM4/CM4S
   DEVICE_ALT1_VARIANT := (32bit)
   DEVICE_DTS := \
 	broadcom/bcm2709-rpi-2-b broadcom/bcm2710-rpi-2-b \
 	broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus \
-	broadcom/bcm2711-rpi-4-b broadcom/bcm2711-rpi-400 \
-	broadcom/bcm2710-rpi-cm3 broadcom/bcm2711-rpi-cm4 \
-	broadcom/bcm2710-rpi-zero-2 broadcom/bcm2710-rpi-zero-2-w
+	broadcom/bcm2710-rpi-cm3 broadcom/bcm2711-rpi-4-b \
+	broadcom/bcm2711-rpi-400 broadcom/bcm2711-rpi-cm4-io \
+	broadcom/bcm2711-rpi-cm4 broadcom/bcm2711-rpi-cm4s \
+	broadcom/bcm2710-rpi-zero-2 broadcom/bcm2710-rpi-zero-2-w \
+	broadcom/bcm2710-rpi-cm0
   SUPPORTED_DEVICES := \
 	rpi-2-b \
 	rpi-3-a-plus \
 	rpi-3-b rpi-3-b-plus \
 	rpi-4-b rpi-400 \
-	rpi-cm \
-	rpi-zero-2 rpi-zero-2-w \
+	rpi-cm rpi-cm3 \
+	rpi-zero-2 rpi-zero-2-w rpi-cm0 \
 	raspberrypi,2-model-b raspberrypi,2-model-b-rev2 \
-	raspberrypi,3-model-a-plus \
-	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
-	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
-	raspberrypi,400 raspberrypi,4-compute-module raspberrypi,4-model-b \
-	raspberrypi,model-zero-2 raspberrypi,model-zero-2-w
+	raspberrypi,3-model-a-plus raspberrypi,3-model-b \
+	raspberrypi,3-model-b-plus raspberrypi,3-compute-module \
+	raspberrypi,compute-module-3 raspberrypi,400 \
+	raspberrypi,4-compute-module raspberrypi,4-compute-module-s raspberrypi,4-model-b \
+	raspberrypi,model-zero-2 raspberrypi,model-zero-2-w raspberrypi,0-compute-module
   DEVICE_PACKAGES := \
-	cypress-firmware-43430-sdio \
-	brcmfmac-nvram-43430-sdio \
-	cypress-firmware-43455-sdio \
-	brcmfmac-nvram-43455-sdio \
-	kmod-brcmfmac wpad-basic-mbedtls \
-	kmod-i2c-bcm2835 kmod-spi-bcm2835 \
-	kmod-spi-bcm2835-aux
+	$(WIFI_43430_FW) \
+	$(WIFI_43455_FW) \
+	$(BRCM_WIFI_DRIVER)
   IMAGE/sysupgrade.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2708 | boot-2711 | sdcard-img | gzip
 endef
@@ -140,7 +145,7 @@ ifeq ($(SUBTARGET),bcm2709)
 endif
 
 define Device/rpi-3
-  DEVICE_MODEL := 3A+/3B/3B+/CM3/Zero2/Zero2W
+  DEVICE_MODEL := 3A+/3B/3B+/CM3/Zero2/Zero2W/CM0
   DEVICE_VARIANT := (64bit)
   DEVICE_ALT0_VENDOR := Raspberry Pi
   DEVICE_ALT0_MODEL := 2B-1.2
@@ -149,51 +154,45 @@ define Device/rpi-3
   DEVICE_DTS := \
 	broadcom/bcm2710-rpi-2-b \
 	broadcom/bcm2710-rpi-3-b broadcom/bcm2710-rpi-3-b-plus \
-	broadcom/bcm2710-rpi-cm3 \
+	broadcom/bcm2710-rpi-cm3 broadcom/bcm2710-rpi-cm0 \
 	broadcom/bcm2710-rpi-zero-2 broadcom/bcm2710-rpi-zero-2-w
   SUPPORTED_DEVICES := \
 	rpi-3-a-plus \
-	rpi-3-b rpi-3-b-plus \
-	rpi-zero-2 rpi-zero-2-w \
+	rpi-3-b rpi-3-b-plus rpi-cm3 \
+	rpi-zero-2 rpi-zero-2-w rpi-cm0 \
 	raspberrypi,2-model-b-rev2 \
 	raspberrypi,3-model-a-plus \
 	raspberrypi,3-model-b raspberrypi,3-model-b-plus \
 	raspberrypi,3-compute-module raspberrypi,compute-module-3 \
-	raspberrypi,model-zero-2 raspberrypi,model-zero-2-w
+	raspberrypi,model-zero-2 raspberrypi,model-zero-2-w raspberrypi,0-compute-module
   DEVICE_PACKAGES := \
-	cypress-firmware-43430-sdio \
-	brcmfmac-nvram-43430-sdio \
-	cypress-firmware-43455-sdio \
-	brcmfmac-nvram-43455-sdio \
-	kmod-brcmfmac wpad-basic-mbedtls \
-	kmod-i2c-bcm2835 kmod-spi-bcm2835 \
-	kmod-spi-bcm2835-aux
+	$(WIFI_43430_FW) \
+	$(WIFI_43455_FW) \
+	$(BRCM_WIFI_DRIVER)
 endef
 ifeq ($(SUBTARGET),bcm2710)
   TARGET_DEVICES += rpi-3
 endif
 
 define Device/rpi-4
-  DEVICE_MODEL := 4B/400/CM4
+  DEVICE_MODEL := 4B/400/CM4/CM4S
   DEVICE_VARIANT := (64bit)
   KERNEL_IMG := kernel8.img
   DEVICE_DTS := \
-	broadcom/bcm2711-rpi-400 \
 	broadcom/bcm2711-rpi-4-b \
-	broadcom/bcm2711-rpi-cm4
+	broadcom/bcm2711-rpi-400 \
+	broadcom/bcm2711-rpi-cm4-io \
+	broadcom/bcm2711-rpi-cm4 \
+	broadcom/bcm2711-rpi-cm4s
   SUPPORTED_DEVICES := \
 	raspberrypi,400 \
 	raspberrypi,4-compute-module \
+	raspberrypi,4-compute-module-s \
 	raspberrypi,4-model-b
   DEVICE_PACKAGES := \
-	cypress-firmware-43455-sdio \
-	brcmfmac-nvram-43455-sdio \
-	kmod-brcmfmac wpad-basic-mbedtls \
-	kmod-i2c-bcm2835 kmod-spi-bcm2835 \
-	kmod-spi-bcm2835-aux \
-	kmod-i2c-brcmstb \
-	kmod-usb-net-lan78xx \
-	kmod-r8169
+	$(WIFI_43455_FW) \
+	$(BRCM_WIFI_DRIVER) \
+	$(LAN_DRIVERS)
   IMAGE/sysupgrade.img.gz := boot-common | boot-2711 | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | boot-2711 | sdcard-img | gzip
 endef
@@ -202,10 +201,12 @@ ifeq ($(SUBTARGET),bcm2711)
 endif
 
 define Device/rpi-5
-  DEVICE_MODEL := 5/500/CM5
+  DEVICE_MODEL := 5/500/CM5/CM5L
   KERNEL_IMG := kernel_2712.img
   DEVICE_DTS := \
+	broadcom/bcm2712-d-rpi-5-b \
 	broadcom/bcm2712-rpi-5-b \
+	broadcom/bcm2712-rpi-500 \
 	broadcom/bcm2712-rpi-cm5-cm4io \
 	broadcom/bcm2712-rpi-cm5-cm5io \
 	broadcom/bcm2712-rpi-cm5l-cm4io \
@@ -216,12 +217,9 @@ define Device/rpi-5
 	raspberrypi,5-compute-module \
 	raspberrypi,5-model-b
   DEVICE_PACKAGES := \
-	cypress-firmware-43455-sdio \
-	brcmfmac-nvram-43455-sdio \
-	kmod-brcmfmac wpad-basic-mbedtls \
-	kmod-i2c-bcm2835 kmod-spi-bcm2835 \
-	kmod-i2c-brcmstb \
-	kmod-i2c-designware-platform kmod-spi-dw-mmio \
+	$(WIFI_43455_FW) \
+	$(BRCM_WIFI_DRIVER) \
+	$(LAN_DRIVERS) \
 	kmod-hwmon-pwmfan kmod-thermal
   IMAGE/sysupgrade.img.gz := boot-common | sdcard-img | gzip | append-metadata
   IMAGE/factory.img.gz := boot-common | sdcard-img | gzip

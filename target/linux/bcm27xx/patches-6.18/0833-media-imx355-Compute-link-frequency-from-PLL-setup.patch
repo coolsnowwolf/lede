@@ -1,0 +1,142 @@
+From 7f3dda0cffae8934919d166d860378a6acf4549a Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 30 Jun 2026 17:17:04 +0100
+Subject: [PATCH] media: imx355: Compute link frequency from PLL setup
+
+In preparation for additional options in the PLL setup, compute
+the link frequency rather than using a hardcoded value.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx355.c | 41 +++++++++++++++++---------------------
+ 1 file changed, 18 insertions(+), 23 deletions(-)
+
+--- a/drivers/media/i2c/imx355.c
++++ b/drivers/media/i2c/imx355.c
+@@ -29,7 +29,11 @@
+ 
+ /* PLL registers that depend on the external clock frequency */
+ #define IMX355_REG_EXTCLK_FREQ		CCI_REG16(0x0136)
++#define IMX355_REG_PLL_OP_PREDIV	CCI_REG8(0x030d)
+ #define IMX355_REG_PLL_OP_MUL		CCI_REG16(0x030e)
++#define IMX355_REG_PLL_IVT_PCK_DIV	CCI_REG8(0x0301)
++#define IMX355_PLL_OP_PREDIV		2
++#define IMX355_PLL_IVT_PCK_DIV		5
+ 
+ /* V_TIMING internal */
+ #define IMX355_REG_FLL			CCI_REG16(0x0340)
+@@ -83,9 +87,6 @@
+ /* Flip Control */
+ #define IMX355_REG_ORIENTATION		CCI_REG8(0x0101)
+ 
+-/* default link frequency and external clock */
+-#define IMX355_LINK_FREQ_DEFAULT	360000000LL
+-
+ /* number of data lanes */
+ #define IMX355_DATA_LANES		4
+ 
+@@ -141,6 +142,7 @@ static const struct imx355_clk_params im
+ };
+ 
+ struct imx355_hwcfg {
++	s64 link_freq_menu;
+ 	unsigned long link_freq_bitmap;
+ };
+ 
+@@ -238,12 +240,12 @@ static const struct cci_reg_sequence imx
+ 	{ CCI_REG8(0x0112), 0x0a },
+ 	{ CCI_REG8(0x0113), 0x0a },
+ 	{ CCI_REG8(0x0114), 0x03 },
+-	{ CCI_REG8(0x0301), 0x05 },
++	{ IMX355_REG_PLL_IVT_PCK_DIV, IMX355_PLL_IVT_PCK_DIV },
+ 	{ CCI_REG8(0x0303), 0x01 },
+-	{ CCI_REG8(0x0305), 0x00 },
++	{ CCI_REG8(0x0305), 0x02 },
+ 	{ CCI_REG8(0x0306), 0x78 },
+ 	{ CCI_REG8(0x0307), 0x02 },
+-	{ CCI_REG8(0x030d), 0x02 },
++	{ IMX355_REG_PLL_OP_PREDIV, IMX355_PLL_OP_PREDIV },
+ 	{ CCI_REG8(0x0310), 0x00 },
+ 	{ CCI_REG8(0x0220), 0x00 },
+ 	{ CCI_REG8(0x0222), 0x01 },
+@@ -337,14 +339,6 @@ static const char * const imx355_test_pa
+ 	"Pseudorandom Sequence (PN9)",
+ };
+ 
+-/*
+- * When adding more than the one below, make sure the disallowed ones will
+- * actually be disabled in the LINK_FREQ control.
+- */
+-static const s64 link_freq_menu_items[] = {
+-	IMX355_LINK_FREQ_DEFAULT,
+-};
+-
+ /* Mode configs */
+ static const struct imx355_mode supported_modes[] = {
+ 	{
+@@ -1080,7 +1074,6 @@ static int imx355_init_controls(struct i
+ 	s64 hblank;
+ 	u64 pixel_rate;
+ 	const struct imx355_mode *mode;
+-	u32 max;
+ 	int ret;
+ 
+ 	ctrl_hdlr = &imx355->ctrl_handler;
+@@ -1089,15 +1082,14 @@ static int imx355_init_controls(struct i
+ 		return ret;
+ 
+ 	ctrl_hdlr->lock = &imx355->mutex;
+-	max = ARRAY_SIZE(link_freq_menu_items) - 1;
+ 	imx355->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr, &imx355_ctrl_ops,
+-						   V4L2_CID_LINK_FREQ, max, 0,
+-						   link_freq_menu_items);
++						   V4L2_CID_LINK_FREQ, 0, 0,
++						   &imx355->hwcfg->link_freq_menu);
+ 	if (imx355->link_freq)
+ 		imx355->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+ 
+ 	/* pixel_rate = link_freq * 2 * nr_of_lanes / bits_per_sample */
+-	pixel_rate = IMX355_LINK_FREQ_DEFAULT * 2 * 4;
++	pixel_rate = imx355->hwcfg->link_freq_menu * 2 * 4;
+ 	do_div(pixel_rate, 10);
+ 	/* By default, PIXEL_RATE is read only */
+ 	v4l2_ctrl_new_std(ctrl_hdlr, &imx355_ctrl_ops, V4L2_CID_PIXEL_RATE,
+@@ -1172,12 +1164,14 @@ error:
+ 	return ret;
+ }
+ 
+-static struct imx355_hwcfg *imx355_get_hwcfg(struct device *dev)
++static struct imx355_hwcfg *imx355_get_hwcfg(struct imx355 *imx355)
+ {
++	struct device *dev = imx355->dev;
+ 	struct imx355_hwcfg *cfg;
+ 	struct v4l2_fwnode_endpoint bus_cfg = {
+ 		.bus_type = V4L2_MBUS_CSI2_DPHY
+ 	};
++	const struct imx355_clk_params *clk = imx355->clk_params;
+ 	struct fwnode_handle *ep;
+ 	struct fwnode_handle *fwnode = dev_fwnode(dev);
+ 	int ret;
+@@ -1200,10 +1194,11 @@ static struct imx355_hwcfg *imx355_get_h
+ 	if (bus_cfg.bus.mipi_csi2.num_data_lanes != IMX355_DATA_LANES)
+ 		goto out_err;
+ 
++	cfg->link_freq_menu = (clk->ext_clk * clk->pll_op_mpy) /
++			      (IMX355_PLL_OP_PREDIV * 2);
+ 	ret = v4l2_link_freq_to_bitmap(dev, bus_cfg.link_frequencies,
+ 				       bus_cfg.nr_of_link_frequencies,
+-				       link_freq_menu_items,
+-				       ARRAY_SIZE(link_freq_menu_items),
++				       &cfg->link_freq_menu, 1,
+ 				       &cfg->link_freq_bitmap);
+ 	if (ret)
+ 		goto out_err;
+@@ -1275,7 +1270,7 @@ static int imx355_probe(struct i2c_clien
+ 	/* Initialize subdev */
+ 	v4l2_i2c_subdev_init(&imx355->sd, client, &imx355_subdev_ops);
+ 
+-	imx355->hwcfg = imx355_get_hwcfg(imx355->dev);
++	imx355->hwcfg = imx355_get_hwcfg(imx355);
+ 	if (!imx355->hwcfg) {
+ 		dev_err(imx355->dev, "failed to get hwcfg");
+ 		ret = -ENODEV;

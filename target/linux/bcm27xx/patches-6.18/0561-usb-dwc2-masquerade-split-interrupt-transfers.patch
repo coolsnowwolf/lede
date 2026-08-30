@@ -1,0 +1,54 @@
+From a63acce3d0d85fb675af901c54648b5286475b72 Mon Sep 17 00:00:00 2001
+From: Jonathan Bell <jonathan@raspberrypi.com>
+Date: Tue, 24 Jun 2025 13:41:32 +0100
+Subject: [PATCH] usb: dwc2: masquerade split-interrupt transfers
+
+Masquerading Interrupt split transfers as Control puts the transfer into
+the non-periodic handler in the hub. This stops the hub dropping
+complete-split data in the microframe after a CSPLIT should have
+arrived, improving resilience to host IRQ latency. Devices are none
+the wiser - the handshake tokens are the same.
+
+Originally devised by Hans Petter Selasky @ FreeBSD.
+
+(v2: dwc2 needs an un-masquerade prior to channel interrupt handling)
+
+Signed-off-by: Jonathan Bell <jonathan@raspberrypi.com>
+---
+ drivers/usb/dwc2/hcd.c      | 12 ++++++++++++
+ drivers/usb/dwc2/hcd_intr.c |  3 +++
+ 2 files changed, 15 insertions(+)
+
+--- a/drivers/usb/dwc2/hcd.c
++++ b/drivers/usb/dwc2/hcd.c
+@@ -676,6 +676,18 @@ static void dwc2_hc_init(struct dwc2_hso
+ 		hcchar |= HCCHAR_EPDIR;
+ 	if (chan->speed == USB_SPEED_LOW)
+ 		hcchar |= HCCHAR_LSPDDEV;
++
++	/*
++	 * Masquerading Interrupt split transfers as Control puts the transfer
++	 * into the non-periodic handler in the hub. This stops the hub
++	 * dropping complete-split data in the microframe after a CSPLIT
++	 * should have arrived, improving resilience to host IRQ latency.
++	 * Devices are none the wiser - the handshake tokens are the same.
++	 * The fakery is undone in dwc2_hc_n_intr().
++	 */
++	if (chan->do_split && chan->ep_type == USB_ENDPOINT_XFER_INT)
++		chan->ep_type = USB_ENDPOINT_XFER_CONTROL;
++
+ 	hcchar |= chan->ep_type << HCCHAR_EPTYPE_SHIFT & HCCHAR_EPTYPE_MASK;
+ 	hcchar |= chan->max_packet << HCCHAR_MPS_SHIFT & HCCHAR_MPS_MASK;
+ 	dwc2_writel(hsotg, hcchar, HCCHAR(hc_num));
+--- a/drivers/usb/dwc2/hcd_intr.c
++++ b/drivers/usb/dwc2/hcd_intr.c
+@@ -2048,6 +2048,9 @@ static void dwc2_hc_n_intr(struct dwc2_h
+ 
+ 	chan->hcint = hcintraw;
+ 
++	/* Un-masquerade the transfer type */
++	if (chan->do_split)
++		chan->ep_type = chan->qh->ep_type;
+ 	/*
+ 	 * If the channel was halted due to a dequeue, the qtd list might
+ 	 * be empty or at least the first entry will not be the active qtd.

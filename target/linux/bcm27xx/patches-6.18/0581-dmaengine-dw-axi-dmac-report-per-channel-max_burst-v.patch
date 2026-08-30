@@ -1,0 +1,51 @@
+From d90854537b05c010bb30b53a43a12b61e7fb3437 Mon Sep 17 00:00:00 2001
+From: Nicolai Buchwitz <nb@tipi-net.de>
+Date: Thu, 21 Aug 2025 21:42:25 +0200
+Subject: [PATCH] dmaengine: dw-axi-dmac: report per-channel max_burst via
+ device_caps
+
+The patch "dmaengine: dw-axi-dmac: add per-channel AXI burst length
+support" programs ARLEN/AWLEN from the snps,axi-max-burst-len array but
+still exposed a single max_burst value via dma_get_slave_caps(). As a
+result all channels reported 8 even when limited to 4, leading to
+warnings:
+
+  dma dma2chan5: requested source burst length 8 exceeds supported 4
+
+Add a .device_caps callback to return the correct per-channel max_burst.
+This allows drivers like amba-pl011 to clamp burst lengths properly.
+
+Fixes: 0e4e6a0c4f4e ("dmaengine: dw-axi-dmac: add per-channel AXI burst length support")
+Signed-off-by: Nicolai Buchwitz <nb@tipi-net.de>
+---
+ drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+--- a/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
++++ b/drivers/dma/dw-axi-dmac/dw-axi-dmac-platform.c
+@@ -1474,6 +1474,16 @@ static int __maybe_unused axi_dma_runtim
+ 	return axi_dma_resume(chip);
+ }
+ 
++static void dw_axi_dma_device_caps(struct dma_chan *dchan,
++				   struct dma_slave_caps *caps)
++{
++	struct axi_dma_chan *chan = dchan_to_axi_dma_chan(dchan);
++	struct dw_axi_dma *dw = chan->chip->dw;
++
++	if (dw->hdata->restrict_axi_burst_len)
++		caps->max_burst = dw->hdata->axi_rw_burst_len[chan->id];
++}
++
+ static bool dw_axi_dma_filter_fn(struct dma_chan *dchan, void *filter_param)
+ {
+ 	struct axi_dma_chan *chan = dchan_to_axi_dma_chan(dchan);
+@@ -1744,7 +1754,7 @@ static int dw_probe(struct platform_devi
+ 	dma_cap_set(DMA_CYCLIC, dw->dma.cap_mask);
+ 
+ 	/* DMA capabilities */
+-	dw->dma.max_burst = hdata->axi_rw_burst_len[0];
++	dw->dma.device_caps = dw_axi_dma_device_caps;
+ 	dw->dma.src_addr_widths = AXI_DMA_BUSWIDTHS;
+ 	dw->dma.dst_addr_widths = AXI_DMA_BUSWIDTHS;
+ 	dw->dma.directions = BIT(DMA_MEM_TO_MEM);

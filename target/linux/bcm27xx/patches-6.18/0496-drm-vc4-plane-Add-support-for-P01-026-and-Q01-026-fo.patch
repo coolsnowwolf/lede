@@ -1,0 +1,123 @@
+From 0c05f090ce883677079336914424641a9a95d4a6 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Tue, 15 Jul 2025 11:57:57 +0100
+Subject: [PATCH] drm/vc4: plane: Add support for P01[026] and Q01[026] formats
+
+There are now formats defined for 2-plane YUV420 at 10, 12,
+and 16 bit depth using the most significant bits of the 16bit
+word (P010, P012, and P016), and 3-plane YUV420 at those
+depths using the least significant bits of the 16 bit word
+(S010, S012, and S016).
+
+VC4_GEN_6 can support all those formats although only composing
+using at most 10bits of resolution, so add them as supported
+formats for all planes.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_plane.c | 54 ++++++++++++++++++++++++++++++---
+ drivers/gpu/drm/vc4/vc4_regs.h  |  9 ++++++
+ 2 files changed, 59 insertions(+), 4 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_plane.c
++++ b/drivers/gpu/drm/vc4/vc4_plane.c
+@@ -36,6 +36,7 @@ static const struct hvs_format {
+ 	u32 pixel_order;
+ 	u32 pixel_order_hvs5;
+ 	bool hvs5_only;
++	bool hvs6_only;
+ } hvs_formats[] = {
+ 	{
+ 		.drm = DRM_FORMAT_XRGB8888,
+@@ -247,6 +248,42 @@ static const struct hvs_format {
+ 		.pixel_order = HVS_PIXEL_ORDER_BGRA,
+ 		.pixel_order_hvs5 = HVS_PIXEL_ORDER_RGBA,
+ 	},
++	{
++		.drm = DRM_FORMAT_P010,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_2PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
++	{
++		.drm = DRM_FORMAT_P012,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_2PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
++	{
++		.drm = DRM_FORMAT_P016,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_2PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
++	{
++		.drm = DRM_FORMAT_S010,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_9_0_3PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
++	{
++		.drm = DRM_FORMAT_S012,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_11_2_3PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
++	{
++		.drm = DRM_FORMAT_S016,
++		.hvs = HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_3PLANE,
++		.pixel_order_hvs5 = HVS_PIXEL_ORDER_XYCBCR,
++		.hvs6_only = true,
++	},
+ };
+ 
+ static const struct hvs_format *vc4_get_hvs_format(u32 drm_format)
+@@ -2638,6 +2675,12 @@ static bool vc4_format_mod_supported(str
+ 	case DRM_FORMAT_YVU420:
+ 	case DRM_FORMAT_NV16:
+ 	case DRM_FORMAT_NV61:
++	case DRM_FORMAT_P010:
++	case DRM_FORMAT_P012:
++	case DRM_FORMAT_P016:
++	case DRM_FORMAT_S010:
++	case DRM_FORMAT_S012:
++	case DRM_FORMAT_S016:
+ 	default:
+ 		return (modifier == DRM_FORMAT_MOD_LINEAR);
+ 	}
+@@ -2672,10 +2715,13 @@ struct drm_plane *vc4_plane_init(struct
+ 	};
+ 
+ 	for (i = 0; i < ARRAY_SIZE(hvs_formats); i++) {
+-		if (!hvs_formats[i].hvs5_only || vc4->gen >= VC4_GEN_5) {
+-			formats[num_formats] = hvs_formats[i].drm;
+-			num_formats++;
+-		}
++		if (hvs_formats[i].hvs5_only && vc4->gen < VC4_GEN_5)
++			continue;
++		if (hvs_formats[i].hvs6_only && vc4->gen < VC4_GEN_6_C)
++			continue;
++
++		formats[num_formats] = hvs_formats[i].drm;
++		num_formats++;
+ 	}
+ 
+ 	vc4_plane = drmm_universal_plane_alloc(dev, struct vc4_plane, base,
+--- a/drivers/gpu/drm/vc4/vc4_regs.h
++++ b/drivers/gpu/drm/vc4/vc4_regs.h
+@@ -1079,6 +1079,15 @@ enum hvs_pixel_format {
+ 	HVS_PIXEL_FORMAT_AYUV444_RGB = 15,
+ 	HVS_PIXEL_FORMAT_RGBA1010102 = 16,
+ 	HVS_PIXEL_FORMAT_YCBCR_10BIT = 17,
++	/* 10 bit YUV420 formats with data with various different alignments */
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_2PLANE = 24,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_15_6_3PLANE = 25,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_13_4_2PLANE = 26,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_13_4_3PLANE = 27,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_11_2_2PLANE = 28,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_11_2_3PLANE = 29,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_9_0_2PLANE = 30,
++	HVS_PIXEL_FORMAT_YCBCR_YUV420_9_0_3PLANE = 31,
+ };
+ 
+ /* Note: the LSB is the rightmost character shown.  Only valid for

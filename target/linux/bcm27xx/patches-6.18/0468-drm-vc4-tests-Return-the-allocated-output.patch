@@ -1,0 +1,230 @@
+From 5c9d10e99e026ef9d460d473e5b86c2223d236ce Mon Sep 17 00:00:00 2001
+From: Maxime Ripard <maxime@cerno.tech>
+Date: Fri, 24 Mar 2023 10:02:59 +0100
+Subject: [PATCH] drm/vc4: tests: Return the allocated output
+
+Some tests will need to retrieve the output that was just allocated by
+vc4_mock_atomic_add_output().
+
+Instead of making them look them up in the DRM device, we can simply
+make vc4_mock_atomic_add_output() return an error pointer that holds the
+allocated output instead of the error code.
+
+Signed-off-by: Maxime Ripard <maxime@cerno.tech>
+---
+ drivers/gpu/drm/vc4/tests/vc4_mock.h          |  7 +--
+ drivers/gpu/drm/vc4/tests/vc4_mock_output.c   |  9 ++--
+ .../gpu/drm/vc4/tests/vc4_test_pv_muxing.c    | 53 ++++++++++---------
+ 3 files changed, 38 insertions(+), 31 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_mock.h
++++ b/drivers/gpu/drm/vc4/tests/vc4_mock.h
+@@ -51,9 +51,10 @@ struct vc4_dummy_output *vc4_dummy_outpu
+ struct vc4_dev *vc4_mock_device(struct kunit *test);
+ struct vc4_dev *vc5_mock_device(struct kunit *test);
+ 
+-int vc4_mock_atomic_add_output(struct kunit *test,
+-			       struct drm_atomic_state *state,
+-			       enum vc4_encoder_type type);
++struct vc4_dummy_output *
++vc4_mock_atomic_add_output(struct kunit *test,
++			   struct drm_atomic_state *state,
++			   enum vc4_encoder_type type);
+ int vc4_mock_atomic_del_output(struct kunit *test,
+ 			       struct drm_atomic_state *state,
+ 			       enum vc4_encoder_type type);
+--- a/drivers/gpu/drm/vc4/tests/vc4_mock_output.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_mock_output.c
+@@ -74,9 +74,10 @@ static const struct drm_display_mode def
+  * EDEADLK, the entire atomic sequence must be restarted. All other
+  * errors are fatal.
+  */
+-int vc4_mock_atomic_add_output(struct kunit *test,
+-			       struct drm_atomic_state *state,
+-			       enum vc4_encoder_type type)
++struct vc4_dummy_output *
++vc4_mock_atomic_add_output(struct kunit *test,
++			   struct drm_atomic_state *state,
++			   enum vc4_encoder_type type)
+ {
+ 	struct drm_device *drm = state->dev;
+ 	struct drm_connector_state *conn_state;
+@@ -115,7 +116,7 @@ int vc4_mock_atomic_add_output(struct ku
+ 
+ 	crtc_state->active = true;
+ 
+-	return 0;
++	return output;
+ }
+ 
+ /**
+--- a/drivers/gpu/drm/vc4/tests/vc4_test_pv_muxing.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_test_pv_muxing.c
+@@ -692,16 +692,17 @@ retry:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 	for (i = 0; i < params->nencoders; i++) {
++		struct vc4_dummy_output *output;
+ 		enum vc4_encoder_type enc_type = params->encoders[i];
+ 
+-		ret = vc4_mock_atomic_add_output(test, state, enc_type);
+-		if (ret == -EDEADLK) {
++		output = vc4_mock_atomic_add_output(test, state, enc_type);
++		if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 			drm_atomic_state_clear(state);
+ 			ret = drm_modeset_backoff(&ctx);
+ 			if (!ret)
+ 				goto retry;
+ 		}
+-		KUNIT_ASSERT_EQ(test, ret, 0);
++		KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 	}
+ 
+ 	ret = drm_atomic_check_only(state);
+@@ -748,16 +749,17 @@ retry:
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+ 	for (i = 0; i < params->nencoders; i++) {
++		struct vc4_dummy_output *output;
+ 		enum vc4_encoder_type enc_type = params->encoders[i];
+ 
+-		ret = vc4_mock_atomic_add_output(test, state, enc_type);
+-		if (ret == -EDEADLK) {
++		output = vc4_mock_atomic_add_output(test, state, enc_type);
++		if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 			drm_atomic_state_clear(state);
+ 			ret = drm_modeset_backoff(&ctx);
+ 			if (!ret)
+ 				goto retry;
+ 		}
+-		KUNIT_ASSERT_EQ(test, ret, 0);
++		KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 	}
+ 
+ 	ret = drm_atomic_check_only(state);
+@@ -827,6 +829,7 @@ static void drm_test_vc5_pv_muxing_bugs_
+ {
+ 	struct drm_modeset_acquire_ctx ctx;
+ 	struct drm_atomic_state *state;
++	struct vc4_dummy_output *output;
+ 	struct vc4_crtc_state *new_vc4_crtc_state;
+ 	struct vc4_hvs_state *new_hvs_state;
+ 	unsigned int hdmi0_channel;
+@@ -845,14 +848,14 @@ retry_first:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_first;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+ 	ret = drm_atomic_check_only(state);
+ 	if (ret == -EDEADLK) {
+@@ -881,14 +884,14 @@ retry_second:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_second;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+ 	ret = drm_atomic_check_only(state);
+ 	if (ret == -EDEADLK) {
+@@ -927,6 +930,7 @@ static void drm_test_vc5_pv_muxing_bugs_
+ {
+ 	struct drm_modeset_acquire_ctx ctx;
+ 	struct drm_atomic_state *state;
++	struct vc4_dummy_output *output;
+ 	struct vc4_crtc_state *new_vc4_crtc_state;
+ 	struct vc4_hvs_state *new_hvs_state;
+ 	unsigned int old_hdmi0_channel;
+@@ -945,23 +949,23 @@ retry_first:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_first;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_first;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+ 	ret = drm_atomic_check_only(state);
+ 	if (ret == -EDEADLK) {
+@@ -1056,6 +1060,7 @@ drm_test_vc5_pv_muxing_bugs_subsequent_c
+ {
+ 	struct drm_modeset_acquire_ctx ctx;
+ 	struct drm_atomic_state *state;
++	struct vc4_dummy_output *output;
+ 	struct vc4_crtc_state *new_vc4_crtc_state;
+ 	struct drm_device *drm;
+ 	struct vc4_dev *vc4;
+@@ -1071,14 +1076,14 @@ retry_first:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI0);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_first;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+ 	ret = drm_atomic_check_only(state);
+ 	if (ret == -EDEADLK) {
+@@ -1095,14 +1100,14 @@ retry_second:
+ 	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+ 
+-	ret = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
+-	if (ret == -EDEADLK) {
++	output = vc4_mock_atomic_add_output(test, state, VC4_ENCODER_TYPE_HDMI1);
++	if (IS_ERR(output) && PTR_ERR(output) == -EDEADLK) {
+ 		drm_atomic_state_clear(state);
+ 		ret = drm_modeset_backoff(&ctx);
+ 		if (!ret)
+ 			goto retry_second;
+ 	}
+-	KUNIT_ASSERT_EQ(test, ret, 0);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, output);
+ 
+ 	ret = drm_atomic_check_only(state);
+ 	if (ret == -EDEADLK) {

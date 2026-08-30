@@ -1,0 +1,87 @@
+From 819ab0f5350dceb5af283a02544515ac31190134 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 28 Apr 2025 17:17:33 +0100
+Subject: [PATCH] drm/vc4: tests: Fix up vc4_test_lbm_size
+
+Following the example of [1], move the state allocation out of the init
+function to make it thread safe.
+
+[1] commit 7e0351ae91ed ("drm/vc4: tests: Stop allocating the state in
+test init")
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c | 24 ++++++++++---------
+ 1 file changed, 13 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
++++ b/drivers/gpu/drm/vc4/tests/vc4_test_lbm_size.c
+@@ -23,7 +23,6 @@ struct vc4_lbm_size_priv {
+ 	struct vc4_dev *vc4;
+ 	struct drm_file *file;
+ 	struct drm_modeset_acquire_ctx ctx;
+-	struct drm_atomic_state *state;
+ };
+ 
+ struct vc4_lbm_size_param {
+@@ -181,16 +180,25 @@ static void drm_vc4_test_vc4_lbm_size(st
+ 	const struct vc4_lbm_size_priv *priv = test->priv;
+ 	const struct drm_format_info *info;
+ 	struct drm_mode_fb_cmd2 fb_req = { };
+-	struct drm_atomic_state *state = priv->state;
+ 	struct vc4_plane_state *vc4_plane_state;
+ 	struct drm_plane_state *plane_state;
++	struct drm_modeset_acquire_ctx ctx;
+ 	struct vc4_dummy_output *output;
++	struct drm_atomic_state *state;
+ 	struct drm_framebuffer *fb;
+ 	struct drm_plane *plane;
++	struct drm_device *drm;
+ 	struct drm_crtc *crtc;
+ 	unsigned int i;
+ 	int ret;
+ 
++	drm_modeset_acquire_init(&ctx, 0);
++
++	vc4 = priv->vc4;
++	drm = &vc4->base;
++	state = drm_kunit_helper_atomic_state_alloc(test, drm, &ctx);
++	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
++
+ 	info = drm_format_info(params->fourcc);
+ 	KUNIT_ASSERT_NOT_NULL(test, info);
+ 
+@@ -263,6 +271,9 @@ static void drm_vc4_test_vc4_lbm_size(st
+ 
+ 	for (i = 0; i < info->num_planes; i++)
+ 		drm_mode_destroy_dumb(state->dev, fb_req.handles[i], priv->file);
++
++	drm_modeset_drop_locks(&ctx);
++	drm_modeset_acquire_fini(&ctx);
+ }
+ 
+ static struct kunit_case vc4_lbm_size_tests[] = {
+@@ -273,9 +284,7 @@ static struct kunit_case vc4_lbm_size_te
+ 
+ static int vc4_lbm_size_test_init(struct kunit *test)
+ {
+-	struct drm_modeset_acquire_ctx *ctx;
+ 	struct vc4_lbm_size_priv *priv;
+-	struct drm_device *drm;
+ 	struct vc4_dev *vc4;
+ 
+ 	priv = kunit_kzalloc(test, sizeof(*priv), GFP_KERNEL);
+@@ -289,13 +298,6 @@ static int vc4_lbm_size_test_init(struct
+ 	priv->file = drm_file_alloc(priv->vc4->base.primary);
+ 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, priv->file);
+ 
+-	ctx = drm_kunit_helper_acquire_ctx_alloc(test);
+-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ctx);
+-
+-	drm = &vc4->base;
+-	priv->state = drm_kunit_helper_atomic_state_alloc(test, drm, ctx);
+-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, priv->state);
+-
+ 	return 0;
+ }
+ 

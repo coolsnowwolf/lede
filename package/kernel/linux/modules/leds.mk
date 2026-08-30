@@ -68,6 +68,22 @@ endef
 $(eval $(call KernelPackage,ledtrig-gpio))
 
 
+define KernelPackage/ledtrig-network
+  SUBMENU:=$(LEDS_MENU)
+  TITLE:=LED Network Trigger
+  KCONFIG:=CONFIG_LEDS_TRIGGER_NETWORK
+  FILES:=$(LED_TRIGGER_DIR)/ledtrig-network.ko
+  AUTOLOAD:=$(call AutoLoad,50,ledtrig-network)
+endef
+
+define KernelPackage/ledtrig-network/description
+ Kernel module that allows LEDs to be controlled by network interfaces
+ aggregated by family (lan/wan/wlan), with an optional per-LED '-online' mode.
+endef
+
+$(eval $(call KernelPackage,ledtrig-network))
+
+
 define KernelPackage/ledtrig-transient
   SUBMENU:=$(LEDS_MENU)
   TITLE:=LED Transient Trigger

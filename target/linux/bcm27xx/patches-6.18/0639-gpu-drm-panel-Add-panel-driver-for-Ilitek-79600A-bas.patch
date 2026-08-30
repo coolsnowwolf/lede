@@ -1,0 +1,512 @@
+From 683d78f201122488feb5055e04d53d5efcb6eaff Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Mon, 1 Sep 2025 16:36:28 +0100
+Subject: [PATCH] gpu/drm: panel: Add panel driver for Ilitek 79600A based
+ panels
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/panel/Kconfig                 |   9 +
+ drivers/gpu/drm/panel/Makefile                |   1 +
+ .../gpu/drm/panel/panel-ilitek-ili79600a.c    | 467 ++++++++++++++++++
+ 3 files changed, 477 insertions(+)
+ create mode 100644 drivers/gpu/drm/panel/panel-ilitek-ili79600a.c
+
+--- a/drivers/gpu/drm/panel/Kconfig
++++ b/drivers/gpu/drm/panel/Kconfig
+@@ -228,6 +228,15 @@ config DRM_PANEL_HYDIS_HV101HD1
+ 
+ 	  If M is selected the module will be called panel-hydis-hv101hd1
+ 
++config DRM_PANEL_ILITEK_IL79600A
++	tristate "Ilitek ILI79960A-based panels"
++	depends on OF
++	depends on DRM_MIPI_DSI
++	depends on BACKLIGHT_CLASS_DEVICE
++	help
++	  Say Y if you want to enable support for panels based on the
++	  Ilitek ILI79960A controller.
++
+ config DRM_PANEL_ILITEK_IL9322
+ 	tristate "Ilitek ILI9322 320x240 QVGA panels"
+ 	depends on OF && SPI
+--- a/drivers/gpu/drm/panel/Makefile
++++ b/drivers/gpu/drm/panel/Makefile
+@@ -23,6 +23,7 @@ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83112A) +
+ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83112B) += panel-himax-hx83112b.o
+ obj-$(CONFIG_DRM_PANEL_HIMAX_HX8394) += panel-himax-hx8394.o
+ obj-$(CONFIG_DRM_PANEL_HYDIS_HV101HD1) += panel-hydis-hv101hd1.o
++obj-$(CONFIG_DRM_PANEL_ILITEK_IL79600A) += panel-ilitek-ili79600a.o
+ obj-$(CONFIG_DRM_PANEL_ILITEK_IL9322) += panel-ilitek-ili9322.o
+ obj-$(CONFIG_DRM_PANEL_ILITEK_ILI9341) += panel-ilitek-ili9341.o
+ obj-$(CONFIG_DRM_PANEL_ILITEK_ILI9805) += panel-ilitek-ili9805.o
+--- /dev/null
++++ b/drivers/gpu/drm/panel/panel-ilitek-ili79600a.c
+@@ -0,0 +1,467 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Copyright (C) 2025, Raspberry Pi
++ */
++
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/err.h>
++#include <linux/errno.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/of.h>
++
++#include <linux/gpio/consumer.h>
++#include <linux/regulator/consumer.h>
++
++#include <drm/drm_mipi_dsi.h>
++#include <drm/drm_modes.h>
++#include <drm/drm_panel.h>
++
++#include <video/mipi_display.h>
++
++struct ili79600a;
++
++struct ili79600a_desc {
++	int (*init)(struct ili79600a *ili);
++	const struct drm_display_mode *mode;
++	const unsigned long mode_flags;
++	unsigned int lanes;
++};
++
++struct ili79600a {
++	struct drm_panel	panel;
++	struct mipi_dsi_device	*dsi;
++	const struct ili79600a_desc	*desc;
++
++	struct regulator	*power;
++	struct gpio_desc	*reset;
++
++	enum drm_panel_orientation	orientation;
++};
++
++static inline struct ili79600a *panel_to_ili79600a(struct drm_panel *panel)
++{
++	return container_of(panel, struct ili79600a, panel);
++}
++
++/*
++ * The panel seems to accept some private DCS commands that map
++ * directly to registers.
++ *
++ * It is organised by page, with each page having its own set of
++ * registers, and the first page looks like it's holding the standard
++ * DCS commands.
++ *
++ * So before any attempt at sending a command or data, we have to be
++ * sure if we're in the right page or not.
++ */
++#define ILI79600A_DCS_SWITCH_PAGE	0xFF
++#define ili79600a_switch_page(ctx, page) \
++	mipi_dsi_dcs_write_seq_multi(ctx, ILI79600A_DCS_SWITCH_PAGE, \
++				     0x5A, 0xA5, (page))
++
++static int rpi_10_1_inch_init(struct ili79600a *ili)
++{
++	struct mipi_dsi_multi_context ctx = { .dsi = ili->dsi };
++
++	ili79600a_switch_page(&ctx, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x00, 0x42);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x01, 0x11);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x02, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x03, 0x00);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x04, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x05, 0x11);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x06, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x07, 0x00);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x08, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x09, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0a, 0x71);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0c, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0e, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0d, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0f, 0x00);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x30, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x31, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x32, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x33, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x34, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x35, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x36, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x37, 0x28);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x38, 0x29);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x39, 0x11);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3A, 0x13);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3B, 0x15);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3C, 0x17);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3D, 0x09);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3E, 0x0D);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3F, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x40, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x41, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x42, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x43, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x44, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x45, 0x02);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x48, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x49, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4A, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4B, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4C, 0x07);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4D, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4E, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4F, 0x28);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x50, 0x29);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x51, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x52, 0x12);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x53, 0x14);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x54, 0x16);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x55, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x56, 0x0C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x57, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x58, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x59, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5A, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5B, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5C, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5D, 0x02);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x2C, 0xB0);
++
++	ili79600a_switch_page(&ctx, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x07, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x06, 0xD2);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x53, 0x1F);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5E, 0x40);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x84, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x29, 0x3A);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x2A, 0x3B);
++
++	ili79600a_switch_page(&ctx, 0x03);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x20, 0x01);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x21, 0x3C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x22, 0xFA);
++
++	ili79600a_switch_page(&ctx, 0x12);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x87, 0x2C);
++
++	ili79600a_switch_page(&ctx, 0x05);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x61, 0x8F);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x6D, 0xBB);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x5A, 0x7C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x67, 0x7C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x54, 0x92);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x55, 0x92);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x40, 0xD2);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x46, 0x70);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x30, 0x47);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x7A, 0x89);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xA4, 0x0B);
++
++	ili79600a_switch_page(&ctx, 0x06);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xC0, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xC1, 0x7);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xCA, 0x58);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xCB, 0x2);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xCE, 0x58);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xCF, 0x2);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x10, 0x0);
++
++	ili79600a_switch_page(&ctx, 0x0b);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x76, 0x55);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x78, 0x68);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x77, 0x0D);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x79, 0x60);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x7A, 0x10);
++
++	ili79600a_switch_page(&ctx, 0x08);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xE0, 0x00, 0x1E, 0x3F, 0x68, 0x7D,
++				     0x72, 0x86, 0x89, 0x92, 0x8E, 0xA5, 0xA8,
++				     0xAA, 0xBD, 0xB8, 0xBE, 0xC5, 0xD6, 0xCD,
++				     0xC3, 0xDA, 0xEB, 0xED);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xE1, 0x00, 0x1E, 0x3F, 0x68, 0x7D,
++				     0x72, 0x86, 0x89, 0x92, 0x8E, 0xA5, 0xA8,
++				     0xAA, 0xBD, 0xB8, 0xBE, 0xC5, 0xD6, 0xCD,
++				     0xC3, 0xDA, 0xEB, 0xED);
++
++	ili79600a_switch_page(&ctx, 0x14);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x85, 0xCC);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x87, 0x91);
++
++	ili79600a_switch_page(&ctx, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x11, 0x3);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x12, 0x34);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x10, 0x1);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x13, 0x4);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x14, 0xBB);
++
++	ili79600a_switch_page(&ctx, 0x0b);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x94, 0x88);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x95, 0x23);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x96, 0x0B);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x97, 0x0B);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x98, 0xC6);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x99, 0xC6);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xA6, 0x47);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xA7, 0x77);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xA8, 0x5);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xA9, 0x5);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xAA, 0xBA);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xAB, 0xBA);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xBD, 0x92);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0xBE, 0xE0);
++
++	ili79600a_switch_page(&ctx, 0x0e);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x14, 0x3);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x12, 0x0);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x13, 0x4);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x11, 0x1);
++
++	ili79600a_switch_page(&ctx, 0x02);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x80, 0x11);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x82, 0x11);
++	ili79600a_switch_page(&ctx, 0x12);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x82, 0x2C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x85, 0x2C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x87, 0x2C);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x88, 0xEC);
++	ili79600a_switch_page(&ctx, 0x10);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x4, 0x1);
++	ili79600a_switch_page(&ctx, 0x11);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0C, 0x80);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x3C, 0x80);
++
++	ili79600a_switch_page(&ctx, 0x06);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0E, 0x0);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x0E, 0x3F);
++	mipi_dsi_dcs_write_seq_multi(&ctx, 0x10, 0x0);
++
++	ili79600a_switch_page(&ctx, 0x00);
++	mipi_dsi_dcs_write_seq_multi(&ctx, MIPI_DCS_SET_TEAR_ON, 0x0);
++
++	return ctx.accum_err;
++};
++
++static int ili79600a_prepare(struct drm_panel *panel)
++{
++	struct ili79600a *ili = panel_to_ili79600a(panel);
++	struct mipi_dsi_multi_context ctx = { .dsi = ili->dsi };
++	ktime_t reset_time, end;
++	s64 remaining;
++	int ret;
++
++	/* Power the panel */
++	ret = regulator_enable(ili->power);
++	if (ret)
++		return ret;
++	fsleep(20);
++
++	/* And reset it */
++	gpiod_set_value_cansleep(ili->reset, 1);
++	fsleep(20);
++
++	gpiod_set_value_cansleep(ili->reset, 0);
++	fsleep(20);
++
++	/* Software reset */
++	ili79600a_switch_page(&ctx, 0x00);
++
++	reset_time = ktime_get();
++	mipi_dsi_dcs_write(ili->dsi, MIPI_DCS_SOFT_RESET, NULL, 0);
++	/* Must wait 5ms from releasing RESX or s/w reset) before sending other
++	 * commands.
++	 */
++	fsleep(5);
++
++	ret = ili->desc->init(ili);
++	if (ret < 0)
++		return ret;
++
++	/* Minimum 120ms between exiting reset and EXIT_SLEEP_MODE */
++	end = ktime_add_us(reset_time, 120000);
++	remaining = ktime_us_delta(end, ktime_get());
++
++	if (remaining > 0)
++		usleep_range(remaining, remaining + 1000);
++
++	mipi_dsi_dcs_write_seq_multi(&ctx, MIPI_DCS_EXIT_SLEEP_MODE, 0x0);
++	mipi_dsi_msleep(&ctx, 100);
++
++	if (ctx.accum_err)
++		return ctx.accum_err;
++
++	ret = mipi_dsi_dcs_set_display_on(ili->dsi);
++
++	return ret;
++}
++
++static int ili79600a_unprepare(struct drm_panel *panel)
++{
++	struct ili79600a *ctx = panel_to_ili79600a(panel);
++
++	mipi_dsi_dcs_set_display_off(ctx->dsi);
++	mipi_dsi_dcs_enter_sleep_mode(ctx->dsi);
++
++	regulator_disable(ctx->power);
++	gpiod_set_value_cansleep(ctx->reset, 1);
++
++	return 0;
++}
++
++static const struct drm_display_mode rpi_10_1_inch_default_mode = {
++	.clock = 166666,
++
++	.hdisplay	= 1200,
++	.hsync_start	= 1200 + 28,
++	.hsync_end	= 1200 + 28 + 10,
++	.htotal		= 1200 + 28 + 10 + 30,
++
++	.vdisplay	= 1920,
++	.vsync_start	= 1920 + 238,
++	.vsync_end	= 1920 + 238 + 4,
++	.vtotal		= 1920 + 238 + 4 + 28,
++
++	.width_mm	= 135,
++	.height_mm	= 216,
++};
++
++static int ili79600a_get_modes(struct drm_panel *panel,
++			       struct drm_connector *connector)
++{
++	struct ili79600a *ctx = panel_to_ili79600a(panel);
++	struct drm_display_mode *mode;
++
++	mode = drm_mode_duplicate(connector->dev, ctx->desc->mode);
++	if (!mode) {
++		dev_err(&ctx->dsi->dev, "failed to add mode %ux%ux@%u\n",
++			ctx->desc->mode->hdisplay,
++			ctx->desc->mode->vdisplay,
++			drm_mode_vrefresh(ctx->desc->mode));
++		return -ENOMEM;
++	}
++
++	drm_mode_set_name(mode);
++
++	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
++	drm_mode_probed_add(connector, mode);
++
++	connector->display_info.width_mm = mode->width_mm;
++	connector->display_info.height_mm = mode->height_mm;
++
++	/*
++	 * TODO: Remove once all drm drivers call
++	 * drm_connector_set_orientation_from_panel()
++	 */
++	drm_connector_set_panel_orientation(connector, ctx->orientation);
++
++	return 1;
++}
++
++static enum drm_panel_orientation ili79600a_get_orientation(struct drm_panel *panel)
++{
++	struct ili79600a *ctx = panel_to_ili79600a(panel);
++
++	return ctx->orientation;
++}
++
++static const struct drm_panel_funcs ili79600a_funcs = {
++	.prepare	= ili79600a_prepare,
++	.unprepare	= ili79600a_unprepare,
++	.get_modes	= ili79600a_get_modes,
++	.get_orientation = ili79600a_get_orientation,
++};
++
++static int ili79600a_dsi_probe(struct mipi_dsi_device *dsi)
++{
++	struct ili79600a *ctx;
++	int ret;
++
++	ctx = devm_kzalloc(&dsi->dev, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	mipi_dsi_set_drvdata(dsi, ctx);
++	ctx->dsi = dsi;
++	ctx->desc = of_device_get_match_data(&dsi->dev);
++
++	ctx->panel.prepare_prev_first = true;
++	drm_panel_init(&ctx->panel, &dsi->dev, &ili79600a_funcs,
++		       DRM_MODE_CONNECTOR_DSI);
++
++	ctx->power = devm_regulator_get(&dsi->dev, "power");
++	if (IS_ERR(ctx->power))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->power),
++				     "Couldn't get our power regulator\n");
++
++	ctx->reset = devm_gpiod_get_optional(&dsi->dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(ctx->reset))
++		return dev_err_probe(&dsi->dev, PTR_ERR(ctx->reset),
++				     "Couldn't get our reset GPIO\n");
++
++	ret = of_drm_get_panel_orientation(dsi->dev.of_node, &ctx->orientation);
++	if (ret) {
++		dev_err(&dsi->dev, "%pOF: failed to get orientation: %d\n",
++			dsi->dev.of_node, ret);
++		return ret;
++	}
++
++	ctx->panel.prepare_prev_first = true;
++
++	ret = drm_panel_of_backlight(&ctx->panel);
++	if (ret)
++		return ret;
++
++	drm_panel_add(&ctx->panel);
++
++	dsi->mode_flags = ctx->desc->mode_flags;
++	dsi->format = MIPI_DSI_FMT_RGB888;
++	dsi->lanes = ctx->desc->lanes;
++
++	ret = mipi_dsi_attach(dsi);
++	if (ret)
++		drm_panel_remove(&ctx->panel);
++
++	return ret;
++}
++
++static void ili79600a_dsi_remove(struct mipi_dsi_device *dsi)
++{
++	struct ili79600a *ctx = mipi_dsi_get_drvdata(dsi);
++
++	mipi_dsi_detach(dsi);
++	drm_panel_remove(&ctx->panel);
++
++	gpiod_set_value_cansleep(ctx->reset, 1);
++	regulator_disable(ctx->power);
++}
++
++static const struct ili79600a_desc rpi_10_1_inch_desc = {
++	.init = rpi_10_1_inch_init,
++	.mode = &rpi_10_1_inch_default_mode,
++	.mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE,
++	.lanes = 4,
++};
++
++static const struct of_device_id ili79600a_of_match[] = {
++	{ .compatible = "raspberrypi,dsi-10-1inch", &rpi_10_1_inch_desc },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ili79600a_of_match);
++
++static struct mipi_dsi_driver ili79600a_dsi_driver = {
++	.probe	= ili79600a_dsi_probe,
++	.remove	= ili79600a_dsi_remove,
++	.driver = {
++		.name		= "ili79600a-dsi",
++		.of_match_table	= ili79600a_of_match,
++	},
++};
++module_mipi_dsi_driver(ili79600a_dsi_driver);
++
++MODULE_AUTHOR("Dave Stevenson <dave.stevenson@raspberrypi.com>");
++MODULE_DESCRIPTION("Ilitek ILI79600a Controller Driver");
++MODULE_LICENSE("GPL");

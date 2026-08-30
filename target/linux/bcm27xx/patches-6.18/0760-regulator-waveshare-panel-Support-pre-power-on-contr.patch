@@ -1,0 +1,64 @@
+From 0ec11e333fe7c4295f61b34d0451294b3eead1a7 Mon Sep 17 00:00:00 2001
+From: Waveshare_Team <support@waveshare.com>
+Date: Mon, 13 Apr 2026 11:24:56 +0800
+Subject: [PATCH] regulator: waveshare-panel: Support pre-power-on control
+
+Some Waveshare DSI touch panels (e.g. the 8.8-DSI-TOUCH-A) need extra rails
+on the on-board display MCU enabled before the panel itself starts
+powering up, and require a longer settle time for those rails to come
+up cleanly. The selection is made from device tree via the new
+"pre-power-on" boolean property on the regulator's I2C node (asserted
+by the matching overlay override).
+
+When "pre-power-on" is present:
+  - OR BIT(4) | BIT(1) | BIT(0) into the initial poweron_state, so the
+    additional MCU rails are turned on together with VCC.
+  - Wait 200 ms after writing REG_TP / REG_LCD so the rails fully
+    stabilise before the panel/touch are accessed.
+
+When the property is absent the driver behaves exactly as before:
+poweron_state stays at BIT(9) | BIT(8) and the post-write delay
+remains 20 ms.
+
+Documented in the overlay README alongside the 8_8_inch_a parameter.
+
+Signed-off-by: Waveshare_Team <support@waveshare.com>
+---
+ drivers/regulator/waveshare-panel-regulator.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+--- a/drivers/regulator/waveshare-panel-regulator.c
++++ b/drivers/regulator/waveshare-panel-regulator.c
+@@ -207,6 +207,7 @@ static int waveshare_panel_i2c_probe(str
+ 	struct waveshare_panel_lcd *state;
+ 	struct regmap *regmap;
+ 	unsigned int data;
++	bool pre_power_on;
+ 	int ret;
+ 
+ 	state = devm_kzalloc(&i2c->dev, sizeof(*state), GFP_KERNEL);
+@@ -226,6 +227,8 @@ static int waveshare_panel_i2c_probe(str
+ 		goto error;
+ 	}
+ 
++	pre_power_on = device_property_read_bool(&i2c->dev, "pre-power-on");
++
+ 	ret = waveshare_panel_i2c_read(i2c, REG_ID, &data);
+ 	if (ret == 0)
+ 		dev_info(&i2c->dev, "waveshare panel hw id = 0x%x\n", data);
+@@ -241,9 +244,14 @@ static int waveshare_panel_i2c_probe(str
+ 
+ 	state->direction_state = 0;
+ 	state->poweron_state = BIT(9) | BIT(8); // Enable VCC
++	if (pre_power_on)
++		state->poweron_state |= BIT(4) | BIT(1) | BIT(0);
+ 	regmap_write(regmap, REG_TP, state->poweron_state >> 8);
+ 	regmap_write(regmap, REG_LCD, state->poweron_state & 0xff);
+-	msleep(20);
++	if (pre_power_on)
++		msleep(200);
++	else
++		msleep(20);
+ 
+ 	state->regmap = regmap;
+ 	state->gc.parent = &i2c->dev;

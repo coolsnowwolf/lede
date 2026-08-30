@@ -1,0 +1,535 @@
+From 8a87e9a489876142c93bf7c6b50090619cdecc03 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mcanal@igalia.com>
+Date: Sun, 27 Jul 2025 19:54:35 -0300
+Subject: [PATCH] [BACKPORTED] drm/v3d: Introduce Runtime Power Management
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Commit 90a64adb0876 ("drm/v3d: Get rid of pm code") removed the last
+bits of power management code that V3D had, which were actually never
+hooked. Therefore, currently, the GPU clock is enabled during probe
+and only disabled when removing the driver.
+
+Implement proper power management using the kernel's Runtime PM
+framework.
+
+Signed-off-by: Maíra Canal <mcanal@igalia.com>
+---
+ drivers/gpu/drm/v3d/Makefile      |  3 +-
+ drivers/gpu/drm/v3d/v3d_debugfs.c | 23 ++++++++-
+ drivers/gpu/drm/v3d/v3d_drv.c     | 84 ++++++++++++++-----------------
+ drivers/gpu/drm/v3d/v3d_drv.h     | 17 +++++++
+ drivers/gpu/drm/v3d/v3d_mmu.c     | 10 +++-
+ drivers/gpu/drm/v3d/v3d_perfmon.c | 18 +++++--
+ drivers/gpu/drm/v3d/v3d_power.c   | 83 ++++++++++++++++++++++++++++++
+ drivers/gpu/drm/v3d/v3d_submit.c  | 19 +++++--
+ 8 files changed, 198 insertions(+), 59 deletions(-)
+ create mode 100644 drivers/gpu/drm/v3d/v3d_power.c
+
+--- a/drivers/gpu/drm/v3d/Makefile
++++ b/drivers/gpu/drm/v3d/Makefile
+@@ -14,7 +14,8 @@ v3d-y := \
+ 	v3d_sched.o \
+ 	v3d_sysfs.o \
+ 	v3d_submit.o \
+-	v3d_gemfs.o
++	v3d_gemfs.o \
++	v3d_power.o
+ 
+ v3d-$(CONFIG_DEBUG_FS) += v3d_debugfs.o
+ 
+--- a/drivers/gpu/drm/v3d/v3d_debugfs.c
++++ b/drivers/gpu/drm/v3d/v3d_debugfs.c
+@@ -96,7 +96,11 @@ static int v3d_v3d_debugfs_regs(struct s
+ 	struct drm_debugfs_entry *entry = m->private;
+ 	struct drm_device *dev = entry->dev;
+ 	struct v3d_dev *v3d = to_v3d_dev(dev);
+-	int i, core;
++	int i, core, ret;
++
++	ret = v3d_pm_runtime_get(v3d);
++	if (ret)
++		return ret;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(v3d_hub_reg_defs); i++) {
+ 		const struct v3d_reg_def *def = &v3d_hub_reg_defs[i];
+@@ -138,6 +142,8 @@ static int v3d_v3d_debugfs_regs(struct s
+ 		}
+ 	}
+ 
++	v3d_pm_runtime_put(v3d);
++
+ 	return 0;
+ }
+ 
+@@ -147,7 +153,11 @@ static int v3d_v3d_debugfs_ident(struct
+ 	struct drm_device *dev = entry->dev;
+ 	struct v3d_dev *v3d = to_v3d_dev(dev);
+ 	u32 ident0, ident1, ident2, ident3, cores;
+-	int core;
++	int core, ret;
++
++	ret = v3d_pm_runtime_get(v3d);
++	if (ret)
++		return ret;
+ 
+ 	ident0 = V3D_READ(V3D_HUB_IDENT0);
+ 	ident1 = V3D_READ(V3D_HUB_IDENT1);
+@@ -206,6 +216,8 @@ static int v3d_v3d_debugfs_ident(struct
+ 		}
+ 	}
+ 
++	v3d_pm_runtime_put(v3d);
++
+ 	return 0;
+ }
+ 
+@@ -233,6 +245,11 @@ static int v3d_measure_clock(struct seq_
+ 	uint32_t cycles;
+ 	int core = 0;
+ 	int measure_ms = 1000;
++	int ret;
++
++	ret = v3d_pm_runtime_get(v3d);
++	if (ret)
++		return ret;
+ 
+ 	if (v3d->ver >= V3D_GEN_41) {
+ 		int cycle_count_reg = V3D_PCTR_CYCLE_COUNT(v3d->ver);
+@@ -252,6 +269,8 @@ static int v3d_measure_clock(struct seq_
+ 	msleep(measure_ms);
+ 	cycles = V3D_CORE_READ(core, V3D_PCTR_0_PCTR0);
+ 
++	v3d_pm_runtime_put(v3d);
++
+ 	seq_printf(m, "cycles: %d (%d.%d Mhz)\n",
+ 		   cycles,
+ 		   cycles / (measure_ms * 1000),
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -63,6 +63,7 @@ static int v3d_get_param_ioctl(struct dr
+ 		[DRM_V3D_PARAM_V3D_CORE0_IDENT1] = V3D_CTL_IDENT1,
+ 		[DRM_V3D_PARAM_V3D_CORE0_IDENT2] = V3D_CTL_IDENT2,
+ 	};
++	int ret;
+ 
+ 	if (args->pad != 0)
+ 		return -EINVAL;
+@@ -79,12 +80,19 @@ static int v3d_get_param_ioctl(struct dr
+ 		if (args->value != 0)
+ 			return -EINVAL;
+ 
++		ret = v3d_pm_runtime_get(v3d);
++		if (ret)
++			return ret;
++
+ 		if (args->param >= DRM_V3D_PARAM_V3D_CORE0_IDENT0 &&
+ 		    args->param <= DRM_V3D_PARAM_V3D_CORE0_IDENT2) {
+ 			args->value = V3D_CORE_READ(0, offset);
+ 		} else {
+ 			args->value = V3D_READ(offset);
+ 		}
++
++		v3d_pm_runtime_put(v3d);
++
+ 		return 0;
+ 	}
+ 
+@@ -299,36 +307,6 @@ static const struct of_device_id v3d_of_
+ };
+ MODULE_DEVICE_TABLE(of, v3d_of_match);
+ 
+-static void
+-v3d_idle_sms(struct v3d_dev *v3d)
+-{
+-	if (v3d->ver < V3D_GEN_71)
+-		return;
+-
+-	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_CLEAR_POWER_OFF);
+-
+-	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
+-				    V3D_SMS_STATE) == V3D_SMS_IDLE), 100)) {
+-		DRM_ERROR("Failed to power up SMS\n");
+-	}
+-
+-	v3d_reset_sms(v3d);
+-}
+-
+-static void
+-v3d_power_off_sms(struct v3d_dev *v3d)
+-{
+-	if (v3d->ver < V3D_GEN_71)
+-		return;
+-
+-	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_POWER_OFF);
+-
+-	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
+-				    V3D_SMS_STATE) == V3D_SMS_POWER_OFF_STATE), 100)) {
+-		DRM_ERROR("Failed to power off SMS\n");
+-	}
+-}
+-
+ static int
+ map_regs(struct v3d_dev *v3d, void __iomem **regs, const char *name)
+ {
+@@ -412,19 +390,26 @@ static int v3d_platform_drm_probe(struct
+ 	if (ret)
+ 		goto dma_free;
+ 
+-	ret = clk_prepare_enable(v3d->clk);
+-	if (ret) {
+-		dev_err(&pdev->dev, "Couldn't enable the V3D clock\n");
++	ret = devm_pm_runtime_enable(dev);
++	if (ret)
+ 		goto gem_destroy;
+-	}
+ 
+-	v3d_idle_sms(v3d);
++	ret = pm_runtime_resume_and_get(dev);
++	if (ret)
++		goto gem_destroy;
++
++	/* If PM is disabled, we need to call v3d_power_resume() manually. */
++	if (!IS_ENABLED(CONFIG_PM)) {
++		ret = v3d_power_resume(dev);
++		if (ret)
++			goto gem_destroy;
++	}
+ 
+ 	mmu_debug = V3D_READ(V3D_MMU_DEBUG_INFO);
+ 	mask = DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH));
+ 	ret = dma_set_mask_and_coherent(dev, mask);
+ 	if (ret)
+-		goto clk_disable;
++		goto runtime_pm_put;
+ 
+ 	dma_set_max_seg_size(&pdev->dev, UINT_MAX);
+ 
+@@ -445,26 +430,27 @@ static int v3d_platform_drm_probe(struct
+ 	v3d->rev = V3D_GET_FIELD(ident3, V3D_HUB_IDENT3_IPREV);
+ 
+ 	v3d_init_hw_state(v3d);
+-	v3d_mmu_set_page_table(v3d);
+-	v3d_irq_enable(v3d);
++
++	pm_runtime_set_autosuspend_delay(dev, 50);
++	pm_runtime_use_autosuspend(dev);
+ 
+ 	ret = drm_dev_register(drm, 0);
+ 	if (ret)
+-		goto irq_disable;
++		goto runtime_pm_put;
+ 
+ 	ret = v3d_sysfs_init(dev);
+ 	if (ret)
+ 		goto drm_unregister;
+ 
++	pm_runtime_mark_last_busy(dev);
++	pm_runtime_put_autosuspend(dev);
++
+ 	return 0;
+ 
+ drm_unregister:
+ 	drm_dev_unregister(drm);
+-irq_disable:
+-	v3d_irq_disable(v3d);
+-clk_disable:
+-	v3d_power_off_sms(v3d);
+-	clk_disable_unprepare(v3d->clk);
++runtime_pm_put:
++	pm_runtime_put_sync_suspend(dev);
+ gem_destroy:
+ 	v3d_gem_destroy(drm);
+ dma_free:
+@@ -482,21 +468,27 @@ static void v3d_platform_drm_remove(stru
+ 
+ 	drm_dev_unregister(drm);
+ 
+-	v3d_power_off_sms(v3d);
++	pm_runtime_suspend(dev);
+ 
+-	clk_disable_unprepare(v3d->clk);
++	/* If PM is disabled, we need to call v3d_power_suspend() manually. */
++	if (!IS_ENABLED(CONFIG_PM))
++		v3d_power_suspend(dev);
+ 
+ 	v3d_gem_destroy(drm);
+ 
+ 	dma_free_wc(dev, 4096, v3d->mmu_scratch, v3d->mmu_scratch_paddr);
+ }
+ 
++static DEFINE_RUNTIME_DEV_PM_OPS(v3d_pm_ops, v3d_power_suspend,
++				 v3d_power_resume, NULL);
++
+ static struct platform_driver v3d_platform_driver = {
+ 	.probe		= v3d_platform_drm_probe,
+ 	.remove		= v3d_platform_drm_remove,
+ 	.driver		= {
+ 		.name	= "v3d",
+ 		.of_match_table = v3d_of_match,
++		.pm = pm_ptr(&v3d_pm_ops),
+ 	},
+ };
+ 
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -3,6 +3,7 @@
+ 
+ #include <linux/delay.h>
+ #include <linux/mutex.h>
++#include <linux/pm_runtime.h>
+ #include <linux/spinlock_types.h>
+ #include <linux/workqueue.h>
+ 
+@@ -330,6 +331,8 @@ struct v3d_job {
+ 
+ 	/* Callback for the freeing of the job on refcount going to 0. */
+ 	void (*free)(struct kref *ref);
++
++	bool has_pm_ref;
+ };
+ 
+ struct v3d_bin_job {
+@@ -608,6 +611,20 @@ int v3d_mmu_set_page_table(struct v3d_de
+ void v3d_mmu_insert_ptes(struct v3d_bo *bo);
+ void v3d_mmu_remove_ptes(struct v3d_bo *bo);
+ 
++/* v3d_power.c */
++int v3d_power_suspend(struct device *dev);
++int v3d_power_resume(struct device *dev);
++
++static __always_inline int v3d_pm_runtime_get(struct v3d_dev *v3d)
++{
++	return pm_runtime_resume_and_get(v3d->drm.dev);
++}
++
++static __always_inline int v3d_pm_runtime_put(struct v3d_dev *v3d)
++{
++	return pm_runtime_put_autosuspend(v3d->drm.dev);
++}
++
+ /* v3d_sched.c */
+ void v3d_timestamp_query_info_free(struct v3d_timestamp_query_info *query_info,
+ 				   unsigned int count);
+--- a/drivers/gpu/drm/v3d/v3d_mmu.c
++++ b/drivers/gpu/drm/v3d/v3d_mmu.c
+@@ -37,7 +37,11 @@ static bool v3d_mmu_is_aligned(u32 page,
+ 
+ int v3d_mmu_flush_all(struct v3d_dev *v3d)
+ {
+-	int ret;
++	int ret = 0;
++
++	/* Flush the PTs only if we're already awake */
++	if (!pm_runtime_get_if_active(v3d->drm.dev))
++		return 0;
+ 
+ 	V3D_WRITE(V3D_MMUC_CONTROL, V3D_MMUC_CONTROL_FLUSH |
+ 		  V3D_MMUC_CONTROL_ENABLE);
+@@ -46,7 +50,7 @@ int v3d_mmu_flush_all(struct v3d_dev *v3
+ 			 V3D_MMUC_CONTROL_FLUSHING), 100);
+ 	if (ret) {
+ 		dev_err(v3d->drm.dev, "MMUC flush wait idle failed\n");
+-		return ret;
++		goto pm_put;
+ 	}
+ 
+ 	V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL) |
+@@ -57,6 +61,8 @@ int v3d_mmu_flush_all(struct v3d_dev *v3
+ 	if (ret)
+ 		dev_err(v3d->drm.dev, "MMU TLB clear wait idle failed\n");
+ 
++pm_put:
++	v3d_pm_runtime_put(v3d);
+ 	return ret;
+ }
+ 
+--- a/drivers/gpu/drm/v3d/v3d_perfmon.c
++++ b/drivers/gpu/drm/v3d/v3d_perfmon.c
+@@ -235,6 +235,9 @@ void v3d_perfmon_start(struct v3d_dev *v
+ 	if (WARN_ON_ONCE(!perfmon || v3d->active_perfmon))
+ 		return;
+ 
++	if (!pm_runtime_get_if_active(v3d->drm.dev))
++		return;
++
+ 	ncounters = perfmon->ncounters;
+ 	mask = GENMASK(ncounters - 1, 0);
+ 
+@@ -260,6 +263,8 @@ void v3d_perfmon_start(struct v3d_dev *v
+ 	V3D_CORE_WRITE(0, V3D_PCTR_0_OVERFLOW, mask);
+ 
+ 	v3d->active_perfmon = perfmon;
++
++	v3d_pm_runtime_put(v3d);
+ }
+ 
+ void v3d_perfmon_stop(struct v3d_dev *v3d, struct v3d_perfmon *perfmon,
+@@ -271,10 +276,11 @@ void v3d_perfmon_stop(struct v3d_dev *v3
+ 		return;
+ 
+ 	mutex_lock(&perfmon->lock);
+-	if (perfmon != v3d->active_perfmon) {
+-		mutex_unlock(&perfmon->lock);
+-		return;
+-	}
++	if (perfmon != v3d->active_perfmon)
++		goto out;
++
++	if (!pm_runtime_get_if_active(v3d->drm.dev))
++		goto out_clear;
+ 
+ 	if (capture)
+ 		for (i = 0; i < perfmon->ncounters; i++)
+@@ -282,7 +288,11 @@ void v3d_perfmon_stop(struct v3d_dev *v3
+ 
+ 	V3D_CORE_WRITE(0, V3D_V4_PCTR_0_EN, 0);
+ 
++	v3d_pm_runtime_put(v3d);
++
++out_clear:
+ 	v3d->active_perfmon = NULL;
++out:
+ 	mutex_unlock(&perfmon->lock);
+ }
+ 
+--- /dev/null
++++ b/drivers/gpu/drm/v3d/v3d_power.c
+@@ -0,0 +1,83 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* Copyright (C) 2026 Raspberry Pi */
++
++#include <linux/clk.h>
++#include <linux/reset.h>
++
++#include <drm/drm_print.h>
++
++#include "v3d_drv.h"
++#include "v3d_regs.h"
++
++static void
++v3d_resume_sms(struct v3d_dev *v3d)
++{
++	if (v3d->ver < V3D_GEN_71)
++		return;
++
++	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_CLEAR_POWER_OFF);
++
++	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
++				    V3D_SMS_STATE) == V3D_SMS_IDLE), 100)) {
++		drm_err(&v3d->drm, "Failed to power up SMS\n");
++	}
++
++	v3d_reset_sms(v3d);
++}
++
++static void
++v3d_suspend_sms(struct v3d_dev *v3d)
++{
++	if (v3d->ver < V3D_GEN_71)
++		return;
++
++	V3D_SMS_WRITE(V3D_SMS_TEE_CS, V3D_SMS_POWER_OFF);
++
++	if (wait_for((V3D_GET_FIELD(V3D_SMS_READ(V3D_SMS_TEE_CS),
++				    V3D_SMS_STATE) == V3D_SMS_POWER_OFF_STATE), 100)) {
++		drm_err(&v3d->drm, "Failed to power off SMS\n");
++	}
++}
++
++int v3d_power_suspend(struct device *dev)
++{
++	struct drm_device *drm = dev_get_drvdata(dev);
++	struct v3d_dev *v3d = to_v3d_dev(drm);
++
++	v3d_irq_disable(v3d);
++	v3d_suspend_sms(v3d);
++
++	if (v3d->reset)
++		reset_control_assert(v3d->reset);
++
++	clk_disable_unprepare(v3d->clk);
++
++	return 0;
++}
++
++int v3d_power_resume(struct device *dev)
++{
++	struct drm_device *drm = dev_get_drvdata(dev);
++	struct v3d_dev *v3d = to_v3d_dev(drm);
++	int ret;
++
++	ret = clk_prepare_enable(v3d->clk);
++	if (ret)
++		return ret;
++
++	if (v3d->reset) {
++		ret = reset_control_deassert(v3d->reset);
++		if (ret)
++			goto clk_disable;
++	}
++
++	v3d_resume_sms(v3d);
++	v3d_mmu_set_page_table(v3d);
++	v3d_irq_enable(v3d);
++
++	return 0;
++
++clk_disable:
++	clk_disable_unprepare(v3d->clk);
++	return ret;
++}
+--- a/drivers/gpu/drm/v3d/v3d_submit.c
++++ b/drivers/gpu/drm/v3d/v3d_submit.c
+@@ -102,6 +102,9 @@ v3d_job_free(struct kref *ref)
+ 	if (job->perfmon)
+ 		v3d_perfmon_put(job->perfmon);
+ 
++	if (job->has_pm_ref)
++		v3d_pm_runtime_put(job->v3d);
++
+ 	kfree(job);
+ }
+ 
+@@ -201,13 +204,13 @@ v3d_job_init(struct v3d_dev *v3d, struct
+ 				if (copy_from_user(&in, handle++, sizeof(in))) {
+ 					ret = -EFAULT;
+ 					DRM_DEBUG("Failed to copy wait dep handle.\n");
+-					goto fail_deps;
++					goto fail_job_init;
+ 				}
+ 				ret = drm_sched_job_add_syncobj_dependency(&job->base, file_priv, in.handle, 0);
+ 
+ 				// TODO: Investigate why this was filtered out for the IOCTL.
+ 				if (ret && ret != -ENOENT)
+-					goto fail_deps;
++					goto fail_job_init;
+ 			}
+ 		}
+ 	} else {
+@@ -215,14 +218,22 @@ v3d_job_init(struct v3d_dev *v3d, struct
+ 
+ 		// TODO: Investigate why this was filtered out for the IOCTL.
+ 		if (ret && ret != -ENOENT)
+-			goto fail_deps;
++			goto fail_job_init;
++	}
++
++	/* CPU jobs don't require hardware resources */
++	if (queue != V3D_CPU) {
++		ret = v3d_pm_runtime_get(v3d);
++		if (ret)
++			goto fail_job_init;
++		job->has_pm_ref = true;
+ 	}
+ 
+ 	kref_init(&job->refcount);
+ 
+ 	return 0;
+ 
+-fail_deps:
++fail_job_init:
+ 	drm_sched_job_cleanup(&job->base);
+ 	return ret;
+ }

@@ -1,0 +1,307 @@
+From 6c136f4e6174dba0520b67cb787b91f86563c968 Mon Sep 17 00:00:00 2001
+From: Phil Elwell <phil@raspberrypi.com>
+Date: Mon, 13 Jan 2025 15:00:21 +0000
+Subject: [PATCH] mmc: bcm2835: Add downstream overclocking support
+
+The principal differences between the downstream SDHOST driver and the
+version accepted upstream driver are that the upstream version loses the
+overclock support and DMA configuration via DT, but gains some tidying
+up (and maintenance by the upstream devs).
+
+Add the missing features (with the exception of the low-overhead logging)
+as a patch to the upstream driver.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+
+mmc: bcm2835: Relax the 50MHz overclock check
+
+EMMC clock speeds are based around divisions of 52Mhz, not the 50MHz
+used by SD. As such, relax the "full speed" check (intended to stop
+any overclock whenever an operation has to be retried) so that any
+requested speed of 50MHz or higher will be overclocked.
+
+Signed-off-by: Phil Elwell <phil@raspberrypi.com>
+---
+ drivers/mmc/host/bcm2835.c | 169 +++++++++++++++++++++++++++++++------
+ 1 file changed, 143 insertions(+), 26 deletions(-)
+
+--- a/drivers/mmc/host/bcm2835.c
++++ b/drivers/mmc/host/bcm2835.c
+@@ -49,6 +49,8 @@
+ #include <linux/mmc/mmc.h>
+ #include <linux/mmc/sd.h>
+ 
++#include <soc/bcm2835/raspberrypi-firmware.h>
++
+ #define SDCMD  0x00 /* Command to SD card              - 16 R/W */
+ #define SDARG  0x04 /* Argument to SD card             - 32 R/W */
+ #define SDTOUT 0x08 /* Start value for timeout counter - 32 R/W */
+@@ -188,6 +190,14 @@ struct bcm2835_host {
+ 	struct page		*drain_page;
+ 	u32			drain_offset;
+ 	bool			use_dma;
++
++	/* Downstream additions */
++	struct rpi_firmware	*fw;
++	u32			pio_limit;	/* Maximum block count for PIO (0 = always DMA) */
++	u32			user_overclock_50; /* User's preferred overclock frequency */
++	u32			overclock_50;	/* Freq to use when 50MHz is requested (MHz) */
++	u32			overclock;	/* Current frequency if overclocked, else zero */
++	bool			reset_clock:1;	/* Reset the clock for the next request */
+ };
+ 
+ static void bcm2835_dumpcmd(struct bcm2835_host *host, struct mmc_command *cmd,
+@@ -242,8 +252,11 @@ static void bcm2835_dumpregs(struct bcm2
+ 
+ static void bcm2835_reset_internal(struct bcm2835_host *host)
+ {
++	u32 cdiv = host->cdiv;
+ 	u32 temp;
+ 
++	if (!cdiv)
++		cdiv = readl(host->ioaddr + SDCDIV);
+ 	writel(SDVDD_POWER_OFF, host->ioaddr + SDVDD);
+ 	writel(0, host->ioaddr + SDCMD);
+ 	writel(0, host->ioaddr + SDARG);
+@@ -264,9 +277,8 @@ static void bcm2835_reset_internal(struc
+ 	msleep(20);
+ 	writel(SDVDD_POWER_ON, host->ioaddr + SDVDD);
+ 	msleep(20);
+-	host->clock = 0;
+ 	writel(host->hcfg, host->ioaddr + SDHCFG);
+-	writel(host->cdiv, host->ioaddr + SDCDIV);
++	writel(cdiv, host->ioaddr + SDCDIV);
+ }
+ 
+ static void bcm2835_reset(struct mmc_host *mmc)
+@@ -597,6 +609,25 @@ static void bcm2835_finish_request(struc
+ 
+ 	mrq = host->mrq;
+ 
++	/* Drop the overclock after any data corruption, or after any
++	 * error while overclocked. Ignore errors for status commands,
++	 * as they are likely when a card is ejected.
++	 */
++	if (host->overclock) {
++		if ((mrq->cmd && mrq->cmd->error &&
++		     (mrq->cmd->opcode != MMC_SEND_STATUS)) ||
++		    (mrq->data && mrq->data->error) ||
++		    (mrq->stop && mrq->stop->error) ||
++		    (mrq->sbc && mrq->sbc->error)) {
++			host->overclock_50--;
++			dev_warn(&host->pdev->dev,
++				 "reducing overclock due to errors\n");
++			host->reset_clock = 1;
++			mrq->cmd->error = -ETIMEDOUT;
++			mrq->cmd->retries = 1;
++		}
++	}
++
+ 	host->mrq = NULL;
+ 	host->cmd = NULL;
+ 	host->data = NULL;
+@@ -1093,8 +1124,13 @@ static void bcm2835_dma_complete_work(st
+ static void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock)
+ {
+ 	struct mmc_host *mmc = mmc_from_priv(host);
++	const unsigned int input_clock = clock;
++	const unsigned int MHZ = 1000000;
+ 	int div;
+ 
++	if (host->overclock_50 && (clock >= 50*MHZ))
++		clock = host->overclock_50 * MHZ + (MHZ - 1);
++
+ 	/* The SDCDIV register has 11 bits, and holds (div - 2).  But
+ 	 * in data mode the max is 50MHz wihout a minimum, and only
+ 	 * the bottom 3 bits are used. Since the switch over is
+@@ -1116,38 +1152,78 @@ static void bcm2835_set_clock(struct bcm
+ 	 * clock divisor at all times.
+ 	 */
+ 
+-	if (clock < 100000) {
+-		/* Can't stop the clock, but make it as slow as possible
+-		 * to show willing
+-		 */
+-		host->cdiv = SDCDIV_MAX_CDIV;
+-		writel(host->cdiv, host->ioaddr + SDCDIV);
+-		return;
+-	}
++	if (host->fw) {
++		u32 msg[3] = { clock, 0, 0 };
++
++		rpi_firmware_property(host->fw,
++				      RPI_FIRMWARE_SET_SDHOST_CLOCK,
++				      &msg, sizeof(msg));
++
++		clock = max(msg[1], msg[2]);
++		host->cdiv = 0;
++	} else {
++		if (clock < 100000) {
++			/* Can't stop the clock, but make it as slow as possible
++			 * to show willing
++			 */
++			host->cdiv = SDCDIV_MAX_CDIV;
++			writel(host->cdiv, host->ioaddr + SDCDIV);
++			return;
++		}
+ 
+-	div = host->max_clk / clock;
+-	if (div < 2)
+-		div = 2;
+-	if ((host->max_clk / div) > clock)
+-		div++;
+-	div -= 2;
++		div = host->max_clk / clock;
++		if (div < 2)
++			div = 2;
++		if ((host->max_clk / div) > clock)
++			div++;
++		div -= 2;
+ 
+-	if (div > SDCDIV_MAX_CDIV)
+-		div = SDCDIV_MAX_CDIV;
++		if (div > SDCDIV_MAX_CDIV)
++			div = SDCDIV_MAX_CDIV;
+ 
+-	clock = host->max_clk / (div + 2);
+-	mmc->actual_clock = clock;
++		clock = host->max_clk / (div + 2);
++
++		host->cdiv = div;
++		writel(host->cdiv, host->ioaddr + SDCDIV);
++	}
+ 
+ 	/* Calibrate some delays */
+ 
+ 	host->ns_per_fifo_word = (1000000000 / clock) *
+ 		((mmc->caps & MMC_CAP_4_BIT_DATA) ? 8 : 32);
+ 
+-	host->cdiv = div;
+-	writel(host->cdiv, host->ioaddr + SDCDIV);
++	if (input_clock == 50 * MHZ) {
++		if (clock > input_clock) {
++			/* Save the closest value, to make it easier
++			 * to reduce in the event of error
++			 */
++			host->overclock_50 = (clock/MHZ);
++
++			if (clock != host->overclock) {
++				pr_info("%s: overclocking to %dHz\n",
++					mmc_hostname(mmc), clock);
++				host->overclock = clock;
++			}
++		} else if (host->overclock) {
++			host->overclock = 0;
++			if (clock == 50 * MHZ)
++				pr_warn("%s: cancelling overclock\n",
++					mmc_hostname(mmc));
++		}
++	} else if (input_clock == 0) {
++		/* Reset the preferred overclock when the clock is stopped.
++		 * This always happens during initialisation.
++		 */
++		host->overclock_50 = host->user_overclock_50;
++		host->overclock = 0;
++	}
+ 
+ 	/* Set the timeout to 500ms */
+-	writel(mmc->actual_clock / 2, host->ioaddr + SDTOUT);
++	writel(clock / 2, host->ioaddr + SDTOUT);
++
++	mmc->actual_clock = clock;
++	host->clock = input_clock;
++	host->reset_clock = 0;
+ }
+ 
+ static void bcm2835_request(struct mmc_host *mmc, struct mmc_request *mrq)
+@@ -1177,6 +1253,9 @@ static void bcm2835_request(struct mmc_h
+ 		return;
+ 	}
+ 
++	if (host->reset_clock)
++		bcm2835_set_clock(host, host->clock);
++
+ 	mutex_lock(&host->mutex);
+ 
+ 	WARN_ON(host->mrq);
+@@ -1200,7 +1279,7 @@ static void bcm2835_request(struct mmc_h
+ 		return;
+ 	}
+ 
+-	if (host->use_dma && mrq->data && (mrq->data->blocks > PIO_THRESHOLD))
++	if (host->use_dma && mrq->data && (mrq->data->blocks > host->pio_limit))
+ 		bcm2835_prepare_dma(host, mrq->data);
+ 
+ 	host->use_sbc = !!mrq->sbc && host->mrq->data &&
+@@ -1335,8 +1414,8 @@ static int bcm2835_add_host(struct bcm28
+ 	}
+ 
+ 	pio_limit_string[0] = '\0';
+-	if (host->use_dma && (PIO_THRESHOLD > 0))
+-		sprintf(pio_limit_string, " (>%d)", PIO_THRESHOLD);
++	if (host->use_dma && (host->pio_limit > 0))
++		sprintf(pio_limit_string, " (>%d)", host->pio_limit);
+ 	dev_info(dev, "loaded - DMA %s%s\n",
+ 		 host->use_dma ? "enabled" : "disabled", pio_limit_string);
+ 
+@@ -1365,8 +1444,11 @@ static DEFINE_SIMPLE_DEV_PM_OPS(bcm2835_
+ static int bcm2835_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
++	struct device_node *node = dev->of_node;
+ 	struct bcm2835_host *host;
++	struct rpi_firmware *fw;
+ 	struct resource *iomem;
++	bool allow_dma = true;
+ 	struct mmc_host *mmc;
+ 	int ret;
+ 
+@@ -1387,6 +1469,23 @@ static int bcm2835_probe(struct platform
+ 	}
+ 
+ 	host->phys_addr = iomem->start;
++	host->pio_limit = PIO_THRESHOLD;
++
++	if (node) {
++		/* Read any custom properties */
++		of_property_read_u32(node,
++				     "brcm,overclock-50",
++				     &host->user_overclock_50);
++		of_property_read_u32(node,
++				     "brcm,pio-limit",
++				     &host->pio_limit);
++		allow_dma =
++			!of_property_read_bool(node, "brcm,force-pio");
++
++		/* Formally recognise the other way of disabling DMA */
++		if (host->pio_limit == 0x7fffffff)
++			allow_dma = false;
++	}
+ 
+ 	host->dma_chan = NULL;
+ 	host->dma_desc = NULL;
+@@ -1402,6 +1501,24 @@ static int bcm2835_probe(struct platform
+ 		/* Ignore errors to fall back to PIO mode */
+ 	}
+ 
++	fw = rpi_firmware_get(
++		of_parse_phandle(dev->of_node, "firmware", 0));
++	if (fw) {
++		u32 msg[3];
++
++		msg[0] = 0;
++		msg[1] = ~0;
++		msg[2] = ~0;
++
++		rpi_firmware_property(fw, RPI_FIRMWARE_SET_SDHOST_CLOCK,
++				      &msg, sizeof(msg));
++
++		if (msg[1] != ~0)
++			host->fw = fw;
++		else
++			rpi_firmware_put(fw);
++	}
++
+ 	host->irq = platform_get_irq(pdev, 0);
+ 	if (host->irq < 0) {
+ 		ret = host->irq;

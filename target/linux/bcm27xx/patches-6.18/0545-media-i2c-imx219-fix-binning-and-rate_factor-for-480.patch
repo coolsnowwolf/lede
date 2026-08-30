@@ -1,0 +1,103 @@
+From 002310f6bf7b5d44a81f5f66aba194176462d87c Mon Sep 17 00:00:00 2001
+From: Vinay Varma <varmavinaym@gmail.com>
+Date: Fri, 22 Sep 2023 18:17:42 +0100
+Subject: [PATCH] media: i2c: imx219: fix binning and rate_factor for 480p and
+ 1232p
+
+At a high FPS with RAW10, there is frame corruption for 480p because the
+rate_factor of 2 is used with the normal 2x2 bining [1]. This commit
+ties the rate_factor to the selected binning mode. For the 480p mode,
+analog 2x2 binning mode with a rate_factor of 2 is always used. For the
+1232p mode the normal 2x2 binning mode is used for RAW10 while analog
+2x2 binning mode is used for RAW8.
+
+[1] raspberrypi#5493
+
+Signed-off-by: Vinay Varma <varmavinaym@gmail.com>
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+Reworked due to upstream changes
+---
+ drivers/media/i2c/imx219.c | 32 +++++++++++++++++++++++++++++++-
+ 1 file changed, 31 insertions(+), 1 deletion(-)
+
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -146,6 +146,12 @@
+ #define IMX219_PIXEL_ARRAY_WIDTH	3280U
+ #define IMX219_PIXEL_ARRAY_HEIGHT	2464U
+ 
++enum binning_bit_depths {
++	BINNING_IDX_8_BIT,
++	BINNING_IDX_10_BIT,
++	BINNING_IDX_MAX
++};
++
+ /* Mode : resolution and related config&values */
+ struct imx219_mode {
+ 	/* Frame width */
+@@ -155,6 +161,10 @@ struct imx219_mode {
+ 
+ 	/* V-timing */
+ 	unsigned int fll_def;
++	unsigned int vts_def;
++
++	/* binning mode based on format code */
++	unsigned int binning[BINNING_IDX_MAX];
+ };
+ 
+ static const struct cci_reg_sequence imx219_common_regs[] = {
+@@ -313,24 +323,44 @@ static const struct imx219_mode supporte
+ 		.width = 3280,
+ 		.height = 2464,
+ 		.fll_def = 3526,
++		.vts_def = 3526,
++		.binning = {
++			[BINNING_IDX_8_BIT] = IMX219_BINNING_NONE,
++			[BINNING_IDX_10_BIT] = IMX219_BINNING_NONE,
++		},
+ 	},
+ 	{
+ 		/* 1080P 30fps cropped */
+ 		.width = 1920,
+ 		.height = 1080,
+ 		.fll_def = 1763,
++		.vts_def = 1763,
++		.binning = {
++			[BINNING_IDX_8_BIT] = IMX219_BINNING_NONE,
++			[BINNING_IDX_10_BIT] = IMX219_BINNING_NONE,
++		},
+ 	},
+ 	{
+ 		/* 2x2 binned 60fps mode */
+ 		.width = 1640,
+ 		.height = 1232,
+ 		.fll_def = 1707,
++		.vts_def = 1763,
++		.binning = {
++			[BINNING_IDX_8_BIT] = IMX219_BINNING_X2_ANALOG,
++			[BINNING_IDX_10_BIT] = IMX219_BINNING_X2,
++		},
+ 	},
+ 	{
+ 		/* 640x480 60fps mode */
+ 		.width = 640,
+ 		.height = 480,
+ 		.fll_def = 1707,
++		.vts_def = 1763,
++		.binning = {
++			[BINNING_IDX_8_BIT] = IMX219_BINNING_X2_ANALOG,
++			[BINNING_IDX_10_BIT] = IMX219_BINNING_X2_ANALOG,
++		},
+ 	},
+ };
+ 
+@@ -431,7 +461,7 @@ static unsigned int imx219_get_binning(s
+ 	*bin_v = IMX219_BINNING_NONE;
+ 
+ 	if (*bin_h == 2 && *bin_v == 2)
+-		return IMX219_BINNING_X2_ANALOG;
++		return bin_mode;
+ 	else if (*bin_h == 2 || *bin_v == 2)
+ 		/*
+ 		 * Don't use analog binning if only one dimension

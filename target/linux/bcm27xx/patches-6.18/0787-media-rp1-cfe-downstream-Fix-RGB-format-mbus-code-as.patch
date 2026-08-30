@@ -1,0 +1,104 @@
+From 67f3a617a8bc66b6d22b436ee6261708e315dc88 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 28 May 2026 16:53:18 +0100
+Subject: [PATCH] media: rp1-cfe-downstream: Fix RGB format / mbus code
+ association
+
+Downstream CFE version of 08f9794d9b79 ("media: bcm2835-unicam: Fix RGB format /
+mbus code association")
+
+The CFE driver is a MIPI-CSI2 Receiver, that can capture RGB 4:4:4,
+YCbCr 4:2:2, and raw formats.
+
+RGB 4:4:4 is converted to the MIPI-CSI2 RGB888 video format, and
+associated to the MEDIA_BUS_FMT_RGB888_1X24 media bus code.
+
+However, V4L2_PIX_FMT_RGB24 is defined as having its color components in
+the R, G and B order, from left to right. MIPI-CSI2 however defines the
+RGB888 format with blue first, and that's what MEDIA_BUS_FMT_RGB888_1X24
+defines too.
+
+This essentially means that the R and B will be swapped compared to what
+V4L2_PIX_FMT_RGB24 defines. The same situation occurs with
+V4L2_PIX_FMT_BGR24 being associated to MEDIA_BUS_FMT_BGR888_1X24.
+
+In order to fix the swapped components, we need to change the
+association of V4L2_PIX_FMT_BGR24 to MEDIA_BUS_FMT_RGB888_1X24, and of
+V4L2_PIX_FMT_RGB24 to MEDIA_BUS_FMT_BGR888_1X24.
+
+Since the media bus code is exposed to userspace, and validated by
+the link_validate implementation, we need to explicitly accept (and
+warn) the old association still to preserve backward compatibility.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ .../media/platform/raspberrypi/rp1_cfe/cfe.c  | 29 +++++++++++++------
+ .../platform/raspberrypi/rp1_cfe/cfe_fmts.h   |  4 +--
+ 2 files changed, 22 insertions(+), 11 deletions(-)
+
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe.c
+@@ -1676,7 +1676,6 @@ static int cfe_video_link_validate(struc
+ 	if (is_image_output_node(node)) {
+ 		struct v4l2_pix_format *pix_fmt = &node->vid_fmt.fmt.pix;
+ 		const struct cfe_fmt *fmt = NULL;
+-		unsigned int i;
+ 
+ 		if (remote_fmt->width != pix_fmt->width ||
+ 		    remote_fmt->height != pix_fmt->height) {
+@@ -1687,17 +1686,29 @@ static int cfe_video_link_validate(struc
+ 			return -EINVAL;
+ 		}
+ 
+-		for (i = 0; i < ARRAY_SIZE(formats); i++) {
+-			if (formats[i].code == remote_fmt->code &&
+-			    formats[i].fourcc == pix_fmt->pixelformat) {
+-				fmt = &formats[i];
+-				break;
+-			}
+-		}
++		fmt = find_format_by_code(remote_fmt->code);
++
+ 		if (!fmt) {
+-			cfe_err("Format mismatch!\n");
++			cfe_err("Format not found. %08x %p4cc\n",
++				remote_fmt->code, &pix_fmt->pixelformat);
+ 			return -EINVAL;
+ 		}
++
++		if (fmt->fourcc != pix_fmt->pixelformat) {
++			if ((pix_fmt->pixelformat == V4L2_PIX_FMT_BGR24 &&
++			     remote_fmt->code == MEDIA_BUS_FMT_BGR888_1X24) ||
++			    (pix_fmt->pixelformat == V4L2_PIX_FMT_RGB24 &&
++			     remote_fmt->code == MEDIA_BUS_FMT_RGB888_1X24)) {
++				dev_warn_once(&cfe->pdev->dev,
++					      "Incorrect pixel format %p4cc for 0x%04x. Fix your application to use %p4cc.\n",
++					      &pix_fmt->pixelformat,
++					      remote_fmt->code, &fmt->fourcc);
++			} else {
++				cfe_err("Format mismatch! Code %u fourcc %p4cc\n",
++					remote_fmt->code, &pix_fmt->pixelformat);
++				return -EINVAL;
++			}
++		}
+ 	} else if (is_csi2_node(node) && is_meta_output_node(node)) {
+ 		struct v4l2_meta_format *meta_fmt = &node->meta_fmt.fmt.meta;
+ 		const struct cfe_fmt *fmt;
+--- a/drivers/media/platform/raspberrypi/rp1_cfe/cfe_fmts.h
++++ b/drivers/media/platform/raspberrypi/rp1_cfe/cfe_fmts.h
+@@ -63,13 +63,13 @@ static const struct cfe_fmt formats[] =
+ 	},
+ 	{
+ 		.fourcc = V4L2_PIX_FMT_RGB24, /* rgb */
+-		.code = MEDIA_BUS_FMT_RGB888_1X24,
++		.code = MEDIA_BUS_FMT_BGR888_1X24,
+ 		.depth = 24,
+ 		.csi_dt = MIPI_CSI2_DT_RGB888,
+ 	},
+ 	{
+ 		.fourcc = V4L2_PIX_FMT_BGR24, /* bgr */
+-		.code = MEDIA_BUS_FMT_BGR888_1X24,
++		.code = MEDIA_BUS_FMT_RGB888_1X24,
+ 		.depth = 24,
+ 		.csi_dt = MIPI_CSI2_DT_RGB888,
+ 	},

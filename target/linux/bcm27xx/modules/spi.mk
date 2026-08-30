@@ -38,3 +38,20 @@ define KernelPackage/spi-bcm2835-aux/description
 endef
 
 $(eval $(call KernelPackage,spi-bcm2835-aux))
+
+
+define KernelPackage/bcm27xx-spi
+  SUBMENU:=$(SPI_MENU)
+  TITLE:=SPI support for bcm27xx boards
+  DEPENDS:=@TARGET_bcm27xx +kmod-spi-bcm2835 \
+	+!TARGET_bcm27xx_bcm2712:kmod-spi-bcm2835-aux \
+	+TARGET_bcm27xx_bcm2712:kmod-spi-dw-mmio
+endef
+
+define KernelPackage/bcm27xx-spi/description
+ Pulls in the correct SPI kernel modules for whichever bcm27xx
+ board you're building for, without needing to know which specific
+ driver combination your particular Pi/CM generation requires.
+endef
+
+$(eval $(call KernelPackage,bcm27xx-spi))

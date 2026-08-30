@@ -1,0 +1,102 @@
+From b1ddfd26254c4872c0d1d65e14255210346fc229 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Wed, 15 Apr 2026 19:05:29 +0100
+Subject: [PATCH] media: imx355: Add support for get_selection
+
+Provide all the cropping information via get_selection.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/media/i2c/imx355.c | 53 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+--- a/drivers/media/i2c/imx355.c
++++ b/drivers/media/i2c/imx355.c
+@@ -86,6 +86,11 @@
+ /* number of data lanes */
+ #define IMX355_DATA_LANES		4
+ 
++#define IMX355_PIXEL_ARRAY_TOP		0
++#define IMX355_PIXEL_ARRAY_LEFT		0
++#define IMX355_PIXEL_ARRAY_WIDTH	3280
++#define IMX355_PIXEL_ARRAY_HEIGHT	2464
++
+ struct imx355_reg {
+ 	u16 address;
+ 	u8 val;
+@@ -676,6 +681,7 @@ static int imx355_open(struct v4l2_subde
+ 	struct imx355 *imx355 = to_imx355(sd);
+ 	struct v4l2_mbus_framefmt *try_fmt =
+ 		v4l2_subdev_state_get_format(fh->state, 0);
++	struct v4l2_rect *crop = v4l2_subdev_state_get_crop(fh->state, 0);
+ 
+ 	mutex_lock(&imx355->mutex);
+ 
+@@ -685,6 +691,8 @@ static int imx355_open(struct v4l2_subde
+ 	try_fmt->code = imx355_get_format_code(imx355);
+ 	try_fmt->field = V4L2_FIELD_NONE;
+ 
++	*crop = imx355->cur_mode->crop;
++
+ 	mutex_unlock(&imx355->mutex);
+ 
+ 	return 0;
+@@ -891,6 +899,50 @@ imx355_set_pad_format(struct v4l2_subdev
+ 	return 0;
+ }
+ 
++static void
++__imx355_get_pad_crop(struct imx355 *imx355,
++		      struct v4l2_subdev_state *sd_state, unsigned int pad,
++		      enum v4l2_subdev_format_whence which, struct v4l2_rect *r)
++{
++	switch (which) {
++	case V4L2_SUBDEV_FORMAT_TRY:
++		*r = *v4l2_subdev_state_get_crop(sd_state, pad);
++		break;
++	case V4L2_SUBDEV_FORMAT_ACTIVE:
++		*r = imx355->cur_mode->crop;
++		break;
++	}
++}
++
++static int imx355_get_selection(struct v4l2_subdev *sd,
++				struct v4l2_subdev_state *sd_state,
++				struct v4l2_subdev_selection *sel)
++{
++	switch (sel->target) {
++	case V4L2_SEL_TGT_CROP: {
++		struct imx355 *imx355 = to_imx355(sd);
++
++		mutex_lock(&imx355->mutex);
++		__imx355_get_pad_crop(imx355, sd_state, sel->pad, sel->which,
++				      &sel->r);
++		mutex_unlock(&imx355->mutex);
++
++		return 0;
++	}
++	case V4L2_SEL_TGT_CROP_DEFAULT:
++	case V4L2_SEL_TGT_CROP_BOUNDS:
++	case V4L2_SEL_TGT_NATIVE_SIZE:
++		sel->r.top = IMX355_PIXEL_ARRAY_TOP;
++		sel->r.left = IMX355_PIXEL_ARRAY_LEFT;
++		sel->r.width = IMX355_PIXEL_ARRAY_WIDTH;
++		sel->r.height = IMX355_PIXEL_ARRAY_HEIGHT;
++
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
+ /* Start streaming */
+ static int imx355_start_streaming(struct imx355 *imx355)
+ {
+@@ -1066,6 +1118,7 @@ static const struct v4l2_subdev_pad_ops
+ 	.get_fmt = imx355_get_pad_format,
+ 	.set_fmt = imx355_set_pad_format,
+ 	.enum_frame_size = imx355_enum_frame_size,
++	.get_selection = imx355_get_selection,
+ };
+ 
+ static const struct v4l2_subdev_ops imx355_subdev_ops = {

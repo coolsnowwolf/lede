@@ -1,0 +1,85 @@
+From ec0db8fae4cd6d743284353f568ab0356f2f9692 Mon Sep 17 00:00:00 2001
+From: Dave Stevenson <dave.stevenson@raspberrypi.com>
+Date: Thu, 11 Jun 2026 12:47:43 +0100
+Subject: [PATCH] drm/vc4: hdmi: Move packet RAM enable to pm_runtime
+
+Audio can be triggered by the HPD handler and start up before
+video has been restored, calling vc4_hdmi_write_infoframe
+for the audio infoframe.
+vc4_hdmi_write_infoframe checks that the packet RAM to store
+the infoframes is enabled, but that is only enabled when
+video is enabled in vc4_hdmi_encoder_post_crtc_enable.
+
+The packet RAM enable is only a power saving thing, so
+move enabling/disabling to the runtime_pm hooks.
+
+Signed-off-by: Dave Stevenson <dave.stevenson@raspberrypi.com>
+---
+ drivers/gpu/drm/vc4/vc4_hdmi.c | 21 +++++++++++++--------
+ 1 file changed, 13 insertions(+), 8 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -846,7 +846,7 @@ static void vc4_hdmi_encoder_post_crtc_d
+ 
+ 	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
+ 
+-	HDMI_WRITE(HDMI_RAM_PACKET_CONFIG, 0);
++	HDMI_WRITE(HDMI_RAM_PACKET_CONFIG, VC4_HDMI_RAM_PACKET_ENABLE);
+ 
+ 	HDMI_WRITE(HDMI_VID_CTL, HDMI_READ(HDMI_VID_CTL) | VC4_HD_VID_CTL_CLRRGB);
+ 
+@@ -1620,9 +1620,6 @@ static void vc4_hdmi_encoder_post_crtc_e
+ 		WARN_ONCE(ret, "Timeout waiting for "
+ 			  "VC4_HDMI_SCHEDULER_CONTROL_HDMI_ACTIVE\n");
+ 	} else {
+-		HDMI_WRITE(HDMI_RAM_PACKET_CONFIG,
+-			   HDMI_READ(HDMI_RAM_PACKET_CONFIG) &
+-			   ~(VC4_HDMI_RAM_PACKET_ENABLE));
+ 		HDMI_WRITE(HDMI_SCHEDULER_CONTROL,
+ 			   HDMI_READ(HDMI_SCHEDULER_CONTROL) &
+ 			   ~VC4_HDMI_SCHEDULER_CONTROL_MODE_HDMI);
+@@ -1641,9 +1638,6 @@ static void vc4_hdmi_encoder_post_crtc_e
+ 		WARN_ON(!(HDMI_READ(HDMI_SCHEDULER_CONTROL) &
+ 			  VC4_HDMI_SCHEDULER_CONTROL_HDMI_ACTIVE));
+ 
+-		HDMI_WRITE(HDMI_RAM_PACKET_CONFIG,
+-			   VC4_HDMI_RAM_PACKET_ENABLE);
+-
+ 		spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
+ 
+ 		drm_atomic_helper_connector_hdmi_update_infoframes(connector, state);
+@@ -3104,6 +3098,12 @@ static int vc5_hdmi_init_resources(struc
+ static int vc4_hdmi_runtime_suspend(struct device *dev)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = dev_get_drvdata(dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
++	HDMI_WRITE(HDMI_RAM_PACKET_CONFIG, 0);
++	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
++
+ 
+ 	clk_disable_unprepare(vc4_hdmi->audio_clock);
+ 	/* we no longer require a minimum clock rate */
+@@ -3116,7 +3116,7 @@ static int vc4_hdmi_runtime_suspend(stru
+ static int vc4_hdmi_runtime_resume(struct device *dev)
+ {
+ 	struct vc4_hdmi *vc4_hdmi = dev_get_drvdata(dev);
+-	unsigned long __maybe_unused flags;
++	unsigned long flags;
+ 	u32 __maybe_unused value;
+ 	unsigned long rate;
+ 	int ret;
+@@ -3164,6 +3164,11 @@ static int vc4_hdmi_runtime_resume(struc
+ 	}
+ #endif
+ 
++	spin_lock_irqsave(&vc4_hdmi->hw_lock, flags);
++	HDMI_WRITE(HDMI_RAM_PACKET_CONFIG,
++		   VC4_HDMI_RAM_PACKET_ENABLE);
++	spin_unlock_irqrestore(&vc4_hdmi->hw_lock, flags);
++
+ 	return 0;
+ 
+ err_disable_clk:

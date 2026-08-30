@@ -1,0 +1,115 @@
+From 27eeaba59b18d655fa3001efb917ef71460faedb Mon Sep 17 00:00:00 2001
+From: Nick Hollinghurst <nick.hollinghurst@raspberrypi.com>
+Date: Fri, 22 May 2026 14:53:33 +0100
+Subject: [PATCH] Revert "drivers: media: imx219: Remove enum binning_mode"
+
+This reverts commit 5eb74d4887b740880dbe51ad4bcafde5f264d740.
+---
+ drivers/media/i2c/imx219.c | 68 ++++++++++++++------------------------
+ 1 file changed, 25 insertions(+), 43 deletions(-)
+
+--- a/drivers/media/i2c/imx219.c
++++ b/drivers/media/i2c/imx219.c
+@@ -400,57 +400,42 @@ static u32 imx219_get_format_bpp(const s
+ 	}
+ }
+ 
+-static unsigned int imx219_get_binning(struct v4l2_subdev_state *state,
+-				       u8 *bin_h, u8 *bin_v)
++static void imx219_get_binning(struct v4l2_subdev_state *state, u8 *bin_h,
++			       u8 *bin_v)
+ {
+ 	const struct v4l2_mbus_framefmt *format =
+ 		v4l2_subdev_state_get_format(state, 0);
+-	unsigned int bin_mode = IMX219_BINNING_NONE;
+-	const struct imx219_mode *mode =
+-		v4l2_find_nearest_size(supported_modes,
+-				       ARRAY_SIZE(supported_modes),
+-				       width, height,
+-				       format->width, format->height);
+-	switch (format->code) {
+-	case MEDIA_BUS_FMT_SRGGB8_1X8:
+-	case MEDIA_BUS_FMT_SGRBG8_1X8:
+-	case MEDIA_BUS_FMT_SGBRG8_1X8:
+-	case MEDIA_BUS_FMT_SBGGR8_1X8:
+-		bin_mode = mode->binning[BINNING_IDX_8_BIT];
+-		break;
+-
+-	case MEDIA_BUS_FMT_SRGGB10_1X10:
+-	case MEDIA_BUS_FMT_SGRBG10_1X10:
+-	case MEDIA_BUS_FMT_SGBRG10_1X10:
+-	case MEDIA_BUS_FMT_SBGGR10_1X10:
+-		bin_mode = mode->binning[BINNING_IDX_10_BIT];
+-		break;
+-	}
++	const struct v4l2_rect *crop = v4l2_subdev_state_get_crop(state, 0);
++	u32 hbin = crop->width / format->width;
++	u32 vbin = crop->height / format->height;
+ 
+ 	*bin_h = IMX219_BINNING_NONE;
+ 	*bin_v = IMX219_BINNING_NONE;
+ 
+-	if (*bin_h == 2 && *bin_v == 2)
+-		return IMX219_BINNING_X2_ANALOG;
+-	else if (*bin_h == 2 || *bin_v == 2)
+-		/*
+-		 * Don't use analog binning if only one dimension
+-		 * is binned, as it crops the other dimension
+-		 */
+-		return IMX219_BINNING_X2;
+-	else
+-		return IMX219_BINNING_NONE;
++	/*
++	 * Use analog binning only if both dimensions are binned, as it crops
++	 * the other dimension.
++	 */
++	if (hbin == 2 && vbin == 2) {
++		*bin_h = IMX219_BINNING_X2_ANALOG;
++		*bin_v = IMX219_BINNING_X2_ANALOG;
++
++		return;
++	}
++
++	if (hbin == 2)
++		*bin_h = IMX219_BINNING_X2;
++	if (vbin == 2)
++		*bin_v = IMX219_BINNING_X2;
+ }
+ 
+ static inline u32 imx219_get_rate_factor(struct v4l2_subdev_state *state)
+ {
+ 	u8 bin_h, bin_v;
+-	unsigned int binning = imx219_get_binning(state, &bin_h, &bin_v);
+ 
+-	if (binning == IMX219_BINNING_X2_ANALOG)
+-		return 2;
++	imx219_get_binning(state, &bin_h, &bin_v);
+ 
+-	return 1;
++	return (bin_h & bin_v) == IMX219_BINNING_X2_ANALOG ? 2 : 1;
+ }
+ 
+ /* -----------------------------------------------------------------------------
+@@ -686,7 +671,6 @@ static int imx219_set_framefmt(struct im
+ {
+ 	const struct v4l2_mbus_framefmt *format;
+ 	const struct v4l2_rect *crop;
+-	unsigned int binning;
+ 	u8 bin_h, bin_v;
+ 	u32 bpp;
+ 	int ret = 0;
+@@ -704,11 +688,9 @@ static int imx219_set_framefmt(struct im
+ 	cci_write(imx219->regmap, IMX219_REG_Y_ADD_END_A,
+ 		  crop->top - IMX219_PIXEL_ARRAY_TOP + crop->height - 1, &ret);
+ 
+-	binning = imx219_get_binning(state, &bin_h, &bin_v);
+-	cci_write(imx219->regmap, IMX219_REG_BINNING_MODE_H,
+-		  (bin_h == 2) ? binning : IMX219_BINNING_NONE, &ret);
+-	cci_write(imx219->regmap, IMX219_REG_BINNING_MODE_V,
+-		  (bin_v == 2) ? binning : IMX219_BINNING_NONE, &ret);
++	imx219_get_binning(state, &bin_h, &bin_v);
++	cci_write(imx219->regmap, IMX219_REG_BINNING_MODE_H, bin_h, &ret);
++	cci_write(imx219->regmap, IMX219_REG_BINNING_MODE_V, bin_v, &ret);
+ 
+ 	cci_write(imx219->regmap, IMX219_REG_X_OUTPUT_SIZE,
+ 		  format->width, &ret);

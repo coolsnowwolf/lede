@@ -1,0 +1,62 @@
+From 89b446d347988c6c64babb1411b1f7dc911fa760 Mon Sep 17 00:00:00 2001
+From: Naushir Patuck <naush@raspberrypi.com>
+Date: Mon, 20 Apr 2026 16:37:00 +0000
+Subject: [PATCH] media: i2c: imx500: Keep the device active while network
+ firmware is loaded
+
+Hold a pm_runtime reference for the lifetime of imx500->fw_network.
+The reference is taken in imx500_set_ctrl() before kernel_read_file_from_fd()
+and released in imx500_clear_fw_network() on vfree. This prevents
+the autosuspend from racing the read (kernel oops in __memcpy) and from
+silently dropping the rpk before stream-on.
+
+Signed-off-by: Naushir Patuck <naush@raspberrypi.com>
+---
+ drivers/media/i2c/imx500.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+--- a/drivers/media/i2c/imx500.c
++++ b/drivers/media/i2c/imx500.c
+@@ -1924,9 +1924,17 @@ static int imx500_clear_weights(struct i
+ 
+ static void imx500_clear_fw_network(struct imx500 *imx500)
+ {
++	struct i2c_client *client = v4l2_get_subdevdata(&imx500->sd);
++
+ 	/* Remove any previous firmware blob. */
+-	if (imx500->fw_network)
++	if (imx500->fw_network) {
+ 		vfree(imx500->fw_network);
++		/*
++		 * Release the PM ref taken when the fw was loaded in
++		 * imx500_set_ctrl().
++		 */
++		pm_runtime_put_noidle(&client->dev);
++	}
+ 
+ 	imx500->fw_network = NULL;
+ 	imx500->network_written = false;
+@@ -2138,6 +2146,13 @@ static int imx500_set_ctrl(struct v4l2_c
+ 		}
+ 
+ 		imx500_clear_fw_network(imx500);
++
++		/*
++		 * Take a pm_runtime reference before the read.  This keeps
++		 * the device active as long as a NW firmware has been loaded.
++		 */
++		pm_runtime_resume_and_get(&client->dev);
++
+ 		ret = kernel_read_file_from_fd(ctrl->val, 0,
+ 					       (void **)&imx500->fw_network, INT_MAX,
+ 					       &imx500->fw_network_size,
+@@ -2151,7 +2166,8 @@ static int imx500_set_ctrl(struct v4l2_c
+ 		if (ret < 0) {
+ 			dev_err(&client->dev, "%s failed to read fw image: %d\n",
+ 				__func__, ret);
+-			imx500_clear_fw_network(imx500);
++			/* Release the ref we took above. */
++			pm_runtime_put_noidle(&client->dev);
+ 			return ret;
+ 		}
+ 		if (ret != imx500->fw_network_size) {

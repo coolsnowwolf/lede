@@ -1,0 +1,50 @@
+From 77f88e9e508a7dea34d6f5a8e1cf9034a9bae5a9 Mon Sep 17 00:00:00 2001
+From: Nicolai Buchwitz <nb@tipi-net.de>
+Date: Tue, 21 Jul 2026 19:51:03 +0200
+Subject: [PATCH] misc: rp1-pio: release DMA channel outside pio->lock
+
+rp1_pio_sm_dma_free() ends in dma_release_channel(), which sleeps while
+removing the sysfs links. Running it under pio->lock in SM_CONFIG_XFER
+triggers "BUG: scheduling while atomic" and hangs the machine when a
+client keeps reconfiguring a transfer.
+
+The claim bit stays set for this client across the unlock, so the
+channel remains reserved against other clients while it is released.
+
+Fixes: 0b7a604d73f3 ("misc: Add RP1 PIO driver")
+Link: https://github.com/raspberrypi/linux/issues/7512
+Signed-off-by: Nicolai Buchwitz <nb@tipi-net.de>
+---
+ drivers/misc/rp1-pio.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+--- a/drivers/misc/rp1-pio.c
++++ b/drivers/misc/rp1-pio.c
+@@ -618,6 +618,7 @@ static int rp1_pio_sm_config_xfer_intern
+ 	struct dma_info *dma = NULL;
+ 	uint32_t dma_mask;
+ 	char chan_name[4];
++	bool reconfigure = false;
+ 	int ret = 0;
+ 
+ 	if (sm >= RP1_PIO_SMS_COUNT || dir >= RP1_PIO_DIR_COUNT)
+@@ -633,7 +634,7 @@ static int rp1_pio_sm_config_xfer_intern
+ 	if (!(pio->claimed_dmas & dma_mask & ~client->claimed_dmas)) {
+ 		dma = &pio->dma_configs[sm][dir];
+ 		if (client->claimed_dmas & dma_mask)
+-			rp1_pio_sm_dma_free(dev, dma);
++			reconfigure = true;
+ 		pio->claimed_dmas |= dma_mask;
+ 		client->claimed_dmas |= dma_mask;
+ 	}
+@@ -641,6 +642,10 @@ static int rp1_pio_sm_config_xfer_intern
+ 	if (!dma)
+ 		return -EBUSY;
+ 
++	/* dma_release_channel() sleeps, so free the old channel outside the lock. */
++	if (reconfigure)
++		rp1_pio_sm_dma_free(dev, dma);
++
+ 	dma->buf_size = buf_size;
+ 	/* Round up the allocations */
+ 	buf_size = ROUND_UP(buf_size, PAGE_SIZE);

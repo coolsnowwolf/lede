@@ -1,0 +1,130 @@
+From ebd2b267e575b26d135b8b3f0d7ee37e215d625e Mon Sep 17 00:00:00 2001
+From: Dom Cobley <popcornmix@gmail.com>
+Date: Mon, 27 Jul 2026 14:31:35 +0100
+Subject: [PATCH] drm/vc4: Derive scanout rate and frame size from the CRTC
+ timings
+
+The vertical timings written to the pixelvalve already come from the
+crtc_* fields of the adjusted mode, but three places that describe the
+same raster still read the mode->* fields directly:
+
+ - the HVS bandwidth estimate in vc4_crtc_atomic_check()
+ - the audio CTS divisor in vc4_hdmi_set_n_cts()
+ - the HVS display FIFO width and height in {vc4,vc6}_hvs_init_channel()
+
+The two sets of fields differ only for stereo modes that pack more than
+one eye into a frame, which vc4 does not yet handle, so switch them over
+to mode->crtc_clock and drm_mode_get_hv_timing() ahead of adding that
+support. drm_mode_get_hv_timing() is used rather than crtc_vdisplay
+because the HVS is fed a whole frame even for interlaced modes, whose
+crtc_vdisplay describes a single field.
+
+No functional change.
+
+Signed-off-by: Dom Cobley <popcornmix@gmail.com>
+---
+ drivers/gpu/drm/vc4/vc4_crtc.c |  7 ++++---
+ drivers/gpu/drm/vc4/vc4_hdmi.c |  2 +-
+ drivers/gpu/drm/vc4/vc4_hvs.c  | 20 ++++++++++++++------
+ 3 files changed, 19 insertions(+), 10 deletions(-)
+
+--- a/drivers/gpu/drm/vc4/vc4_crtc.c
++++ b/drivers/gpu/drm/vc4/vc4_crtc.c
+@@ -768,10 +768,11 @@ int vc4_crtc_atomic_check(struct drm_crt
+ 		struct vc4_encoder *vc4_encoder = to_vc4_encoder(encoder);
+ 
+ 		if (vc4_encoder->type == VC4_ENCODER_TYPE_HDMI0) {
+-			vc4_state->hvs_load = max(mode->clock * mode->hdisplay / mode->htotal + 8000,
+-						  mode->clock * 9 / 10) * 1000;
++			vc4_state->hvs_load =
++				max(mode->crtc_clock * mode->hdisplay / mode->htotal + 8000,
++				    mode->crtc_clock * 9 / 10) * 1000;
+ 		} else {
+-			vc4_state->hvs_load = mode->clock * 1000;
++			vc4_state->hvs_load = mode->crtc_clock * 1000;
+ 		}
+ 	}
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hdmi.c
++++ b/drivers/gpu/drm/vc4/vc4_hdmi.c
+@@ -1853,7 +1853,7 @@ static void vc4_hdmi_set_n_cts(struct vc
+ 	lockdep_assert_held(&vc4_hdmi->hw_lock);
+ 
+ 	n = 128 * samplerate / 1000;
+-	tmp = (u64)(mode->clock * 1000) * n;
++	tmp = (u64)(mode->crtc_clock * 1000) * n;
+ 	do_div(tmp, 128 * samplerate);
+ 	cts = tmp;
+ 
+--- a/drivers/gpu/drm/vc4/vc4_hvs.c
++++ b/drivers/gpu/drm/vc4/vc4_hvs.c
+@@ -945,6 +945,7 @@ static int vc4_hvs_init_channel(struct v
+ 	struct vc4_crtc_state *vc4_crtc_state = to_vc4_crtc_state(crtc->state);
+ 	unsigned int chan = vc4_crtc_state->assigned_channel;
+ 	bool interlace = mode->flags & DRM_MODE_FLAG_INTERLACE;
++	int hdisplay, vdisplay;
+ 	u32 dispbkgndx;
+ 	u32 dispctrl;
+ 	int idx;
+@@ -954,6 +955,9 @@ static int vc4_hvs_init_channel(struct v
+ 	if (!drm_dev_enter(drm, &idx))
+ 		return -ENODEV;
+ 
++	/* Doubled for frame packing stereo modes */
++	drm_mode_get_hv_timing(mode, &hdisplay, &vdisplay);
++
+ 	HVS_WRITE(SCALER_DISPCTRLX(chan), 0);
+ 	HVS_WRITE(SCALER_DISPCTRLX(chan), SCALER_DISPCTRLX_RESET);
+ 	HVS_WRITE(SCALER_DISPCTRLX(chan), 0);
+@@ -967,16 +971,16 @@ static int vc4_hvs_init_channel(struct v
+ 	dispbkgndx = HVS_READ(SCALER_DISPBKGNDX(chan));
+ 
+ 	if (vc4->gen == VC4_GEN_4) {
+-		dispctrl |= VC4_SET_FIELD(mode->hdisplay,
++		dispctrl |= VC4_SET_FIELD(hdisplay,
+ 					  SCALER_DISPCTRLX_WIDTH) |
+-			    VC4_SET_FIELD(mode->vdisplay,
++			    VC4_SET_FIELD(vdisplay,
+ 					  SCALER_DISPCTRLX_HEIGHT) |
+ 			    (oneshot ? SCALER_DISPCTRLX_ONESHOT : 0);
+ 		dispbkgndx |= SCALER_DISPBKGND_AUTOHS;
+ 	} else {
+-		dispctrl |= VC4_SET_FIELD(mode->hdisplay,
++		dispctrl |= VC4_SET_FIELD(hdisplay,
+ 					  SCALER5_DISPCTRLX_WIDTH) |
+-			    VC4_SET_FIELD(mode->vdisplay,
++			    VC4_SET_FIELD(vdisplay,
+ 					  SCALER5_DISPCTRLX_HEIGHT) |
+ 			    (oneshot ? SCALER5_DISPCTRLX_ONESHOT : 0);
+ 		dispbkgndx &= ~SCALER5_DISPBKGND_BCK2BCK;
+@@ -1009,6 +1013,7 @@ static int vc6_hvs_init_channel(struct v
+ 	struct vc4_crtc_state *vc4_crtc_state = to_vc4_crtc_state(crtc->state);
+ 	unsigned int chan = vc4_crtc_state->assigned_channel;
+ 	bool interlace = mode->flags & DRM_MODE_FLAG_INTERLACE;
++	int hdisplay, vdisplay;
+ 	u32 disp_ctrl1;
+ 	int idx;
+ 
+@@ -1017,6 +1022,9 @@ static int vc6_hvs_init_channel(struct v
+ 	if (!drm_dev_enter(drm, &idx))
+ 		return -ENODEV;
+ 
++	/* Doubled for frame packing stereo modes */
++	drm_mode_get_hv_timing(mode, &hdisplay, &vdisplay);
++
+ 	HVS_WRITE(SCALER6_DISPX_CTRL0(chan), SCALER6_DISPX_CTRL0_RESET);
+ 
+ 	disp_ctrl1 = HVS_READ(SCALER6_DISPX_CTRL1(chan));
+@@ -1026,10 +1034,10 @@ static int vc6_hvs_init_channel(struct v
+ 
+ 	HVS_WRITE(SCALER6_DISPX_CTRL0(chan),
+ 		  SCALER6_DISPX_CTRL0_ENB |
+-		  VC4_SET_FIELD(mode->hdisplay - 1,
++		  VC4_SET_FIELD(hdisplay - 1,
+ 				SCALER6_DISPX_CTRL0_FWIDTH) |
+ 		  (oneshot ? SCALER6_DISPX_CTRL0_ONESHOT : 0) |
+-		  VC4_SET_FIELD(mode->vdisplay - 1,
++		  VC4_SET_FIELD(vdisplay - 1,
+ 				SCALER6_DISPX_CTRL0_LINES));
+ 
+ 	drm_dev_exit(idx);

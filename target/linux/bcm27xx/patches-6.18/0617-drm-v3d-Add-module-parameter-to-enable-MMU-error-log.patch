@@ -1,0 +1,86 @@
+From 948fda56a911062443fb06b9f9707cb85a34cfec Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ma=C3=ADra=20Canal?= <mairacanal@riseup.net>
+Date: Tue, 20 Jan 2026 08:09:22 -0300
+Subject: [PATCH] drm/v3d: Add module parameter to enable MMU error logging
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+MMU error messages are useful to help developers quickly identify
+issues in userspace graphics drivers, but always printing them can
+swamp the kernel log.
+
+Add a module parameter, ``debug_mmu``, to gate MMU error logging.
+Logging is disabled by default and can be enabled when needed with
+``v3d.debug_mmu=1``.
+
+Signed-off-by: Maíra Canal <mairacanal@riseup.net>
+---
+ drivers/gpu/drm/v3d/v3d_drv.c |  4 ++++
+ drivers/gpu/drm/v3d/v3d_drv.h |  1 +
+ drivers/gpu/drm/v3d/v3d_irq.c | 24 +++++++++++++-----------
+ 3 files changed, 18 insertions(+), 11 deletions(-)
+
+--- a/drivers/gpu/drm/v3d/v3d_drv.c
++++ b/drivers/gpu/drm/v3d/v3d_drv.c
+@@ -46,6 +46,10 @@ module_param_named(super_pages, super_pa
+ MODULE_PARM_DESC(super_pages, "Enable/Disable Super Pages support.");
+ #endif
+ 
++bool debug_mmu;
++module_param(debug_mmu, bool, 0644);
++MODULE_PARM_DESC(debug_mmu, "Enable/Disable MMU error logging");
++
+ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
+ 			       struct drm_file *file_priv)
+ {
+--- a/drivers/gpu/drm/v3d/v3d_drv.h
++++ b/drivers/gpu/drm/v3d/v3d_drv.h
+@@ -600,6 +600,7 @@ int v3d_submit_cpu_ioctl(struct drm_devi
+ 			 struct drm_file *file_priv);
+ 
+ /* v3d_irq.c */
++extern bool debug_mmu;
+ int v3d_irq_init(struct v3d_dev *v3d);
+ void v3d_irq_enable(struct v3d_dev *v3d);
+ void v3d_irq_disable(struct v3d_dev *v3d);
+--- a/drivers/gpu/drm/v3d/v3d_irq.c
++++ b/drivers/gpu/drm/v3d/v3d_irq.c
+@@ -197,7 +197,7 @@ v3d_hub_irq(int irq, void *arg)
+ 			{0x7F, 0x80, "GMP"},
+ 		};
+ 		const char *client = "?";
+-		static int logged_error;
++		static bool logged_error;
+ 
+ 		V3D_WRITE(V3D_MMU_CTL, V3D_READ(V3D_MMU_CTL));
+ 
+@@ -225,16 +225,18 @@ v3d_hub_irq(int irq, void *arg)
+ 			}
+ 		}
+ 
+-		if (!logged_error)
+-		dev_err(v3d->drm.dev, "MMU error from client %s (0x%x) at 0x%llx%s%s%s\n",
+-			client, axi_id, (long long)vio_addr,
+-			((intsts & V3D_HUB_INT_MMU_WRV) ?
+-			 ", write violation" : ""),
+-			((intsts & V3D_HUB_INT_MMU_PTI) ?
+-			 ", pte invalid" : ""),
+-			((intsts & V3D_HUB_INT_MMU_CAP) ?
+-			 ", cap exceeded" : ""));
+-		logged_error = 1;
++		if (!logged_error || debug_mmu) {
++			dev_err(v3d->drm.dev, "MMU error from client %s (%d) at 0x%llx%s%s%s\n",
++				client, axi_id, (long long)vio_addr,
++				((intsts & V3D_HUB_INT_MMU_WRV) ?
++				 ", write violation" : ""),
++				((intsts & V3D_HUB_INT_MMU_PTI) ?
++				 ", pte invalid" : ""),
++				((intsts & V3D_HUB_INT_MMU_CAP) ?
++				 ", cap exceeded" : ""));
++		}
++		logged_error = true;
++
+ 		status = IRQ_HANDLED;
+ 	}
+ 
