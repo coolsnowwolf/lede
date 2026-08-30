@@ -24,12 +24,14 @@ include $(INCLUDE_DIR)/package.mk
 TAR_OPTIONS+= --strip-components 1
 TAR_CMD=$(HOST_TAR) -C $(1) $(TAR_OPTIONS)
 
+# ca-certs is deprecated and new packages should use ca-certificates-any if
+# they don't need a specific package
 define Package/ca-certificates
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=System CA certificates
   PKGARCH:=all
-  PROVIDES:=ca-certs
+  PROVIDES:=@ca-certs
 endef
 
 define Package/ca-bundle
@@ -37,7 +39,7 @@ define Package/ca-bundle
   CATEGORY:=Base system
   TITLE:=System CA certificates as a bundle
   PKGARCH:=all
-  PROVIDES:=ca-certs
+  PROVIDES:=@ca-certs @ca-certificates-any
 endef
 
 define Build/Install
