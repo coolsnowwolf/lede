@@ -8,17 +8,16 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=bpftool
-PKG_VERSION:=7.5.0
+PKG_VERSION:=7.7.0
 PKG_RELEASE:=1
 
 PKG_SOURCE_URL:=https://github.com/libbpf/bpftool
-PKG_MIRROR_HASH:=d2d55ff9cc11490b251105c9e376cbfaa9bcd26d224af779fd58cdcaa8f70ccf
+PKG_MIRROR_HASH:=e397b10e195f7c02d92ece533125f8b6dc0375263028381db0424f98955fa417
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_VERSION:=v$(PKG_VERSION)
 
 PKG_MAINTAINER:=Tony Ambardar <itugrok@yahoo.com>
 
-PKG_USE_MIPS16:=0
 PKG_BUILD_FLAGS:=no-mips16 gc-sections lto
 PKG_BUILD_PARALLEL:=1
 PKG_INSTALL:=1
@@ -34,7 +33,7 @@ define Package/bpftool/Default
   CATEGORY:=Network
   TITLE:=bpftool - eBPF subsystem utility
   LICENSE:=GPL-2.0-only OR BSD-2-Clause
-  URL:=http://www.kernel.org
+  URL:=https://www.kernel.org
   DEPENDS:=+libelf
 endef
 
@@ -82,7 +81,8 @@ MAKE_FLAGS += \
 	feature-llvm=0 \
 	feature-libcap=0 \
 	feature-disassembler-four-args=1 \
-	feature-disassembler-init-styled=1
+	feature-disassembler-init-styled=1 \
+	SKIP_CRYPTO=1
 
 MAKE_PATH = src
 
@@ -102,7 +102,8 @@ HOST_MAKE_FLAGS += \
 	feature-llvm=0 \
 	feature-libcap=0 \
 	feature-disassembler-four-args=1 \
-	feature-disassembler-init-styled=1
+	feature-disassembler-init-styled=1 \
+	SKIP_CRYPTO=1
 
 HOST_MAKE_PATH = src
 
