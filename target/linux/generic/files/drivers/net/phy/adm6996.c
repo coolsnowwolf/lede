@@ -84,7 +84,7 @@ struct adm6996_priv {
 	u16 vlan_id[ADM_NUM_VLANS];
 	u8 vlan_table[ADM_NUM_VLANS];	/* bitmap, 1 = port is member */
 	u8 vlan_tagged[ADM_NUM_VLANS];	/* bitmap, 1 = tagged member */
-	
+
 	struct mutex mib_lock;
 	char buf[2048];
 
@@ -805,12 +805,12 @@ adm6996_get_port_link(struct switch_dev *dev, int port,
 		struct switch_port_link *link)
 {
 	struct adm6996_priv *priv = to_adm(dev);
-	
+
 	u16 reg = 0;
-	
+
 	if (port >= ADM_NUM_PORTS)
 		return -EINVAL;
-	
+
 	switch (port) {
 	case 0:
 		reg = r16(priv, ADM_PS0);
@@ -838,7 +838,7 @@ adm6996_get_port_link(struct switch_dev *dev, int port,
 	default:
 		return -EINVAL;
 	}
-	
+
 	link->link = reg & ADM_PS_LS;
 	if (!link->link)
 		return 0;
@@ -1003,9 +1003,9 @@ static int adm6996_switch_init(struct adm6996_priv *priv, const char *alias, str
 		w16(priv, ADM_VID_CHECK, test);
 		test ^= r16(priv, ADM_VID_CHECK);
 		if (test & (1 << 12)) {
-			/* 
-			 * Bit 12 of this register is read-only. 
-			 * This is the FC model. 
+			/*
+			 * Bit 12 of this register is read-only.
+			 * This is the FC model.
 			 */
 			priv->model = ADM6996FC;
 		} else {
@@ -1180,13 +1180,16 @@ static int adm6996_gpio_probe(struct platform_device *pdev)
 	priv->read = adm6996_read_gpio_reg;
 	priv->write = adm6996_write_gpio_reg;
 
-	ret = devm_gpio_request(&pdev->dev, priv->eecs, "adm_eecs");
+	ret = devm_gpio_request_one(&pdev->dev, priv->eecs,
+				    GPIOF_IN, "adm_eecs");
 	if (ret)
 		return ret;
-	ret = devm_gpio_request(&pdev->dev, priv->eedi, "adm_eedi");
+	ret = devm_gpio_request_one(&pdev->dev, priv->eedi,
+				    GPIOF_IN, "adm_eedi");
 	if (ret)
 		return ret;
-	ret = devm_gpio_request(&pdev->dev, priv->eesk, "adm_eesk");
+	ret = devm_gpio_request_one(&pdev->dev, priv->eesk,
+				    GPIOF_IN, "adm_eesk");
 	if (ret)
 		return ret;
 
@@ -1216,7 +1219,7 @@ static void adm6996_gpio_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver adm6996_gpio_driver = {
-	.probe = adm6996_gpio_probe,
+	.probe  = adm6996_gpio_probe,
 	.remove = adm6996_gpio_remove,
 	.driver = {
 		.name = "adm6996_gpio",
@@ -1227,14 +1230,14 @@ static int __init adm6996_init(void)
 {
 	int err;
 
-	phy_register_fixup_for_id(PHY_ANY_ID, adm6996_fixup);
-	err = phy_driver_register(&adm6996_phy_driver, THIS_MODULE);
+	phy_register_fixup_for_id("MATCH ANY PHY", adm6996_fixup);
+	err = phy_drivers_register(&adm6996_phy_driver, 1, THIS_MODULE);
 	if (err)
 		return err;
 
 	err = platform_driver_register(&adm6996_gpio_driver);
 	if (err)
-		phy_driver_unregister(&adm6996_phy_driver);
+		phy_drivers_unregister(&adm6996_phy_driver, 1);
 
 	return err;
 }
@@ -1242,7 +1245,7 @@ static int __init adm6996_init(void)
 static void __exit adm6996_exit(void)
 {
 	platform_driver_unregister(&adm6996_gpio_driver);
-	phy_driver_unregister(&adm6996_phy_driver);
+	phy_drivers_unregister(&adm6996_phy_driver, 1);
 }
 
 module_init(adm6996_init);

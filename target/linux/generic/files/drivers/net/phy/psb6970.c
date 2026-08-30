@@ -7,7 +7,7 @@
  * under  the terms of the GNU General Public License v2 as published by the
  * Free Software Foundation.
  *
- * The switch programming done in this driver follows the 
+ * The switch programming done in this driver follows the
  * "Ethernet Traffic Separation using VLAN" Application Note as
  * published by Lantiq.
  */
@@ -423,17 +423,17 @@ static struct phy_driver psb6970_driver = {
 	.read_status = &psb6970_read_status,
 };
 
-int __init psb6970_init(void)
+static int __init psb6970_init(void)
 {
-	phy_register_fixup_for_id(PHY_ANY_ID, psb6970_fixup);
-	return phy_driver_register(&psb6970_driver, THIS_MODULE);
+	phy_register_fixup_for_id("MATCH ANY PHY", psb6970_fixup);
+	return phy_drivers_register(&psb6970_driver, 1, THIS_MODULE);
 }
 
 module_init(psb6970_init);
 
-void __exit psb6970_exit(void)
+static void __exit psb6970_exit(void)
 {
-	phy_driver_unregister(&psb6970_driver);
+	phy_drivers_unregister(&psb6970_driver, 1);
 }
 
 module_exit(psb6970_exit);
