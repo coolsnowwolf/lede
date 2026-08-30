@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mbedtls
-PKG_VERSION:=3.6.5
+PKG_VERSION:=3.6.7
 PKG_RELEASE:=1
-PKG_USE_MIPS16:=0
+PKG_BUILD_FLAGS:=no-mips16 gc-sections no-lto
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
 PKG_SOURCE_URL=https://github.com/Mbed-TLS/$(PKG_NAME)/releases/download/$(PKG_NAME)-$(PKG_VERSION)
-PKG_HASH:=4a11f1777bb95bf4ad96721cac945a26e04bf19f57d905f241fe77ebeddf46d8
+PKG_HASH:=a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
 
 PKG_LICENSE:=GPL-2.0-or-later
 PKG_LICENSE_FILES:=LICENSE
@@ -130,8 +130,7 @@ This package contains mbedtls helper programs for private key and
 CSR generation (gen_key, cert_req)
 endef
 
-TARGET_CFLAGS += -ffunction-sections -fdata-sections
-TARGET_CFLAGS := $(filter-out -O%,$(TARGET_CFLAGS))
+TARGET_CFLAGS := $(filter-out -O%,$(TARGET_CFLAGS)) -Wno-unterminated-string-initialization
 
 CMAKE_OPTIONS += \
 	-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
@@ -139,14 +138,14 @@ CMAKE_OPTIONS += \
 	-DENABLE_TESTING:Bool=OFF \
 	-DENABLE_PROGRAMS:Bool=ON
 
-define Build/Prepare
-       $(call Build/Prepare/Default)
+define Build/Configure
+	$(call Build/Configure/Default)
 
-       $(if $(strip $(foreach opt,$(MBEDTLS_BUILD_OPTS),$($(opt)))),
-	 $(foreach opt,$(MBEDTLS_BUILD_OPTS),
-	 $(PKG_BUILD_DIR)/scripts/config.py \
-	 -f $(PKG_BUILD_DIR)/include/mbedtls/mbedtls_config.h \
-	 $(if $($(opt)),set,unset) $(patsubst CONFIG_%,%,$(opt))),)
+	$(if $(strip $(foreach opt,$(MBEDTLS_BUILD_OPTS),$($(opt)))),
+		$(foreach opt,$(MBEDTLS_BUILD_OPTS),
+			$(PKG_BUILD_DIR)/scripts/config.py \
+			-f $(PKG_BUILD_DIR)/include/mbedtls/mbedtls_config.h \
+			$(if $($(opt)),set,unset) $(patsubst CONFIG_%,%,$(opt))),)
 endef
 
 define Build/InstallDev
