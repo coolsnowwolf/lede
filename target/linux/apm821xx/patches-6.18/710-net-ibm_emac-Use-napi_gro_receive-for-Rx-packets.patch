@@ -1,0 +1,83 @@
+From 286eda6cb8c69e38ef83b2e73b14bb92b482ad9d Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Thu, 21 May 2026 13:52:11 -0700
+Subject: [PATCH] net: ibm_emac: Use napi_gro_receive() for Rx packets
+
+emac_poll_rx() already runs in NAPI context and TAH-equipped EMACs set
+CHECKSUM_UNNECESSARY on verified frames, which lets GRO coalesce TCP
+segments without a software checksum on the merge path. Replace the
+per-poll rx_list batched with netif_receive_skb_list() with direct
+napi_gro_receive() calls so the stack can merge segments into super-skbs
+and skip a full traversal per packet -- a meaningful win on the slow
+4xx-class CPUs this driver targets.
+
+Small routing speed improvement tested on a Cisco Meraki MX60W:
+
+Tested with iperf3
+
+Before:
+
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec   494 MBytes   414 Mbits/sec  839             sender
+[  5]   0.00-10.04  sec   492 MBytes   411 Mbits/sec                  receiver
+
+After:
+
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec   510 MBytes   428 Mbits/sec  580             sender
+[  5]   0.00-10.04  sec   508 MBytes   424 Mbits/sec                  receiver
+
+Traffic to and from the router seems to be slow no matter what:
+
+Tested with iperf3 --bidir
+
+Before:
+
+[ ID][Role] Interval           Transfer     Bitrate         Retr
+[  8][TX-C]   0.00-10.00  sec   297 MBytes   249 Mbits/sec   35            sender
+[  8][TX-C]   0.00-10.00  sec   293 MBytes   245 Mbits/sec                  receiver
+[ 10][RX-C]   0.00-10.00  sec   184 MBytes   154 Mbits/sec    0            sender
+[ 10][RX-C]   0.00-10.00  sec   184 MBytes   154 Mbits/sec                  receiver
+
+After:
+
+[ ID][Role] Interval           Transfer     Bitrate         Retr
+[  8][TX-C]   0.00-10.00  sec   295 MBytes   248 Mbits/sec   31            sender
+[  8][TX-C]   0.00-10.00  sec   294 MBytes   246 Mbits/sec                  receiver
+[ 10][RX-C]   0.00-10.00  sec   181 MBytes   152 Mbits/sec    0            sender
+[ 10][RX-C]   0.00-10.00  sec   181 MBytes   152 Mbits/sec                  receiver
+
+Assisted-by: Claude:Opus-4.7
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ drivers/net/ethernet/ibm/emac/core.c | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/ibm/emac/core.c
++++ b/drivers/net/ethernet/ibm/emac/core.c
+@@ -1738,7 +1738,6 @@ static inline int emac_rx_sg_append(stru
+ /* NAPI poll context */
+ static int emac_poll_rx(void *param, int budget)
+ {
+-	LIST_HEAD(rx_list);
+ 	struct emac_instance *dev = param;
+ 	int slot = dev->rx_slot, received = 0;
+ 
+@@ -1795,7 +1794,7 @@ static int emac_poll_rx(void *param, int
+ 		skb->protocol = eth_type_trans(skb, dev->ndev);
+ 		emac_rx_csum(dev, skb, ctrl);
+ 
+-		list_add_tail(&skb->list, &rx_list);
++		napi_gro_receive(&dev->mal->napi, skb);
+ 	next:
+ 		++dev->stats.rx_packets;
+ 	skip:
+@@ -1839,8 +1838,6 @@ static int emac_poll_rx(void *param, int
+ 		goto next;
+ 	}
+ 
+-	netif_receive_skb_list(&rx_list);
+-
+ 	if (received) {
+ 		DBG2(dev, "rx %d BDs" NL, received);
+ 		dev->rx_slot = slot;

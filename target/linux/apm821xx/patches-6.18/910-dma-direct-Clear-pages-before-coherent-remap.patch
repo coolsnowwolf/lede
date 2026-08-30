@@ -1,0 +1,72 @@
+From 78bddfc01439de243624b1e60a7f599ec11b55b7 Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Sat, 16 May 2026 16:08:49 -0700
+Subject: [PATCH] dma-direct: Clear pages before coherent remap
+
+Clear pages through their page mapping before creating a coherent
+remap for dma-direct allocations. Some architectures implement the
+coherent remap as uncached memory, where the generic memset() path may
+use cache-only zeroing instructions that are not valid for the returned
+CPU mapping.
+
+Keep the existing memset() for non-remapped allocations, but avoid
+normal memset() on the remapped coherent allocation path.
+
+Assisted-by: Codex:GPT-5.5
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ kernel/dma/direct.c | 20 ++++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+--- a/kernel/dma/direct.c
++++ b/kernel/dma/direct.c
+@@ -8,6 +8,7 @@
+ #include <linux/export.h>
+ #include <linux/mm.h>
+ #include <linux/dma-map-ops.h>
++#include <linux/highmem.h>
+ #include <linux/scatterlist.h>
+ #include <linux/pfn.h>
+ #include <linux/vmalloc.h>
+@@ -104,6 +105,15 @@ static void __dma_direct_free_pages(stru
+ 	dma_free_contiguous(dev, page, size);
+ }
+ 
++static void dma_direct_zero_pages(struct page *page, size_t size)
++{
++	unsigned long count = PAGE_ALIGN(size) >> PAGE_SHIFT;
++	unsigned long i;
++
++	for (i = 0; i < count; i++)
++		clear_highpage(page + i);
++}
++
+ static struct page *dma_direct_alloc_swiotlb(struct device *dev, size_t size)
+ {
+ 	struct page *page = swiotlb_alloc(dev, size);
+@@ -268,6 +278,13 @@ void *dma_direct_alloc(struct device *de
+ 	if (remap) {
+ 		pgprot_t prot = dma_pgprot(dev, PAGE_KERNEL, attrs);
+ 
++		/*
++		 * Zero via the page mapping before creating a potentially
++		 * uncached remap.  Some architectures cannot safely run normal
++		 * memset on uncached memory.
++		 */
++		dma_direct_zero_pages(page, size);
++
+ 		if (force_dma_unencrypted(dev))
+ 			prot = pgprot_decrypted(prot);
+ 
+@@ -283,10 +300,9 @@ void *dma_direct_alloc(struct device *de
+ 		ret = page_address(page);
+ 		if (dma_set_decrypted(dev, ret, size))
+ 			goto out_leak_pages;
++		memset(ret, 0, size);
+ 	}
+ 
+-	memset(ret, 0, size);
+-
+ 	if (set_uncached) {
+ 		arch_dma_prep_coherent(page, size);
+ 		ret = arch_dma_set_uncached(ret, size);

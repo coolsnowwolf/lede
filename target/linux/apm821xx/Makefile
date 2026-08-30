@@ -10,7 +10,7 @@ FEATURES:=fpu dt gpio ramdisk squashfs usb
 SUBTARGETS:=nand sata
 
 KERNEL_PATCHVER:=5.4
-KERNEL_TESTING_PATCHVER:=5.10
+KERNEL_TESTING_PATCHVER:=6.18
 
 define Target/Description
 	Build images for AppliedMicro APM821xx based boards.

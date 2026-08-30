@@ -7,8 +7,9 @@
 
 /dts-v1/;
 
-#include "apm82181.dtsi"
 #include <dt-bindings/thermal/thermal.h>
+#include <dt-bindings/leds/common.h>
+#include "apm82181.dtsi"
 
 / {
 	model = "Netgear WNDR4700/WNDR4720 Series";
@@ -16,14 +17,26 @@
 
 	aliases {
 		serial0 = &UART0;
-		led-boot = &status;
-		led-failsafe = &failsafe;
-		led-running = &status;
-		led-upgrade = &status;
 	};
 
 	chosen {
 		stdout-path = "/plb/opb/serial@ef600300:115200n8";
+	};
+
+	ubi-concat {
+		compatible = "mtd-concat";
+		devices = <&ubiconcat0 &ubiconcat1>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				reg = <0x0 0x7400000>;
+				label = "ubi";
+			};
+		};
 	};
 
 	thermal-zones {
@@ -108,32 +121,32 @@
 
 				map1 {
 					trip = <&cpu_alert1>;
-					cooling-device = <&fan0 1 76>;
+					cooling-device = <&fan0 1 1>;
 				};
 
 				map2 {
 					trip = <&cpu_alert2>;
-					cooling-device = <&fan0 77 101>;
+					cooling-device = <&fan0 2 4>;
 				};
 
 				map3 {
 					trip = <&cpu_alert3>;
-					cooling-device = <&fan0 102 147>;
+					cooling-device = <&fan0 4 8>;
 				};
 
 				map4 {
 					trip = <&cpu_alert4>;
-					cooling-device = <&fan0 148 207>;
+					cooling-device = <&fan0 9 12>;
 				};
 
 				map5 {
 					trip = <&cpu_alert5>;
-					cooling-device = <&fan0 208 231>;
+					cooling-device = <&fan0 13 15>;
 				};
 
 				map6 {
 					trip = <&cpu_alert6>;
-					cooling-device =<&fan0 232 THERMAL_NO_LIMIT>;
+					cooling-device =<&fan0 16 THERMAL_NO_LIMIT>;
 				};
 			};
 		};
@@ -172,90 +185,146 @@
 	dr_mode = "host";
 };
 
-&EBC0 {
-	ndfc: ndfc@1,0 {
+&ndfc {
+	status = "okay";
+	/* 128 MiB Nand Flash */
+	nand {
+		nand-is-boot-medium;
 
-		status = "okay";
-		/* 128 MiB Nand Flash */
-		nand {
-			nand-is-boot-medium;
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
 
-			partition0,0@0 {
-				label = "NAND 128MiB 3,3V 8-bit";
-				reg = <0x00000000 0x08000000>;
-				read-only;
-			};
-
-			partition0,1@0 {
+			partition@0 {
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
 				label = "uboot";
 				reg = <0x00000000 0x00180000>;
 				read-only;
+
+				partition@40000 {
+					label = "u-boot-env-main";
+					reg = <0x00040000 0x20000>; /* one block is 128k */
+					status = "disabled";
+
+					nvmem-layout {
+						compatible = "u-boot,env-redundant-count";
+					};
+				};
+
+				partition@60000 {
+					label = "u-boot-env-redundant";
+					reg = <0x00060000 0x20000>;
+					status = "disabled";
+
+					nvmem-layout {
+						compatible = "u-boot,env-redundant-count";
+					};
+				};
 			};
 
-			partition0,2@180000 {
-				label = "device-tree";
-				reg = <0x00180000 0x00020000>;
-			};
+			partition@180000 {
+				label = "firmware";
+				reg = <0x00180000 0x01860000>;
 
-			partition0,3@180000 {
-				label = "kernel";
-				reg = <0x00180000 0x00380000>;
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				partition@0 {
+					label = "kernel";
+					reg = <0x00000000 0x00480000>;
+
+					compatible = "fixed-partitions";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					/*
+					 * device-tree is @ 0x00180000 - 0x0019ffff
+					 * kernel starts from 0x20000.
+					 * this is coded into netgear's u-boot.
+					 */
+					partition@0 {
+						label = "dtb";
+						reg = <0x00000000 0x20000>;
+					};
 				/*
-				 * device-tree is @ 0x00180000 - 0x001fffff
-				 * kernel starts from 0x200000.
-				 * this is coded into netgear's u-boot.
-				 *
 				 * this partition will also contain a
 				 * fake/empty rootfs at the end to fool
 				 * Netgear's uboot rootfs integrety checks.
 				 */
+				};
+
+				ubiconcat0: partition@480000 {
+					label = "ubiconcat0";
+					reg = <0x00480000 0x013e0000>;
+				};
 			};
 
-			partition0,4@500000 {
-				label = "ubi";
-				reg = <0x00500000 0x014e0000>;
-			};
 
-			partition0,5@19e0000 {
+			/*
+			 * Netgear's u-boot in the fw_recovery mode (can be
+			 * triggered by holding the reset button, or if
+			 * "bootm" fails) will not flash past this point
+			 * (= 0x19E0000).
+			 */
+
+			partition@19e0000 {
 				label = "config";
 				reg = <0x019e0000 0x00080000>;
 				read-only;
 			};
 
-			partition0,6@1a60000 {
+			partition@1a60000 {
 				label = "pot";
 				reg = <0x01a60000 0x00080000>;
 				read-only;
 			};
 
-			partition0,7@1ae0000 {
+			partition@1ae0000 {
 				label = "traffic_meter";
 				reg = <0x01ae0000 0x00300000>;
 				read-only;
 			};
 
-			partition0,8@1de0000 {
+			partition@1de0000 {
 				label = "language";
 				reg = <0x01de0000 0x001c0000>;
 				read-only;
 			};
 
-			partition0,9@1fa0000 {
-				label = "ecos";
+			ubiconcat1: partition@1fa0000 {
+				label = "ubiconcat1";
 				reg = <0x01fa0000 0x06020000>;
-				read-only;
 			};
 
-			partition0,10@7fc0000 {
+			partition@7fc0000 {
 				label = "wifi_data";
 				reg = <0x07fc0000 0x00040000>;
 				read-only;
-			};
 
-			partition0,11@180000 {
-				label = "firmware";
-				reg = <0x00180000 0x01860000>;
-				read-only;
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					macaddr_wifi_0: macaddr@0 {
+						reg = <0x0 0x6>;
+					};
+					macaddr_wifi_c: macaddr@c {
+						reg = <0xc 0x6>;
+					};
+
+					calibration_wifi_1000: calibration@1000 {
+						reg = <0x1000 0x440>;
+					};
+
+					calibration_wifi_5000: calibration@5000 {
+						reg = <0x5000 0x440>;
+					};
+				};
 			};
 		};
 	};
@@ -275,8 +344,6 @@
 	fan0: fan@1b {
 		compatible = "microchip,tc654";
 		reg = <0x1b>;
-		cooling-min-level = <0>;
-		cooling-max-level = <255>;
 		#cooling-cells = <2>; /* min followed by max */
 
 		gpios = <&GPIO0 16 GPIO_ACTIVE_LOW>; /* fan status */
@@ -301,24 +368,93 @@
 
 &EMAC0 {
 	status = "okay";
-	phy-handle = <&phy0>;
 	fifo-entry-size = <10>;
+
+	fixed-link {
+		speed = <1000>;
+		full-duplex;
+	};
 
 	mdio {
 		#address-cells = <1>;
 		#size-cells = <0>;
-		phy0: ethernet-phy@0 {
-			device_type = "ethernet-phy";
-			reg = <0>;
-			qca,mib-poll-interval = <500>;
 
-			qca,ar8327-initvals = <
-				0x0010 0x40000000
-				0x0624 0x007f7f7f
-				0x0004 0x07a00000	/* PAD0_MODE */
-				0x000c 0x01000000	/* PAD6_MODE */
-				0x007c 0x0000007e	/* PORT0_STATUS */
-			>;
+		phy_port1: phy@0 {
+			reg = <0>;
+		};
+
+		phy_port2: phy@1 {
+			reg = <1>;
+		};
+
+		phy_port3: phy@2 {
+			reg = <2>;
+		};
+
+		phy_port4: phy@3 {
+			reg = <3>;
+		};
+
+		phy_port5: phy@4 {
+			reg = <4>;
+		};
+
+		switch0@10 {
+			compatible = "qca,qca8327";
+			reg = <0x10>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					label = "cpu";
+					ethernet = <&EMAC0>;
+					phy-mode = "rgmii-id";
+					tx-internal-delay-ps = <2000>;
+
+					fixed-link {
+						speed = <1000>;
+						full-duplex;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+					label = "lan4";
+					phy-mode = "internal";
+					phy-handle = <&phy_port1>;
+				};
+
+				port@2 {
+					reg = <2>;
+					label = "lan3";
+					phy-mode = "internal";
+					phy-handle = <&phy_port2>;
+				};
+
+				port@3 {
+					reg = <3>;
+					label = "lan2";
+					phy-mode = "internal";
+					phy-handle = <&phy_port3>;
+				};
+
+				port@4 {
+					reg = <4>;
+					label = "lan1";
+					phy-mode = "internal";
+					phy-handle = <&phy_port4>;
+				};
+
+				port@5 {
+					reg = <5>;
+					label = "wan";
+					phy-mode = "internal";
+					phy-handle = <&phy_port5>;
+				};
+			};
 		};
 	};
 };
@@ -328,7 +464,7 @@
 	keys {
 		compatible = "gpio-keys";
 
-		reset {
+		button-restart {
 			label = "Reset button";
 			gpios = <&GPIO0 15 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RESTART>;
@@ -337,7 +473,7 @@
 			debounce-interval = <60>;
 		};
 
-		backup_hd {
+		button-backup_hd {
 			label = "Backup HD button";
 			gpios = <&GPIO0 19 GPIO_ACTIVE_LOW>;
 			linux,code = <BTN_0>;
@@ -346,7 +482,7 @@
 			debounce-interval = <60>;
 		};
 
-		rfkill {
+		button-rfkill {
 			label = "RFKILL button";
 			gpios = <&GPIO0 20 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_RFKILL>;
@@ -355,7 +491,7 @@
 			debounce-interval = <60>;
 		};
 
-		wps {
+		button-wps {
 			label = "WPS button";
 			gpios = <&GPIO0 23 GPIO_ACTIVE_LOW>;
 			linux,code = <KEY_WPS_BUTTON>;
@@ -367,53 +503,63 @@
 
 	leds {
 		compatible = "gpio-leds";
-		status: power-green {
-			label = "wndr4700:green:power";
+
+		led-0 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_POWER;
 			gpios = <&GPIO0 8 GPIO_ACTIVE_HIGH>;
 		};
 
-		failsafe: power-orange {
-			label = "wndr4700:orange:power";
+		led-1 {
+			color = <LED_COLOR_ID_AMBER>;
+			function = LED_FUNCTION_FAULT;
 			gpios = <&GPIO0 9 GPIO_ACTIVE_LOW>;
-			linux,default-trigger = "panic";
+			panic-indicator;
 		};
 
-		usb-blue {
-			label = "wndr4700:blue:usb";
+		led-2 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_USB;
 			gpios = <&GPIO0 10 GPIO_ACTIVE_HIGH>;
 			trigger-sources = <&usb2_port 1>, <&usb2_port 2>,
 					  <&usb3_port 1>, <&usb3_port 2>;
 			linux,default-trigger = "usbport";
 		};
 
-		logo-white {
-			label = "wndr4700:white:logo";
+		led-3 {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
 			gpios = <&GPIO0 11 GPIO_ACTIVE_HIGH>;
 		};
 
-		wan-yellow {
-			label = "wndr4700:yellow:wan";
+		led-4 {
+			color = <LED_COLOR_ID_YELLOW>;
+			function = LED_FUNCTION_WAN;
 			gpios = <&GPIO0 3 GPIO_ACTIVE_HIGH>;
 		};
 
-		wan-green {
-			label = "wndr4700:green:wan";
+		led-5 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN;
 			gpios = <&GPIO0 12 GPIO_ACTIVE_HIGH>;
 		};
 
-		hd-green {
-			label = "wndr4700:green:hd";
+		led-6 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_DISK;
 			gpios = <&GPIO0 14 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "disk-activity";
 		};
 
-		hd-red {
-			label = "wndr4700:red:hd";
+		led-7 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_DISK_ERR;
 			gpios = <&GPIO0 17 GPIO_ACTIVE_HIGH>;
 		};
 
-		wlan-blue {
-			label = "wndr4700:blue:wlan";
+		led-8 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WLAN;
 			gpios = <&GPIO0 18 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "phy0tpt";
 		};
@@ -432,13 +578,13 @@
 	 *
 	 */
 
-	bridge@64,0 {
+	bridge@0,0 {
 		reg = <0x00400000 0 0 0 0>;
 		#address-cells = <3>;
 		#size-cells = <2>;
 		ranges;
 
-		bridge@65,0 {
+		bridge@0,0 {
 			/* IDT PES4T4 PCI Express Switch */
 			compatible = "pci111d,803a";
 			reg = <0x00410000 0 0 0 0>;
@@ -446,20 +592,20 @@
 			#size-cells = <2>;
 			ranges;
 
-			bridge@66,2 {
+			bridge@2,0 {
 				compatible = "pci111d,803a";
 				reg = <0x00421000 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
 
-				wifi0: wifi@67,0 {
+				wifi0: wifi@0,0 {
 					/* Atheros AR9380 5GHz */
 					compatible = "pci168c,0030";
 					reg = <0x00430000 0 0 0 0>;
 					interrupts = <3>; /* INTC */
-					qca,no-eeprom;
-					/* wifi CAL & MAC is stored in nvram */
+					nvmem-cell-names = "mac-address", "calibration";
+					nvmem-cells = <&macaddr_wifi_0>, <&calibration_wifi_1000>;
 
 					/*
 					 * Because this was such a pain.
@@ -469,31 +615,31 @@
 				};
 			};
 
-			bridge@66,3 {
+			bridge@3,0 {
 				compatible = "pci111d,803a";
 				reg = <0x00421800 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
 
-				wifi1: wifi@68,0 {
+				wifi1: wifi@0,0 {
 					/* Atheros AR9381 2.4GHz */
 					compatible = "pci168c,0033";
 					reg = <0x00440000 0 0 0 0>;
 					interrupts = <4>; /* INTD */
-					qca,no-eeprom;
-					/* wifi CAL & MAC is stored in nvram */
+					nvmem-cell-names = "mac-address", "calibration";
+					nvmem-cells = <&macaddr_wifi_c>, <&calibration_wifi_5000>;
 				};
 			};
 
-			bridge@66,4 {
+			bridge@4,0 {
 				compatible = "pci111d,803a";
 				reg = <0x00422000 0 0 0 0>;
 				#address-cells = <3>;
 				#size-cells = <2>;
 				ranges;
 
-				usb1: usb@69,0 {
+				usb1: usb@0,0 {
 					/* Renesas uPD720202 */
 					compatible = "pci1912,0015";
 					reg = <0x00450000 0 0 0 0>;
@@ -515,8 +661,4 @@
 			};
 		};
 	};
-};
-
-&MSI {
-	status = "okay";
 };
