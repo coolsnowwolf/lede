@@ -1,15 +1,14 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=apk
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 
 PKG_SOURCE_URL=https://gitlab.alpinelinux.org/alpine/apk-tools.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2025-06-06
-PKG_SOURCE_VERSION:=9331888de6bd5b280d75112e5b2f7b55684db0ec
-PKG_MIRROR_HASH:=7ebbea3624fb413364f37ac5b0655bb73ea02a054b63cf72b035683cf701ba1f
+PKG_SOURCE_VERSION:=b5a31c0d865342ad80be10d68f1bb3d3ad9b0866
+PKG_MIRROR_HASH:=bdb70571302d4baeafd4558522a49ce4c834c2acb51b954a19a3eea7f20b01b7
 
-PKG_VERSION=3.0.0_pre$(subst -,,$(PKG_SOURCE_DATE))
+PKG_VERSION=3.0.5
 
 PKG_MAINTAINER:=Paul Spooren <mail@aparcar.org>
 PKG_LICENSE:=GPL-2.0-only
@@ -27,7 +26,7 @@ define Package/apk/default
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=apk package manager
-  DEPENDS:=+zlib +wget
+  DEPENDS:=+zlib +wget-any
   URL:=$(PKG_SOURCE_URL)
   PROVIDES:=apk
 endef
@@ -36,6 +35,7 @@ define Package/apk-mbedtls
   $(Package/apk/default)
   TITLE += (mbedtls)
   DEPENDS +=+libmbedtls
+  DEFAULT:=y if USE_APK
   VARIANT:=mbedtls
   DEFAULT_VARIANT:=1
   CONFLICTS:=apk-openssl
@@ -53,13 +53,12 @@ MESON_VARS+=VERSION=$(PKG_VERSION)
 
 MESON_COMMON_ARGS = \
 	-Db_lto=true \
-	-Dcompressed-help=false \
 	-Ddocs=disabled \
 	-Dhelp=enabled \
 	-Dlua_version=5.1 \
 	-Ddefault_library=static \
 	-Durl_backend=wget \
-	-Dzstd=false \
+	-Dzstd=disabled \
 	-Dpython=disabled \
 	-Dtests=disabled
 
@@ -69,7 +68,8 @@ MESON_HOST_ARGS += \
 
 MESON_ARGS += \
 	$(MESON_COMMON_ARGS) \
-	-Dcrypto_backend=$(BUILD_VARIANT)
+	-Dcrypto_backend=$(BUILD_VARIANT) \
+	-Dminimal=true
 
 define Package/apk/conffiles
 /etc/apk/repositories.d/customfeeds.list
