@@ -8,14 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libusb
-PKG_VERSION:=1.0.26
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_VERSION:=1.0.29
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.bz2
-PKG_SOURCE_URL:=\
-  https://github.com/libusb/libusb/releases/download/v$(PKG_VERSION) \
-  @SF/$(PKG_NAME)
-PKG_HASH:=12ce7a61fc9854d1d2a1ffe095f7b5fac19ddba095c259e6067a46500381b5a5
+PKG_SOURCE_URL:=https://github.com/libusb/libusb/releases/download/v$(PKG_VERSION)
+PKG_HASH:=5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85
 
 PKG_MAINTAINER:= Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=LGPL-2.1-or-later
@@ -32,7 +30,7 @@ define Package/libusb-1.0
   CATEGORY:=Libraries
   TITLE:=A library for accessing Linux USB devices
   DEPENDS:=+libpthread +librt +libatomic
-  URL:=http://libusb.info/
+  URL:=https://libusb.info/
   ABI_VERSION:=0
 endef
 
@@ -45,7 +43,7 @@ define Package/fxload
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=fxload firmware loader
-  URL:=http://linux-hotplug.sourceforge.net
+  URL:=https://linux-hotplug.sourceforge.net
   DEPENDS:=+libusb-1.0
 endef
 
