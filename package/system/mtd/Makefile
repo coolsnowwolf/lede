@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=mtd
-PKG_RELEASE:=26
+PKG_RELEASE:=28
 
 PKG_BUILD_DIR := $(KERNEL_BUILD_DIR)/$(PKG_NAME)
 STAMP_PREPARED := $(STAMP_PREPARED)_$(call confvar,CONFIG_MTD_REDBOOT_PARTS)
@@ -18,6 +18,7 @@ PKG_LICENSE:=GPL-2.0+
 PKG_LICENSE_FILES:=
 
 PKG_FLAGS:=nonshared
+PKG_BUILD_FLAGS:=lto
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -36,8 +37,7 @@ endef
 target=$(firstword $(subst -, ,$(BOARD)))
 
 MAKE_FLAGS += TARGET="$(target)"
-TARGET_CFLAGS += -Dtarget_$(target)=1 -Wall -flto
-TARGET_LDFLAGS += -flto=jobserver
+TARGET_CFLAGS += -Dtarget_$(target)=1 -Wall
 
 ifdef CONFIG_MTD_REDBOOT_PARTS
   MAKE_FLAGS += FIS_SUPPORT=1

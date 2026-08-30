@@ -96,14 +96,18 @@ int jffs2_skip_bytes=0;
 int mtdtype = 0;
 uint32_t opt_trxmagic = TRX_MAGIC;
 
-int mtd_open(const char *mtd, bool block)
+int mtd_open(const char *mtd, bool block, bool write_mode)
 {
 	FILE *fp;
 	char dev[PATH_MAX];
 	int i;
 	int ret;
-	int flags = O_RDWR | O_SYNC;
+	int flags = O_RDONLY;
 	char name[PATH_MAX];
+
+	if(write_mode) {
+		flags = O_RDWR | O_SYNC;
+	}
 
 	snprintf(name, sizeof(name), "\"%s\"", mtd);
 	if ((fp = fopen("/proc/mtd", "r"))) {
@@ -124,12 +128,12 @@ int mtd_open(const char *mtd, bool block)
 	return open(mtd, flags);
 }
 
-int mtd_check_open(const char *mtd)
+int mtd_check_open(const char *mtd, bool write_mode)
 {
 	struct mtd_info_user mtdInfo;
 	int fd;
 
-	fd = mtd_open(mtd, false);
+	fd = mtd_open(mtd, false, write_mode);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		return -1;
@@ -179,8 +183,14 @@ int mtd_erase_block(int fd, int offset)
 
 int mtd_write_buffer(int fd, const char *buf, int offset, int length)
 {
-	lseek(fd, offset, SEEK_SET);
-	write(fd, buf, length);
+	if (lseek(fd, offset, SEEK_SET) != offset) {
+		fprintf(stderr, "Failed to seek MTD device: %s\n", strerror(errno));
+		return -1;
+	}
+	if (write(fd, buf, length) != length) {
+		fprintf(stderr, "Short write to MTD device\n");
+		return -1;
+	}
 	return 0;
 }
 
@@ -253,12 +263,17 @@ static int mtd_check(const char *mtd)
 			next++;
 		}
 
-		fd = mtd_check_open(mtd);
+		fd = mtd_check_open(mtd, true);
 		if (fd < 0)
 			return 0;
 
 		if (!buf)
 			buf = malloc(erasesize);
+		if (!buf) {
+			close(fd);
+			free(str);
+			return 0;
+		}
 
 		close(fd);
 		mtd = next;
@@ -290,7 +305,7 @@ mtd_unlock(const char *mtd)
 			next++;
 		}
 
-		fd = mtd_check_open(mtd);
+		fd = mtd_check_open(mtd, true);
 		if(fd < 0) {
 			fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 			exit(1);
@@ -321,7 +336,7 @@ mtd_erase(const char *mtd)
 	if (quiet < 2)
 		fprintf(stderr, "Erasing %s ...\n", mtd);
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);
@@ -352,12 +367,12 @@ mtd_dump(const char *mtd, int part_offset, int size)
 {
 	int ret = 0, offset = 0;
 	int fd;
-	char *buf;
+	char *buf = NULL;
 
 	if (quiet < 2)
 		fprintf(stderr, "Dumping %s ...\n", mtd);
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, false);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		return -1;
@@ -370,8 +385,10 @@ mtd_dump(const char *mtd, int part_offset, int size)
 		lseek(fd, part_offset, SEEK_SET);
 
 	buf = malloc(erasesize);
-	if (!buf)
-		return -1;
+	if (!buf) {
+		ret = -1;
+		goto out;
+	}
 
 	do {
 		int len = (size > erasesize) ? (erasesize) : (size);
@@ -395,6 +412,7 @@ mtd_dump(const char *mtd, int part_offset, int size)
 	} while (size > 0);
 
 out:
+	free(buf);
 	close(fd);
 	return ret;
 }
@@ -416,7 +434,7 @@ mtd_verify(const char *mtd, char *file)
 		return -1;
 	}
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, false);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		return -1;
@@ -551,7 +569,7 @@ resume:
 		next++;
 	}
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);
@@ -770,6 +788,7 @@ static void usage(void)
 	fprintf(stderr, "Usage: mtd [<options> ...] <command> [<arguments> ...] <device>[:<device>...]\n\n"
 	"The device is in the format of mtdX (eg: mtd4) or its label.\n"
 	"mtd recognizes these commands:\n"
+	"        dump                    dump mtd device\n"
 	"        unlock                  unlock the device\n"
 	"        refresh                 refresh mtd partition\n"
 	"        erase                   erase all data on device\n"
@@ -812,7 +831,10 @@ static void usage(void)
 	if (mtd_fixtrx) {
 	    fprintf(stderr,
 	"        -M <magic>              magic number of the image header in the partition (for fixtrx)\n"
-	"        -o offset               offset of the image header in the partition(for fixtrx)\n");
+	"        -o offset               offset of the image header in the partition (for dump / fixtrx)\n");
+	} else {
+	    fprintf(stderr,
+	"        -o offset               offset of the image header in the partition (for dump)\n");
 	}
 	if (mtd_fixtrx || mtd_fixseama || mtd_fixwrg || mtd_fixwrgg) {
 		fprintf(stderr,

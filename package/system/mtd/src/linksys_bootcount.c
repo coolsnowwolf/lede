@@ -69,12 +69,10 @@ struct bootcounter {
 	uint32_t checksum;
 };
 
-static char page[2048];
-
 int mtd_resetbc(const char *mtd)
 {
 	struct mtd_info_user mtd_info;
-	struct bootcounter *curr = (struct bootcounter *)page;
+	struct bootcounter *curr = NULL;
 	unsigned int i;
 	unsigned int bc_offset_increment;
 	int last_count = 0;
@@ -85,7 +83,7 @@ int mtd_resetbc(const char *mtd)
 
 	DLOG_OPEN();
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 
 	if (ioctl(fd, MEMGETINFO, &mtd_info) < 0) {
 		DLOG_ERR("Unable to obtain mtd_info for given partition name.");
@@ -108,23 +106,36 @@ int mtd_resetbc(const char *mtd)
 	}
 
 	num_bc = mtd_info.size / bc_offset_increment;
+	curr = malloc(bc_offset_increment);
+
+	if(curr == NULL) {
+		DLOG_ERR("Failed to allocate %u bytes from memory.", bc_offset_increment);
+
+		retval = -6;
+		goto out;
+	}
 
 	for (i = 0; i < num_bc; i++) {
-		pread(fd, curr, sizeof(*curr), i * bc_offset_increment);
+		ret = pread(fd, curr, sizeof(struct bootcounter), i * bc_offset_increment);
+
+		if(ret != sizeof(struct bootcounter)) {
+			DLOG_ERR("Failed to read boot-count log at offset 0x%08x.", i * bc_offset_increment);
+
+			retval = -5;
+			goto out;
+		}
 
 		/* Existing code assumes erase is to 0xff; left as-is (2019) */
+		if (curr->magic == 0xffffffff)
+			break;
 
-		if (curr->magic != BOOTCOUNT_MAGIC &&
-		    curr->magic != 0xffffffff) {
-			DLOG_ERR("Unexpected magic %08x at offset %08x; aborting.",
-				 curr->magic, i * bc_offset_increment);
+		if (curr->magic != BOOTCOUNT_MAGIC || curr->checksum != curr->magic + curr->count) {
+			DLOG_ERR("Unexpected boot-count log at offset 0x%08x: magic 0x%08x boot count 0x%08x checksum 0x%08x; aborting.",
+				 i * bc_offset_increment, curr->magic, curr->count, curr->checksum);
 
 			retval = -2;
 			goto out;
 		}
-
-		if (curr->magic == 0xffffffff)
-			break;
 
 		last_count = curr->count;
 	}
@@ -182,6 +193,9 @@ int mtd_resetbc(const char *mtd)
 	}
 
 out:
+	if (curr != NULL)
+		free(curr);
+
 	close(fd);
 	return retval;
 }

@@ -29,6 +29,7 @@
 #include <endian.h>
 #include <string.h>
 #include <errno.h>
+#include <netinet/in.h>
 
 #include <sys/ioctl.h>
 #include <mtd/mtd-user.h>
@@ -82,7 +83,7 @@ trx_fixup(int fd, const char *name)
 		goto err;
 	}
 
-	bfd = mtd_open(name, true);
+	bfd = mtd_open(name, true, true);
 	ptr = mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED, bfd, 0);
 	if (!ptr || (ptr == (void *) -1)) {
 		perror("mmap");
@@ -137,7 +138,7 @@ trx_check(int imagefd, const char *mtd, char *buf, int *len)
 	}
 
 	/* check if image fits to mtd device */
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);
@@ -165,9 +166,9 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 	size_t block_offset;
 
 	if (quiet < 2)
-		fprintf(stderr, "Trying to fix trx header in %s at 0x%x...\n", mtd, offset);
+		fprintf(stderr, "Trying to fix trx header in %s at 0x%zx...\n", mtd, offset);
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);
@@ -246,7 +247,7 @@ mtd_fixtrx(const char *mtd, size_t offset, size_t data_size)
 
 	trx->crc32 = STORE32_LE(crc32buf(buf, data_size));
 	if (mtd_erase_block(fd, block_offset)) {
-		fprintf(stderr, "Can't erease block at 0x%x (%s)\n", block_offset, strerror(errno));
+		fprintf(stderr, "Can't erease block at 0x%zx (%s)\n", block_offset, strerror(errno));
 		exit(1);
 	}
 

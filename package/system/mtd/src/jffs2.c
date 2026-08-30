@@ -242,6 +242,10 @@ int mtd_replace_jffs2(const char *mtd, int fd, int ofs, const char *filename)
 	mtdofs = ofs;
 
 	buf = malloc(erasesize);
+	if (!buf) {
+		fprintf(stderr, "Out of memory!\n");
+		return -1;
+	}
 	target_ino = 1;
 	if (!last_ino)
 		last_ino = 1;
@@ -287,13 +291,13 @@ int mtd_write_jffs2(const char *mtd, const char *filename, const char *dir)
 {
 	int err = -1, fdeof = 0;
 
-	outfd = mtd_check_open(mtd);
+	outfd = mtd_check_open(mtd, true);
 	if (outfd < 0)
 		return -1;
 
 	if (quiet < 2)
 		fprintf(stderr, "Appending %s to jffs2 partition %s\n", filename, mtd);
-	
+
 	buf = malloc(erasesize);
 	if (!buf) {
 		fprintf(stderr, "Out of memory!\n");

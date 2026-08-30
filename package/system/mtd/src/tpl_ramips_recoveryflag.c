@@ -49,7 +49,7 @@ int mtd_tpl_recoverflag_write(const char *mtd, const bool recovery_active)
 		return -1;
 	}
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if (fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		ret = -1;

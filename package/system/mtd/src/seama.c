@@ -121,7 +121,7 @@ mtd_fixseama(const char *mtd, size_t offset, size_t data_size)
 	block_offset = offset & ~(erasesize - 1);
 	offset -= block_offset;
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open(mtd, true);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);

@@ -15,8 +15,8 @@ extern int mtdsize;
 extern int erasesize;
 extern uint32_t opt_trxmagic;
 
-extern int mtd_open(const char *mtd, bool block);
-extern int mtd_check_open(const char *mtd);
+extern int mtd_open(const char *mtd, bool block, bool write_mode);
+extern int mtd_check_open(const char *mtd, bool write_mode);
 extern int mtd_block_is_bad(int fd, int offset);
 extern int mtd_erase_block(int fd, int offset);
 extern int mtd_write_buffer(int fd, const char *buf, int offset, int length);

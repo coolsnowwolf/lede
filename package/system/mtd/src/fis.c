@@ -67,12 +67,12 @@ fis_open(void)
 	if (fis_fd >= 0)
 		fis_close();
 
-	fis_fd = mtd_check_open("FIS directory");
+	fis_fd = mtd_check_open("FIS directory", true);
 	if (fis_fd < 0)
 		goto error;
 
 	close(fis_fd);
-	fis_fd = mtd_open("FIS directory", true);
+	fis_fd = mtd_open("FIS directory", true, true);
 	if (fis_fd < 0)
 		goto error;
 
@@ -215,7 +215,7 @@ fis_remap(struct fis_part *old, int n_old, struct fis_part *new, int n_new)
 		memmove(desc, last, end - tmp);
 		if (desc < last) {
 			tmp = end - (last - desc) * sizeof(struct fis_image_desc);
-			memset(tmp, 0xff, tmp - end);
+			memset(tmp, 0xff, end - tmp);
 		}
 	}
 
