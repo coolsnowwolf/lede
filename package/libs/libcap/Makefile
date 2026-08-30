@@ -6,12 +6,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=libcap
-PKG_VERSION:=2.68
+PKG_VERSION:=2.69
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/libs/security/linux-privs/libcap2
-PKG_HASH:=90be3b6d41be5f81ae4b03ec76012b0d27c829293684f6c05b65d5f9cce724b2
+PKG_HASH:=f311f8f3dad84699d0566d1d6f7ec943a9298b28f714cae3c931dfd57492d7eb
 
 PKG_MAINTAINER:=Paul Wassi <p.wassi@gmx.at>
 PKG_LICENSE:=GPL-2.0-only
@@ -66,6 +66,7 @@ MAKE_FLAGS += \
     BUILD_CC="$(CC)" \
     BUILD_CFLAGS="$(FPIC) -I$(PKG_BUILD_DIR)/libcap/include" \
     CFLAGS="$(TARGET_CFLAGS)" \
+    TARGET_CPPFLAGS="$(TARGET_CPPFLAGS)" \
     LD="$(TARGET_CC) -Wl,-x -shared" \
     LDFLAGS="$(TARGET_LDFLAGS)" \
     INDENT="| true" \
