@@ -8,13 +8,13 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=wolfssl
-PKG_VERSION:=5.7.6
+PKG_VERSION:=5.9.2
 PKG_REAL_VERSION:=$(PKG_VERSION)-stable
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_REAL_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/wolfSSL/wolfssl/archive/v$(PKG_REAL_VERSION)
-PKG_HASH:=52b1e439e30d1ed8162a16308a8525a862183b67aa30373b11166ecbab000d63
+PKG_HASH:=2f4ef3d4fd387a9b3191d36a6316d69116c46ff69bb9583b6c82b36d7b8ca114
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(BUILD_VARIANT)/$(PKG_NAME)-$(PKG_REAL_VERSION)
 
@@ -22,7 +22,7 @@ PKG_FIXUP:=libtool libtool-abiver
 PKG_INSTALL:=1
 PKG_BUILD_FLAGS:=no-mips16 lto
 PKG_BUILD_PARALLEL:=1
-PKG_LICENSE:=GPL-2.0-or-later
+PKG_LICENSE:=GPL-3.0-or-later
 PKG_LICENSE_FILES:=LICENSING COPYING
 PKG_MAINTAINER:=Eneas U de Queiroz <cotequeiroz@gmail.com>
 PKG_CPE_ID:=cpe:/a:wolfssl:wolfssl
@@ -60,7 +60,7 @@ define Package/libwolfssl/Default
   SECTION:=libs
   SUBMENU:=SSL
   CATEGORY:=Libraries
-  URL:=http://www.wolfssl.com/
+  URL:=https://www.wolfssl.com/
 endef
 
 define Package/libwolfssl
@@ -88,7 +88,7 @@ define Package/libwolfsslcpu-crypto
 $(call Package/libwolfssl/Default)
   TITLE:=wolfSSL library with AES CPU instructions
   PROVIDES:=libwolfssl libcyassl
-  DEPENDS:=@((aarch64||x86_64)&&(m||!TARGET_bcm27xx))
+  DEPENDS:=@((aarch64||x86_64||riscv64)&&(m||!TARGET_bcm27xx))
   ABI_VERSION:=$(PKG_ABI_VERSION)
   VARIANT:=cpu-crypto
 endef
@@ -101,7 +101,7 @@ endef
 
 define Package/libwolfsslcpu-crypto/description
 $(call Package/libwolfssl/description)
-This variant uses AES CPU instructions (Intel AESNI or ARMv8 Crypto Extension)
+This variant uses AES CPU instructions (Intel AESNI, ARMv8 Crypto Extension or RISC-V ASM)
 endef
 
 define Package/libwolfsslcpu-crypto/config
@@ -192,6 +192,8 @@ else ifdef CONFIG_aarch64
     Package/libwolfsslcpu-crypto/preinst=$(Package/libwolfsslcpu-crypto/preinst-aarch64)
 else ifdef CONFIG_TARGET_x86_64
 	CONFIGURE_ARGS += --enable-intelasm
+else ifdef CONFIG_riscv64
+	CONFIGURE_ARGS += --enable-riscv-asm
 endif
 
 ifeq ($(CONFIG_WOLFSSL_HAS_OCSP),y)
