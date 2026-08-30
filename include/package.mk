@@ -309,6 +309,10 @@ define BuildPackage
   $(eval $(Package/Default))
   $(eval $(Package/$(1)))
 
+  # Let multiple implementations satisfy a shared virtual package without
+  # claiming ownership of the package name.
+  $(eval PROVIDES:=$(strip @$(1)-any $(PROVIDES)))
+
 ifdef DESCRIPTION
 $$(error DESCRIPTION:= is obsolete, use Package/PKG_NAME/description)
 endif

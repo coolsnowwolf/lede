@@ -67,6 +67,24 @@ define FixupDependencies
   $(call AddDependency,$(1),$$(DEPS))
 endef
 
+# Virtual provides are marked with @ in package metadata. The marker controls
+# provider selection and must not be written to opkg metadata or filenames.
+define SanitizeProvides
+$(filter-out $(1),$(patsubst @%,%,$(2)))
+endef
+
+# Preserve the existing IPK ABI provide behavior while leaving virtual
+# provides unversioned so multiple implementations can coexist.
+define FormatProvides
+$(strip \
+  $(filter-out @%,$(3)) \
+  $(patsubst @%,%,$(filter @%,$(3))) \
+  $(if $(ABIV_$(1)), \
+    $(1) $(foreach provide,$(filter-out @%,$(3)),$(provide)$(ABIV_$(1))) \
+  ) \
+)
+endef
+
 ifneq ($(PKG_NAME),toolchain)
   define CheckDependencies
 	@( \
@@ -159,7 +177,7 @@ ifeq ($(DUMP),)
 	mkdir -p $(STAGING_DIR_ROOT)/stamp
 	$(if $(ABI_VERSION),echo '$(ABI_VERSION)' | cmp -s - $(PKG_INFO_DIR)/$(1).version || { \
 		echo '$(ABI_VERSION)' > $(PKG_INFO_DIR)/$(1).version; \
-		$(foreach pkg,$(filter-out $(1),$(PROVIDES)), \
+		$(foreach pkg,$(call SanitizeProvides,$(1),$(PROVIDES)), \
 			cp $(PKG_INFO_DIR)/$(1).version $(PKG_INFO_DIR)/$(pkg).version; \
 		) \
 	} )
@@ -176,7 +194,7 @@ Package: $(1)$$(ABIV_$(1))
 Version: $(VERSION)
 $$(call addfield,Depends,$$(Package/$(1)/DEPENDS)
 )$$(call addfield,Conflicts,$$(call mergelist,$(CONFLICTS))
-)$$(call addfield,Provides,$$(call mergelist,$$(filter-out $(1)$$(ABIV_$(1)),$(PROVIDES)$$(if $$(ABIV_$(1)), $(1) $(foreach provide,$(PROVIDES),$(provide)$$(ABIV_$(1))))))
+)$$(call addfield,Provides,$$(call mergelist,$$(filter-out $(1)$$(ABIV_$(1)),$$(call FormatProvides,$(1),$(VERSION),$(PROVIDES)))))
 )$$(call addfield,Alternatives,$$(call mergelist,$(ALTERNATIVES))
 )$$(call addfield,Source,$(SOURCE)
 )$$(call addfield,SourceName,$(1)
@@ -214,7 +232,7 @@ $(_endef)
 			fi; \
 		done; $(Package/$(1)/extra_provides) \
 	) | sort -u > $(PKG_INFO_DIR)/$(1).provides
-	$(if $(PROVIDES),@for pkg in $(filter-out $(1),$(PROVIDES)); do cp $(PKG_INFO_DIR)/$(1).provides $(PKG_INFO_DIR)/$$$$pkg.provides; done)
+	$(if $(PROVIDES),@for pkg in $(call SanitizeProvides,$(1),$(PROVIDES)); do cp $(PKG_INFO_DIR)/$(1).provides $(PKG_INFO_DIR)/$$$$pkg.provides; done)
 	$(CheckDependencies)
 
 	$(RSTRIP) $$(IDIR_$(1))
