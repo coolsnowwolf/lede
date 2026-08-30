@@ -1,4 +1,4 @@
-BPF_DEPENDS := @HAS_BPF_TOOLCHAIN
+BPF_DEPENDS := @HAS_BPF_TOOLCHAIN +@NEED_BPF_TOOLCHAIN
 LLVM_VER:=
 
 CLANG_MIN_VER:=12
@@ -82,4 +82,3 @@ define CompileBPF
 	$(CP) $(patsubst %.c,%.o,$(1)) $(patsubst %.c,%.debug.o,$(1))
 	$(LLVM_STRIP) --strip-debug $(patsubst %.c,%.o,$(1))
 endef
-

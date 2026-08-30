@@ -40,6 +40,7 @@ define Package/unetd/config
 		bool "VXLAN support"
 		depends on PACKAGE_unetd
 		depends on HAS_BPF_TOOLCHAIN
+		select NEED_BPF_TOOLCHAIN
 		default y
 
 endef
