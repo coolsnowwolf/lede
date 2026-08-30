@@ -5,7 +5,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=zram-swap
-PKG_RELEASE:=$(AUTORELEASE)
+PKG_RELEASE:=32
 
 PKG_BUILD_DIR := $(BUILD_DIR)/$(PKG_NAME)
 
