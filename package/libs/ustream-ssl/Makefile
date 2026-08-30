@@ -5,9 +5,9 @@ PKG_RELEASE:=1
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/ustream-ssl.git
-PKG_SOURCE_DATE:=2025-10-03
-PKG_SOURCE_VERSION:=5a81c108d20e24724ed847cc4be033f2a74e6635
-PKG_MIRROR_HASH:=c48331dcfda73d16cb12a0aa069eb62a5c370428c7559011a7284a9ef67d3089
+PKG_SOURCE_DATE:=2026-03-01
+PKG_SOURCE_VERSION:=99f1c0db5a729f615bc5114b3b52fd8ac8083f34
+PKG_MIRROR_HASH:=631ce829a510895cdf0bcfa48970e963e6c910ccd09718b90d85e455ec35f290
 CMAKE_INSTALL:=1
 
 PKG_LICENSE:=ISC
@@ -31,7 +31,6 @@ define Package/libustream-openssl
   TITLE += (openssl)
   DEPENDS += +PACKAGE_libustream-openssl:libopenssl
   VARIANT:=openssl
-  DEFAULT_VARIANT:=1
 endef
 
 define Package/libustream-wolfssl
@@ -48,6 +47,7 @@ define Package/libustream-mbedtls
   DEPENDS += +PACKAGE_libustream-mbedtls:libmbedtls
   CONFLICTS := libustream-openssl libustream-wolfssl
   VARIANT:=mbedtls
+  DEFAULT_VARIANT:=1
 endef
 
 ifeq ($(BUILD_VARIANT),wolfssl)
