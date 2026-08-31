@@ -1,0 +1,342 @@
+--- a/adb/adb_auth_host.c
++++ b/adb/adb_auth_host.c
+@@ -39,15 +39,13 @@
+ 
+ #include <cutils/list.h>
+ 
+-#include <openssl/evp.h>
+-#include <openssl/objects.h>
+-#include <openssl/pem.h>
+-#include <openssl/rsa.h>
+-#include <openssl/sha.h>
+-
+-#if defined(OPENSSL_IS_BORINGSSL)
+-#include <openssl/base64.h>
+-#endif
++#include <mbedtls/rsa.h>
++#include <mbedtls/sha1.h>
++#include <mbedtls/base64.h>
++#include <mbedtls/entropy.h>
++#include <mbedtls/ctr_drbg.h>
++#include <mbedtls/pk.h>
++#include <mbedtls/pem.h>
+ 
+ #define TRACE_TAG TRACE_AUTH
+ 
+@@ -57,56 +55,92 @@
+ 
+ struct adb_private_key {
+     struct listnode node;
+-    RSA *rsa;
++    mbedtls_pk_context pk;
+ };
+ 
+ static struct listnode key_list;
++static mbedtls_ctr_drbg_context ctr_drbg;
+ 
+ 
+ /* Convert OpenSSL RSA private key to android pre-computed RSAPublicKey format */
+-static int RSA_to_RSAPublicKey(RSA *rsa, RSAPublicKey *pkey)
++static int RSA_to_RSAPublicKey(mbedtls_pk_context *pk, RSAPublicKey *pkey)
+ {
+     int ret = 1;
+     unsigned int i;
++    mbedtls_mpi r32, rr, r, rem, n, n0inv, e, tmp;
++    mbedtls_rsa_context *rsa;
++    unsigned char buf[sizeof(uint32_t)];
++
++    if (mbedtls_pk_get_type(pk) != MBEDTLS_PK_RSA) {
++        return 0;
++    }
+ 
+-    BN_CTX* ctx = BN_CTX_new();
+-    BIGNUM* r32 = BN_new();
+-    BIGNUM* rr = BN_new();
+-    BIGNUM* r = BN_new();
+-    BIGNUM* rem = BN_new();
+-    BIGNUM* n = BN_new();
+-    BIGNUM* n0inv = BN_new();
++    rsa = mbedtls_pk_rsa(*pk);
++    if (!rsa) {
++         return 0;
++    }
+ 
+-    if (RSA_size(rsa) != RSANUMBYTES) {
++    mbedtls_mpi_init(&r32);
++    mbedtls_mpi_init(&rr);
++    mbedtls_mpi_init(&r);
++    mbedtls_mpi_init(&rem);
++    mbedtls_mpi_init(&n);
++    mbedtls_mpi_init(&n0inv);
++    mbedtls_mpi_init(&e);
++    mbedtls_mpi_init(&tmp);
++
++    if (mbedtls_rsa_get_len(rsa) != RSANUMBYTES) {
+         ret = 0;
+         goto out;
+     }
+ 
+-    BN_set_bit(r32, 32);
+-    BN_copy(n, rsa->n);
+-    BN_set_bit(r, RSANUMWORDS * 32);
+-    BN_mod_sqr(rr, r, n, ctx);
+-    BN_div(NULL, rem, n, r32, ctx);
+-    BN_mod_inverse(n0inv, rem, r32, ctx);
++    mbedtls_rsa_export(rsa, &n, NULL, NULL, NULL, &e);
++
++    mbedtls_mpi_lset(&r32, 1);
++    mbedtls_mpi_shift_l(&r32, 32);
++    mbedtls_mpi_lset(&r, 1);
++    mbedtls_mpi_shift_l(&r, RSANUMWORDS * 32);
++    mbedtls_mpi_mul_mpi(&rr, &r, &r);
++    mbedtls_mpi_mod_mpi(&rr, &rr, &n);
++    mbedtls_mpi_div_mpi(NULL, &rem, &n, &r32);
++    mbedtls_mpi_inv_mod(&n0inv, &rem, &r32);
+ 
+     pkey->len = RSANUMWORDS;
+-    pkey->n0inv = 0 - BN_get_word(n0inv);
++
++    mbedtls_mpi_write_binary(&n0inv, buf, sizeof(buf));
++    uint32_t n0inv_val = ((buf[0] << 24) | (buf[1] << 16) |
++                          (buf[2] << 8)  |  buf[3]);
++    pkey->n0inv = 0 - n0inv_val;
++
+     for (i = 0; i < RSANUMWORDS; i++) {
+-        BN_div(rr, rem, rr, r32, ctx);
+-        pkey->rr[i] = BN_get_word(rem);
+-        BN_div(n, rem, n, r32, ctx);
+-        pkey->n[i] = BN_get_word(rem);
++        mbedtls_mpi_div_mpi(&tmp, &rem, &rr, &r32);
++        mbedtls_mpi_copy(&rr, &tmp);
++
++        mbedtls_mpi_write_binary(&rem, buf, sizeof(buf));
++        pkey->rr[i] = ((buf[0] << 24) | (buf[1] << 16) |
++                       (buf[2] << 8)  |  buf[3]);
++
++        mbedtls_mpi_div_mpi(&tmp, &rem, &n, &r32);
++        mbedtls_mpi_copy(&n, &tmp);
++
++        mbedtls_mpi_write_binary(&rem, buf, sizeof(buf));
++        pkey->n[i] = ((buf[0] << 24) | (buf[1] << 16) |
++                      (buf[2] << 8)  |  buf[3]);
+     }
+-    pkey->exponent = BN_get_word(rsa->e);
++
++    mbedtls_mpi_write_binary(&e, buf, sizeof(buf));
++    pkey->exponent = ((buf[0] << 24) | (buf[1] << 16) |
++                      (buf[2] << 8)  |  buf[3]);
+ 
+ out:
+-    BN_free(n0inv);
+-    BN_free(n);
+-    BN_free(rem);
+-    BN_free(r);
+-    BN_free(rr);
+-    BN_free(r32);
+-    BN_CTX_free(ctx);
++    mbedtls_mpi_free(&tmp);
++    mbedtls_mpi_free(&e);
++    mbedtls_mpi_free(&n0inv);
++    mbedtls_mpi_free(&n);
++    mbedtls_mpi_free(&rem);
++    mbedtls_mpi_free(&r);
++    mbedtls_mpi_free(&rr);
++    mbedtls_mpi_free(&r32);
+ 
+     return ret;
+ }
+@@ -133,7 +167,7 @@ static void get_user_info(char *buf, siz
+         buf[len - 1] = '\0';
+ }
+ 
+-static int write_public_keyfile(RSA *private_key, const char *private_key_path)
++static int write_public_keyfile(mbedtls_pk_context *private_key, const char *private_key_path)
+ {
+     RSAPublicKey pkey;
+     FILE *outfile = NULL;
+@@ -161,16 +195,7 @@ static int write_public_keyfile(RSA *pri
+ 
+     D("Writing public key to '%s'\n", path);
+ 
+-#if defined(OPENSSL_IS_BORINGSSL)
+-    if (!EVP_EncodedLength(&encoded_length, sizeof(pkey))) {
+-        D("Public key too large to base64 encode");
+-        goto out;
+-    }
+-#else
+-    /* While we switch from OpenSSL to BoringSSL we have to implement
+-     * |EVP_EncodedLength| here. */
+     encoded_length = 1 + ((sizeof(pkey) + 2) / 3 * 4);
+-#endif
+ 
+     encoded = malloc(encoded_length);
+     if (encoded == NULL) {
+@@ -178,7 +203,12 @@ static int write_public_keyfile(RSA *pri
+         goto out;
+     }
+ 
+-    encoded_length = EVP_EncodeBlock(encoded, (uint8_t*) &pkey, sizeof(pkey));
++    if (mbedtls_base64_encode(encoded, encoded_length, &encoded_length,
++                             (unsigned char*)&pkey, sizeof(pkey)) != 0) {
++        D("Base64 encoding failed");
++        goto out;
++    }
++
+     get_user_info(info, sizeof(info));
+ 
+     if (fwrite(encoded, encoded_length, 1, outfile) != 1 ||
+@@ -201,23 +231,25 @@ static int write_public_keyfile(RSA *pri
+ 
+ static int generate_key(const char *file)
+ {
+-    EVP_PKEY* pkey = EVP_PKEY_new();
+-    BIGNUM* exponent = BN_new();
+-    RSA* rsa = RSA_new();
++    mbedtls_pk_context pk;
+     mode_t old_mask;
+     FILE *f = NULL;
+     int ret = 0;
+ 
+     D("generate_key '%s'\n", file);
+ 
+-    if (!pkey || !exponent || !rsa) {
+-        D("Failed to allocate key\n");
++    mbedtls_pk_init(&pk);
++
++    if (mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA)) != 0) {
++        D("Failed to setup key context\n");
+         goto out;
+     }
+ 
+-    BN_set_word(exponent, RSA_F4);
+-    RSA_generate_key_ex(rsa, 2048, exponent, NULL);
+-    EVP_PKEY_set1_RSA(pkey, rsa);
++    if (mbedtls_rsa_gen_key(mbedtls_pk_rsa(pk), mbedtls_ctr_drbg_random, &ctr_drbg,
++                            2048, 65537) != 0) {
++        D("Failed to generate key\n");
++        goto out;
++    }
+ 
+     old_mask = umask(077);
+ 
+@@ -230,12 +262,20 @@ static int generate_key(const char *file
+ 
+     umask(old_mask);
+ 
+-    if (!PEM_write_PrivateKey(f, pkey, NULL, NULL, 0, NULL, NULL)) {
+-        D("Failed to write key\n");
++    unsigned char buf[16000];
++    size_t len;
++
++    if (mbedtls_pk_write_key_pem(&pk, buf, sizeof(buf)) != 0) {
++        D("Failed to write key to buffer\n");
+         goto out;
+     }
+ 
+-    if (!write_public_keyfile(rsa, file)) {
++    if (fwrite(buf, strlen((char*)buf), 1, f) != 1) {
++        D("Failed to write buffer to file\n");
++        goto out;
++    }
++
++    if (!write_public_keyfile(&pk, file)) {
+         D("Failed to write public key\n");
+         goto out;
+     }
+@@ -243,44 +283,32 @@ static int generate_key(const char *file
+     ret = 1;
+ 
+ out:
+-    if (f)
++    if (f) {
+         fclose(f);
+-    EVP_PKEY_free(pkey);
+-    RSA_free(rsa);
+-    BN_free(exponent);
++    }
++    mbedtls_pk_free(&pk);
+     return ret;
+ }
+ 
+ static int read_key(const char *file, struct listnode *list)
+ {
+     struct adb_private_key *key;
+-    FILE *f;
+-
+-    D("read_key '%s'\n", file);
+-
+-    f = fopen(file, "r");
+-    if (!f) {
+-        D("Failed to open '%s'\n", file);
+-        return 0;
+-    }
+ 
+     key = malloc(sizeof(*key));
+     if (!key) {
+         D("Failed to alloc key\n");
+-        fclose(f);
+         return 0;
+     }
+-    key->rsa = RSA_new();
+ 
+-    if (!PEM_read_RSAPrivateKey(f, &key->rsa, NULL, NULL)) {
++    mbedtls_pk_init(&key->pk);
++
++    if (mbedtls_pk_parse_keyfile(&key->pk, file, NULL, mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
+         D("Failed to read key\n");
+-        fclose(f);
+-        RSA_free(key->rsa);
++        mbedtls_pk_free(&key->pk);
+         free(key);
+         return 0;
+     }
+ 
+-    fclose(f);
+     list_add_tail(list, &key->node);
+     return 1;
+ }
+@@ -373,15 +401,20 @@ static void get_vendor_keys(struct listn
+ 
+ int adb_auth_sign(void *node, void *token, size_t token_size, void *sig)
+ {
+-    unsigned int len;
+     struct adb_private_key *key = node_to_item(node, struct adb_private_key, node);
++    unsigned char hash[20];
++    size_t sig_len;
++
++    mbedtls_sha1((unsigned char*)token, token_size, hash);
+ 
+-    if (!RSA_sign(NID_sha1, token, token_size, sig, &len, key->rsa)) {
++    if (mbedtls_pk_sign(&key->pk, MBEDTLS_MD_SHA1, hash, sizeof(hash),
++                        sig, mbedtls_pk_get_len(&key->pk), &sig_len,
++                        mbedtls_ctr_drbg_random, &ctr_drbg) != 0) {
+         return 0;
+     }
+ 
+-    D("adb_auth_sign len=%d\n", len);
+-    return (int)len;
++    D("adb_auth_sign len=%d\n", (int)sig_len);
++    return (int)sig_len;
+ }
+ 
+ void *adb_auth_nextkey(void *current)
+@@ -439,10 +472,19 @@ int adb_auth_get_userkey(unsigned char *
+ void adb_auth_init(void)
+ {
+     int ret;
++    mbedtls_entropy_context entropy;
+ 
+     D("adb_auth_init\n");
+ 
+     list_init(&key_list);
++    mbedtls_entropy_init(&entropy);
++    mbedtls_ctr_drbg_init(&ctr_drbg);
++
++    if (mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
++                              (const unsigned char *)"adb_auth", 8) != 0) {
++        D("Failed to seed RNG\n");
++        return;
++    }
+ 
+     ret = get_user_key(&key_list);
+     if (!ret) {
