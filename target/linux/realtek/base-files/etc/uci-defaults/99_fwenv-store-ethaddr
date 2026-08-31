@@ -1,0 +1,73 @@
+[ ! -e /etc/fw_env.config ] && exit 0
+
+BOARD_CFG=/etc/board.json
+[ ! -e "$BOARD_CFG" ] && exit 0
+
+. /lib/functions/system.sh
+. /lib/upgrade/common.sh
+. /usr/share/libubox/jshn.sh
+
+[ "$(rootfs_type)" = "tmpfs" ] && exit 0
+
+# Some devices make it hard or impossible to acquire a usable ethaddr / MAC address
+# of the device. Some store it in weird places, some ship with only the common
+# Realtek dummy ethaddr, and some are outright broken. Often the MAC address
+# isn't printed on the case label either.
+#
+# For these devices, we generate a random ethaddr in /etc/board.d/02_network,
+# which is saved in /etc/board.json.
+#
+# Here we take this random ethaddr and store it in the U-Boot environment,
+# so that it survives sysupgrades and factory resets.
+
+store_board_ethaddr() {
+	local board_ethaddr
+	json_init
+	json_load_file "$BOARD_CFG"
+	json_select network_device
+	json_select eth0
+	json_get_var board_ethaddr macaddr
+	json_cleanup
+	[ -n "$board_ethaddr" ] && fw_setenv ethaddr "$board_ethaddr"
+}
+
+case "$(board_name)" in
+# F1100W-4SX-4XGT and its variants ship with the dummy ethaddr in the u-boot
+# environment, and the real ethaddr stored in RUNTIME/RUNTIME2 JFFS2 partitions,
+# which would be annoying to deal with. Also ethaddr isn't printed on the case.
+#
+# F5800W-12S+ same as F1100W, except the MAC address ends with :10, not :00.
+#
+# TL-ST1008F v2 ships with the dummy ethaddr because it's sold as unmanaged.
+#
+# We store the random ethaddr if the currently stored ethaddr is empty or dummy.
+hasivo,f1100w-4sx-4xgt|\
+hasivo,f1100w-4sx-4xgt-512mb|\
+hasivo,f1100wp-4sx-4xgt|\
+hasivo,f1100wp-4sx-4xgt-512mb|\
+hasivo,f5800w-12s-plus|\
+hasivo,s1300wp-8xgt-4s-plus|\
+hasivo,s600wp-5gt-2s-plus|\
+tplink,tl-st1008f-v2)
+	env_ethaddr=$(macaddr_canonicalize "$(fw_printenv -n ethaddr 2>/dev/null)")
+	ethaddr_prefix=$(echo "$env_ethaddr" | cut -d: -f1-5)
+
+	if [ -z "$env_ethaddr" ] || [ "$ethaddr_prefix" = "00:e0:4c:00:00" ]; then
+		store_board_ethaddr
+	fi
+	;;
+# This device ships with an empty environment (invalid CRC). If it is still in
+# that state, we don't want to modify it, because that would write the defaults
+# of the userspace U-Boot tools (which differ from the ones in the bootloader).
+# Thus, we don't do anything here if the ethaddr variable is empty.
+zyxel,xgs1010-12-a1|\
+zyxel,xgs1010-12-b1)
+	env_ethaddr=$(macaddr_canonicalize "$(fw_printenv -n ethaddr 2>/dev/null)")
+
+	if [ "$env_ethaddr" = "00:e0:4c:00:00:00" ]; then
+		store_board_ethaddr
+	fi
+	;;
+esac
+
+exit 0

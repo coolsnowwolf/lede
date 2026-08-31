@@ -1,0 +1,423 @@
+From 5899b3e8af412d5ad6edd3c7fb7bdf4800cf52d1 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Mon, 18 May 2026 18:07:21 +0200
+Subject: [PATCH] realtek: enhance board setup
+
+The Realtek targets need more than the upstream available code
+for proper initialization. Add what is needed.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+---
+
+--- a/arch/mips/generic/Platform
++++ b/arch/mips/generic/Platform
+@@ -10,6 +10,7 @@
+ 
+ # Note: order matters, keep the asm/mach-generic include last.
+ cflags-$(CONFIG_MACH_INGENIC_SOC)	+= -I$(srctree)/arch/mips/include/asm/mach-ingenic
++cflags-$(CONFIG_MACH_REALTEK_RTL)	+= -I$(srctree)/arch/mips/include/asm/mach-rtl-otto
+ cflags-$(CONFIG_MIPS_GENERIC)	+= -I$(srctree)/arch/mips/include/asm/mach-generic
+ 
+ load-$(CONFIG_MIPS_GENERIC)	+= 0xffffffff80100000
+--- a/arch/mips/generic/board-realtek.c
++++ b/arch/mips/generic/board-realtek.c
+@@ -11,6 +11,312 @@
+ #include <asm/fw/fw.h>
+ #include <asm/machine.h>
+ 
++#include <mach-rtl-otto.h>
++
++#define RTL_SOC_BASE			((volatile void *) 0xB8000000)
++
++#define RTL83XX_DRAM_CONFIG		0x1004
++
++#define RTL9300_SRAMSAR0		0x4000
++#define RTL9300_SRAMSAR1		0x4010
++#define RTL9300_SRAMSAR2		0x4020
++#define RTL9300_SRAMSAR3		0x4030
++#define RTL9300_UMSAR0			0x1300
++#define RTL9300_UMSAR1			0x1310
++#define RTL9300_UMSAR2			0x1320
++#define RTL9300_UMSAR3			0x1330
++#define RTL9300_O0DOR2			0x4220
++#define RTL9300_O0DMAR2			0x4224
++
++#define RTL931X_DRAM_CONFIG		0x14304c
++
++#define soc_r32(reg)			__raw_readl(RTL_SOC_BASE + reg)
++#define soc_w32(val, reg)		__raw_writel(val, RTL_SOC_BASE + reg)
++
++struct realtek_soc_data {
++	u32 model_info_reg;
++	u32 family;
++	int cpu_port;
++	void (*read_details)(u32 model);
++	void (*apply_quirks)(void);
++	void (*get_memory)(void);
++	void (*prepare_highmem)(void);
++};
++
++struct rtl83xx_soc_info soc_info;
++
++static unsigned int __init realtek_measure_hpt_freq(void)
++{
++	struct device_node *np;
++	u32 freq = 500000000;
++
++	np = of_find_node_by_name(NULL, "cpus");
++	if (!np) {
++		pr_err("Missing 'cpus' DT node, using default frequency.");
++	} else {
++		if (of_property_read_u32(np, "frequency", &freq) < 0)
++			pr_err("No 'frequency' property in DT, using default.");
++		else
++			pr_info("CPU frequency from device tree: %dMHz", freq / 1000000);
++		of_node_put(np);
++	}
++
++	return freq / 2;
++}
++
++static int __init realtek_apply_dts_quirks(void)
++{
++	struct device_node *node;
++
++	node = of_find_compatible_node(NULL, NULL, "diodes,pt7a75xx-wdt");
++	if (node) {
++		if (soc_info.family == RTL9310_FAMILY_ID) {
++			pr_info("apply quirk for diodes pt7a75xx watchdog\n");
++			sw_w32_mask(GENMASK(13, 12), BIT(12), RTL931X_LED_GLB_CTRL);
++			sw_w32_mask(0x0, BIT(8), RTL931X_MAC_L2_GLOBAL_CTRL2);
++		};
++		of_node_put(node);
++	}
++
++	return 0;
++}
++
++arch_initcall(realtek_apply_dts_quirks);
++
++static void __init rtl838x_apply_early_quirks(void)
++{
++	/*
++	 * Open up write protected registers. SDK opens/closes this whenever needed. For
++	 * simplicity always work with an "open" register set.
++	 */
++	sw_w32(0x3, RTL838X_INT_RW_CTRL);
++	/*
++	 * Disable 4 byte address mode of flash controller. If this bit is not cleared
++	 * the watchdog cannot reset the SoC. The SDK changes this short before restart.
++	 * Until this quirk was implemented all RTL838x devices ran with this disabled
++	 * because of a coding error. As no issues were detected keep the behaviour
++	 * until more details are known.
++	 */
++	sw_w32_mask(BIT(30), 0, RTL838X_PLL_CML_CTRL);
++}
++
++static void __init rtl838x_read_details(u32 model)
++{
++	u32 chip_info, ext_version, tmp;
++
++	sw_w32(0xa << 28, RTL838X_CHIP_INFO);
++
++	chip_info = sw_r32(RTL838X_CHIP_INFO);
++	soc_info.cpu = chip_info & 0xffff;
++
++	ext_version = sw_r32(RTL838X_EXT_VERSION);
++	tmp = ext_version & 0x1f;
++
++	if (tmp == 2) {
++		soc_info.revision = 1;
++	} else {
++		tmp = (chip_info >> 16) & 0x1f;
++		if (soc_info.cpu == 0x0477) {
++			soc_info.revision = tmp;
++			soc_info.testchip = true;
++		} else {
++			soc_info.revision = tmp - 1;
++		}
++	}
++}
++
++static void __init rtl839x_read_details(u32 model)
++{
++	u32 chip_info;
++
++	sw_w32(0xa << 28, RTL839X_CHIP_INFO);
++
++	chip_info = sw_r32(RTL839X_CHIP_INFO);
++	soc_info.cpu = chip_info & 0xffff;
++
++	soc_info.revision = (model >> 1) & 0x1f;
++
++	if (!(model & 0x3e))
++		soc_info.testchip = true;
++}
++
++static void __init rtl93xx_read_details(u32 model)
++{
++	u32 chip_info;
++
++	sw_w32(0xa << 16, RTL93XX_CHIP_INFO);
++
++	chip_info = sw_r32(RTL93XX_CHIP_INFO);
++	soc_info.cpu = chip_info & 0xffff;
++
++	soc_info.revision = model & 0xf;
++
++	if (model & 0x30)
++		soc_info.testchip = true;
++}
++
++static void __init rtl96xx_read_details(u32 model)
++{
++	u32 chip_info, chip_subtype;
++
++	sw_w32(0xa << 28, RTL96XX_CHIP_INFO);
++
++	chip_info = sw_r32(RTL96XX_CHIP_INFO);
++	soc_info.cpu = chip_info & 0xffff;
++
++	sw_w32(0xb << 28, RTL96XX_CHIP_SUB_INFO);
++
++	chip_subtype = sw_r32(RTL96XX_CHIP_SUB_INFO);
++	soc_info.subtype = chip_subtype & 0x1f;
++
++	soc_info.revision = model & 0xf;
++}
++
++static void __init realtek_parse_model(u32 model)
++{
++	int val;
++	char suffix = 0;
++
++	val = (model >> 11) & 0x1f;
++	if (val > 0 && val <= 26)
++		suffix = 'A' + (val - 1);
++
++	snprintf(soc_info.name, sizeof(soc_info.name), "RTL%04X%c",
++		 soc_info.id, suffix);
++}
++
++static void __init realtek_set_system_type(void)
++{
++	char revision = '?';
++	char *es = "";
++	char subtype[12] = "";
++
++	if (soc_info.revision >= 0 && soc_info.revision < 26)
++		revision = 'A' + soc_info.revision;
++
++	if (soc_info.testchip)
++		es = " ES";
++
++	if (soc_info.subtype)
++		snprintf(subtype, sizeof(subtype), " subtype %02X", soc_info.subtype);
++
++	snprintf(soc_info.system_type, sizeof(soc_info.system_type),
++		 "Realtek %s%s%s rev %c (%04X)",
++		 soc_info.name, es, subtype, revision, soc_info.cpu);
++
++	system_type = soc_info.system_type;
++}
++
++static void realtek_get_system_memory(void)
++{
++	unsigned int dcr, bits;
++
++	dcr = soc_r32(RTL83XX_DRAM_CONFIG);
++	bits = ((dcr >> 28) & 0x3) + ((dcr >> 24) & 0x3) +
++	       ((dcr >> 20) & 0xf) + ((dcr >> 16) & 0xf) + 20;
++
++	soc_info.memory_size = 1 << bits;
++}
++
++static void rtl931x_get_system_memory(void)
++{
++	unsigned int dcr, bits;
++
++	dcr = soc_r32(RTL931X_DRAM_CONFIG);
++	bits = (dcr >> 12) + ((dcr >> 6) & 0x3f) + (dcr & 0x3f);
++
++	soc_info.memory_size = 1 << bits;
++}
++
++static void rtl930x_prepare_highmem(void)
++{
++	if ((soc_info.memory_size <= 256 * 1024 * 1024) ||
++	    !IS_ENABLED(CONFIG_HIGHMEM))
++		return;
++
++	/*
++	 * The RTL930x provides 3 logical adressing zones that can be configured individually
++	 * and offer an additional memory access indirection. Memory is accessed via the OCP
++	 * bus that checks these regions and maps logical addresses to physical ones. They are
++	 *
++	 * zone 1: logical address 0x00000000-0x0fffffff (256 MB) - map register 0xb8004200
++	 * zone 2: logical address 0x10000000-0x13ffffff (64 MB)  - map register 0xb8004210
++	 * zone 3: logical address 0x20000000-0x9fffffff (2 GB)   - map register 0xb8004220
++	 *
++	 * Whenever CPU accesses memory the normal MIPS translation is applied and afterwards
++	 * the bus adds the zone mapping. E.g. a read to 0x81230000 is converted to an cached
++	 * memory access to logical address 0x01230000. It is issued to the OCP bus and the
++	 * mapping from zone 1 register is added. That allows for two memory topologies:
++	 *
++	 * Linear memory with a maximum of 320 MB:
++	 *
++	 * Zone | map content | logical               | physical
++	 * -------------------+-----------------------+-----------------------
++	 *    1 | 0x00000000  | 0x00000000-0x0fffffff | 0x00000000-0x0fffffff
++	 *    2 | 0x00000000  | 0x10000000-0x13ffffff | 0x10000000-0x13ffffff
++	 *
++	 * 256MB low memory plus up to 2GB high memory:
++	 *
++	 * Zone | map content | logical               | physical
++	 * -------------------+-----------------------+-----------------------
++	 *    1 | 0x00000000  | 0x00000000-0x0fffffff | 0x00000000-0x0fffffff
++	 *    3 | 0x70000000  | 0x20000000-0x9fffffff | 0x10000000-0x7fffffff
++	 */
++
++	pr_info("highmem kernel with > 256 MB RAM, adapt SoC memory mapping\n");
++
++	soc_w32(0, RTL9300_UMSAR0);
++	soc_w32(0, RTL9300_UMSAR1);
++	soc_w32(0, RTL9300_UMSAR2);
++	soc_w32(0, RTL9300_UMSAR3);
++	soc_w32(0, RTL9300_SRAMSAR0);
++	soc_w32(0, RTL9300_SRAMSAR1);
++	soc_w32(0, RTL9300_SRAMSAR2);
++	soc_w32(0, RTL9300_SRAMSAR3);
++	__sync();
++
++	soc_w32(0x70000000, RTL9300_O0DOR2);
++	soc_w32(0x7fffffff, RTL9300_O0DMAR2);
++	__sync();
++}
++
++static void __init realtek_prom_init(const void *match_data)
++{
++	const struct realtek_soc_data *cfg = match_data;
++	u32 model;
++
++	if (!cfg)
++		panic("No match_data found!");
++
++	model = sw_r32(cfg->model_info_reg);
++
++	soc_info.id = model >> 16 & 0xffff;
++	soc_info.family = cfg->family;
++	soc_info.cpu_port = cfg->cpu_port;
++
++	if (cfg->apply_quirks)
++		cfg->apply_quirks();
++
++	cfg->read_details(model);
++	realtek_parse_model(model);
++	realtek_set_system_type();
++	cfg->get_memory();
++
++	if (cfg->prepare_highmem)
++		cfg->prepare_highmem();
++
++	pr_info("%s SoC with %d MB\n", get_system_type(), soc_info.memory_size >> 20);
++
++	/*
++	 * fw_arg2 is the pointer to the environment. Some devices (e.g. HP JG924A) hand
++	 * over other than expected kernel boot arguments. Something like 0xfffdffff looks
++	 * suspicous. Do extra cleanup for fw_init_cmdline() to avoid a hang during boot.
++	 */
++	if (fw_arg2 >= CKSEG2)
++		fw_arg2 = 0;
++}
++
++
+ static __init int realtek_add_initrd(void *fdt)
+ {
+ 	int node, err;
+@@ -55,6 +361,8 @@ static __init const void *realtek_fixup_
+ 	static unsigned char fdt_buf[16 << 10] __initdata;
+ 	int err;
+ 
++	realtek_prom_init(match_data);
++
+ 	if (fdt_check_header(fdt))
+ 		panic("Corrupt DT");
+ 
+@@ -68,12 +376,76 @@ static __init const void *realtek_fixup_
+ 
+ }
+ 
++static const struct realtek_soc_data rtl838x_soc __initconst = {
++	.model_info_reg = RTL838X_MODEL_NAME_INFO,
++	.family = RTL8380_FAMILY_ID,
++	.cpu_port = RTL838X_CPU_PORT,
++	.read_details = rtl838x_read_details,
++	.apply_quirks = rtl838x_apply_early_quirks,
++	.get_memory = realtek_get_system_memory,
++};
++
++static const struct realtek_soc_data rtl839x_soc __initconst = {
++	.model_info_reg = RTL839X_MODEL_NAME_INFO,
++	.family = RTL8390_FAMILY_ID,
++	.cpu_port = RTL839X_CPU_PORT,
++	.read_details = rtl839x_read_details,
++	.get_memory = realtek_get_system_memory,
++};
++
++static const struct realtek_soc_data rtl930x_soc __initconst = {
++	.model_info_reg = RTL93XX_MODEL_NAME_INFO,
++	.family = RTL9300_FAMILY_ID,
++	.cpu_port = RTL930X_CPU_PORT,
++	.read_details = rtl93xx_read_details,
++	.get_memory = realtek_get_system_memory,
++	.prepare_highmem = rtl930x_prepare_highmem,
++};
++
++static const struct realtek_soc_data rtl931x_soc __initconst = {
++	.model_info_reg = RTL93XX_MODEL_NAME_INFO,
++	.family = RTL9310_FAMILY_ID,
++	.cpu_port = RTL931X_CPU_PORT,
++	.read_details = rtl93xx_read_details,
++	.get_memory = rtl931x_get_system_memory,
++};
++
++static const struct realtek_soc_data rtl960x_soc __initconst = {
++	.model_info_reg = RTL96XX_MODEL_NAME_INFO,
++	.family = RTL9607_FAMILY_ID,
++	.cpu_port = RTL9607_CPU_PORT,
++	.read_details = rtl96xx_read_details,
++	.get_memory = realtek_get_system_memory,
++	.prepare_highmem = rtl930x_prepare_highmem,
++};
++
+ static const struct of_device_id realtek_of_match[] __initconst = {
+-	{ .compatible = "realtek,rtl9302-soc" },
++	{ .compatible = "realtek,rtl8380-soc", .data = &rtl838x_soc },
++	{ .compatible = "realtek,rtl8381-soc", .data = &rtl838x_soc },
++	{ .compatible = "realtek,rtl8382-soc", .data = &rtl838x_soc },
++	{ .compatible = "realtek,rtl838x-soc", .data = &rtl838x_soc },
++	{ .compatible = "realtek,rtl8391-soc", .data = &rtl839x_soc },
++	{ .compatible = "realtek,rtl8392-soc", .data = &rtl839x_soc },
++	{ .compatible = "realtek,rtl8393-soc", .data = &rtl839x_soc },
++	{ .compatible = "realtek,rtl839x-soc", .data = &rtl839x_soc },
++	{ .compatible = "realtek,rtl9301-soc", .data = &rtl930x_soc },
++	{ .compatible = "realtek,rtl9302-soc", .data = &rtl930x_soc },
++	{ .compatible = "realtek,rtl9302c-soc", .data = &rtl930x_soc },
++	{ .compatible = "realtek,rtl9303-soc", .data = &rtl930x_soc },
++	{ .compatible = "realtek,rtl930x-soc", .data = &rtl930x_soc },
++	{ .compatible = "realtek,rtl9311-soc", .data = &rtl931x_soc },
++	{ .compatible = "realtek,rtl9312-soc", .data = &rtl931x_soc },
++	{ .compatible = "realtek,rtl9313-soc", .data = &rtl931x_soc },
++	{ .compatible = "realtek,rtl931x-soc", .data = &rtl931x_soc },
++	{ .compatible = "realtek,rtl8198d-soc", .data = &rtl960x_soc },
++	{ .compatible = "realtek,rtl9607-soc", .data = &rtl960x_soc },
++	{ .compatible = "realtek,rtl9607c-soc", .data = &rtl960x_soc },
++	{ .compatible = "realtek,rtl960x-soc", .data = &rtl960x_soc },
+ 	{}
+ };
+ 
+ MIPS_MACHINE(realtek) = {
+ 	.matches = realtek_of_match,
+ 	.fixup_fdt = realtek_fixup_fdt,
++	.measure_hpt_freq = realtek_measure_hpt_freq,
+ };

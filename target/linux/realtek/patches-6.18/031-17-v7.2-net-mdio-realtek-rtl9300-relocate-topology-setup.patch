@@ -1,0 +1,219 @@
+From 94f05740ad16c5b2bf738af69b99cd0c48afd19e Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 3 Jun 2026 19:59:21 +0200
+Subject: [PATCH 17/20] net: mdio: realtek-rtl9300: relocate topology setup
+
+Until now the driver sets up the port to bus/address topology of the
+controller after all buses are set up via otto_emdio_probe_one(). This
+does not work for devices where U-Boot skips this setup. It is not
+only needed for the hardware internal background PHY polling engine
+but it is essential for access to the PHYs during probing.
+
+Depending on the SoC type there exist two different register arrays
+
+- Bus mapping registers (RTL930x, RTL931x) define to which bus the port
+  is attached. E.g. [1]
+- Address mapping registers (RTL838x, RTL930x, RTL931x) define to which
+  address of the bus the port is attached. E.g. [2]
+
+Relocate the topology setup and make it generic. For this
+
+- Define device-specific bus_base/addr_base attributes that give the
+  register base address where the mapping lives. In case one or both are
+  not given the SoC does not support this specific type of mapping.
+- Create a helper otto_emdio_setup_topology() that writes the detected
+  topology to the registers.
+- Call this helper prior to otto_emdio_probe_one().
+- Remove unneeded code from otto_emdio_9300_mdiobus_init().
+- Due to the added prefixes, increase define indentation
+
+Subtle change: The old coding used regmap_bulk_write and silently wrote
+bus=0/address=0 to mapping registers for ports that are out of scope.
+The new coding leaves those untouched.
+
+[1] https://svanheule.net/realtek/longan/register/smi_port0_15_polling_sel
+[2] https://svanheule.net/realtek/longan/register/smi_port0_5_addr_ctrl
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20260603175924.123019-5-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 127 ++++++++++++++----------
+ 1 file changed, 76 insertions(+), 51 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -51,34 +51,38 @@
+ #include <linux/property.h>
+ #include <linux/regmap.h>
+ 
+-#define RTL9300_NUM_BUSES		4
+-#define RTL9300_NUM_PAGES		4096
+-#define RTL9300_NUM_PORTS		28
+-#define SMI_GLB_CTRL			0xca00
+-#define   GLB_CTRL_INTF_SEL(intf)	BIT(16 + (intf))
+-#define SMI_PORT0_15_POLLING_SEL	0xca08
+-#define RTL9300_SMI_ACCESS_PHY_CTRL_0	0xcb70
+-#define RTL9300_SMI_ACCESS_PHY_CTRL_1	0xcb74
+-#define   PHY_CTRL_REG_ADDR		GENMASK(24, 20)
+-#define   PHY_CTRL_PARK_PAGE		GENMASK(19, 15)
+-#define   PHY_CTRL_MAIN_PAGE		GENMASK(14, 3)
+-#define   PHY_CTRL_WRITE		BIT(2)
+-#define   PHY_CTRL_READ			0
+-#define   PHY_CTRL_TYPE_C45		BIT(1)
+-#define   PHY_CTRL_TYPE_C22		0
+-#define   PHY_CTRL_CMD			BIT(0)
+-#define   PHY_CTRL_FAIL			BIT(25)
+-#define RTL9300_SMI_ACCESS_PHY_CTRL_2	0xcb78
+-#define   PHY_CTRL_INDATA		GENMASK(31, 16)
+-#define   PHY_CTRL_DATA			GENMASK(15, 0)
+-#define RTL9300_SMI_ACCESS_PHY_CTRL_3	0xcb7c
+-#define   PHY_CTRL_MMD_DEVAD		GENMASK(20, 16)
+-#define   PHY_CTRL_MMD_REG		GENMASK(15, 0)
+-#define SMI_PORT0_5_ADDR_CTRL		0xcb80
+-
+-#define MAX_PORTS       28
+-#define MAX_SMI_BUSSES  4
+-#define RAW_PAGE(priv)	((priv)->info->num_pages - 1)
++#define RTL9300_NUM_BUSES			4
++#define RTL9300_NUM_PAGES			4096
++#define RTL9300_NUM_PORTS			28
++#define SMI_GLB_CTRL				0xca00
++#define   GLB_CTRL_INTF_SEL(intf)		BIT(16 + (intf))
++#define RTL9300_SMI_PORT0_15_POLLING_SEL	0xca08
++#define RTL9300_SMI_ACCESS_PHY_CTRL_0		0xcb70
++#define RTL9300_SMI_ACCESS_PHY_CTRL_1		0xcb74
++#define   PHY_CTRL_REG_ADDR			GENMASK(24, 20)
++#define   PHY_CTRL_PARK_PAGE			GENMASK(19, 15)
++#define   PHY_CTRL_MAIN_PAGE			GENMASK(14, 3)
++#define   PHY_CTRL_WRITE			BIT(2)
++#define   PHY_CTRL_READ				0
++#define   PHY_CTRL_TYPE_C45			BIT(1)
++#define   PHY_CTRL_TYPE_C22			0
++#define   PHY_CTRL_CMD				BIT(0)
++#define   PHY_CTRL_FAIL				BIT(25)
++#define RTL9300_SMI_ACCESS_PHY_CTRL_2		0xcb78
++#define   PHY_CTRL_INDATA			GENMASK(31, 16)
++#define   PHY_CTRL_DATA				GENMASK(15, 0)
++#define RTL9300_SMI_ACCESS_PHY_CTRL_3		0xcb7c
++#define   PHY_CTRL_MMD_DEVAD			GENMASK(20, 16)
++#define   PHY_CTRL_MMD_REG			GENMASK(15, 0)
++#define RTL9300_SMI_PORT0_5_ADDR_CTRL		0xcb80
++
++#define MAP_ADDRS_PER_REG			6
++#define MAP_BITS_PER_ADDR			5
++#define MAP_BITS_PER_BUS			2
++#define MAP_BUSES_PER_REG			16
++#define MAX_PORTS				28
++#define MAX_SMI_BUSSES				4
++#define RAW_PAGE(priv)				((priv)->info->num_pages - 1)
+ 
+ 
+ struct otto_emdio_cmd_regs {
+@@ -89,6 +93,8 @@ struct otto_emdio_cmd_regs {
+ };
+ 
+ struct otto_emdio_info {
++	u32 addr_map_base;
++	u32 bus_map_base;
+ 	u32 cmd_fail;
+ 	u32 cmd_read;
+ 	u32 cmd_write;
+@@ -327,41 +333,54 @@ static int otto_emdio_write_c45(struct m
+ 	return ret;
+ }
+ 
+-static int otto_emdio_9300_mdiobus_init(struct otto_emdio_priv *priv)
++static int otto_emdio_write_mapping(struct otto_emdio_priv *priv, u32 base, u32 port,
++				    u32 vals_per_reg, u32 bits_per_val, u32 value)
+ {
+-	u32 glb_ctrl_mask = 0, glb_ctrl_val = 0;
+-	struct regmap *regmap = priv->regmap;
+-	u32 port_addr[5] = { 0 };
+-	u32 poll_sel[2] = { 0 };
+-	int i, err;
++	u32 shift = (port % vals_per_reg) * bits_per_val;
++	u32 reg = base + (port / vals_per_reg) * 4;
++	u32 mask = GENMASK(bits_per_val - 1, 0);
+ 
+-	/* Associate the port with the SMI interface and PHY */
+-	for_each_set_bit(i, priv->valid_ports, priv->info->num_ports) {
+-		int pos;
++	return regmap_update_bits(priv->regmap, reg, mask << shift, value << shift);
++}
+ 
+-		pos = (i % 6) * 5;
+-		port_addr[i / 6] |= (priv->smi_addr[i] & 0x1f) << pos;
++static int otto_emdio_setup_topology(struct otto_emdio_priv *priv)
++{
++	const struct otto_emdio_info *info = priv->info;
++	u32 port;
++	int ret;
+ 
+-		pos = (i % 16) * 2;
+-		poll_sel[i / 16] |= (priv->smi_bus[i] & 0x3) << pos;
++	for_each_set_bit(port, priv->valid_ports, info->num_ports) {
++		if (info->bus_map_base) {
++			ret = otto_emdio_write_mapping(priv, info->bus_map_base, port,
++						       MAP_BUSES_PER_REG, MAP_BITS_PER_BUS,
++						       priv->smi_bus[port]);
++			if (ret)
++				return ret;
++		}
++		if (info->addr_map_base) {
++			ret = otto_emdio_write_mapping(priv, info->addr_map_base, port,
++						       MAP_ADDRS_PER_REG, MAP_BITS_PER_ADDR,
++						       priv->smi_addr[port]);
++			if (ret)
++				return ret;
++		}
+ 	}
+ 
++	return 0;
++}
++
++static int otto_emdio_9300_mdiobus_init(struct otto_emdio_priv *priv)
++{
++	u32 glb_ctrl_mask = 0, glb_ctrl_val = 0;
++	struct regmap *regmap = priv->regmap;
++	int i, err;
++
+ 	/* Put the interfaces into C45 mode if required */
+ 	glb_ctrl_mask = GENMASK(19, 16);
+ 	for (i = 0; i < priv->info->num_buses; i++)
+ 		if (priv->smi_bus_is_c45[i])
+ 			glb_ctrl_val |= GLB_CTRL_INTF_SEL(i);
+ 
+-	err = regmap_bulk_write(regmap, SMI_PORT0_5_ADDR_CTRL,
+-				port_addr, 5);
+-	if (err)
+-		return err;
+-
+-	err = regmap_bulk_write(regmap, SMI_PORT0_15_POLLING_SEL,
+-				poll_sel, 2);
+-	if (err)
+-		return err;
+-
+ 	err = regmap_update_bits(regmap, SMI_GLB_CTRL,
+ 				 glb_ctrl_mask, glb_ctrl_val);
+ 	if (err)
+@@ -528,6 +547,10 @@ static int otto_emdio_probe(struct platf
+ 	if (err)
+ 		return err;
+ 
++	err = otto_emdio_setup_topology(priv);
++	if (err)
++		return err;
++
+ 	device_for_each_child_node_scoped(dev, child) {
+ 		err = otto_emdio_probe_one(dev, priv, child);
+ 		if (err)
+@@ -542,6 +565,8 @@ static int otto_emdio_probe(struct platf
+ }
+ 
+ static const struct otto_emdio_info otto_emdio_9300_info = {
++	.addr_map_base = RTL9300_SMI_PORT0_5_ADDR_CTRL,
++	.bus_map_base = RTL9300_SMI_PORT0_15_POLLING_SEL,
+ 	.cmd_fail = PHY_CTRL_FAIL,
+ 	.cmd_read = PHY_CTRL_READ,
+ 	.cmd_write = PHY_CTRL_WRITE,

@@ -1,0 +1,58 @@
+From 05d871c5194bef01b525ca9289efb736bbfd6ece Mon Sep 17 00:00:00 2001
+From: Sander Vanheule <sander@svanheule.net>
+Date: Fri, 15 May 2026 23:23:50 +0200
+Subject: watchdog: realtek-otto: prevent PHASE2 underflows
+
+For small pretimeout values, ((timeout - pretimeout) / tick) might be
+rounded up to the same value as (timeout / tick). As a result, the
+number of PHASE2 ticks may be zero, causing an underflow when
+subtracting 1 to configure the hardware. While this results in a
+longer-than-expected time to system reset, the duration of PHASE1 and
+minimum ping interval for the watchdog would still be correct.
+
+As the watchdog core ensures pretimeout is strictly less than timeout,
+ceil(timeout / tick) is strictly greater than floor(pretimeout / tick)
+and the number of PHASE1 ticks cannot be 0. So instead of rounding up
+the number of PHASE1 ticks, we can round down the number of PHASE2
+ticks, maintaining the current behavior while avoiding underflows.
+
+The original helper function is now inlined, as it doesn't save any
+duplication anymore.
+
+Signed-off-by: Sander Vanheule <sander@svanheule.net>
+Link: https://lore.kernel.org/r/20260515212351.752054-2-sander@svanheule.net
+Signed-off-by: Guenter Roeck <linux@roeck-us.net>
+---
+ drivers/watchdog/realtek_otto_wdt.c | 12 +++---------
+ 1 file changed, 3 insertions(+), 9 deletions(-)
+
+(limited to 'drivers/watchdog/realtek_otto_wdt.c')
+
+--- a/drivers/watchdog/realtek_otto_wdt.c
++++ b/drivers/watchdog/realtek_otto_wdt.c
+@@ -114,12 +114,6 @@ static int otto_wdt_tick_ms(struct otto_
+  * the value stored in those fields. This means each phase will run for at least
+  * one tick, so small values need to be clamped to correctly reflect the timeout.
+  */
+-static inline unsigned int div_round_ticks(unsigned int val, unsigned int tick_duration,
+-		unsigned int min_ticks)
+-{
+-	return max(min_ticks, DIV_ROUND_UP(val, tick_duration));
+-}
+-
+ static int otto_wdt_determine_timeouts(struct watchdog_device *wdev, unsigned int timeout,
+ 		unsigned int pretimeout)
+ {
+@@ -140,9 +134,9 @@ static int otto_wdt_determine_timeouts(s
+ 			return -EINVAL;
+ 
+ 		tick_ms = otto_wdt_tick_ms(ctrl, prescale);
+-		total_ticks = div_round_ticks(timeout_ms, tick_ms, 2);
+-		phase1_ticks = div_round_ticks(timeout_ms - pretimeout_ms, tick_ms, 1);
+-		phase2_ticks = total_ticks - phase1_ticks;
++		total_ticks = max(2, DIV_ROUND_UP(timeout_ms, tick_ms));
++		phase2_ticks = max(1, pretimeout_ms / tick_ms);
++		phase1_ticks = total_ticks - phase2_ticks;
+ 
+ 		prescale_next++;
+ 	} while (phase1_ticks > OTTO_WDT_PHASE_TICKS_MAX

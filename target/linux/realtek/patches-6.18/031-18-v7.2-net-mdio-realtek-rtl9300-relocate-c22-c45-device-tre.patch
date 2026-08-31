@@ -1,0 +1,64 @@
+From 439aba443a8012b5a61bf327f75bec69be56ddd3 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 3 Jun 2026 19:59:22 +0200
+Subject: [PATCH 18/20] net: mdio: realtek-rtl9300: relocate c22/c45 device
+ tree readout
+
+otto_emdio_map_ports() is the central place to lookup the topology and the
+properties of the Realtek ethernet MDIO controller from the device tree.
+Deviating from this the c22/c45 detection via "ethernet-phy-ieee802.3-c45"
+is running separately in otto_emdio_probe_one(). It loops over the same
+nodes, just at a later point in time.
+
+There is no benefit to divide this setup and to have a time window where
+the data structure is only filled partially. Additionally it uses the
+"fwnode" API. Consolidate the setup and convert it to the "of" API.
+
+Remark. This is a subtle change for dangling PHY nodes (not referenced
+by ethernet-ports). Before this commit all PHY nodes were evaluated for
+c45 setup, now only the referenced ones.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20260603175924.123019-6-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 21 +++++++++------------
+ 1 file changed, 9 insertions(+), 12 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -405,18 +405,6 @@ static int otto_emdio_probe_one(struct d
+ 		return dev_err_probe(dev, -EINVAL,
+ 				     "illegal (dangling) smi bus number %d\n", mdio_bus);
+ 
+-	/* The MDIO accesses from the kernel work with the PHY polling unit in
+-	 * the switch. We need to tell the PPU to operate either in GPHY (i.e.
+-	 * clause 22) or 10GPHY mode (i.e. clause 45).
+-	 *
+-	 * We select 10GPHY mode if there is at least one PHY that declares
+-	 * compatible = "ethernet-phy-ieee802.3-c45". This does mean we can't
+-	 * support both c45 and c22 on the same MDIO bus.
+-	 */
+-	fwnode_for_each_child_node_scoped(node, child)
+-		if (fwnode_device_is_compatible(child, "ethernet-phy-ieee802.3-c45"))
+-			priv->smi_bus_is_c45[mdio_bus] = true;
+-
+ 	bus = devm_mdiobus_alloc_size(dev, sizeof(*chan));
+ 	if (!bus)
+ 		return -ENOMEM;
+@@ -506,6 +494,15 @@ static int otto_emdio_map_ports(struct d
+ 			goto put_nodes;
+ 		}
+ 
++		/*
++		 * The MDIO accesses from the kernel work with the PHY polling unit in the
++		 * switch. The PPU either operates in GPHY (i.e. clause 22) or 10GPHY mode
++		 * (i.e. clause 45). Select 10GPHY mode if there is at least one PHY that
++		 * declares compatible = "ethernet-phy-ieee802.3-c45".
++		 */
++		if (of_device_is_compatible(phy_dn, "ethernet-phy-ieee802.3-c45"))
++			priv->smi_bus_is_c45[bus] = true;
++
+ 		__set_bit(pn, priv->valid_ports);
+ 		priv->smi_bus[pn] = bus;
+ 		priv->smi_addr[pn] = addr;

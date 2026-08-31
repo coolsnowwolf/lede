@@ -1,0 +1,66 @@
+From 18652e0d0527bc17542699d7dbdc14e4054acb2f Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Fri, 5 Jun 2026 19:47:35 +0200
+Subject: [PATCH 7/8] irqchip/irq-realtek-rtl: Allow shuffled interrupt order
+
+The driver silently assumes that the first given interrupt in
+the device tree is nailed to "2". Any deviation from this will
+break the driver. Fix this by storing the given interrupt
+in the domain data structure and writing the proper value
+to the routing register.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+---
+ drivers/irqchip/irq-realtek-rtl.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+--- a/drivers/irqchip/irq-realtek-rtl.c
++++ b/drivers/irqchip/irq-realtek-rtl.c
+@@ -28,6 +28,8 @@
+ struct realtek_ictl_output {
+ 	struct fwnode_handle *fwnode;
+ 	struct irq_domain *domain;
++	unsigned int parent_irq;
++	unsigned int parent_hwirq;
+ 	unsigned int index;
+ 	u32 mask;
+ };
+@@ -122,7 +124,7 @@ static int intc_map(struct irq_domain *d
+ 	guard(raw_spinlock_irqsave)(&irq_lock);
+ 	output->mask |= BIT(hw_irq);
+ 	for_each_present_cpu(cpu)
+-		write_irr(cpu, hw_irq, 1);
++		write_irr(cpu, hw_irq, output->parent_hwirq - 1);
+ 
+ 	return 0;
+ }
+@@ -175,6 +177,7 @@ static int __init realtek_setup_parents(
+ {
+ 	int err, parent_irq, num_parents = of_irq_count(node);
+ 	struct realtek_ictl_output *output;
++	struct irq_data *parent_data;
+ 	struct of_phandle_args oirq;
+ 	struct irq_domain *domain;
+ 
+@@ -207,6 +210,12 @@ static int __init realtek_setup_parents(
+ 		goto err_out;
+ 	}
+ 
++	parent_data = irq_get_irq_data(parent_irq);
++	if (!parent_data) {
++		err = -EINVAL;
++		goto err_out;
++	}
++
+ 	domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS,
+ 					  &irq_domain_ops, output);
+ 	if (!domain) {
+@@ -217,6 +226,8 @@ static int __init realtek_setup_parents(
+ 	output->domain = domain;
+ 	output->fwnode = of_fwnode_handle(node);
+ 	output->index = 0;
++	output->parent_irq = parent_irq;
++	output->parent_hwirq = irqd_to_hwirq(parent_data);
+ 	irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, output);
+ 
+ 	return 0;

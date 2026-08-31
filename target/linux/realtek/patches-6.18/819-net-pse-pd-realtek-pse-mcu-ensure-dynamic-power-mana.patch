@@ -1,0 +1,94 @@
+From 0e7f97c356a8c04bbae1e412ecfac8efa46ec03e Mon Sep 17 00:00:00 2001
+From: Russell Senior <russell@personaltelco.net>
+Date: Mon, 3 Aug 2026 13:44:04 -0700
+Subject: [PATCH] net: pse-pd: realtek-pse-mcu: ensure dynamic power management
+ mode with priority
+
+The MCU may have any power management mode configuration by default
+but the driver should ensure that we run in "Dynamic Power Mgmt with
+Priority" mode. The absence of this command was noted with the
+Engenius EWS2910P v1. In the unexpected case where the opcode is
+not recognized by a different board, the code emits a warning.
+
+The opcode used for gen2 devices is derived from the realtek-poe
+userspace package that preceded the realtek-pse-mcu driver.
+
+Tested on an EWS2910P v1.
+
+Signed-off-by: Russell Senior <russell@personaltelco.net>
+---
+ drivers/net/pse-pd/realtek-pse-mcu-core.c | 31 +++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+--- a/drivers/net/pse-pd/realtek-pse-mcu-core.c
++++ b/drivers/net/pse-pd/realtek-pse-mcu-core.c
+@@ -70,10 +70,14 @@
+ /* Nominal PSE rail; 802.3at/bt operating range. */
+ #define RTPSE_MCU_PSE_VOLTAGE_UV		54000000
+ 
++/* RTPSE_MCU_CMD_SET_POWER_MANAGEMENT_MODE values */
++#define RTPSE_MCU_DYNAMIC_POWER_MGMT_PRIO	0x02	/* dynamic, with port priority */
++
+ enum rtpse_mcu_cmd {
+ 	RTPSE_MCU_CMD_SET_GLOBAL_STATE,
+ 	RTPSE_MCU_CMD_GET_SYSTEM_INFO,
+ 	RTPSE_MCU_CMD_GET_EXT_CONFIG,
++	RTPSE_MCU_CMD_SET_POWER_MANAGEMENT_MODE,
+ 
+ 	RTPSE_MCU_CMD_PORT_ENABLE,
+ 	RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_TYPE,
+@@ -382,6 +386,26 @@ static int rtpse_mcu_set_global_state(st
+ 	return (resp.payload[0] == 0x0) ? 0 : -EIO;
+ }
+ 
++static int rtpse_mcu_set_power_management_mode(struct rtpse_mcu_ctrl *pse, u8 value)
++{
++	struct rtpse_mcu_msg req, resp;
++	const struct rtpse_mcu_opcode *opc;
++	int ret;
++
++	opc = &pse->dialect->opcode[RTPSE_MCU_CMD_SET_POWER_MANAGEMENT_MODE];
++	if (!opc->valid)
++		return -EOPNOTSUPP;
++
++	rtpse_mcu_msg_init(&req, opc->op);
++	req.payload[0] = value;
++
++	ret = rtpse_mcu_do_xfer(pse, &req, &resp);
++	if (ret)
++		return ret;
++
++	return (resp.payload[0] == 0x0) ? 0 : -EIO;
++}
++
+ /* Port operations */
+ 
+ static int rtpse_mcu_port_get_status(struct rtpse_mcu_ctrl *pse, unsigned int port,
+@@ -983,6 +1007,11 @@ int rtpse_mcu_register(struct rtpse_mcu_
+ 		return dev_err_probe(pse->dev, PTR_ERR(gpiod),
+ 				     "failed to get disable-ports gpio\n");
+ 
++	/* Ensure that we run in "Dynamic Power Management Mode with Priority" mode */
++	ret = rtpse_mcu_set_power_management_mode(pse, RTPSE_MCU_DYNAMIC_POWER_MGMT_PRIO);
++	if (ret)
++		dev_warn_probe(pse->dev, ret, "failed to set power management mode\n");
++
+ 	if (!info.system_enable) {
+ 		ret = rtpse_mcu_set_global_state(pse, true);
+ 		/* Dialects without a global-state concept (e.g. Gen1) return
+@@ -1096,6 +1125,7 @@ static const struct rtpse_mcu_dialect rt
+ 		[RTPSE_MCU_CMD_SET_GLOBAL_STATE]	= RTPSE_MCU_OP(0x00),
+ 		[RTPSE_MCU_CMD_GET_SYSTEM_INFO]		= RTPSE_MCU_OP(0x40),
+ 		[RTPSE_MCU_CMD_GET_EXT_CONFIG]		= RTPSE_MCU_OP(0x4a),
++		[RTPSE_MCU_CMD_SET_POWER_MANAGEMENT_MODE] = RTPSE_MCU_OP(0x10),
+ 
+ 		[RTPSE_MCU_CMD_PORT_ENABLE]		= RTPSE_MCU_OP(0x01),
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_TYPE] = RTPSE_MCU_OP(0x12),
+@@ -1119,6 +1149,7 @@ static const struct rtpse_mcu_dialect rt
+ 	.opcode = {
+ 		[RTPSE_MCU_CMD_GET_SYSTEM_INFO]		= RTPSE_MCU_OP(0x20),
+ 		[RTPSE_MCU_CMD_GET_EXT_CONFIG]		= RTPSE_MCU_OP(0x2b),
++		[RTPSE_MCU_CMD_SET_POWER_MANAGEMENT_MODE] = RTPSE_MCU_OP(0x17),
+ 
+ 		[RTPSE_MCU_CMD_PORT_ENABLE]		= RTPSE_MCU_OP(0x00),
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_TYPE] = RTPSE_MCU_OP(0x15),

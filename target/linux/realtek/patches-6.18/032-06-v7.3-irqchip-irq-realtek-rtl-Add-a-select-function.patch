@@ -1,0 +1,81 @@
+From 4be0e039e8456b0e3111072ac9c66c1e62d1d8df Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Fri, 5 Jun 2026 19:39:41 +0200
+Subject: [PATCH 6/8] irqchip/irq-realtek-rtl: Add a select function
+
+When working with multiple domains, the interrupt registration
+must know to which domain it attaches. Add a select function that
+takes care of the lookup. Logic is as follows.
+
+If a device needs explicit parent routing it can request it by
+giving an index as a second argument in the device tree. E.g.
+
+intc: interrupt-controller@3000 {
+  ...
+  interrupts = <2>, <3>, <4>, <5>, <6>, <7>;
+};
+
+uart1: uart@2100 {
+  ...
+  interrupt-parent = <&intc>;
+  interrupts = <31 1>;
+}
+
+This way the serial console with hardware interrupt 31 will be
+routed via SoC interrupt 3. If the second argument is not given,
+the first parent interrupt of the controller is selected.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+---
+ drivers/irqchip/irq-realtek-rtl.c | 24 ++++++++++++++++++++++--
+ 1 file changed, 22 insertions(+), 2 deletions(-)
+
+--- a/drivers/irqchip/irq-realtek-rtl.c
++++ b/drivers/irqchip/irq-realtek-rtl.c
+@@ -26,7 +26,9 @@
+ #define REG(cpu, x)		(realtek_ictl_base[cpu] + x)
+ 
+ struct realtek_ictl_output {
++	struct fwnode_handle *fwnode;
+ 	struct irq_domain *domain;
++	unsigned int index;
+ 	u32 mask;
+ };
+ 
+@@ -125,9 +127,25 @@ static int intc_map(struct irq_domain *d
+ 	return 0;
+ }
+ 
++static int intc_select(struct irq_domain *d, struct irq_fwspec *fwspec,
++		       enum irq_domain_bus_token bus_token)
++{
++	struct realtek_ictl_output *output = d->host_data;
++	unsigned int index = 0;
++
++	if (fwspec->fwnode != output->fwnode)
++		return false;
++
++	if (fwspec->param_count == 2)
++		index = fwspec->param[1];
++
++	return index == output->index;
++}
++
+ static const struct irq_domain_ops irq_domain_ops = {
+-	.map = intc_map,
+-	.xlate = irq_domain_xlate_onecell,
++	.map	= intc_map,
++	.select	= intc_select,
++	.xlate	= irq_domain_xlate_onecell,
+ };
+ 
+ static void realtek_irq_dispatch(struct irq_desc *desc)
+@@ -197,6 +215,8 @@ static int __init realtek_setup_parents(
+ 	}
+ 
+ 	output->domain = domain;
++	output->fwnode = of_fwnode_handle(node);
++	output->index = 0;
+ 	irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, output);
+ 
+ 	return 0;

@@ -1,0 +1,63 @@
+From da96d42a568b98508729abf5c8f05d6e7770443d Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Mon, 4 May 2026 17:10:20 +0200
+Subject: hwmon: (lm75) Support active-high alert polarity
+
+LM75 devices supported by this driver support configurable active-high
+alert polarity. This is already documented in the devicetree description.
+Add support for it to the driver.
+
+Follow documentation and defensively enforce active-low if property is
+not set. This avoids possible inconsistencies for future devices with
+wrong parametrization. No API breakage as all current devices have
+their parameters set to active-low.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://lore.kernel.org/r/20260504151020.462342-3-markus.stockhausen@gmx.de
+Signed-off-by: Guenter Roeck <linux@roeck-us.net>
+---
+ drivers/hwmon/lm75.c | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+--- a/drivers/hwmon/lm75.c
++++ b/drivers/hwmon/lm75.c
+@@ -122,7 +122,9 @@ struct lm75_data {
+ 
+ static const u8 lm75_sample_set_masks[] = { 0 << 5, 1 << 5, 2 << 5, 3 << 5 };
+ 
+-#define LM75_SAMPLE_CLEAR_MASK	(3 << 5)
++#define LM75_ALERT_POLARITY_HIGH_8_BIT	(BIT(2))
++#define LM75_ALERT_POLARITY_HIGH_16_BIT	(BIT(2) << 8)
++#define LM75_SAMPLE_CLEAR_MASK		(3 << 5)
+ 
+ /* The structure below stores the configuration values of the supported devices.
+  * In case of being supported multiple configurations, the default one must
+@@ -710,6 +712,7 @@ static void lm75_remove(void *data)
+ static int lm75_generic_probe(struct device *dev, const char *name,
+ 			      enum lm75_type kind, int irq, struct regmap *regmap)
+ {
++	u16 clr_mask, pol_mask, set_mask;
+ 	struct device *hwmon_dev;
+ 	struct lm75_data *data;
+ 	int status, err;
+@@ -744,8 +747,18 @@ static int lm75_generic_probe(struct dev
+ 		return err;
+ 	data->orig_conf = status;
+ 
+-	err = lm75_write_config(data, data->params->set_mask,
+-				data->params->clr_mask);
++	/* Enforce polarity active-low (default) or active-high (devicetree) */
++	if (!data->params->config_reg_16bits)
++		pol_mask = LM75_ALERT_POLARITY_HIGH_8_BIT;
++	else
++		pol_mask = LM75_ALERT_POLARITY_HIGH_16_BIT;
++
++	clr_mask = data->params->clr_mask | pol_mask;
++	set_mask = data->params->set_mask & ~pol_mask;
++	if (device_property_read_bool(dev, "ti,alert-polarity-active-high"))
++		set_mask |= pol_mask;
++
++	err = lm75_write_config(data, set_mask, clr_mask);
+ 	if (err)
+ 		return err;
+ 

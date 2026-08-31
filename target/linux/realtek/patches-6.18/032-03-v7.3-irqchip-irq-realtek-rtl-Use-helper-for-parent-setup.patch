@@ -1,0 +1,106 @@
+From 62e8298a43e3f0de23cbd52e4ac2399356a724cc Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Fri, 5 Jun 2026 16:05:22 +0200
+Subject: [PATCH 3/8] irqchip/irq-realtek-rtl: Use helper for parent setup
+
+With the upcoming commits the parent interrupt setup will be extended.
+Relocate it into a separate helper. Although it still works only
+for a single interrupt prepare the coding so it can be easily
+extended with a loop for multi parent support. For this reduce the
+line lengths so that the upcoming indentation still leaves the
+width below 100 characters.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+---
+ drivers/irqchip/irq-realtek-rtl.c | 60 +++++++++++++++++--------------
+ 1 file changed, 33 insertions(+), 27 deletions(-)
+
+--- a/drivers/irqchip/irq-realtek-rtl.c
++++ b/drivers/irqchip/irq-realtek-rtl.c
+@@ -147,48 +147,35 @@ out:
+ 	chained_irq_exit(chip, desc);
+ }
+ 
+-static int __init realtek_rtl_of_init(struct device_node *node, struct device_node *parent)
++static int __init realtek_setup_parents(struct device_node *node)
+ {
++	int parent_irq, num_parents = of_irq_count(node);
+ 	struct of_phandle_args oirq;
+ 	struct irq_domain *domain;
+-	int cpu, parent_irq;
+ 
+-	for_each_present_cpu(cpu) {
+-		realtek_ictl_base[cpu] = of_iomap(node, cpu);
+-		if (!realtek_ictl_base[cpu])
+-			return -ENXIO;
+-
+-		/* Disable all cascaded interrupts and clear routing */
+-		for (unsigned int hw_irq = 0; hw_irq < RTL_ICTL_NUM_INPUTS; hw_irq++) {
+-			disable_gimr(cpu, hw_irq);
+-			write_irr(cpu, hw_irq, 0);
+-		}
+-	}
+-
+-	if (WARN_ON(!of_irq_count(node))) {
++	if (WARN_ON(!num_parents)) {
+ 		/*
+-		 * If DT contains no parent interrupts, assume MIPS CPU IRQ 2
+-		 * (HW0) is connected to the first output. This is the case for
+-		 * all known hardware anyway. "interrupt-map" is deprecated, so
+-		 * don't bother trying to parse that.
++		 * If DT contains no parent interrupts, assume MIPS IRQ 2 (HW0) is
++		 * connected to the first output. This is the case for all known hardware.
+ 		 */
+-		oirq.np = of_find_compatible_node(NULL, NULL, "mti,cpu-interrupt-controller");
++		oirq.np = of_find_compatible_node(NULL, NULL,
++						  "mti,cpu-interrupt-controller");
++		if (!oirq.np)
++			return -EINVAL;
++
+ 		oirq.args_count = 1;
+ 		oirq.args[0] = 2;
+-
+ 		parent_irq = irq_create_of_mapping(&oirq);
+-
+ 		of_node_put(oirq.np);
+ 	} else {
+ 		parent_irq = of_irq_get(node, 0);
+ 	}
+ 
+-	if (parent_irq < 0)
+-		return parent_irq;
+-	else if (!parent_irq)
+-		return -ENODEV;
++	if (parent_irq <= 0)
++		return parent_irq ? parent_irq : -ENODEV;
+ 
+-	domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS, &irq_domain_ops, NULL);
++	domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS,
++					  &irq_domain_ops, NULL);
+ 	if (!domain)
+ 		return -ENOMEM;
+ 
+@@ -197,4 +184,23 @@ static int __init realtek_rtl_of_init(st
+ 	return 0;
+ }
+ 
++static int __init realtek_rtl_of_init(struct device_node *node, struct device_node *parent)
++{
++	unsigned int cpu;
++
++	for_each_present_cpu(cpu) {
++		realtek_ictl_base[cpu] = of_iomap(node, cpu);
++		if (!realtek_ictl_base[cpu])
++			return -ENXIO;
++
++		/* Disable all cascaded interrupts and clear routing */
++		for (unsigned int hw_irq = 0; hw_irq < RTL_ICTL_NUM_INPUTS; hw_irq++) {
++			disable_gimr(cpu, hw_irq);
++			write_irr(cpu, hw_irq, 0);
++		}
++	}
++
++	return realtek_setup_parents(node);
++}
++
+ IRQCHIP_DECLARE(realtek_rtl_intc, "realtek,rtl-intc", realtek_rtl_of_init);

@@ -1,0 +1,133 @@
+From 9cd59932f2d2a09ef239228671020dfd1ae7f4af Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 27 May 2026 18:34:47 +0200
+Subject: [PATCH 11/20] net: mdio: realtek-rtl9300: use command runner for
+ write_c22()
+
+Now that the driver has a generic command runner make use of it in the
+write_c22() path. For this.
+
+- add generic otto_emdio_write_c22() helper that will be called by bus
+- convert otto_emdio_9300_write_c22() to new command runner logic
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20260527163449.1294961-3-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 81 +++++++++----------------
+ 1 file changed, 27 insertions(+), 54 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -98,7 +98,7 @@ struct otto_emdio_info {
+ 	u16 num_pages;
+ 	int (*read_c22)(struct mii_bus *bus, int phy_id, int regnum);
+ 	int (*read_c45)(struct mii_bus *bus, int phy_id, int dev_addr, int regnum);
+-	int (*write_c22)(struct mii_bus *bus, int phy_id, int regnum, u16 value);
++	int (*write_c22)(struct mii_bus *bus, int port, int regnum, u16 value);
+ 	int (*write_c45)(struct mii_bus *bus, int port, int dev_addr, int regnum, u16 value);
+ };
+ 
+@@ -254,60 +254,18 @@ out_err:
+ 	return err;
+ }
+ 
+-static int otto_emdio_9300_write_c22(struct mii_bus *bus, int phy_id, int regnum, u16 value)
++static int otto_emdio_9300_write_c22(struct mii_bus *bus, int port, int regnum, u16 value)
+ {
+-	struct otto_emdio_chan *chan = bus->priv;
+-	struct otto_emdio_priv *priv;
+-	u32 io_reg, cmd_reg, val;
+-	struct regmap *regmap;
+-	int port;
+-	int err;
+-
+-	priv = chan->priv;
+-	regmap = priv->regmap;
+-	io_reg = priv->info->cmd_regs.io_data;
+-	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+-
+-	port = otto_emdio_phy_to_port(bus, phy_id);
+-	if (port < 0)
+-		return port;
+-
+-	mutex_lock(&priv->lock);
+-	err = otto_emdio_wait_ready(priv);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_write(regmap, priv->info->cmd_regs.port_mask_low, BIT(port));
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_write(regmap, io_reg, FIELD_PREP(PHY_CTRL_INDATA, value));
+-	if (err)
+-		goto out_err;
+-
+-	val = FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
+-	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+-	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+-	      PHY_CTRL_WRITE | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+-	err = regmap_write(regmap, cmd_reg, val);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 100);
+-	if (err)
+-		goto out_err;
+-
+-	if (val & PHY_CTRL_FAIL) {
+-		err = -ENXIO;
+-		goto out_err;
+-	}
+-
+-	mutex_unlock(&priv->lock);
+-	return 0;
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	struct otto_emdio_cmd_regs cmd_data = {
++		.c22_data	= FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
++				  FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
++				  FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)),
++		.io_data	= FIELD_PREP(PHY_CTRL_INDATA, value),
++		.port_mask_low	= BIT(port),
++	};
+ 
+-out_err:
+-	mutex_unlock(&priv->lock);
+-	return err;
++	return otto_emdio_write_cmd(bus, PHY_CTRL_TYPE_C22, &cmd_data);
+ }
+ 
+ static int otto_emdio_9300_read_c45(struct mii_bus *bus, int phy_id, int dev_addr, int regnum)
+@@ -377,6 +335,21 @@ static int otto_emdio_9300_write_c45(str
+ 	return otto_emdio_write_cmd(bus, PHY_CTRL_TYPE_C45, &cmd_data);
+ }
+ 
++static int otto_emdio_write_c22(struct mii_bus *bus, int phy_id, int regnum, u16 value)
++{
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	int ret, port;
++
++	port = otto_emdio_phy_to_port(bus, phy_id);
++	if (port < 0)
++		return port;
++
++	scoped_guard(mutex, &priv->lock)
++		ret = priv->info->write_c22(bus, port, regnum, value);
++
++	return ret;
++}
++
+ static int otto_emdio_write_c45(struct mii_bus *bus, int phy_id,
+ 				int dev_addr, int regnum, u16 value)
+ {
+@@ -470,7 +443,7 @@ static int otto_emdio_probe_one(struct d
+ 		bus->write_c45 = otto_emdio_write_c45;
+ 	} else {
+ 		bus->read = priv->info->read_c22;
+-		bus->write = priv->info->write_c22;
++		bus->write = otto_emdio_write_c22;
+ 	}
+ 	bus->parent = dev;
+ 	chan = bus->priv;

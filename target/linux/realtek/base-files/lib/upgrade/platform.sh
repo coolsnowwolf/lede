@@ -27,9 +27,32 @@ platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
+	plasmacloud,esx28|\
+	plasmacloud,mcx3|\
+	plasmacloud,psx8|\
+	plasmacloud,psx10|\
+	plasmacloud,psx28)
+		PART_NAME="inactive"
+		platform_do_upgrade_dualboot_plasmacloud "$1"
+		;;
 	tplink,sg2008p-v1|\
+	tplink,sg2008p-v3|\
 	tplink,sg2210p-v3)
 		tplink_sg2xxx_fix_mtdparts
+		default_do_upgrade "$1"
+		;;
+	linksys,lgs328c|\
+	linksys,lgs328mpc-v2|\
+	linksys,lgs352c)
+		nand_do_upgrade "$1"
+		;;
+	zyxel,xgs1930-28hp|\
+	zyxel,xmg1915-10e|\
+	zyxel,xmg1915-10ep|\
+	zyxel,xs1930-10|\
+	zyxel,xs1930-12f|\
+	zyxel,xs1930-12hp)
+		PART_NAME="factory"
 		default_do_upgrade "$1"
 		;;
 	*)

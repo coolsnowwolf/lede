@@ -1,0 +1,285 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/dts-v1/;
+
+#include "rtl930x.dtsi"
+
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	aliases {
+		label-mac-device = &ethernet0;
+		led-boot = &led_pwr_sys_green;
+		led-failsafe = &led_pwr_sys_red;
+		led-running = &led_pwr_sys_green;
+		led-upgrade = &led_pwr_sys_green;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinmux_disable_sys_led>;
+
+		led_pwr_sys_green: led-0 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		led_pwr_sys_red: led-1 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+		};
+	};
+
+	led_set: led_set {
+		compatible = "realtek,rtl9300-leds";
+		active-low;
+
+		/* Copper */
+		led_set0 = <(RTL93XX_LED_SET_100M | RTL93XX_LED_SET_LINK |
+			     RTL93XX_LED_SET_ACT)
+			    (RTL93XX_LED_SET_100M |RTL93XX_LED_SET_1G |
+			     RTL93XX_LED_SET_2P5G | RTL93XX_LED_SET_LINK |
+			     RTL93XX_LED_SET_ACT)
+			    (RTL93XX_LED_SET_2P5G | RTL93XX_LED_SET_LINK |
+			     RTL93XX_LED_SET_ACT)>;
+		/* SFP+ */
+		led_set1 = <(RTL93XX_LED_SET_1G | RTL93XX_LED_SET_2P5G |
+			     RTL93XX_LED_SET_LINK | RTL93XX_LED_SET_ACT)
+			     (RTL93XX_LED_SET_10G | RTL93XX_LED_SET_2P5G |
+			     RTL93XX_LED_SET_LINK | RTL93XX_LED_SET_ACT)>;
+
+		/* PoE and Cloud are 4 leds in total but software managed.
+		   Assign them to led_set 1 to avoid shifting the others
+		   incorrectly. */
+		realtek,led-set1-force-port-mask = <0x01800000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		mode {
+			label = "restore";
+			gpios = <&gpio0 22 GPIO_ACTIVE_LOW>;
+			linux,code = <BTN_0>;
+		};
+	};
+
+	sfp0: sfp-p9 {
+		compatible = "sff,sfp";
+		i2c-bus = <&i2c0>;
+		mod-def0-gpio = <&gpio0 12 GPIO_ACTIVE_LOW>;
+		los-gpio = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+		tx-disable-gpio = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+	};
+
+	sfp1: sfp-p10 {
+		compatible = "sff,sfp";
+		i2c-bus = <&i2c1>;
+		mod-def0-gpio = <&gpio0 16 GPIO_ACTIVE_LOW>;
+		los-gpio = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&gpio0 20 GPIO_ACTIVE_HIGH>;
+		tx-disable-gpio = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&i2c_mst1 {
+	status = "okay";
+
+	/* i2c of the left SFP+ cage seen from the front; port 9 */
+	i2c0: i2c@0 {
+		reg = <0>;
+	};
+
+	/* i2c of the right SFP+ cage seen from the front; port 10 */
+	i2c1: i2c@1 {
+		reg = <1>;
+	};
+};
+
+&spi0 {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "bootbase";
+				reg = <0x0 0x80000>;
+				read-only;
+
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				partition@0 {
+					label = "u-boot";
+					reg = <0x0 0x7e000>;
+				};
+
+				partition@7e000 {
+					label = "u-boot-env2";
+					reg = <0x7e000 0x1000>;
+				};
+
+				partition@7f000 {
+					label = "mrd";
+					reg = <0x7f000 0x1000>;
+
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						/* 12 addresses are available */
+						macaddr_factory: macaddr@ff8 {
+							compatible = "mac-base";
+							reg = <0xff8 0x6>;
+							#nvmem-cell-cells = <1>;
+						};
+					};
+				};
+			};
+
+			partition@80000 {
+				label = "reserved";
+				reg = <0x80000 0x1e0000>;
+				read-only;
+			};
+
+			partition@260000 {
+				label = "factory";
+				reg = <0x260000 0x1da0000>;
+
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				partition@0 {
+					label = "loader";
+					reg = <0x0 0x10000>;
+				};
+				partition@10000 {
+					label = "firmware";
+					reg = <0x10000 0x1d90000>;
+					compatible = "openwrt,uimage", "denx,uimage";
+				};
+			};
+		};
+	};
+};
+
+/*
+ * GPIO 2 is the global reset shared by all PHYs across all MDIO busses.
+ * It is intentionally not declared as reset-gpios on any bus: the MDIO
+ * driver / phylink only support a reset GPIO per bus, not on the parent
+ * controller. Attaching it to a single bus would still reset the PHYs
+ * on the other busses as a side effect, leaving their software state
+ * out of sync with the hardware and likely breaking them.
+ */
+
+&mdio_bus0 {
+	/* External RTL8224 PHY */
+	phy0: ethernet-phy@0 {
+		reg = <0>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <0>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy1: ethernet-phy@1 {
+		reg = <1>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <0>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy2: ethernet-phy@2 {
+		reg = <2>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <1>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy3: ethernet-phy@3 {
+		reg = <3>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <1>;
+		enet-phy-pair-polarity = <0>;
+	};
+};
+
+&mdio_bus1 {
+	/* External RTL8224 PHY */
+	phy8: ethernet-phy@4 {
+		reg = <4>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <0>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy9: ethernet-phy@5 {
+		reg = <5>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <0>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy10: ethernet-phy@6 {
+		reg = <6>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <1>;
+		enet-phy-pair-polarity = <0>;
+	};
+	phy11: ethernet-phy@7 {
+		reg = <7>;
+		compatible = "ethernet-phy-ieee802.3-c45";
+		enet-phy-pair-order = <1>;
+		enet-phy-pair-polarity = <0>;
+	};
+};
+
+&ethernet0 {
+	nvmem-cells = <&macaddr_factory 0>;
+	nvmem-cell-names = "mac-address";
+};
+
+&switch0 {
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Copper ports */
+		SWITCH_PORT_LED(0, 1, 2, 0, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(1, 2, 2, 1, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(2, 3, 2, 2, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(3, 4, 2, 3, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(8, 5, 3, 0, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(9, 6, 3, 1, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(10, 7, 3, 2, 0, 10g-qxgmii)
+		SWITCH_PORT_LED(11, 8, 3, 3, 0, 10g-qxgmii)
+
+		/* SFP cages */
+		SWITCH_PORT_SFP(25, 9, 7, 1, 0)
+		SWITCH_PORT_SFP(27, 10, 9, 1, 1)
+
+		port@28 {
+			ethernet = <&ethernet0>;
+			reg = <28>;
+			phy-mode = "internal";
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+			};
+		};
+	};
+};

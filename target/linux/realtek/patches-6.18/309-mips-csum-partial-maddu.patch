@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Gennaro Cimmino <gcimmino@rayonra.net>
+Date: Mon, 10 Aug 2026 22:08:39 +0200
+Subject: [PATCH] realtek: use maddu in the 32-bit checksum loop
+
+Keeping the carry costs three instructions per word: ADDC expands to
+addu, sltu and a second addu.  maddu accumulates a 32-bit word into the
+64-bit HI:LO pair in a single instruction, so the carry only has to be
+folded once, after the loop.  That also makes the aggressive unrolling
+unnecessary: one 32-byte loop replaces the 128/64/32-byte cascade, 18
+instructions per 32 bytes instead of 33, with one load placed between
+two accumulates so that cores whose multiplier stalls back-to-back
+accumulates can overlap the two streams.
+
+maddu was added in MIPS32 and removed again in MIPS32r6, and it only
+accumulates 32-bit words, so the 64-bit path and everything before
+MIPS32 keep the existing loops.  HI:LO is seeded with the checksum so
+far, through multu sum,1 rather than mtlo: writing HI or LO while a
+multiply result has not been read leaves the other one UNPREDICTABLE
+(MIPS32 Volume II, MTHI and MTLO restrictions).  poly1305-mips seeds
+its maddu chains the same way.  HI:LO is ac0, saved and restored
+through SAVE_TEMP by the exception paths that clobber it, so an
+interrupt inside the loop does not disturb the accumulator.
+
+The prologue stages that aligned src to 8, 16 and 32 bytes are
+skipped: they cost up to 44 instructions to fold 28 bytes, which the
+loop sums in 14, and the loop only needs the word alignment that
+.Lword_align already guarantees.  The 64-bit path keeps them, since
+CSUM_BIGCHUNK there loads with ld.  The remainder is picked up by the
+existing epilogue, and since buffers shorter than 56 bytes never reach
+the loop, the block count is at least one on every path that does and
+no zero-block guard is needed.  csum_partial() shrinks from 1408 to
+400 bytes on a mips32r2 build.
+
+On an RTL9303 (MIPS 34Kc, mips32r2) an iperf3 transmit to a Linux
+peer over a port linked at 1 Gbit/s goes from 185.8 to 210.2 Mbit/s,
+and the non-idle CPU time needed to send at a fixed 70 Mbit/s drops
+by 11.0%.  Images from the same tree with and without this patch,
+RAM-booted and measured in one session, the patched boots first and
+the two main boots last, 12 runs of 20 s per arm and per metric over
+two boots each, medians, nothing excluded; all 144 paired comparisons
+favour the patch in both metrics and the distributions are disjoint.
+The eth0 interrupt and the sender are both pinned to CPU0: left free
+to migrate, the same binary spreads from 141 to 185 Mbit/s across
+runs.
+
+The interleaving is for the cores whose multiplier stalls back-to-back
+accumulates.  The 34Kc is not one of them, its high performance MDU
+has a single cycle repeat rate for maddu (34Kc datasheet, table 1),
+and there the interleaved order costs about 0.7% CPU against the
+grouped one, most of which the pointer hoist below takes back; what
+is left repeated across boots and is not explained.  The pointer
+increment is hoisted above the last three accumulates for the same
+reason, three instructions ahead of the branch that reads it.  On
+RTL931x, two interAptiv cores, Markus Stockhausen measured iperf3
+transmit at 178, 176, 190 and 200 Mbit/s with one stream for main, the
+grouped order, the interleaved one and the interleaved one with the
+increment hoisted, and 278, 274, 296 and 298 with two; on the 34Kc the
+hoist is worth 0.3% throughput and 0.6% CPU, neither significant over
+12 runs per arm.  He also measured an RTL838x, a 4KEc whose maddu
+holds the multiply unit for two cycles (gcc, 4k.md): 57.0 Mbit/s on
+main against 60.6 on an earlier revision, grouped and with the
+alignment prologue still in place, both over 30 s.  On the interleaved
+loop before the hoist he measured 64.0 over 60 s, with no fresh
+baseline beside it.
+RTL839x is a 34Kc like the RTL9303 and was not measured; neither was a
+1004Kc.  An early revision was tried on an ath79 74Kc and showed no
+change, without establishing whether the checksum was the limit there.
+On an RTL8198D, interAptiv as well but not a target in this tree,
+zectaiga measured the loop before the hoist at no throughput change
+and 3.4% more CPU at a fixed rate, so the core alone does not predict
+the sign.
+
+Correctness was checked under qemu-mips over every length from 0 to
+1024 at every source alignment 0 to 31, plus 1500, 2048, 4095, 4096,
+9000, 16384 and 32768, with six data patterns and seven starting sums,
+693504 comparisons per alignment half.  The object exercised is the
+arch/mips/lib/csum_partial.o the image is built from: it returns the
+same 32-bit value as the unmodified routine in every case, and folds
+to the same checksum as the generic C implementation in lib/checksum.c.
+
+Suggested-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Assisted-by: Claude:claude-opus-5
+Assisted-by: Claude:claude-fable-5
+Signed-off-by: Gennaro Cimmino <gcimmino@rayonra.net>
+---
+--- a/arch/mips/lib/csum_partial.S
++++ b/arch/mips/lib/csum_partial.S
+@@ -14,6 +14,7 @@
+ #include <linux/export.h>
+ #include <asm/asm.h>
+ #include <asm/asm-offsets.h>
++#include <asm/isa-rev.h>
+ #include <asm/regdef.h>
+ 
+ #ifdef CONFIG_64BIT
+@@ -54,6 +55,17 @@
+ 
+ #endif /* USE_DOUBLE */
+ 
++/*
++ * maddu accumulates a 32-bit word into HI:LO in a single instruction and was
++ * added in MIPS32; MIPS32r6 removed it again.
++ */
++#if !defined(USE_DOUBLE) && MIPS_ISA_REV >= 1 && MIPS_ISA_REV < 6
++#define USE_MADDU
++#define BLOCK_SHIFT	0x5
++#else
++#define BLOCK_SHIFT	0x7
++#endif
++
+ #define UNIT(unit)  ((unit)*NBYTES)
+ 
+ #define ADDC(sum,reg)						\
+@@ -141,6 +153,9 @@ EXPORT_SYMBOL(csum_partial)
+ 	bnez	t8, .Ldo_end_words
+ 	 move	t8, a1
+ 
++#ifdef USE_MADDU
++	LONG_SRL	t8, a1, BLOCK_SHIFT
++#else
+ 	andi	t8, src, 0x4
+ 	beqz	t8, .Lqword_align
+ 	 andi	t8, src, 0x8
+@@ -171,7 +186,7 @@ EXPORT_SYMBOL(csum_partial)
+ 
+ .Loword_align:
+ 	beqz	t8, .Lbegin_movement
+-	 LONG_SRL	t8, a1, 0x7
++	 LONG_SRL	t8, a1, BLOCK_SHIFT
+ 
+ #ifdef USE_DOUBLE
+ 	ld	t0, 0x00(src)
+@@ -183,9 +198,41 @@ EXPORT_SYMBOL(csum_partial)
+ #endif
+ 	LONG_SUBU	a1, a1, 0x10
+ 	PTR_ADDU	src, src, 0x10
+-	LONG_SRL	t8, a1, 0x7
++	LONG_SRL	t8, a1, BLOCK_SHIFT
++#endif /* USE_MADDU */
+ 
+ .Lbegin_movement:
++#ifdef USE_MADDU
++	li	t6, 1
++	LONG_SLL	t8, t8, BLOCK_SHIFT
++	PTR_ADDU	t8, src, t8
++	multu	sum, t6			/* mtlo would be restricted here */
++
++.Lmove_maddu:
++	lw	t0, 0x00(src)
++	lw	t1, 0x04(src)
++	lw	t3, 0x08(src)
++	maddu	t0, t6
++	lw	t4, 0x0c(src)
++	maddu	t1, t6
++	lw	t0, 0x10(src)
++	maddu	t3, t6
++	lw	t1, 0x14(src)
++	maddu	t4, t6
++	lw	t3, 0x18(src)
++	maddu	t0, t6
++	lw	t4, 0x1c(src)
++	PTR_ADDU	src, src, 0x20
++	maddu	t1, t6
++	maddu	t3, t6
++	bne	src, t8, .Lmove_maddu
++	 maddu	t4, t6
++
++	mflo	sum
++	mfhi	t1
++	ADDC(sum, t1)
++	andi	t8, a1, 0x1c
++#else
+ 	beqz	t8, 1f
+ 	 andi	t2, a1, 0x40
+ 
+@@ -217,6 +264,7 @@ EXPORT_SYMBOL(csum_partial)
+ 	CSUM_BIGCHUNK(src, 0x00, sum, t0, t1, t3, t4)
+ 	andi	t8, a1, 0x1c
+ 	PTR_ADDU	src, src, 0x20
++#endif /* USE_MADDU */
+ 
+ .Ldo_end_words:
+ 	beqz	t8, .Lsmall_csumcpy

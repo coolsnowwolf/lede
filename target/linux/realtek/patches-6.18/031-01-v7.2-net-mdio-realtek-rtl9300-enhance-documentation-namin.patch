@@ -1,0 +1,381 @@
+From d15c0d1df49480b8f7d7c6182880e353574c871d Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Thu, 21 May 2026 19:59:10 +0200
+Subject: [PATCH 01/20] net: mdio: realtek-rtl9300: enhance documentation &
+ naming
+
+The Realtek ethernet MDIO driver currently only serves SOCs from the
+Realtek RTL930x series. This is only one lineup of the Realtek Otto
+switch series that also knows RTL838x, RTL839x, RTL931x devices.
+All of these share similar hardware with comparable MMIO access logic
+but have individual variations. Important to note
+
+- Controller works on switch ports instead of buses and addresses.
+- Devices incorporate additional MDIO hardware. E.g.
+  - an auxiliary MDIO controller for GPIO expanders [1]
+  - a MDIO style SerDes controller [2]
+
+To avoid future confusion enhance the driver documentation and
+function naming. Make clear what this driver is about and what
+parts are generic and what parts are device specific. For this
+rename the function and structure prefix as follows:
+
+- for generic functions use otto_emdio_
+- for device specific helpers use e.g. otto_emdio_9300_
+
+This prefix naming tries to align with the watchdog timer [3].
+It paves the way so that drivers for the other Realtek Otto MDIO
+controllers can be added in future commits using the same naming
+convention.
+
+Remark 1: The read/write functions are kept device specific for now
+because they will only fit the RTL930x SOCs. Renaming will take place
+as soon as the I/O handling will be generalized.
+
+Remark 2: The driver name "mdio-rtl9300" is kept for now.
+
+[1] https://git.openwrt.org/openwrt/openwrt/tree/target/linux/realtek/patches-6.18/723-net-mdio-Add-Realtek-Otto-auxiliary-controller.patch
+[2] https://git.openwrt.org/openwrt/openwrt/tree/target/linux/realtek/files-6.18/drivers/net/mdio/mdio-realtek-otto-serdes.c
+[3] https://elixir.bootlin.com/linux/v7.0/source/drivers/watchdog/realtek_otto_wdt.c
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20260521175918.1494797-2-markus.stockhausen@gmx.de
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 139 ++++++++++++++----------
+ 1 file changed, 84 insertions(+), 55 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -1,11 +1,40 @@
+ // SPDX-License-Identifier: GPL-2.0-only
+ /*
+- * MDIO controller for RTL9300 switches with integrated SoC.
++ * Realtek switches of the Otto series (RTL838x, RTL839x, RTL930x and RTL931x SoCs) have multiple
++ * integrated MDIO controllers. This driver targets the ethernet MDIO controller. It serves only
++ * 1G/2.5G/10G ethernet PHYs attached to up to 4 individual buses.
+  *
+- * The MDIO communication is abstracted by the switch. At the software level
+- * communication uses the switch port to address the PHY. We work out the
+- * mapping based on the MDIO bus described in device tree and phandles on the
+- * ethernet-ports property.
++ * The controller is programmed through MMIO. The MDIO communication is abstracted by the hardware
++ * and uses the switch port number for its addressing. For this to work, mapping registers need to
++ * be setup in advance. With that the controller translates each port based I/O operation into the
++ * physical bus and address. This gives the following end-to-end communication
++ *
++ *     +----------+       +----------+           +----------+       +----------+
++ *     |  phydev  |  ...  |  phydev  |           |  phydev  |  ...  |  phydev  |
++ *     +----------+       +----------+           +----------+       +----------+
++ *              |                  |               |                  |
++ *   mii_bus 0  +------------------+               +------------------+  mii_bus 1
++ *                                 |               |
++ *           +-----------------------------------------------------+
++ *           |  MDIO driver                                        |
++ *           |                      translate bus/address -> port  |
++ *           +-----------------------------------------------------+
++ *                                        |                             Software
++ *                             - - - - - - - - - - - - - - - - - - - - - - - - -
++ *                                        |                             Hardware
++ *           +-----------------------------------------------------+
++ *           | MDIO controller                                     |
++ *           |                      translate port -> bus/address  |
++ *           +-----------------------------------------------------+
++ *                                 |               |
++ *       bus 0  +------------------+               +------------------+  bus 1
++ *              |                  |               |                  |
++ *     +----------+       +----------+           +----------+       +----------+
++ *     | PHY 0/1  |  ...  | PHY 0/31 |           | PHY 1/1  |  ...  | PHY 1/31 |
++ *     +----------+       +----------+           +----------+       +----------+
++ *
++ * The driver works out the mapping based on the MDIO bus described in device tree and phandles on
++ * the ethernet-ports property.
+  */
+ 
+ #include <linux/bitfield.h>
+@@ -48,7 +77,7 @@
+ #define MAX_SMI_BUSSES  4
+ #define MAX_SMI_ADDR	0x1f
+ 
+-struct rtl9300_mdio_priv {
++struct otto_emdio_priv {
+ 	struct regmap *regmap;
+ 	struct mutex lock; /* protect HW access */
+ 	DECLARE_BITMAP(valid_ports, MAX_PORTS);
+@@ -58,15 +87,15 @@ struct rtl9300_mdio_priv {
+ 	struct mii_bus *bus[MAX_SMI_BUSSES];
+ };
+ 
+-struct rtl9300_mdio_chan {
+-	struct rtl9300_mdio_priv *priv;
++struct otto_emdio_chan {
++	struct otto_emdio_priv *priv;
+ 	u8 mdio_bus;
+ };
+ 
+-static int rtl9300_mdio_phy_to_port(struct mii_bus *bus, int phy_id)
++static int otto_emdio_phy_to_port(struct mii_bus *bus, int phy_id)
+ {
+-	struct rtl9300_mdio_chan *chan = bus->priv;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_chan *chan = bus->priv;
++	struct otto_emdio_priv *priv;
+ 	int i;
+ 
+ 	priv = chan->priv;
+@@ -79,7 +108,7 @@ static int rtl9300_mdio_phy_to_port(stru
+ 	return -ENOENT;
+ }
+ 
+-static int rtl9300_mdio_wait_ready(struct rtl9300_mdio_priv *priv)
++static int otto_emdio_wait_ready(struct otto_emdio_priv *priv)
+ {
+ 	struct regmap *regmap = priv->regmap;
+ 	u32 val;
+@@ -90,10 +119,10 @@ static int rtl9300_mdio_wait_ready(struc
+ 					val, !(val & PHY_CTRL_CMD), 10, 1000);
+ }
+ 
+-static int rtl9300_mdio_read_c22(struct mii_bus *bus, int phy_id, int regnum)
++static int otto_emdio_9300_read_c22(struct mii_bus *bus, int phy_id, int regnum)
+ {
+-	struct rtl9300_mdio_chan *chan = bus->priv;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_chan *chan = bus->priv;
++	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
+ 	int port;
+ 	u32 val;
+@@ -102,12 +131,12 @@ static int rtl9300_mdio_read_c22(struct
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
+ 
+-	port = rtl9300_mdio_phy_to_port(bus, phy_id);
++	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+ 		return port;
+ 
+ 	mutex_lock(&priv->lock);
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -123,7 +152,7 @@ static int rtl9300_mdio_read_c22(struct
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -139,10 +168,10 @@ out_err:
+ 	return err;
+ }
+ 
+-static int rtl9300_mdio_write_c22(struct mii_bus *bus, int phy_id, int regnum, u16 value)
++static int otto_emdio_9300_write_c22(struct mii_bus *bus, int phy_id, int regnum, u16 value)
+ {
+-	struct rtl9300_mdio_chan *chan = bus->priv;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_chan *chan = bus->priv;
++	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
+ 	int port;
+ 	u32 val;
+@@ -151,12 +180,12 @@ static int rtl9300_mdio_write_c22(struct
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
+ 
+-	port = rtl9300_mdio_phy_to_port(bus, phy_id);
++	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+ 		return port;
+ 
+ 	mutex_lock(&priv->lock);
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -194,10 +223,10 @@ out_err:
+ 	return err;
+ }
+ 
+-static int rtl9300_mdio_read_c45(struct mii_bus *bus, int phy_id, int dev_addr, int regnum)
++static int otto_emdio_9300_read_c45(struct mii_bus *bus, int phy_id, int dev_addr, int regnum)
+ {
+-	struct rtl9300_mdio_chan *chan = bus->priv;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_chan *chan = bus->priv;
++	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
+ 	int port;
+ 	u32 val;
+@@ -206,12 +235,12 @@ static int rtl9300_mdio_read_c45(struct
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
+ 
+-	port = rtl9300_mdio_phy_to_port(bus, phy_id);
++	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+ 		return port;
+ 
+ 	mutex_lock(&priv->lock);
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -231,7 +260,7 @@ static int rtl9300_mdio_read_c45(struct
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -247,11 +276,11 @@ out_err:
+ 	return err;
+ }
+ 
+-static int rtl9300_mdio_write_c45(struct mii_bus *bus, int phy_id, int dev_addr,
++static int otto_emdio_9300_write_c45(struct mii_bus *bus, int phy_id, int dev_addr,
+ 				  int regnum, u16 value)
+ {
+-	struct rtl9300_mdio_chan *chan = bus->priv;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_chan *chan = bus->priv;
++	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
+ 	int port;
+ 	u32 val;
+@@ -260,12 +289,12 @@ static int rtl9300_mdio_write_c45(struct
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
+ 
+-	port = rtl9300_mdio_phy_to_port(bus, phy_id);
++	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+ 		return port;
+ 
+ 	mutex_lock(&priv->lock);
+-	err = rtl9300_mdio_wait_ready(priv);
++	err = otto_emdio_wait_ready(priv);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -307,7 +336,7 @@ out_err:
+ 	return err;
+ }
+ 
+-static int rtl9300_mdiobus_init(struct rtl9300_mdio_priv *priv)
++static int otto_emdio_9300_mdiobus_init(struct otto_emdio_priv *priv)
+ {
+ 	u32 glb_ctrl_mask = 0, glb_ctrl_val = 0;
+ 	struct regmap *regmap = priv->regmap;
+@@ -350,10 +379,10 @@ static int rtl9300_mdiobus_init(struct r
+ 	return 0;
+ }
+ 
+-static int rtl9300_mdiobus_probe_one(struct device *dev, struct rtl9300_mdio_priv *priv,
+-				     struct fwnode_handle *node)
++static int otto_emdio_probe_one(struct device *dev, struct otto_emdio_priv *priv,
++				 struct fwnode_handle *node)
+ {
+-	struct rtl9300_mdio_chan *chan;
++	struct otto_emdio_chan *chan;
+ 	struct mii_bus *bus;
+ 	u32 mdio_bus;
+ 	int err;
+@@ -380,11 +409,11 @@ static int rtl9300_mdiobus_probe_one(str
+ 
+ 	bus->name = "Realtek Switch MDIO Bus";
+ 	if (priv->smi_bus_is_c45[mdio_bus]) {
+-		bus->read_c45 = rtl9300_mdio_read_c45;
+-		bus->write_c45 =  rtl9300_mdio_write_c45;
++		bus->read_c45 = otto_emdio_9300_read_c45;
++		bus->write_c45 = otto_emdio_9300_write_c45;
+ 	} else {
+-		bus->read = rtl9300_mdio_read_c22;
+-		bus->write = rtl9300_mdio_write_c22;
++		bus->read = otto_emdio_9300_read_c22;
++		bus->write = otto_emdio_9300_write_c22;
+ 	}
+ 	bus->parent = dev;
+ 	chan = bus->priv;
+@@ -404,9 +433,9 @@ static int rtl9300_mdiobus_probe_one(str
+  * ethernet-ports node and build a mapping of the switch port to MDIO bus/addr
+  * based on the phy-handle.
+  */
+-static int rtl9300_mdiobus_map_ports(struct device *dev)
++static int otto_emdio_map_ports(struct device *dev)
+ {
+-	struct rtl9300_mdio_priv *priv = dev_get_drvdata(dev);
++	struct otto_emdio_priv *priv = dev_get_drvdata(dev);
+ 	struct device *parent = dev->parent;
+ 	int err;
+ 
+@@ -462,10 +491,10 @@ static int rtl9300_mdiobus_map_ports(str
+ 	return 0;
+ }
+ 
+-static int rtl9300_mdiobus_probe(struct platform_device *pdev)
++static int otto_emdio_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+-	struct rtl9300_mdio_priv *priv;
++	struct otto_emdio_priv *priv;
+ 	int err;
+ 
+ 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
+@@ -482,38 +511,38 @@ static int rtl9300_mdiobus_probe(struct
+ 
+ 	platform_set_drvdata(pdev, priv);
+ 
+-	err = rtl9300_mdiobus_map_ports(dev);
++	err = otto_emdio_map_ports(dev);
+ 	if (err)
+ 		return err;
+ 
+ 	device_for_each_child_node_scoped(dev, child) {
+-		err = rtl9300_mdiobus_probe_one(dev, priv, child);
++		err = otto_emdio_probe_one(dev, priv, child);
+ 		if (err)
+ 			return err;
+ 	}
+ 
+-	err = rtl9300_mdiobus_init(priv);
++	err = otto_emdio_9300_mdiobus_init(priv);
+ 	if (err)
+ 		return dev_err_probe(dev, err, "failed to initialise MDIO bus controller\n");
+ 
+ 	return 0;
+ }
+ 
+-static const struct of_device_id rtl9300_mdio_ids[] = {
++static const struct of_device_id otto_emdio_ids[] = {
+ 	{ .compatible = "realtek,rtl9301-mdio" },
+ 	{}
+ };
+-MODULE_DEVICE_TABLE(of, rtl9300_mdio_ids);
++MODULE_DEVICE_TABLE(of, otto_emdio_ids);
+ 
+-static struct platform_driver rtl9300_mdio_driver = {
+-	.probe = rtl9300_mdiobus_probe,
++static struct platform_driver otto_emdio_driver = {
++	.probe = otto_emdio_probe,
+ 	.driver = {
+ 		.name = "mdio-rtl9300",
+-		.of_match_table = rtl9300_mdio_ids,
++		.of_match_table = otto_emdio_ids,
+ 	},
+ };
+ 
+-module_platform_driver(rtl9300_mdio_driver);
++module_platform_driver(otto_emdio_driver);
+ 
+ MODULE_DESCRIPTION("RTL9300 MDIO driver");
+ MODULE_LICENSE("GPL");

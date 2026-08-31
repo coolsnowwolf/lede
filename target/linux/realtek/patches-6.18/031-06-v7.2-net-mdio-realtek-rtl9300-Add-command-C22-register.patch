@@ -1,0 +1,178 @@
+From 8bf7e2b133db0ec690268a0afb0ee9471f4fbb52 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Thu, 21 May 2026 19:59:15 +0200
+Subject: [PATCH 06/20] net: mdio: realtek-rtl9300: Add command/C22 register
+
+Command issuing/status bits and C22 data share the same register. In the
+future the number of places where this register is used will be:
+
+- One generic command helper/runner for all devices that will access the
+  command bits of the register
+- 8 device specific C22 read/write functions that will access the C22
+  data fields.
+
+Thus name the register c22_data to align with the existing c45_data
+register. This way all device specific helpers will have a common
+view on the to-be-fed data. Add the register to the existing structure
+and make use of it where needed.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20260521175918.1494797-7-markus.stockhausen@gmx.de
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 38 +++++++++++++------------
+ 1 file changed, 20 insertions(+), 18 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -58,7 +58,7 @@
+ #define   GLB_CTRL_INTF_SEL(intf)	BIT(16 + (intf))
+ #define SMI_PORT0_15_POLLING_SEL	0xca08
+ #define SMI_ACCESS_PHY_CTRL_0		0xcb70
+-#define SMI_ACCESS_PHY_CTRL_1		0xcb74
++#define RTL9300_SMI_ACCESS_PHY_CTRL_1	0xcb74
+ #define   PHY_CTRL_REG_ADDR		GENMASK(24, 20)
+ #define   PHY_CTRL_PARK_PAGE		GENMASK(19, 15)
+ #define   PHY_CTRL_MAIN_PAGE		GENMASK(14, 3)
+@@ -83,6 +83,7 @@
+ 
+ 
+ struct otto_emdio_cmd_regs {
++	u32 c22_data;
+ 	u32 c45_data;
+ };
+ 
+@@ -128,12 +129,12 @@ static int otto_emdio_phy_to_port(struct
+ static int otto_emdio_wait_ready(struct otto_emdio_priv *priv)
+ {
+ 	struct regmap *regmap = priv->regmap;
+-	u32 val;
++	u32 cmd_reg, val;
+ 
+ 	lockdep_assert_held(&priv->lock);
++	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+ 
+-	return regmap_read_poll_timeout(regmap, SMI_ACCESS_PHY_CTRL_1,
+-					val, !(val & PHY_CTRL_CMD), 10, 1000);
++	return regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 1000);
+ }
+ 
+ static int otto_emdio_9300_read_c22(struct mii_bus *bus, int phy_id, int regnum)
+@@ -141,12 +142,13 @@ static int otto_emdio_9300_read_c22(stru
+ 	struct otto_emdio_chan *chan = bus->priv;
+ 	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
++	u32 cmd_reg, val;
+ 	int port;
+-	u32 val;
+ 	int err;
+ 
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
++	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+ 
+ 	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+@@ -165,7 +167,7 @@ static int otto_emdio_9300_read_c22(stru
+ 	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+ 	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+ 	      PHY_CTRL_READ | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+-	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1, val);
++	err = regmap_write(regmap, cmd_reg, val);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -190,12 +192,13 @@ static int otto_emdio_9300_write_c22(str
+ 	struct otto_emdio_chan *chan = bus->priv;
+ 	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
++	u32 cmd_reg, val;
+ 	int port;
+-	u32 val;
+ 	int err;
+ 
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
++	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+ 
+ 	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+@@ -218,12 +221,11 @@ static int otto_emdio_9300_write_c22(str
+ 	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+ 	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+ 	      PHY_CTRL_WRITE | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+-	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1, val);
++	err = regmap_write(regmap, cmd_reg, val);
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = regmap_read_poll_timeout(regmap, SMI_ACCESS_PHY_CTRL_1,
+-				       val, !(val & PHY_CTRL_CMD), 10, 100);
++	err = regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 100);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -245,12 +247,13 @@ static int otto_emdio_9300_read_c45(stru
+ 	struct otto_emdio_chan *chan = bus->priv;
+ 	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
++	u32 cmd_reg, val;
+ 	int port;
+-	u32 val;
+ 	int err;
+ 
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
++	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+ 
+ 	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+@@ -272,8 +275,7 @@ static int otto_emdio_9300_read_c45(stru
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1,
+-			   PHY_CTRL_READ | PHY_CTRL_TYPE_C45 | PHY_CTRL_CMD);
++	err = regmap_write(regmap, cmd_reg, PHY_CTRL_READ | PHY_CTRL_TYPE_C45 | PHY_CTRL_CMD);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -299,12 +301,13 @@ static int otto_emdio_9300_write_c45(str
+ 	struct otto_emdio_chan *chan = bus->priv;
+ 	struct otto_emdio_priv *priv;
+ 	struct regmap *regmap;
++	u32 cmd_reg, val;
+ 	int port;
+-	u32 val;
+ 	int err;
+ 
+ 	priv = chan->priv;
+ 	regmap = priv->regmap;
++	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+ 
+ 	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+@@ -330,13 +333,11 @@ static int otto_emdio_9300_write_c45(str
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1,
+-			   PHY_CTRL_TYPE_C45 | PHY_CTRL_WRITE | PHY_CTRL_CMD);
++	err = regmap_write(regmap, cmd_reg, PHY_CTRL_TYPE_C45 | PHY_CTRL_WRITE | PHY_CTRL_CMD);
+ 	if (err)
+ 		goto out_err;
+ 
+-	err = regmap_read_poll_timeout(regmap, SMI_ACCESS_PHY_CTRL_1,
+-				       val, !(val & PHY_CTRL_CMD), 10, 100);
++	err = regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 100);
+ 	if (err)
+ 		goto out_err;
+ 
+@@ -548,6 +549,7 @@ static int otto_emdio_probe(struct platf
+ 
+ static const struct otto_emdio_info otto_emdio_9300_info = {
+ 	.cmd_regs = {
++		.c22_data = RTL9300_SMI_ACCESS_PHY_CTRL_1,
+ 		.c45_data = RTL9300_SMI_ACCESS_PHY_CTRL_3,
+ 	},
+ 	.num_buses = RTL9300_NUM_BUSES,

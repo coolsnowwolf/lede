@@ -1,0 +1,488 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Carlo Szelinsky <github@szelinsky.de>
+Date: Sat, 24 May 2026 12:00:00 +0200
+Subject: hwmon: add Hasivo management MCU sensor driver
+
+Exposes CPU/system temperatures and fan presence + control for the
+external management MCU found on Hasivo / Horaco network switches.
+The sensor driver is a child of the hasivo MCU MFD (syscon regmap) and
+reads temperature, capability and fan registers over I2C.
+
+The same temperature/fan register map is shared across Hasivo boards
+(verified by diffing the stock firmware of the S1300WP-8XGT-4S+ and
+S1100W-8XGT-SE); register 0xFD is a per-board firmware revision byte, not
+a fixed chip identity, so the driver does not gate on a specific value.
+
+The driver, its device-tree binding and the Kconfig/Makefile wiring are
+added to the kernel tree as a realtek target patch and exposed as the
+kmod-hasivo-mcu-sensor KernelPackage. Keeping the binding in the kernel
+tree lets dt_binding_check exercise it and makes the driver easy to drop
+once it lands upstream.
+
+Signed-off-by: Carlo Szelinsky <github@szelinsky.de>
+---
+--- /dev/null
++++ b/Documentation/devicetree/bindings/hwmon/hasivo,mcu-sensor.yaml
+@@ -0,0 +1,43 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/hwmon/hasivo,mcu-sensor.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Hasivo management MCU sensor
++
++maintainers:
++  - Carlo Szelinsky <github@szelinsky.de>
++
++description: |
++  Sensor node of the Hasivo management MCU MFD (compatible
++  "hasivo,stc8-mfd"). The microcontroller reports CPU and system
++  temperatures and provides a 3-state fan control (auto / force-on /
++  force-off) and reports the fan drive state. Fan speed is regulated
++  internally by the microcontroller; there is no host-side PWM duty or
++  tachometer register.
++
++properties:
++  compatible:
++    const: hasivo,mcu-sensor
++
++required:
++  - compatible
++
++additionalProperties: false
++
++examples:
++  - |
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        mcu: mcu-mfd@6f {
++            compatible = "hasivo,stc8-mfd", "syscon";
++            reg = <0x6f>;
++
++            sensor {
++                compatible = "hasivo,mcu-sensor";
++            };
++        };
++    };
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -820,6 +820,21 @@ config SENSORS_GXP_FAN_CTRL
+ 	  The GXP controls fan function via the CPLD through the use of PWM
+ 	  registers. This driver reports status and pwm setting of the fans.
+ 
++config SENSORS_HASIVO_MCU
++	tristate "Hasivo management MCU sensor"
++	depends on MFD_HASIVO_STC8
++	depends on OF
++	select REGMAP
++	help
++	  Sensor child of the Hasivo MCU MFD. Exposes CPU and system
++	  temperatures plus a 3-state fan control knob (auto / force-on
++	  / force-off) plus a fan drive-state reading. Used on Hasivo managed
++	  switches that carry the management MCU for thermal and
++	  fan management (S1300WP-8XGT-4S+ and similar).
++
++	  This driver can also be built as a module, which will be
++	  called hasivo-mcu-sensor.
++
+ config SENSORS_HIH6130
+ 	tristate "Honeywell Humidicon HIH-6130 humidity/temperature sensor"
+ 	depends on I2C
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -91,6 +91,7 @@ obj-$(CONFIG_SENSORS_GSC)	+= gsc-hwmon.o
+ obj-$(CONFIG_SENSORS_GPD)	+= gpd-fan.o
+ obj-$(CONFIG_SENSORS_GPIO_FAN)	+= gpio-fan.o
+ obj-$(CONFIG_SENSORS_GXP_FAN_CTRL) += gxp-fan-ctrl.o
++obj-$(CONFIG_SENSORS_HASIVO_MCU) += hasivo-mcu-sensor.o
+ obj-$(CONFIG_SENSORS_HIH6130)	+= hih6130.o
+ obj-$(CONFIG_SENSORS_HS3001)	+= hs3001.o
+ obj-$(CONFIG_SENSORS_HTU31)	+= htu31.o
+--- /dev/null
++++ b/drivers/hwmon/hasivo-mcu-sensor.c
+@@ -0,0 +1,382 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Hasivo management MCU sensor driver
++ *
++ * Exposes CPU/system temperatures and fan control as hwmon attributes via
++ * the parent MFD's syscon regmap. The MCU regulates fan speed internally;
++ * the host can only pick one of three modes (auto / force-on / force-off)
++ * via the fan-control register 0xFA, with pwm_enable following the hwmon
++ * convention:
++ *   0 = no host control (fan forced full speed)
++ *   1 = manual (state determined by pwm_input)
++ *   2 = automatic (MCU regulates based on internal temperature)
++ *
++ * There is no tachometer. The fan-status register 0xFB reflects the MCU's
++ * effective drive state (0x4f = auto-running, 0x5f = force-on, 0x40 = off),
++ * not actual rotation: blocking the blade while force-on still reads 0x5f.
++ * So pwm_input reports the live drive state from 0xFB (accurate in auto
++ * too), and no fanN_alarm is exposed - a stuck/dead fan is not detectable
++ * from these registers, and thermal protection is the MCU's own job.
++ *
++ * Register protocol reverse-engineered from the stock 'imi' binary and
++ * verified on hardware. The same temperature/fan register map is shared
++ * across Hasivo boards (S1300WP-8XGT-4S+, S1100W-8XGT-SE); reg 0xFD is a
++ * per-board firmware revision byte (0x91 / 0xFC), not a fixed chip identity.
++ *
++ * Copyright (C) 2026 Carlo Szelinsky <github@szelinsky.de>
++ */
++
++#include <linux/bitops.h>
++#include <linux/hwmon.h>
++#include <linux/minmax.h>
++#include <linux/mfd/syscon.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++#define MCU_REG_CPU_TEMP_SIGN		0x01
++#define MCU_REG_CPU_TEMP_MAG		0x02
++#define MCU_REG_SYS_TEMP_SIGN		0x03
++#define MCU_REG_SYS_TEMP_MAG		0x04
++#define MCU_REG_FAN_CONTROL		0xfa
++#define MCU_REG_FAN_STATUS		0xfb
++#define MCU_REG_REVISION		0xfd
++#define MCU_REG_CAPABILITIES		0xfe
++
++#define MCU_CAP_FAN_PRESENT		BIT(6)
++#define MCU_CAP_TEMP_MASK		GENMASK(5, 0)
++#define MCU_TEMP_FLAG_NONE		1
++#define MCU_TEMP_FLAG_SYSTEM_ONLY	2
++
++/*
++ * Values written to the fan-control register (0xFA); the fan-status
++ * register (0xFB) reports the MCU's effective drive using the same encoding.
++ */
++#define MCU_FAN_VAL_AUTO		0x4f
++#define MCU_FAN_VAL_FORCE_ON		0x5f
++#define MCU_FAN_VAL_FORCE_OFF		0x40
++
++#define MCU_PWM_FORCE_THRESHOLD	128
++
++enum mcu_temp_channel {
++	MCU_TEMP_CPU = 0,
++	MCU_TEMP_SYS,
++};
++
++struct mcu_sensor {
++	struct regmap *regmap;
++	bool fan_present;
++	bool cpu_temp_avail;
++	bool sys_temp_avail;
++};
++
++static int mcu_read_temp(struct regmap *regmap, unsigned int sign_reg,
++			  unsigned int mag_reg, long *temp)
++{
++	unsigned int sign, mag;
++	int ret;
++
++	ret = regmap_read(regmap, sign_reg, &sign);
++	if (ret)
++		return ret;
++	ret = regmap_read(regmap, mag_reg, &mag);
++	if (ret)
++		return ret;
++
++	/*
++	 * The sign register is 0 for positive, non-zero (1 in practice) for
++	 * negative. Treat any non-zero value as negative rather than only
++	 * 0x01, so a stray reading can't be reported as a plausible positive
++	 * temperature.
++	 */
++	*temp = (long)(sign ? -(int)mag : (int)mag) * 1000;
++	return 0;
++}
++
++static umode_t mcu_is_visible(const void *drvdata,
++			       enum hwmon_sensor_types type,
++			       u32 attr, int channel)
++{
++	const struct mcu_sensor *priv = drvdata;
++
++	switch (type) {
++	case hwmon_temp:
++		/*
++		 * Expose both temperature channels unconditionally so
++		 * sysfs numbering stays contiguous (some userspace tools
++		 * assume so). Per-channel availability is reported via
++		 * tempN_fault.
++		 */
++		switch (attr) {
++		case hwmon_temp_input:
++		case hwmon_temp_label:
++		case hwmon_temp_fault:
++			return 0444;
++		}
++		break;
++	case hwmon_pwm:
++		if (!priv->fan_present)
++			return 0;
++		if (attr == hwmon_pwm_enable || attr == hwmon_pwm_input)
++			return 0644;
++		break;
++	default:
++		break;
++	}
++	return 0;
++}
++
++static int mcu_read(struct device *dev, enum hwmon_sensor_types type,
++		     u32 attr, int channel, long *val)
++{
++	struct mcu_sensor *priv = dev_get_drvdata(dev);
++	unsigned int v;
++	int ret;
++
++	switch (type) {
++	case hwmon_temp:
++		switch (attr) {
++		case hwmon_temp_input:
++			if (channel == MCU_TEMP_CPU) {
++				if (!priv->cpu_temp_avail)
++					return -ENODATA;
++				return mcu_read_temp(priv->regmap,
++						      MCU_REG_CPU_TEMP_SIGN,
++						      MCU_REG_CPU_TEMP_MAG,
++						      val);
++			}
++			if (!priv->sys_temp_avail)
++				return -ENODATA;
++			return mcu_read_temp(priv->regmap,
++					      MCU_REG_SYS_TEMP_SIGN,
++					      MCU_REG_SYS_TEMP_MAG,
++					      val);
++		case hwmon_temp_fault:
++			if (channel == MCU_TEMP_CPU)
++				*val = priv->cpu_temp_avail ? 0 : 1;
++			else
++				*val = priv->sys_temp_avail ? 0 : 1;
++			return 0;
++		}
++		break;
++	case hwmon_pwm:
++		switch (attr) {
++		case hwmon_pwm_enable:
++			/*
++			 * Mode from the control register (0xFA), per the hwmon
++			 * convention: 0 = force-on (full speed), 1 = manual
++			 * (force-off; pwm_input drives it), 2 = automatic.
++			 */
++			ret = regmap_read(priv->regmap, MCU_REG_FAN_CONTROL, &v);
++			if (ret)
++				return ret;
++			switch (v) {
++			case MCU_FAN_VAL_AUTO:
++				*val = 2;
++				break;
++			case MCU_FAN_VAL_FORCE_ON:
++				*val = 0;
++				break;
++			default:
++				*val = 1;
++				break;
++			}
++			return 0;
++		case hwmon_pwm_input:
++			/*
++			 * Echo the commanded state from the control register
++			 * (0xFA) so a pwm write reads back consistently. The
++			 * control register carries no duty in automatic mode,
++			 * so there fall back to the live drive state (0xFB):
++			 * 0x4f (auto-running) / 0x5f mean driven on, else off.
++			 */
++			ret = regmap_read(priv->regmap, MCU_REG_FAN_CONTROL, &v);
++			if (ret)
++				return ret;
++			if (v == MCU_FAN_VAL_AUTO) {
++				ret = regmap_read(priv->regmap,
++						  MCU_REG_FAN_STATUS, &v);
++				if (ret)
++					return ret;
++			}
++			*val = (v == MCU_FAN_VAL_AUTO || v == MCU_FAN_VAL_FORCE_ON) ? 255 : 0;
++			return 0;
++		default:
++			return -EOPNOTSUPP;
++		}
++		break;
++	default:
++		break;
++	}
++	return -EOPNOTSUPP;
++}
++
++static int mcu_read_string(struct device *dev, enum hwmon_sensor_types type,
++			    u32 attr, int channel, const char **str)
++{
++	if (type == hwmon_temp && attr == hwmon_temp_label) {
++		*str = (channel == MCU_TEMP_CPU) ? "CPU" : "System";
++		return 0;
++	}
++	return -EOPNOTSUPP;
++}
++
++static int mcu_write(struct device *dev, enum hwmon_sensor_types type,
++		      u32 attr, int channel, long val)
++{
++	struct mcu_sensor *priv = dev_get_drvdata(dev);
++	unsigned int byte;
++
++	if (type != hwmon_pwm)
++		return -EOPNOTSUPP;
++
++	switch (attr) {
++	case hwmon_pwm_enable:
++		switch (val) {
++		case 0:
++			byte = MCU_FAN_VAL_FORCE_ON;
++			break;
++		case 1:
++			/*
++			 * Manual: leave the MCU's automatic regulation
++			 * by switching to an explicit FORCE_OFF state so
++			 * a subsequent pwm_enable read reports 1 (manual)
++			 * even before any pwm_input write. Userspace is
++			 * expected to follow up by writing pwm_input to
++			 * pick the actual fan state.
++			 */
++			byte = MCU_FAN_VAL_FORCE_OFF;
++			break;
++		case 2:
++			byte = MCU_FAN_VAL_AUTO;
++			break;
++		default:
++			return -EINVAL;
++		}
++		break;
++	case hwmon_pwm_input:
++		if (val < 0)
++			return -EINVAL;
++		val = clamp_val(val, 0, 255);
++		byte = (val >= MCU_PWM_FORCE_THRESHOLD) ?
++			MCU_FAN_VAL_FORCE_ON : MCU_FAN_VAL_FORCE_OFF;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	return regmap_write(priv->regmap, MCU_REG_FAN_CONTROL, byte);
++}
++
++static const struct hwmon_channel_info *const mcu_sensor_info[] = {
++	HWMON_CHANNEL_INFO(temp,
++			   HWMON_T_INPUT | HWMON_T_LABEL | HWMON_T_FAULT,
++			   HWMON_T_INPUT | HWMON_T_LABEL | HWMON_T_FAULT),
++	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_ENABLE | HWMON_PWM_INPUT),
++	NULL
++};
++
++static const struct hwmon_ops mcu_sensor_ops = {
++	.is_visible = mcu_is_visible,
++	.read = mcu_read,
++	.read_string = mcu_read_string,
++	.write = mcu_write,
++};
++
++static const struct hwmon_chip_info mcu_sensor_chip_info = {
++	.ops = &mcu_sensor_ops,
++	.info = mcu_sensor_info,
++};
++
++static int mcu_sensor_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct mcu_sensor *priv;
++	struct device *hwmon_dev;
++	unsigned int rev, caps, flag;
++	int ret;
++
++	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++
++	priv->regmap = syscon_node_to_regmap(dev_of_node(dev->parent));
++	if (IS_ERR(priv->regmap))
++		return dev_err_probe(dev, PTR_ERR(priv->regmap),
++				     "failed to get parent regmap\n");
++
++	/*
++	 * Register 0xFD holds a board/firmware revision byte (e.g. 0x91 on the
++	 * S1300WP-8XGT-4S+, 0xFC on the S1100W-8XGT-SE), not a fixed chip ID;
++	 * the stock firmware never gates on a specific value. Only reject the
++	 * all-zero / all-ones reads that mean the MCU isn't responding, and
++	 * leave actual feature detection to the capability register below.
++	 */
++	ret = regmap_read(priv->regmap, MCU_REG_REVISION, &rev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read revision\n");
++	if (rev == 0x00 || rev == 0xff)
++		return dev_err_probe(dev, -ENODEV,
++				     "MCU not responding (revision 0x%02x)\n",
++				     rev);
++
++	ret = regmap_read(priv->regmap, MCU_REG_CAPABILITIES, &caps);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read capabilities\n");
++
++	priv->fan_present = !!(caps & MCU_CAP_FAN_PRESENT);
++	flag = caps & MCU_CAP_TEMP_MASK;
++	priv->cpu_temp_avail = flag != MCU_TEMP_FLAG_NONE &&
++			       flag != MCU_TEMP_FLAG_SYSTEM_ONLY;
++	priv->sys_temp_avail = flag != MCU_TEMP_FLAG_NONE;
++
++	dev_info(dev, "rev 0x%02x: fan=%s cpu_temp=%s sys_temp=%s\n", rev,
++		 priv->fan_present ? "present" : "absent",
++		 priv->cpu_temp_avail ? "yes" : "no",
++		 priv->sys_temp_avail ? "yes" : "no");
++
++	platform_set_drvdata(pdev, priv);
++
++	hwmon_dev = devm_hwmon_device_register_with_info(dev, "hasivo_mcu",
++							 priv,
++							 &mcu_sensor_chip_info,
++							 NULL);
++	return PTR_ERR_OR_ZERO(hwmon_dev);
++}
++
++static void mcu_sensor_remove(struct platform_device *pdev)
++{
++	struct mcu_sensor *priv = platform_get_drvdata(pdev);
++
++	/*
++	 * Restore AUTO mode so the MCU resumes thermal regulation after
++	 * unload. Skipping this would leave a user-forced state in
++	 * effect indefinitely (e.g. fan off after a force-off
++	 * experiment + reboot), which is a real thermal-safety hazard.
++	 */
++	if (priv->fan_present)
++		regmap_write(priv->regmap, MCU_REG_FAN_CONTROL,
++			     MCU_FAN_VAL_AUTO);
++}
++
++static const struct of_device_id mcu_sensor_of_match[] = {
++	{ .compatible = "hasivo,mcu-sensor" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, mcu_sensor_of_match);
++
++static struct platform_driver mcu_sensor_driver = {
++	.driver = {
++		.name = "hasivo-mcu-sensor",
++		.of_match_table = mcu_sensor_of_match,
++	},
++	.probe = mcu_sensor_probe,
++	.remove = mcu_sensor_remove,
++};
++module_platform_driver(mcu_sensor_driver);
++
++MODULE_AUTHOR("Carlo Szelinsky <github@szelinsky.de>");
++MODULE_DESCRIPTION("Hasivo management MCU sensor driver");
++MODULE_LICENSE("GPL");

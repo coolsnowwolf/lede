@@ -1,0 +1,215 @@
+From 0765570f330f526dd12a966a0a6a25a99da52fb4 Mon Sep 17 00:00:00 2001
+From: Jan Hoffmann <jan@3e8.eu>
+Date: Sat, 16 May 2026 21:03:45 +0200
+Subject: [PATCH] net: phy: realtek: support MDI swapping for RTL8226-CG
+
+Add support for configuring swapping of MDI pairs (ABCD->DCBA) when the
+property "enet-phy-pair-order" is specified.
+
+Unfortunately, no documentation about this feature is available, but
+this implementation still tries to avoid magic numbers and raw register
+numbers where it seems clear what is going on.
+
+As it is unknown whether the patching step can be safely reversed, only
+enabling MDI swapping is fully supported. A value of "0" for the "enet-
+phy-pair-order" property is not accepted if the PHY has already been
+patched for MDI swapping (however, this should not occur in practice).
+
+Some other Realtek PHYs also support similar mechanisms:
+
+- RTL8221B-VB-CG allows to configure MDI swapping via the same register,
+  but does not need the additional patching step. However, it is unclear
+  whether a driver implementation for that PHY is necessary, as it is
+  known to support configuration via strapping pins (which is working
+  fine at least in Zyxel XGS1210-12 rev B1).
+
+- The patching step seems to match the one for the integrated PHYs of
+  some Realtek PCIe/USB NICs (see for example the r8152 driver).
+
+For now, only implement this for the RTL8226-CG PHY, where it is needed
+for the switches Zyxel XGS1010-12 rev A1 and XGS1210-12 rev A1.
+
+Signed-off-by: Jan Hoffmann <jan@3e8.eu>
+Link: https://patch.msgid.link/20260516190456.387768-1-jan@3e8.eu
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 154 +++++++++++++++++++++++++
+ 1 file changed, 154 insertions(+)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -193,6 +193,21 @@
+ #define RTL8224_VND1_MDI_PAIR_SWAP		0xa90
+ #define RTL8224_VND1_MDI_POLARITY_SWAP		0xa94
+ 
++#define RTL8226_VND1_UNKNOWN_6A21		0x6a21
++#define  RTL8226_VND1_UNKNOWN_6A21_MDI_SWAP_EN	BIT(5)
++
++#define RTL8226_VND2_UNKNOWN_D068		0xd068
++#define  RTL8226_VND2_UNKNOWN_D068_MDI_SWAP_FLAG	BIT(1)
++#define  RTL8226_VND2_UNKNOWN_D068_PAIR_SEL	GENMASK(4, 3)
++#define RTL8226_VND2_ADCCAL_OFFSET		0xd06a
++
++#define RTL8226_VND2_RG_LPF_CAP_XG_P0_P1	0xbd5a
++#define RTL8226_VND2_RG_LPF_CAP_XG_P2_P3	0xbd5c
++#define RTL8226_VND2_RG_LPF_CAP_P0_P1		0xbc18
++#define RTL8226_VND2_RG_LPF_CAP_P2_P3		0xbc1a
++#define  RTL8226_RG_LPF_CAP_PAIR_A_MASK		GENMASK(4, 0)
++#define  RTL8226_RG_LPF_CAP_PAIR_B_MASK		GENMASK(12, 8)
++
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+ 
+@@ -1404,6 +1419,144 @@ static int rtl822x_init_phycr1(struct ph
+ 				      mask, val);
+ }
+ 
++static int rtl8226_set_mdi_swap(struct phy_device *phydev, bool swap_enable)
++{
++	u16 val = swap_enable ? RTL8226_VND1_UNKNOWN_6A21_MDI_SWAP_EN : 0;
++
++	return phy_modify_mmd(phydev, MDIO_MMD_VEND1, RTL8226_VND1_UNKNOWN_6A21,
++			      RTL8226_VND1_UNKNOWN_6A21_MDI_SWAP_EN, val);
++}
++
++static int rtl8226_swap_rg_lpf_cap(struct phy_device *phydev, u32 reg_p0_p1, u32 reg_p2_p3)
++{
++	u16 val_p0, val_p1, val_p2, val_p3;
++	int ret;
++
++	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, reg_p0_p1);
++	if (ret < 0)
++		return ret;
++
++	val_p0 = FIELD_GET(RTL8226_RG_LPF_CAP_PAIR_A_MASK, ret);
++	val_p1 = FIELD_GET(RTL8226_RG_LPF_CAP_PAIR_B_MASK, ret);
++
++	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, reg_p2_p3);
++	if (ret < 0)
++		return ret;
++
++	val_p2 = FIELD_GET(RTL8226_RG_LPF_CAP_PAIR_A_MASK, ret);
++	val_p3 = FIELD_GET(RTL8226_RG_LPF_CAP_PAIR_B_MASK, ret);
++
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, reg_p0_p1,
++			     RTL8226_RG_LPF_CAP_PAIR_A_MASK | RTL8226_RG_LPF_CAP_PAIR_B_MASK,
++			     FIELD_PREP(RTL8226_RG_LPF_CAP_PAIR_A_MASK, val_p3) |
++			     FIELD_PREP(RTL8226_RG_LPF_CAP_PAIR_B_MASK, val_p2));
++	if (ret < 0)
++		return ret;
++
++	return phy_modify_mmd(phydev, MDIO_MMD_VEND2, reg_p2_p3,
++			     RTL8226_RG_LPF_CAP_PAIR_A_MASK | RTL8226_RG_LPF_CAP_PAIR_B_MASK,
++			     FIELD_PREP(RTL8226_RG_LPF_CAP_PAIR_A_MASK, val_p1) |
++			     FIELD_PREP(RTL8226_RG_LPF_CAP_PAIR_B_MASK, val_p0));
++}
++
++static int rtl8226_patch_mdi_swap(struct phy_device *phydev, bool swap_enable)
++{
++	u16 adccal_offset[4];
++	bool is_patched;
++	int ret;
++
++	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_UNKNOWN_D068);
++	if (ret < 0)
++		return ret;
++
++	is_patched = !(ret & RTL8226_VND2_UNKNOWN_D068_MDI_SWAP_FLAG);
++
++	if (is_patched == swap_enable) {
++		/* Nothing to do */
++		return 0;
++	}
++
++	if (!swap_enable) {
++		/* Patching is only implemented one-way, see next comment. */
++		phydev_err(phydev, "MDI swapping disabled, but PHY is already patched.\n");
++		return -EINVAL;
++	}
++
++	/* The exact meaning of these bits is unknown. We only know that bit 1
++	 * is used as a flag that swapping is already done.
++	 */
++	ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_UNKNOWN_D068, 0x7, 0x1);
++	if (ret < 0)
++		return ret;
++
++	for (int i = 0; i < 4; i++) {
++		ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_UNKNOWN_D068,
++				     RTL8226_VND2_UNKNOWN_D068_PAIR_SEL,
++				     FIELD_PREP(RTL8226_VND2_UNKNOWN_D068_PAIR_SEL, i));
++		if (ret < 0)
++			return ret;
++
++		ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_ADCCAL_OFFSET);
++		if (ret < 0)
++			return ret;
++
++		adccal_offset[i] = ret;
++	}
++
++	for (int i = 0; i < 4; i++) {
++		ret = phy_modify_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_UNKNOWN_D068,
++				     RTL8226_VND2_UNKNOWN_D068_PAIR_SEL,
++				     FIELD_PREP(RTL8226_VND2_UNKNOWN_D068_PAIR_SEL, i));
++		if (ret < 0)
++			return ret;
++
++		ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, RTL8226_VND2_ADCCAL_OFFSET,
++				    adccal_offset[3 - i]);
++		if (ret < 0)
++			return ret;
++	}
++
++	ret = rtl8226_swap_rg_lpf_cap(phydev, RTL8226_VND2_RG_LPF_CAP_XG_P0_P1,
++				      RTL8226_VND2_RG_LPF_CAP_XG_P2_P3);
++	if (ret < 0)
++		return ret;
++
++	return rtl8226_swap_rg_lpf_cap(phydev, RTL8226_VND2_RG_LPF_CAP_P0_P1,
++				       RTL8226_VND2_RG_LPF_CAP_P2_P3);
++}
++
++static int rtl8226_config_mdi_order(struct phy_device *phydev)
++{
++	u32 order;
++	bool swap_enable;
++	int ret;
++
++	ret = of_property_read_u32(phydev->mdio.dev.of_node, "enet-phy-pair-order", &order);
++
++	/* Property not present, nothing to do */
++	if (ret == -EINVAL || ret == -ENOSYS)
++		return 0;
++
++	if (ret)
++		return ret;
++
++	if (order & ~1)
++		return -EINVAL;
++
++	swap_enable = !!(order & 1);
++
++	ret = rtl8226_set_mdi_swap(phydev, swap_enable);
++	if (ret)
++		return ret;
++
++	return rtl8226_patch_mdi_swap(phydev, swap_enable);
++}
++
++static int rtl8226_probe(struct phy_device *phydev)
++{
++	return rtl8226_config_mdi_order(phydev);
++}
++
+ static int rtl822x_set_serdes_option_mode(struct phy_device *phydev, bool gen1)
+ {
+ 	bool has_2500, has_sgmii;
+@@ -3231,6 +3384,7 @@ static struct phy_driver realtek_drvs[]
+ 		.soft_reset	= rtl822x_c45_soft_reset,
+ 		.get_features	= rtl822x_c45_get_features,
+ 		.config_aneg	= rtl822x_c45_config_aneg,
++		.probe		= rtl8226_probe,
+ 		.config_init	= rtl822x_config_init,
+ 		.inband_caps	= rtl822x_inband_caps,
+ 		.config_inband	= rtl822x_config_inband,

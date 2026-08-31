@@ -1,0 +1,324 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/dts-v1/;
+
+#include "rtl931x.dtsi"
+
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/mux/mux.h>
+#include <dt-bindings/phy/phy.h>
+
+/ {
+	compatible = "ubnt,usw-pro-xg-8-poe", "realtek,rtl9313-soc";
+	model = "UniFi USW Pro XG 8 PoE";
+
+	aliases {
+		label-mac-device = &ethernet0;
+		led-boot = &led_sys_white;
+		led-failsafe = &led_sys_white;
+		led-running = &led_sys_blue;
+		led-upgrade = &led_sys_white;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x00000000 0x10000000>, /* first 256 MiB */
+		      <0x90000000 0x10000000>; /* remaining 256 MiB */
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
+		};
+	};
+
+	leds: leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinmux_disable_sys_led>;
+
+		led_sys_blue: led-0 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_INDICATOR;
+			gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+		};
+
+		led_sys_white: led-1 {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_INDICATOR;
+			gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	led_set: led_set@0 {
+		compatible = "realtek,rtl9300-leds";
+		clock-frequency = <1250000>;
+		active-low;
+
+		/*
+		 * selects all speed modes to trigger a LED, two slots. This doesn't correspond
+		 * fully to actual LED behavior. The serial stream is fed into the Etherlighting
+		 * MCU which translates that into the LEDs, managing color, behavior etc. in
+		 * addition.
+		 */
+		led_set0 = <(RTL93XX_LED_SET_10G | RTL93XX_LED_SET_5G | RTL93XX_LED_SET_2P5G |
+			     RTL93XX_LED_SET_1G | RTL93XX_LED_SET_100M | RTL93XX_LED_SET_10M |
+			     RTL93XX_LED_SET_LINK | RTL93XX_LED_SET_ACT)
+			    (RTL93XX_LED_SET_10G | RTL93XX_LED_SET_5G | RTL93XX_LED_SET_2P5G |
+			     RTL93XX_LED_SET_1G | RTL93XX_LED_SET_100M | RTL93XX_LED_SET_10M |
+			     RTL93XX_LED_SET_LINK | RTL93XX_LED_SET_ACT)>;
+	};
+
+	sfp1: sfp-p1 {
+		compatible = "sff,sfp";
+		i2c-bus = <&i2c_sfp1>;
+		los-gpio = <&gpio2 0 GPIO_ACTIVE_HIGH>;
+		mod-def0-gpio = <&gpio2 2 GPIO_ACTIVE_LOW>;
+		tx-disable-gpio = <&gpio2 3 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&gpio2 1 GPIO_ACTIVE_HIGH>;
+	};
+
+	sfp2: sfp-p2 {
+		compatible = "sff,sfp";
+		i2c-bus = <&i2c_sfp2>;
+		los-gpio = <&gpio2 4 GPIO_ACTIVE_HIGH>;
+		mod-def0-gpio = <&gpio2 6 GPIO_ACTIVE_LOW>;
+		tx-disable-gpio = <&gpio2 7 GPIO_ACTIVE_HIGH>;
+		tx-fault-gpio = <&gpio2 5 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&spi0 {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "u-boot";
+				reg = <0x0 0x140000>;
+				read-only;
+			};
+
+			partition@140000 {
+				label = "u-boot-env";
+				reg = <0x140000 0x10000>;
+			};
+
+			/*
+			 * Vendor layout has two kernel partitions:
+			 * (1) <0x150000 0xec0000> = "kernel0"
+			 * (2) <0x1010000 0xed0000> = "kernel1"
+			 */
+			partition@150000 {
+				label = "firmware";
+				reg = <0x150000 0x1d90000>;
+				compatible = "openwrt,uimage", "denx,uimage";
+			};
+
+			partition@1ee0000 {
+				label = "cdata";
+				reg = <0x1ee0000 0x10000>;
+			};
+
+			partition@1ef0000 {
+				label = "cfg";
+				reg = <0x1ef0000 0x100000>;
+			};
+
+			partition@1ff0000 {
+				label = "EEPROM";
+				reg = <0x1ff0000 0x10000>;
+
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					factory_macaddr: macaddr@0 {
+						compatible = "mac-base";
+						reg = <0x0 0x6>;
+						#nvmem-cell-cells = <1>;
+					};
+				};
+			};
+		};
+	};
+};
+
+&ethernet0 {
+	nvmem-cells = <&factory_macaddr 0>;
+	nvmem-cell-names = "mac-address";
+};
+
+&gpio0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinmux_disable_jtag>;
+
+	/*
+	 * GPIO 1 is the global reset pin shared by all PHYs across all MDIO
+	 * buses. It is intentionally not declared as reset-gpios on any bus:
+	 * the MDIO driver / phylink only support a reset GPIO per bus, not on
+	 * the parent controller. Attaching it to a single bus would still reset
+	 * the PHYs on the other buses as a side effect, leaving their software
+	 * state out of sync with the hardware and likely breaking them.
+	 */
+	phy_reset_hog {
+		gpio-hog;
+		gpios = <1 GPIO_ACTIVE_LOW>;
+		output-low;
+		line-name = "phy-reset";
+	};
+};
+
+&i2c_mst1 {
+	status = "okay";
+
+	i2c_sfp1: i2c@0 { reg = <0>; };
+	i2c_sfp2: i2c@1 { reg = <1>; };
+	i2c7: i2c@7 { reg = <7>; }; /* Etherlighting MCU at 0x66 */
+
+	i2c8: i2c@8 {
+		reg = <8>;
+
+		adt7475@2e {
+			compatible = "adi,adt7475";
+			reg = <0x2e>;
+		};
+	};
+};
+
+&i2c_mst2 {
+	status = "okay";
+
+	i2c5: i2c@5 {
+		reg = <5>;
+
+		gpio1: gpio@22 {
+			compatible = "nxp,pca9555";
+			reg = <0x22>;
+			gpio-controller;
+			#gpio-cells = <2>;
+		};
+
+		gpio2: gpio@24 {
+			compatible = "nxp,pca9555";
+			reg = <0x24>;
+			gpio-controller;
+			#gpio-cells = <2>;
+		};
+	};
+
+	i2c_poe: i2c@6 {
+		reg = <6>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pse: ethernet-pse@20 {
+			compatible = "ubnt,usw-pro-xg-8-poe-pse", "realtek,pse-mcu-gen2-smbus";
+			reg = <0x20>;
+
+			reset-gpios = <&gpio1 15 GPIO_ACTIVE_LOW>;
+
+			pse-pis {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				PSE_PI(0)
+				PSE_PI(1)
+				PSE_PI(2)
+				PSE_PI(3)
+				PSE_PI(4)
+				PSE_PI(5)
+				PSE_PI(6)
+				PSE_PI(7)
+			};
+		};
+	};
+};
+
+&mdio_ctrl {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinmux_enable_mdc_mdio_0>;
+};
+
+&mdio_bus0 {
+	/* RTL8264B */
+	ethernet-phy-package@0 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <0>;
+
+		PHY_C45(0, 0)
+		PHY_C45(8, 1)
+		PHY_C45(16, 2)
+		PHY_C45(24, 3)
+	};
+
+	/* RTL8264B */
+	ethernet-phy-package@4 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		reg = <4>;
+
+		PHY_C45(32, 4)
+		PHY_C45(40, 5)
+		PHY_C45(48, 6)
+		PHY_C45(50, 7)
+	};
+};
+
+&switch0 {
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		SWITCH_PORT_LED(0, 1, 2, 0, 0, usxgmii)
+		SWITCH_PORT_LED(8, 2, 3, 0, 0, usxgmii)
+		SWITCH_PORT_LED(16, 3, 4, 0, 0, usxgmii)
+		SWITCH_PORT_LED(24, 4, 5, 0, 0, usxgmii)
+		SWITCH_PORT_LED(32, 5, 6, 0, 0, usxgmii)
+		SWITCH_PORT_LED(40, 6, 7, 0, 0, usxgmii)
+		SWITCH_PORT_LED(48, 7, 8, 0, 0, usxgmii)
+		SWITCH_PORT_LED(50, 8, 9, 0, 0, usxgmii)
+
+		SWITCH_PORT_SFP(54, 9, 12, 0, 1)
+		SWITCH_PORT_SFP(55, 10, 13, 0, 2)
+
+		/* CPU port */
+		port@56 {
+			ethernet = <&ethernet0>;
+			reg = <56>;
+			phy-mode = "internal";
+			fixed-link {
+				speed = <1000>;
+				full-duplex;
+			};
+		};
+	};
+};
+
+&phy0 { pses = <&pse_pi0>; };
+&phy8 { pses = <&pse_pi1>; };
+&phy16 { pses = <&pse_pi2>; };
+&phy24 { pses = <&pse_pi3>; };
+&phy32 { pses = <&pse_pi4>; };
+&phy40 { pses = <&pse_pi5>; };
+&phy48 { pses = <&pse_pi6>; };
+&phy50 { pses = <&pse_pi7>; };

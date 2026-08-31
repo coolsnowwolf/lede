@@ -1,0 +1,41 @@
+From 56d0885514491e5ed8f7593400879ab77c52504c Mon Sep 17 00:00:00 2001
+From: Jonas Jelonek <jelonek.jonas@gmail.com>
+Date: Thu, 28 May 2026 20:52:40 +0000
+Subject: [PATCH] net: sfp: initialize i2c_block_size at adapter configure time
+
+sfp->i2c_block_size is only assigned in sfp_sm_mod_probe(), which runs
+from the state machine timer after SFP_F_PRESENT has been set. Between
+those two points, sfp_module_eeprom() (the ethtool -m callback) gates
+only on SFP_F_PRESENT and can be entered with i2c_block_size still at
+its kzalloc'd value of 0.
+
+On a pure-I2C adapter, sfp_i2c_read() then issues an i2c_transfer()
+with msgs[1].len = 0 inside a loop that subtracts this_len from len
+each iteration; on adapters that succeed a zero-length read the loop
+never advances, spinning while holding rtnl_lock.
+
+This was previously addressed by initializing i2c_block_size in
+sfp_alloc() (commit 813c2dd78618), but the initialization was dropped
+when i2c_block_size was split from i2c_max_block_size.
+
+Initialize sfp->i2c_block_size from sfp->i2c_max_block_size in
+sfp_i2c_configure(), so the field is valid as soon as the adapter is
+known. sfp_sm_mod_probe() still reassigns it on each module insertion
+to recover from a per-module clamp to 1 (sfp_id_needs_byte_io).
+
+Fixes: 7662abf4db94 ("net: phy: sfp: Add support for SMBus module access")
+Cc: stable@vger.kernel.org
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+Link: https://patch.msgid.link/20260528205242.971410-2-jelonek.jonas@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -1819,6 +1819,7 @@ static int sfp_hwmon_insert(struct sfp *
+ 		sfp->hwmon_tries = R_PROBE_RETRY_SLOW;
+ 	}
+ 
++	sfp->i2c_block_size = sfp->i2c_max_block_size;
+ 	return 0;
+ }
+ 
