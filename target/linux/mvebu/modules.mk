@@ -45,7 +45,7 @@ $(eval $(call KernelPackage,turris-omnia-mcu))
 define KernelPackage/leds-turris-omnia
    SUBMENU:=$(LEDS_MENU)
    TITLE:=LED support for CZ.NIC's Turris Omnia
-   DEPENDS:=@TARGET_mvebu_cortexa9
+   DEPENDS:=@TARGET_mvebu_cortexa9 kmod-turris-omnia-mcu
    KCONFIG:=CONFIG_LEDS_TURRIS_OMNIA
    FILES:=$(LINUX_DIR)/drivers/leds/leds-turris-omnia.ko
    AUTOLOAD:=$(call AutoLoad,60,leds-turris-omnia,1)

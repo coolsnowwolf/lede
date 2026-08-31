@@ -1,7 +1,5 @@
-define Device/FitImage
-  KERNEL_SUFFIX := -uImage.itb
-  KERNEL = kernel-bin | gzip | fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb
-  KERNEL_NAME := Image
+define Build/append-bootscript
+	cat $@-boot.scr >> $@
 endef
 
 define Device/UbiFit
@@ -10,6 +8,42 @@ define Device/UbiFit
   IMAGE/factory.ubi := append-ubi
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
 endef
+
+define Device/checkpoint_v-80
+  $(call Device/Default-arm64)
+  DEVICE_VENDOR := Check Point
+  DEVICE_MODEL := V-80
+  SOC := armada-7040
+  BOOT_SCRIPT := v-80
+  IMAGES += sysupgrade.gz
+  IMAGE/sysupgrade.gz := boot-scr eMMC | append-bootscript | pad-to 2048 | \
+	append-kernel | \
+	sysupgrade-tar kernel=$$$$@ dtb=$$(KDIR)/image-$$(DEVICE_DTS).dtb | \
+	libdeflate-gzip | append-metadata
+  ARTIFACTS := initramfs.dtb initramfs.scr
+  ARTIFACT/initramfs.dtb := append-dtb
+  ARTIFACT/initramfs.scr := boot-scr INIT | append-bootscript
+  DEVICE_PACKAGES := kmod-dsa-mv88e6xxx kmod-hwmon-nct7802 kmod-rtc-ds1307
+endef
+TARGET_DEVICES += checkpoint_v-80
+
+define Device/checkpoint_v-81
+  $(call Device/Default-arm64)
+  DEVICE_VENDOR := Check Point
+  DEVICE_MODEL := V-81
+  SOC := armada-8040
+  BOOT_SCRIPT := v-80
+  IMAGES += sysupgrade.gz
+  IMAGE/sysupgrade.gz := boot-scr eMMC | append-bootscript | pad-to 2048 | \
+	append-kernel | \
+	sysupgrade-tar kernel=$$$$@ dtb=$$(KDIR)/image-$$(DEVICE_DTS).dtb | \
+	libdeflate-gzip | append-metadata
+  ARTIFACTS := initramfs.dtb initramfs.scr
+  ARTIFACT/initramfs.dtb := append-dtb
+  ARTIFACT/initramfs.scr := boot-scr INIT | append-bootscript
+  DEVICE_PACKAGES := kmod-dsa-mv88e6xxx kmod-hwmon-nct7802 kmod-rtc-ds1307
+endef
+TARGET_DEVICES += checkpoint_v-81
 
 define Device/globalscale_mochabin
   $(call Device/Default-arm64)
@@ -25,7 +59,7 @@ define Device/marvell_armada7040-db
   DEVICE_VENDOR := Marvell
   DEVICE_MODEL := Armada 7040 Development Board
   DEVICE_DTS := armada-7040-db
-  IMAGE/sdcard.img.gz := boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
+  IMAGE/sdcard.img.gz := boot-img-ext4 | sdcard-img-ext4 | libdeflate-gzip | append-metadata
 endef
 TARGET_DEVICES += marvell_armada7040-db
 
@@ -34,7 +68,7 @@ define Device/marvell_armada8040-db
   DEVICE_VENDOR := Marvell
   DEVICE_MODEL := Armada 8040 Development Board
   DEVICE_DTS := armada-8040-db
-  IMAGE/sdcard.img.gz := boot-img-ext4 | sdcard-img-ext4 | gzip | append-metadata
+  IMAGE/sdcard.img.gz := boot-img-ext4 | sdcard-img-ext4 | libdeflate-gzip | append-metadata
 endef
 TARGET_DEVICES += marvell_armada8040-db
 
@@ -72,12 +106,25 @@ define Device/mikrotik_rb5009
   $(call Device/FitImage)
   $(call Device/UbiFit)
   DEVICE_VENDOR := MikroTik
-  DEVICE_MODEL := RB5009
   SOC := armada-7040
   KERNEL_LOADADDR := 0x22000000
   DEVICE_PACKAGES += kmod-i2c-gpio yafut kmod-dsa-mv88e6xxx
 endef
-TARGET_DEVICES += mikrotik_rb5009
+
+define Device/mikrotik_rb5009ug
+  $(call Device/mikrotik_rb5009)
+  DEVICE_DTS := armada-7040-rb5009ug
+  DEVICE_MODEL := RB5009UG+S+IN
+  SUPPORTED_DEVICES += mikrotik,rb5009
+endef
+TARGET_DEVICES += mikrotik_rb5009ug
+
+define Device/mikrotik_rb5009upr
+  $(call Device/mikrotik_rb5009)
+  DEVICE_DTS := armada-7040-rb5009upr
+  DEVICE_MODEL := RB5009UPr+S+IN
+endef
+TARGET_DEVICES += mikrotik_rb5009upr
 
 define Device/marvell_clearfog-gt-8k
   $(call Device/Default-arm64)
@@ -107,26 +154,6 @@ define Device/iei_puzzle-m902
   DEVICE_PACKAGES += kmod-rtc-ds1307
 endef
 TARGET_DEVICES += iei_puzzle-m902
-
-define Device/qnap_qhora-321
-  $(call Device/Default-arm64)
-  SOC := cn9131
-  DEVICE_VENDOR := QNAP
-  DEVICE_MODEL := QHora-321
-  DEVICE_DTS := cn9131-qhora-321
-  DEVICE_PACKAGES += kmod-rtc-ds1307
-endef
-TARGET_DEVICES += qnap_qhora-321
-
-define Device/qnap_qhora-322
-  $(call Device/Default-arm64)
-  SOC := cn9132
-  DEVICE_VENDOR := QNAP
-  DEVICE_MODEL := QHora-322
-  DEVICE_DTS := cn9132-qhora-322
-  DEVICE_PACKAGES += kmod-rtc-ds1307
-endef
-TARGET_DEVICES += qnap_qhora-322
 
 define Device/solidrun_clearfog-pro
   $(call Device/Default-arm64)
