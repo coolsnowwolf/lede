@@ -1,0 +1,68 @@
+From a2dd154377c9aa6ddda00d39b8c7c334e4fa16ff Mon Sep 17 00:00:00 2001
+From: Damien Horsley <damien.horsley@imgtec.com>
+Date: Tue, 22 Mar 2016 12:46:09 +0000
+Subject: dmaengine: img-mdc: Handle early status read
+
+It is possible that mdc_tx_status may be called before the first
+node has been read from memory.
+
+In this case, the residue value stored in the register is undefined.
+Return the transfer size instead.
+
+Signed-off-by: Damien Horsley <damien.horsley@imgtec.com>
+---
+ drivers/dma/img-mdc-dma.c | 40 ++++++++++++++++++++++++----------------
+ 1 file changed, 24 insertions(+), 16 deletions(-)
+
+--- a/drivers/dma/img-mdc-dma.c
++++ b/drivers/dma/img-mdc-dma.c
+@@ -617,25 +617,33 @@ static enum dma_status mdc_tx_status(str
+ 			(MDC_CMDS_PROCESSED_CMDS_DONE_MASK + 1);
+ 
+ 		/*
+-		 * If the command loaded event hasn't been processed yet, then
+-		 * the difference above includes an extra command.
++		 * If the first node has not yet been read from memory,
++		 * the residue register value is undefined
+ 		 */
+-		if (!mdesc->cmd_loaded)
+-			cmds--;
+-		else
+-			cmds += mdesc->list_cmds_done;
+-
+-		bytes = mdesc->list_xfer_size;
+-		ldesc = mdesc->list;
+-		for (i = 0; i < cmds; i++) {
+-			bytes -= ldesc->xfer_size + 1;
+-			ldesc = ldesc->next_desc;
+-		}
+-		if (ldesc) {
+-			if (residue != MDC_TRANSFER_SIZE_MASK)
+-				bytes -= ldesc->xfer_size - residue;
++		if (!mdesc->cmd_loaded && !cmds) {
++			bytes = mdesc->list_xfer_size;
++		} else {
++			/*
++			 * If the command loaded event hasn't been processed yet, then
++			 * the difference above includes an extra command.
++			 */
++			if (!mdesc->cmd_loaded)
++				cmds--;
+ 			else
++				cmds += mdesc->list_cmds_done;
++
++			bytes = mdesc->list_xfer_size;
++			ldesc = mdesc->list;
++			for (i = 0; i < cmds; i++) {
+ 				bytes -= ldesc->xfer_size + 1;
++				ldesc = ldesc->next_desc;
++			}
++			if (ldesc) {
++				if (residue != MDC_TRANSFER_SIZE_MASK)
++					bytes -= ldesc->xfer_size - residue;
++				else
++					bytes -= ldesc->xfer_size + 1;
++			}
+ 		}
+ 	}
+ 	spin_unlock_irqrestore(&mchan->vc.lock, flags);
