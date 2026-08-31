@@ -29,16 +29,17 @@ endef
 
 define Device/Default
 	PROFILES := Default
+	DTS_DIR := $(DTS_DIR)/xilinx
 	DEVICE_DTS := $(lastword $(subst _, ,$(1)))
 	KERNEL_DEPENDS = $$(wildcard $(DTS_DIR)/$$(DEVICE_DTS).dts)
 	KERNEL_LOADADDR := 0x8000
 	IMAGES := sdcard.img.gz
-	IMAGE/sdcard.img.gz := zynq-sdcard | gzip
+	IMAGE/sdcard.img.gz := zynq-sdcard | libdeflate-gzip
 endef
 
 define Device/FitImageGzip
 	KERNEL_SUFFIX := -fit-uImage.itb
-	KERNEL = kernel-bin | gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
+	KERNEL = kernel-bin | libdeflate-gzip | fit gzip $$(DTS_DIR)/$$(DEVICE_DTS).dtb
 	KERNEL_NAME := Image
 endef
 
@@ -52,6 +53,13 @@ define Device/avnet_zynq-zed
 	DEVICE_MODEL := ZedBoard
 endef
 TARGET_DEVICES += avnet_zynq-zed
+
+define Device/bitmain_zynq-antminer-s9
+	$(call Device/FitImageGzip)
+	DEVICE_VENDOR := Bitmain
+	DEVICE_MODEL := Antminer S9 control board
+endef
+TARGET_DEVICES += bitmain_zynq-antminer-s9
 
 define Device/digilent_zynq-zybo
 	$(call Device/FitImageGzip)

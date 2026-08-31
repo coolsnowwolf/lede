@@ -10,6 +10,7 @@ BOARDNAME:=Xilinx Zynq 7000 SoCs
 FEATURES:=fpu gpio rtc usb usbgadget boot-part rootfs-part squashfs
 CPU_TYPE:=cortex-a9
 CPU_SUBTYPE:=neon
+SUBTARGETS:=generic
 
 # future support SUBTARGETS: for both zynq and zynqmp
 
@@ -18,6 +19,7 @@ define Target/Description
 endef
 
 KERNEL_PATCHVER:=5.4
+KERNEL_TESTING_PATCHVER:=6.18
 
 include $(INCLUDE_DIR)/target.mk
 
