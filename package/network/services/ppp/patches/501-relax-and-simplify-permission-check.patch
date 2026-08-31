@@ -1,0 +1,749 @@
+From 71d3d3a6703fce993432151d363f405b51e7b75c Mon Sep 17 00:00:00 2001
+From: Qingfang Deng <dqfext@gmail.com>
+Date: Fri, 12 Jun 2026 10:52:39 +0800
+Subject: [PATCH] pppd: relax and simplify permission check
+
+The additional check added in v2.5.3 is intended to mitigate symlink
+attacks, but it checks the permissions of every component of a path and
+is too strict, breaking existing configurations. Relax and simplify the
+check by only checking the opened file descriptor of a path, so the path
+is resolved only once.
+
+Signed-off-by: Qingfang Deng <dqfext@gmail.com>
+---
+ configure.ac        |   2 +
+ pppd/auth.c         | 146 +++++++++++++++++++++++++-------------------
+ pppd/main.c         |  46 ++++++++++----
+ pppd/options.c      |  56 +++++++++++++----
+ pppd/pppd-private.h |   2 +-
+ pppd/pppd.8         |  10 ---
+ pppd/pppd.h         |   2 +-
+ pppd/utils.c        |  84 ++++++-------------------
+ 8 files changed, 184 insertions(+), 164 deletions(-)
+
+--- a/configure.ac
++++ b/configure.ac
+@@ -2,6 +2,7 @@ AC_PREREQ([2.69])
+ AC_INIT([ppp],
+         [2.5.3],
+         [https://github.com/ppp-project/ppp])
++AC_USE_SYSTEM_EXTENSIONS
+ 
+ m4_ifdef([AM_SILENT_RULES],[AM_SILENT_RULES([yes])])
+ AC_CONFIG_MACRO_DIR([m4])
+@@ -93,6 +94,7 @@ AC_CHECK_SIZEOF(unsigned short)
+ 
+ # Checks for library functions.
+ AC_CHECK_FUNCS([    \
++    fexecve         \
+     mmap            \
+     logwtmp         \
+     strerror])
+--- a/pppd/auth.c
++++ b/pppd/auth.c
+@@ -307,7 +307,7 @@ static int  setupapfile (char **);
+ static int  privgroup (char **);
+ static int  set_noauth_addr (char **);
+ static int  set_permitted_number (char **);
+-static void check_access (FILE *, char *);
++static void check_access (int, const char *);
+ static int  wordlist_count (struct wordlist *);
+ static void check_maxoctets (void *);
+ 
+@@ -532,7 +532,7 @@ setupapfile(char **argv)
+         free(fname);
+ 	return 0;
+     }
+-    check_access(ufile, fname);
++    check_access(fileno(ufile), fname);
+     uafname = fname;
+ 
+     /* get username */
+@@ -1543,8 +1543,7 @@ check_passwd(int unit,
+      * Open the file of pap secrets and scan for a suitable secret
+      * for authenticating this user.
+      */
+-    if (!ppp_check_access(path_upapfile, &filename, 0, 0))
+-	    return UPAP_AUTHNAK;
++    filename = path_upapfile;
+     addrs = opts = NULL;
+     ret = UPAP_AUTHNAK;
+     f = fopen(filename, "r");
+@@ -1552,7 +1551,13 @@ check_passwd(int unit,
+ 	error("Can't open PAP password file %s: %m", filename);
+ 
+     } else {
+-	check_access(f, filename);
++	int fd = fileno(f);
++
++	if (!ppp_check_access(fd, filename, 0)) {
++	    fclose(f);
++	    return UPAP_AUTHNAK;
++	}
++	check_access(fd, filename);
+ 	if (scan_authfile(f, user, our_name, secret, &addrs, &opts, filename, 0) < 0) {
+ 	    warn("no PAP secret found for %s", user);
+ 	} else {
+@@ -1586,7 +1591,6 @@ check_passwd(int unit,
+ 	}
+ 	fclose(f);
+     }
+-    free(filename);
+ 
+     if (ret == UPAP_AUTHNAK) {
+         if (**msg == 0)
+@@ -1646,21 +1650,24 @@ null_login(int unit)
+      * Open the file of pap secrets and scan for a suitable secret.
+      */
+     if (ret <= 0) {
+-	if (!ppp_check_access(path_upapfile, &filename, 0, 0))
+-	    return 0;
++	int fd;
++
++	filename = path_upapfile;
+ 	addrs = NULL;
+ 	f = fopen(filename, "r");
+-	if (f == NULL) {
+-	    free(filename);
++	if (f == NULL)
++	    return 0;
++	fd = fileno(f);
++	if (!ppp_check_access(fd, filename, 0)) {
++	    fclose(f);
+ 	    return 0;
+ 	}
+-	check_access(f, filename);
++	check_access(fd, filename);
+ 
+ 	i = scan_authfile(f, "", our_name, secret, &addrs, &opts, filename, 0);
+ 	ret = i >= 0 && secret[0] == 0;
+ 	BZERO(secret, sizeof(secret));
+ 	fclose(f);
+-	free(filename);
+     }
+ 
+     if (ret)
+@@ -1701,7 +1708,7 @@ get_pap_passwd(char *passwd)
+     f = fopen(filename, "r");
+     if (f == NULL)
+ 	return 0;
+-    check_access(f, filename);
++    check_access(fileno(f), filename);
+     ret = scan_authfile(f, user,
+ 			(remote_name[0]? remote_name: NULL),
+ 			secret, NULL, NULL, filename, 0);
+@@ -1734,18 +1741,18 @@ have_pap_secret(int *lacks_ipp)
+ 	    return ret;
+     }
+ 
+-    if (!ppp_check_access(path_upapfile, &filename, 0, 0))
+-	return 0;
++    filename = path_upapfile;
+     f = fopen(filename, "r");
+-    if (f == NULL) {
+-	free(filename);
++    if (f == NULL)
+ 	return 0;
+-    }
+ 
++    if (!ppp_check_access(fileno(f), filename, 0)) {
++	fclose(f);
++	return 0;
++    }
+     ret = scan_authfile(f, (explicit_remote? remote_name: NULL), our_name,
+ 			NULL, &addrs, NULL, filename, 0);
+     fclose(f);
+-    free(filename);
+     if (ret >= 0 && !some_ip_ok(addrs)) {
+ 	if (lacks_ipp != 0)
+ 	    *lacks_ipp = 1;
+@@ -1780,11 +1787,13 @@ have_chap_secret(char *client, char *ser
+ 	}
+     }
+ 
+-    if (!ppp_check_access(path_chapfile, &filename, 0, 0))
+-	    return 0;
++    filename = path_chapfile;
+     f = fopen(filename, "r");
+-    if (f == NULL) {
+-	free(filename);
++    if (f == NULL)
++	return 0;
++
++    if (!ppp_check_access(fileno(f), filename, 0)) {
++	fclose(f);
+ 	return 0;
+     }
+ 
+@@ -1795,7 +1804,6 @@ have_chap_secret(char *client, char *ser
+ 
+     ret = scan_authfile(f, client, server, NULL, &addrs, NULL, filename, 0);
+     fclose(f);
+-    free(filename);
+     if (ret >= 0 && need_ip && !some_ip_ok(addrs)) {
+ 	if (lacks_ipp != 0)
+ 	    *lacks_ipp = 1;
+@@ -1822,11 +1830,13 @@ have_srp_secret(char *client, char *serv
+     char *filename;
+     struct wordlist *addrs;
+ 
+-    if (!ppp_check_access(PPP_PATH_SRPFILE, &filename, 0, 0))
+-	return 0;
++    filename = PPP_PATH_SRPFILE;
+     f = fopen(filename, "r");
+-    if (f == NULL) {
+-	free(filename);
++    if (f == NULL)
++	return 0;
++
++    if (!ppp_check_access(fileno(f), filename, 0)) {
++	fclose(f);
+ 	return 0;
+     }
+ 
+@@ -1837,7 +1847,6 @@ have_srp_secret(char *client, char *serv
+ 
+     ret = scan_authfile(f, client, server, NULL, &addrs, NULL, filename, 0);
+     fclose(f);
+-    free(filename);
+     if (ret >= 0 && need_ip && !some_ip_ok(addrs)) {
+ 	if (lacks_ipp != 0)
+ 	    *lacks_ipp = 1;
+@@ -1874,22 +1883,27 @@ get_secret(int unit, char *client, char
+ 	    return 0;
+ 	}
+     } else {
+-	if (!ppp_check_access(path_chapfile, &filename, 0, 0))
+-	    return 0;
++	int fd;
++
++	filename = path_chapfile;
+ 	addrs = NULL;
+ 	secbuf[0] = 0;
+ 
+ 	f = fopen(filename, "r");
+ 	if (f == NULL) {
+ 	    error("Can't open chap secret file %s: %m", filename);
+-	    free(filename);
+ 	    return 0;
+ 	}
+-	check_access(f, filename);
++
++	fd = fileno(f);
++	if (!ppp_check_access(fd, filename, 0)) {
++	    fclose(f);
++	    return 0;
++	}
++	check_access(fd, filename);
+ 
+ 	ret = scan_authfile(f, client, server, secbuf, &addrs, &opts, filename, 0);
+ 	fclose(f);
+-	free(filename);
+ 	if (ret < 0)
+ 	    return 0;
+ 
+@@ -1931,23 +1945,27 @@ get_srp_secret(int unit, char *client, c
+     if (!am_server && passwd[0] != '\0') {
+ 	strlcpy(secret, passwd, MAXWORDLEN);
+     } else {
+-	if (!ppp_check_access(PPP_PATH_SRPFILE, &filename, 0, 0))
+-	    return 0;
+-	addrs = NULL;
++	int fd;
+ 
++	filename = PPP_PATH_SRPFILE;
++	addrs = NULL;
+ 	fp = fopen(filename, "r");
+ 	if (fp == NULL) {
+ 	    error("Can't open srp secret file %s: %m", filename);
+-	    free(filename);
+ 	    return 0;
+ 	}
+-	check_access(fp, filename);
++
++	fd = fileno(fp);
++	if (!ppp_check_access(fd, filename, 0)) {
++	    fclose(fp);
++	    return 0;
++	}
++	check_access(fd, filename);
+ 
+ 	secret[0] = '\0';
+ 	ret = scan_authfile(fp, client, server, secret, &addrs, &opts,
+ 	    filename, am_server);
+ 	fclose(fp);
+-	free(filename);
+ 	if (ret < 0)
+ 	    return 0;
+ 
+@@ -2214,11 +2232,11 @@ auth_number(void)
+  * check_access - complain if a secret file has too-liberal permissions.
+  */
+ static void
+-check_access(FILE *f, char *filename)
++check_access(int fd, const char *filename)
+ {
+     struct stat sbuf;
+ 
+-    if (fstat(fileno(f), &sbuf) < 0) {
++    if (fstat(fd, &sbuf) < 0) {
+ 	warn("cannot stat secret file %s: %m", filename);
+     } else if ((sbuf.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+ 	warn("Warning - secret file %s has world and/or group access",
+@@ -2326,25 +2344,25 @@ scan_authfile(FILE *f, char *client, cha
+ 	     * Special syntax: @/pathname means read secret from file.
+ 	     */
+ 	    if (word[0] == '@' && word[1] == '/') {
+-		char *realname;
++		int fd;
+ 
+ 		strlcpy(atfile, word+1, sizeof(atfile));
+-		if (!ppp_check_access(atfile, &realname, 0, 0))
+-		    continue;
+-		if ((sf = fopen(realname, "r")) == NULL) {
++		if ((sf = fopen(atfile, "r")) == NULL) {
+ 		    warn("can't open indirect secret file %s", atfile);
+-		    free(realname);
+ 		    continue;
+ 		}
+-		check_access(sf, atfile);
++		fd = fileno(sf);
++		if (!ppp_check_access(fd, atfile, 0)) {
++		    fclose(sf);
++		    continue;
++		}
++		check_access(fd, atfile);
+ 		if (!getword(sf, word, &xxx, atfile)) {
+ 		    warn("no secret in indirect secret file %s", atfile);
+ 		    fclose(sf);
+-		    free(realname);
+ 		    continue;
+ 		}
+ 		fclose(sf);
+-		free(realname);
+ 	    }
+ 	    strlcpy(lsecret, word, sizeof(lsecret));
+ 	}
+@@ -2503,14 +2521,15 @@ have_eaptls_secret_server(char *client,
+     char cacertfile[MAXWORDLEN];
+     char pkfile[MAXWORDLEN];
+ 
+-    if (!ppp_check_access(PPP_PATH_EAPTLSSERVFILE, &filename, 0, 0))
+-	return 0;
++    filename = PPP_PATH_EAPTLSSERVFILE;
+     f = fopen(filename, "r");
+-    if (f == NULL) {
+-	free(filename);
++    if (f == NULL)
+ 	return 0;
+-    }
+ 
++    if (!ppp_check_access(fileno(f), filename, 0)) {
++	fclose(f);
++	return 0;
++    }
+     if (client != NULL && client[0] == 0)
+ 		client = NULL;
+     else if (server != NULL && server[0] == 0)
+@@ -2522,7 +2541,6 @@ have_eaptls_secret_server(char *client,
+ 			     0);
+ 
+     fclose(f);
+-    free(filename);
+ 
+ /*
+     if (ret >= 0 && !eaptls_init_ssl(1, cacertfile, servcertfile,
+@@ -2782,26 +2800,28 @@ get_eaptls_secret(int unit, char *client
+ 	}
+ 	else
+ 	{
++		int fd;
++
+ 		filename = (am_server ? PPP_PATH_EAPTLSSERVFILE : PPP_PATH_EAPTLSCLIFILE);
+ 		addrs = NULL;
+ 
+-		if (!ppp_check_access(filename, &filename, 0, 0))
+-			return 0;
+ 		fp = fopen(filename, "r");
+-		if (fp == NULL)
+-		{
++		if (fp == NULL) {
+ 			error("Can't open eap-tls secret file %s: %m", filename);
+-			free(filename);
+ 			return 0;
+ 		}
+ 
+-		check_access(fp, filename);
++		fd = fileno(fp);
++		if (!ppp_check_access(fd, filename, 0)) {
++			fclose(fp);
++			return 0;
++		}
++		check_access(fd, filename);
+ 
+ 		ret = scan_authfile_eaptls(fp, client, server, clicertfile, servcertfile,
+ 				cacertfile, pkfile, &addrs, &opts, filename, 0);
+ 
+ 		fclose(fp);
+-		free(filename);
+ 
+ 		if (ret < 0) return 0;
+ 	}
+--- a/pppd/main.c
++++ b/pppd/main.c
+@@ -1952,22 +1952,37 @@ update_script_environment(void)
+ pid_t
+ run_program(char *prog, char * const *args, int must_exist, void (*done)(void *), void *arg, int wait)
+ {
+-    int pid, status, ret;
+-    char *rpath;
++    int fd, pid, status, ret;
+ 
+     /*
+      * First check if the file exists and is executable by root,
+      * and couldn't have been modified by a non-root process.
+      */
+-    if (!ppp_check_access(prog, &rpath, must_exist, 1))
++#if defined(O_PATH)
++    fd = open(prog, O_PATH);
++#elif defined(O_EXEC)
++    fd = open(prog, O_EXEC);
++#else
++    fd = open(prog, O_RDONLY);
++#endif
++    if (fd < 0) {
++	if (errno != ENOENT || must_exist)
++	    error("Can't access %s: %m", prog);
++	return 0;
++    }
++    if (!ppp_check_access(fd, prog, 1)) {
++	close(fd);
+ 	return 0;
++    }
+ 
+     pid = ppp_safe_fork(fd_devnull, fd_devnull, fd_devnull);
+     if (pid == -1) {
+ 	error("Failed to create child process for %s: %m", prog);
++	close(fd);
+ 	return -1;
+     }
+     if (pid != 0) {
++	close(fd);
+ 	if (debug)
+ 	    dbglog("Script %s started (pid %d)", prog, pid);
+ 	record_child(pid, prog, done, arg, 0);
+@@ -1979,7 +1994,6 @@ run_program(char *prog, char * const *ar
+ 	    }
+ 	    forget_child(pid, status);
+ 	}
+-	free(rpath);
+ 	return pid;
+     }
+ 
+@@ -2007,14 +2021,24 @@ run_program(char *prog, char * const *ar
+ 
+     /* run the program */
+     update_script_environment();
+-    execve(rpath, args, script_env);
+-    if (must_exist || errno != ENOENT) {
+-	/* have to reopen the log, there's nowhere else
+-	   for the message to go. */
+-	reopen_log();
+-	syslog(LOG_ERR, "Can't execute %s: %m", rpath);
+-	closelog();
++#ifdef HAVE_FEXECVE
++    fexecve(fd, args, script_env);
++#else
++    {
++	char fdpath[32];
++
++	snprintf(fdpath, sizeof(fdpath), "/dev/fd/%d", fd);
++	execve(fdpath, args, script_env);
++	if (errno == ENOENT) {
++	    snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", fd);
++	    execve(fdpath, args, script_env);
++	}
+     }
++#endif
++    /* have to reopen the log, there's nowhere else for the message to go. */
++    reopen_log();
++    syslog(LOG_ERR, "Can't execute %s: %m", prog);
++    closelog();
+     _exit(99);
+ }
+ 
+--- a/pppd/options.c
++++ b/pppd/options.c
+@@ -210,6 +210,8 @@ static struct option *find_option(char *
+ static int process_option(struct option *, char *, char **);
+ static int n_arguments(struct option *);
+ static int number_option(char *, u_int32_t *, int);
++static int ppp_options_open(const char *, int, int, FILE **);
++static int ppp_options_from_fp(FILE *, const char *, int);
+ 
+ /*
+  * Structure to store extra lists of options.
+@@ -588,14 +590,23 @@ int
+ ppp_options_from_file(char *filename, int must_exist, int check_prot, int priv)
+ {
+     FILE *f;
+-    int i, newline, ret, err;
+-    struct option *opt;
+-    int oldpriv, n;
+-    char *oldsource;
++
++    if (!ppp_options_open(filename, must_exist, check_prot, &f))
++	return 0;
++    if (f == NULL)
++	return 1;
++    return ppp_options_from_fp(f, filename, priv);
++}
++
++/*
++ * ppp_options_open - Open a file for options
++ */
++static int
++ppp_options_open(const char *filename, int must_exist, int check_prot, FILE **fp)
++{
+     uid_t euid;
+-    char *argv[MAXARGS];
+-    char args[MAXARGS][MAXWORDLEN];
+-    char cmd[MAXWORDLEN];
++    FILE *f;
++    int err;
+ 
+     euid = geteuid();
+     if (check_prot && seteuid(getuid()) == -1) {
+@@ -606,6 +617,7 @@ ppp_options_from_file(char *filename, in
+     err = errno;
+     if (check_prot && seteuid(euid) == -1)
+ 	fatal("unable to regain privileges");
++    *fp = f;
+     if (f == NULL) {
+ 	errno = err;
+ 	if (!must_exist) {
+@@ -616,6 +628,22 @@ ppp_options_from_file(char *filename, in
+ 	ppp_option_error("Can't open options file %s: %m", filename);
+ 	return 0;
+     }
++    return 1;
++}
++
++/*
++ * Parse options from an open FILE pointer.
++ */
++static int
++ppp_options_from_fp(FILE *f, const char *filename, int priv)
++{
++    int i, newline, ret;
++    struct option *opt;
++    int oldpriv, n;
++    char *oldsource;
++    char *argv[MAXARGS];
++    char args[MAXARGS][MAXWORDLEN];
++    char cmd[MAXWORDLEN];
+ 
+     oldpriv = privileged_option;
+     privileged_option = priv;
+@@ -1371,7 +1399,7 @@ readable(int fd)
+  * \<newline> is ignored.
+  */
+ int
+-getword(FILE *f, char *word, int *newlinep, char *filename)
++getword(FILE *f, char *word, int *newlinep, const char *filename)
+ {
+     int c, len, escape;
+     int quoted, comment;
+@@ -1666,7 +1694,7 @@ callfile(char **argv)
+ {
+     char *fname, *arg, *p;
+     int l, ok;
+-    char *realname;
++    FILE *f;
+ 
+     arg = *argv;
+     ok = 1;
+@@ -1695,15 +1723,19 @@ callfile(char **argv)
+     slprintf(fname, l, "%s%s", PPP_PATH_PEERFILES, arg);
+     ppp_script_setenv("CALL_FILE", arg, 0);
+ 
+-    if (!ppp_check_access(fname, &realname, 1, 0)) {
++    if (!ppp_options_open(fname, 1, 1, &f)) {
++	free(fname);
++	return 0;
++    }
++    if (!ppp_check_access(fileno(f), fname, 0)) {
+ 	free(fname);
++	fclose(f);
+ 	return 0;
+     }
+ 
+-    ok = ppp_options_from_file(realname, 1, 1, 1);
++    ok = ppp_options_from_fp(f, fname, 1);
+ 
+     free(fname);
+-    free(realname);
+     return ok;
+ }
+ 
+--- a/pppd/pppd-private.h
++++ b/pppd/pppd-private.h
+@@ -470,7 +470,7 @@ int  get_first_ether_hwaddr(unsigned cha
+ int setipaddr(char *, char **, int); /* Set local/remote ip addresses */
+ int  parse_args(int argc, char **argv);
+ 				/* Parse options from arguments given */
+-int  getword(FILE *f, char *word, int *newlinep, char *filename);
++int  getword(FILE *f, char *word, int *newlinep, const char *filename);
+ 				/* Read a word from a file */
+ int  options_from_user(void); /* Parse options from user's .ppprc */
+ int  options_for_tty(void); /* Parse options from /etc/ppp/options.tty */
+--- a/pppd/pppd.8
++++ b/pppd/pppd.8
+@@ -1334,16 +1334,6 @@ file under /etc/ppp/peers, the system ad
+ establish a ppp connection via a device which they would not normally
+ have permission to access.  Otherwise pppd uses the invoking user's
+ real UID when opening the device.
+-.PP
+-To avoid the possibility of privileged options files, secrets files,
+-and other files which contain sensitive information being compromised,
+-\fIpppd\fR performs a path check on these files before opening them.
+-This involves first translating the file path into a real absolute path
+-containing no symlinks or ".." components.  Then each component from
+-the root down is checked to ensure that it is owned by root and that
+-its permissions do not permit writing by group or other.  Failure to
+-conform to these requirements will cause \fIpppd\fR to exit with a
+-suitable error message.
+ .SH AUTHENTICATION
+ Authentication is the process whereby one peer convinces the other of
+ its identity.  This involves the first peer sending its name to the
+--- a/pppd/pppd.h
++++ b/pppd/pppd.h
+@@ -300,7 +300,7 @@ void pr_log(void *, char *, ...);
+ void end_pr_log(void);
+ 
+ /* Check that a file can safely be used */
+-int ppp_check_access(const char *path, char **path_to_use, int must_exist, int exec);
++int ppp_check_access(int fd, const char *path, int exec);
+ 
+ /*
+  * Get the current exist status of pppd
+--- a/pppd/utils.c
++++ b/pppd/utils.c
+@@ -75,98 +75,50 @@ struct buffer_info {
+ };
+ 
+ /*
+- * Check that a file is owned by root, not writable by group or other,
+- * and that all the directories in the path leading to it is likewise
+- * owned by root and not writable by group or other.  The real path to
+- * the file is returned in *path_to_use, which should be freed after
+- * use (real meaning not containing any symlinks or ".." components).
++ * Check that a file descriptor is owned by root, not writable by group or
++ * other.
+  * If exec is true, check for execute permission, otherwise for read
+  * permission.
++ * Note: the path argument is only used for log messages.
+  * Returns 1 if OK; if not, prints an error message and returns 0.
+  */
+ int
+-ppp_check_access(const char *path, char **path_to_use, int must_exist, int exec)
++ppp_check_access(int fd, const char *path, int exec)
+ {
+-    char *rpath, *slash, *part;
+     struct stat sbuf;
+     int perm;
+ 
+-    /*
+-     * Resolve symlinks such that we eliminate a few potential ToCToU
+-     * attack avenues (eg, changing symlinks).
+-     */
+-    rpath = realpath(path, NULL);
+-    if (!rpath) {
+-	if (errno == ENOMEM)
+-	    fatal("Insufficient memory for real path");
+-	if (must_exist || errno != ENOENT)
+-	    error("Can't access %s: %m", path);
+-	return 0;
++    if (fstat(fd, &sbuf) != 0) {
++	error("Can't stat %v: %m", path);
++	goto err;
+     }
+ 
+-    /*
+-     * full check the entire path, must be root: owned, and NOT be writable
+-     * to group/other (which incorporates FACL bits somehow, so we can ignore
+-     * explicit FACL checks).
+-     */
+-    part = "/";
+-    slash = rpath;
+-    for (;;) {
+-	bool ok = false;
+-	const char *pname = (slash? part: "it");
+-
+-	if (lstat(part, &sbuf) != 0) {
+-	    if (must_exist || errno != ENOENT) {
+-		if (!slash) {
+-		    error("Can't access %v: %m", rpath);
+-		} else {
+-		    error("Can't use %v, because of error accessing", path);
+-		    error("path component %v: %m");
+-		}
+-	    }
+-	    goto err;
+-	}
+-
+-	if (sbuf.st_uid != 0) {
+-	    error("Can't safely use %v because %v is not owned by root",
+-		  path, pname);
+-	    goto err;
+-	}
+-
+-	if (0 != (sbuf.st_mode & (S_IWGRP | S_IWOTH))) {
+-	    error("Can't safely use %v because %v is group or other writable",
+-		  path, pname);
+-	    goto err;
+-	}
+-
+-	if (!slash)
+-	    break;
+-
+-	*slash = '/';
+-	part = rpath;
+-
+-	slash = strchr(slash + 1, '/');
+-	if (slash)
+-	    *slash = 0;
++    if (!S_ISREG(sbuf.st_mode)) {
++	error("Can't use %v: not a regular file", path);
++	goto err;
+     }
+ 
+-    if (!S_ISREG(sbuf.st_mode)) {
+-	error("Can't use %v: not a regular file", rpath);
++    if (sbuf.st_uid != 0) {
++	error("Can't safely use %v because it is not owned by root", path);
++	goto err;
++    }
++
++    if (0 != (sbuf.st_mode & (S_IWGRP | S_IWOTH))) {
++	error("Can't safely use %v because it is group or other writable",
++	      path);
+ 	goto err;
+     }
+ 
+     perm = exec? S_IXUSR : S_IRUSR;
+     if ((sbuf.st_mode & perm) == 0) {
+-	error("Can't use %v: not %sable by root", rpath,
++	error("Can't use %v: not %sable by root", path,
+ 	      exec? "execut": "read");
+ 	goto err;
+     }
+ 
+-    *path_to_use = rpath;
+     return 1;
+ 
+  err:
+-    free(rpath);
+     return 0;
+ }
+ 

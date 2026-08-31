@@ -1,19 +1,16 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] pppd: synchronize authentication across multiple sessions
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
 --- a/pppd/chap.c
 +++ b/pppd/chap.c
-@@ -42,6 +42,9 @@
- #include "chap.h"
- #include "chap-md5.h"
- 
+@@ -38,0 +39,3 @@
 +#include <semaphore.h>
 +#include "syncppp.h"
 +
- #ifdef PPP_WITH_CHAPMS
- #include "chap_ms.h"
- #define MDTYPE_ALL (MDTYPE_MICROSOFT_V2 | MDTYPE_MICROSOFT | MDTYPE_MD5)
-@@ -520,6 +523,18 @@ chap_respond(struct chap_client_state *c
- 	p[2] = len >> 8;
- 	p[3] = len;
- 
+@@ -515,0 +519,12 @@
++
 +	if (npppd > 1) {
 +		if (syncppp(npppd) < 0) {
 +			error("syncppp sync fail");
@@ -25,76 +22,36 @@
 +	} else {
 +		info("syncppp not active");
 +	}
-+
- 	output(0, response, PPP_HDRLEN + len);
- }
- 
 --- a/pppd/Makefile.am
 +++ b/pppd/Makefile.am
-@@ -67,6 +67,7 @@ noinst_HEADERS = \
-     peap.h \
-     pppd-private.h \
-     spinlock.h \
+@@ -67,0 +68 @@
 +    syncppp.h \
-     tls.h \
-     tdb.h
- 
-@@ -85,6 +86,7 @@ pppd_SOURCES = \
-     main.c \
-     options.c \
-     session.c \
+@@ -86,0 +88 @@
 +    syncppp.c \
-     tty.c \
-     upap.c \
-     utils.c
-@@ -95,7 +97,7 @@ BUILT_SOURCE = \
- 
- pppd_CPPFLAGS = -DSYSCONFDIR=\"${sysconfdir}\" -DPPPD_RUNTIME_DIR='"@PPPD_RUNTIME_DIR@"' -DPPPD_LOGFILE_DIR='"@PPPD_LOGFILE_DIR@"'
- pppd_LDFLAGS =
+@@ -97 +99 @@
 -pppd_LIBS =
 +pppd_LIBS = -lpthread
- 
- if PPP_WITH_SYSTEM_CA_PATH
- pppd_CPPFLAGS += -DSYSTEM_CA_PATH='"@SYSTEM_CA_PATH@"'
 --- a/pppd/options.c
 +++ b/pppd/options.c
-@@ -136,6 +136,7 @@ bool	show_options;		/* print all support
- bool	dryrun;			/* print out option values and exit */
- char	*domain;		/* domain name set by domain option */
- int	child_wait = 5;		/* # seconds to wait for children at exit */
+@@ -143,0 +144 @@
 +int	npppd = 0;		/* synchronize between multiple pppd */
- struct userenv *userenv_list;	/* user environment variables */
- int	dfl_route_metric = -1;	/* metric of the default route to set over the PPP link */
- 
-@@ -339,6 +340,9 @@ struct option general_options[] = {
-       "Unset user environment variable",
-       OPT_A2PRINTER | OPT_NOPRINT, (void *)user_unsetprint },
- 
+@@ -352,0 +354,3 @@
++
 +    { "syncppp", o_int, &npppd,
 +      "sync among multiple pppd when sending chap/pap respond", OPT_PRIO },
-+
-     { "defaultroute-metric", o_int, &dfl_route_metric,
-       "Metric to use for the default route (Linux only; -1 for default behavior)",
-       OPT_PRIV|OPT_LLIMIT|OPT_INITONLY, NULL, 0, -1 },
 --- a/pppd/pppd-private.h
 +++ b/pppd/pppd-private.h
-@@ -207,6 +207,7 @@ extern bool	dump_options;	/* print out o
- extern bool	show_options;	/* show all option names and descriptions */
- extern bool	dryrun;		/* check everything, print options, exit */
- extern int	child_wait;	/* # seconds to wait for children at end */
+@@ -216,0 +217 @@
 +extern int	npppd;		/* synchronize between multiple pppd */
- extern char *current_option;    /* the name of the option being parsed */
- extern int  privileged_option;  /* set iff the current option came from root */
- extern char *option_source;     /* string saying where the option came from */
---- /dev/null
+--- a/pppd/syncppp.c
 +++ b/pppd/syncppp.c
-@@ -0,0 +1,75 @@
-+#include<stdio.h>
-+#include<semaphore.h>
-+#include<fcntl.h>
-+#include<stdlib.h>
-+#include<time.h>
-+#include<errno.h>
+@@ -0,0 +1,71 @@
++#include <stdio.h>
++#include <semaphore.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <time.h>
++#include <errno.h>
 +#include "pppd-private.h"
 +#include "syncppp.h"
 +
@@ -116,7 +73,6 @@
 +        return -1;
 +    }
 +    ts.tv_sec += SYNCPPP_TIMEOUT;
-+
 +
 +    flags = O_RDWR | O_CREAT;
 +    block = sem_open(SEM_BLOCK_NAME, flags, 0644, 0);
@@ -152,19 +108,16 @@
 +            }
 +            return -1;
 +        }
-+
 +    }
 +
 +    sem_close(count);
 +    sem_close(block);
-+
 +    sem_unlink(SEM_COUNT_NAME);
 +    sem_unlink(SEM_BLOCK_NAME);
 +
 +    return 0;
 +}
-+
---- /dev/null
+--- a/pppd/syncppp.h
 +++ b/pppd/syncppp.h
 @@ -0,0 +1,4 @@
 +#define SEM_BLOCK_NAME  "block"
@@ -173,19 +126,11 @@
 +extern int syncppp(int nproc);
 --- a/pppd/upap.c
 +++ b/pppd/upap.c
-@@ -55,6 +55,8 @@
- #include "options.h"
- #include "upap.h"
- 
+@@ -57,0 +58,2 @@
 +#include <semaphore.h>
 +#include "syncppp.h"
- 
- static bool hide_password = 1;
- 
-@@ -545,6 +547,18 @@ upap_sauthreq(upap_state *u)
-     PUTCHAR(u->us_passwdlen, outp);
-     BCOPY(u->us_passwd, outp, u->us_passwdlen);
- 
+@@ -546,0 +549,12 @@
++
 +    if (npppd > 1) {
 +        if (syncppp(npppd) < 0) {
 +            error("syncppp sync fail");
@@ -197,7 +142,3 @@
 +    } else {
 +        info("syncppp not active");
 +    }
-+
-     output(u->us_unit, outpacket_buf, outlen + PPP_HDRLEN);
- 
-     TIMEOUT(upap_timeout, u, u->us_timeouttime);
