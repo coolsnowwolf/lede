@@ -8,33 +8,60 @@ STOP=50
 USE_PROCD=1
 PROG=/usr/sbin/dropbear
 NAME=dropbear
-PIDCOUNT=0
 
-EXTRA_COMMANDS="killclients"
-EXTRA_HELP="	killclients Kill ${NAME} processes except servers and yourself"
+extra_command "killclients" "Kill ${NAME} processes except servers and yourself"
 
-_dropbearkey()
-{
-	/usr/bin/dropbearkey "$@" 0<&- 1>&- 2>&-
+# most of time real_stat() will be failing
+# due to missing "stat" binary (by default)
+real_stat() { env stat -L "$@" 2>/dev/null ; }
+dumb_stat() { ls -Ldln "$1" | tr -s '\t ' ' ' ; }
+stat_perm()  { real_stat -c '%A' "$1" || dumb_stat "$1" | cut -d ' ' -f 1 ; }
+stat_owner() { real_stat -c '%u' "$1" || dumb_stat "$1" | cut -d ' ' -f 3 ; }
+
+db_key_quiet() { dropbearkey "$@" </dev/null >/dev/null 2>&1 ; }
+db_key_types_int() {
+	dropbearkey -h </dev/null 2>&1 \
+	| sed -En '/^\s*-t/,/^\s*-/p' \
+	| sed -En '/^\s*-/n;p'
+}
+db_key_types() {
+	normalize_list "$(db_key_types_int)"
 }
 
-# $1 - host key file name
-hk_verify()
+# $1 - file name (host key or config)
+file_verify()
 {
 	[ -f "$1" ] || return 1
-	[ -s "$1" ] || return 2
-	_dropbearkey -y -f "$1" || return 3
+	# checking file ownership
+	[ "$(stat_owner "$1")" = "0" ] || {
+		chown 0 "$1"
+		[ "$(stat_owner "$1")" = "0" ] || return 2
+	}
+	# checking file permissions
+	[ "$(stat_perm "$1")" = "-rw-------" ] || {
+		chmod 0600 "$1"
+		[ "$(stat_perm "$1")" = "-rw-------" ] || return 3
+	}
+	# file is host key or not?
+	# if $2 is empty string - file is "host key"
+	# if $2 is non-empty string - file is "config"
+	[ -z "$2" ] || return 0
+	# checking file contents (finally)
+	[ -s "$1" ] || return 4
+	db_key_quiet -y -f "$1" || return 5
 	return 0
 }
 
-# $1 - hk_verify() return code
-hk_errmsg()
+# $1 - file_verify() return code
+file_errmsg()
 {
 	case "$1" in
 	0) ;;
 	1) echo "file does not exist" ;;
-	2) echo "file has zero length" ;;
-	3) echo "file is not valid host key or not supported" ;;
+	2) echo "file has wrong owner (must be owned by root)" ;;
+	3) echo "file has wrong permissions (must not have group/other write bit)" ;;
+	4) echo "file has zero length" ;;
+	5) echo "file is not valid host key or not supported" ;;
 	*) echo "unknown error" ;;
 	esac
 }
@@ -44,73 +71,99 @@ hk_errmsg()
 hk_config()
 {
 	local x m
-	hk_verify "$2"; x=$?
-	case "$x" in
-	0)	procd_append_param command -r "$2"
-		;;
-	*)	m=$(hk_errmsg "$x")
-		logger -t "${NAME}" -p daemon.warn \
-		  "option '$1', value '$2': $m, skipping"
-		;;
-	esac
+	file_verify "$2" ; x=$?
+	if [ "$x" = 0 ] ; then
+		procd_append_param command -r "$2"
+		return
+	fi
+	m=$(file_errmsg "$x")
+	logger -s -t "${NAME}" -p daemon.warn \
+	  "Option '$1', skipping '$2': $m"
 }
 
 # $1 - host key file name
-hk_config__keyfile()
-{
-	hk_config 'keyfile' "$1"
-}
+hk_config__keyfile() { hk_config keyfile "$1" ; }
 
 hk_generate_as_needed()
 {
-	local kdir kgen ktype tdir kcount tfile
-	kdir='/etc/dropbear'
+	local hk_cfg_dir ktype_all kgen ktype kfile hk_tmp_dir
+	hk_cfg_dir='/etc/dropbear'
 
-	kgen=''
-	for ktype in ed25519 ecdsa rsa; do
-		hk_verify "${kdir}/dropbear_${ktype}_host_key" && continue
+	[ -d "${hk_cfg_dir}" ] || mkdir -p "${hk_cfg_dir}"
+
+	# don't hardcode supported algorithm list until things go wrong
+	ktype_all=$(db_key_types)
+	[ -n "${ktype_all}" ] || {
+		logger -t "${NAME}" -p daemon.warn \
+		  "unable to correctly retrieve supported hostkey algorithms!"
+
+		ktype_all='rsa ecdsa ed25519'
+	}
+
+	kgen=
+	for ktype in ${ktype_all} ; do
+		kfile="${hk_cfg_dir}/dropbear_${ktype}_host_key"
+
+		if file_verify "${kfile}" ; then continue ; fi
+
+		# cleanup empty files (if any)
+		[ -s "${kfile}" ] || rm -f "${kfile}"
 
 		kgen="${kgen} ${ktype}"
 	done
 
-	[ -z "${kgen}" ] && return
+	# all keys are sane?
+	[ -n "${kgen}" ] || return 0
 
-	tdir=$(mktemp -d); chmod 0700 "${tdir}"
+	hk_tmp_dir=$(mktemp -d)
+	# system in bad state?
+	[ -n "${hk_tmp_dir}" ] || return 1
+	chmod 0700 "${hk_tmp_dir}"
 
-	kcount=0
-	for ktype in ${kgen}; do
-		tfile="${tdir}/dropbear_${ktype}_host_key"
+	for ktype in ${kgen} ; do
+		kfile="${hk_tmp_dir}/dropbear_${ktype}_host_key"
 
-		if ! _dropbearkey -t ${ktype} -f "${tfile}"; then
+		if ! db_key_quiet -t "${ktype}" -f "${kfile}" ; then
 			# unsupported key type
-			rm -f "${tfile}"
+			rm -f "${kfile}" "${kfile}.pub"
 			continue
 		fi
 
-		kcount=$((kcount+1))
+		chmod 0600 "${kfile}"
+		# unused file
+		rm -f "${kfile}.pub"
 	done
 
-	if [ ${kcount} -ne 0 ]; then
-		mkdir -p "${kdir}"; chmod 0700 "${kdir}"; chown root "${kdir}"
-		mv -f "${tdir}/"* "${kdir}/"
+	kgen=
+	for ktype in ${ktype_all} ; do
+		kfile="${hk_tmp_dir}/dropbear_${ktype}_host_key"
+		[ -s "${kfile}" ] || continue
+		kgen="${kgen} ${ktype}"
+	done
+
+	if [ -n "${kgen}" ] ; then
+		for ktype in ${kgen} ; do
+			kfile="${hk_tmp_dir}/dropbear_${ktype}_host_key"
+			[ -s "${kfile}" ] || continue
+			mv -f "${kfile}" "${hk_cfg_dir}/"
+		done
 	fi
 
-	rm -rf "${tdir}"
+	rm -rf "${hk_tmp_dir}"
 }
 
-append_ports()
+# $1 - list with whitespace-separated elements
+normalize_list()
 {
-	local ipaddrs="$1"
-	local port="$2"
+	printf '%s' "$1" | tr -s ' \r\n\t' ' ' | sed -E 's/^ //;s/ $//'
+}
 
-	[ -z "$ipaddrs" ] && {
-		procd_append_param command -p "$port"
-		return
-	}
-
-	for addr in $ipaddrs; do
-		procd_append_param command -p "$addr:$port"
-	done
+warn_multiple_interfaces()
+{
+	logger -t "${NAME}" -p daemon.warn \
+	  "Option '$1' should specify SINGLE interface but instead it lists interfaces: $2"
+	logger -t "${NAME}" -p daemon.warn \
+	  "Consider creating per-interface instances instead!"
 }
 
 validate_section_dropbear()
@@ -118,8 +171,10 @@ validate_section_dropbear()
 	uci_load_validate dropbear dropbear "$1" "$2" \
 		'PasswordAuth:bool:1' \
 		'enable:bool:1' \
+		'DirectInterface:string' \
 		'Interface:string' \
 		'GatewayPorts:bool:0' \
+		'ForceCommand:string' \
 		'RootPasswordAuth:bool:1' \
 		'RootLogin:bool:1' \
 		'rsakeyfile:file' \
@@ -128,53 +183,187 @@ validate_section_dropbear()
 		'Port:port:22' \
 		'SSHKeepAlive:uinteger:300' \
 		'IdleTimeout:uinteger:0' \
+		'MaxSessionDuration:uinteger:0' \
 		'MaxAuthTries:uinteger:3' \
 		'RecvWindowSize:uinteger:0' \
+		'LocalPortForward:bool:1' \
+		'RemotePortForward:bool:1' \
 		'mdns:bool:1'
 }
 
 dropbear_instance()
 {
-	local ipaddrs
-
 	[ "$2" = 0 ] || {
 		echo "validation failed"
 		return 1
 	}
 
-	[ -n "${Interface}" ] && {
-		[ -n "${BOOT}" ] && return 0
+	[ "${enable}" = "1" ] || return 1
 
-		network_get_ipaddrs_all ipaddrs "${Interface}" || {
-			echo "interface ${Interface} has no physdev or physdev has no suitable ip"
-			return 1
-		}
-	}
+	local iface ndev ipaddrs
 
-	[ "${enable}" = "0" ] && return 1
-	PIDCOUNT="$(( ${PIDCOUNT} + 1))"
-	local pid_file="/var/run/${NAME}.${PIDCOUNT}.pid"
+	# 'DirectInterface' should specify single interface
+	# but end users may misinterpret this setting
+	DirectInterface=$(normalize_list "${DirectInterface}")
+
+	# 'Interface' should specify single interface
+	# but end users are often misinterpret this setting
+	Interface=$(normalize_list "${Interface}")
+
+	if [ -n "${Interface}" ] ; then
+		if [ -n "${DirectInterface}" ] ; then
+			logger -t "${NAME}" -p daemon.warn \
+			  "Option 'DirectInterface' takes precedence over 'Interface'"
+		else
+			logger -t "${NAME}" -p daemon.info \
+			  "Option 'Interface' binds to address(es) but not to interface"
+			logger -t "${NAME}" -p daemon.info \
+			  "Consider using option 'DirectInterface' to bind directly to interface"
+		fi
+	fi
+
+	# handle 'DirectInterface'
+	iface=$(echo "${DirectInterface}" | awk '{print $1}')
+	case "${DirectInterface}" in
+	*\ *)
+		warn_multiple_interfaces DirectInterface "${DirectInterface}"
+		logger -t "${NAME}" -p daemon.warn \
+		  "Using network interface '${iface}' for direct binding"
+	;;
+	esac
+	while [ -n "${iface}" ] ; do
+		# if network is available (even during boot) - proceed
+		if network_is_up "${iface}" ; then break ; fi
+		# skip during boot
+		[ -z "${BOOT}" ] || return 0
+
+		logger -t "${NAME}" -p daemon.crit \
+		  "Network interface '${iface}' is not available!"
+		return 1
+	done
+	while [ -n "${iface}" ] ; do
+		# ${iface} is logical (higher level) interface name
+		# ${ndev} is 'real' interface name
+		# e.g.: if ${iface} is 'lan' (default LAN interface) then ${ndev} is 'br-lan'
+		network_get_device ndev "${iface}"
+		[ -z "${ndev}" ] || break
+
+		logger -t "${NAME}" -p daemon.crit \
+		  "Missing network device for network interface '${iface}'!"
+		return 1
+	done
+	if [ -n "${iface}" ] ; then
+		logger -t "${NAME}" -p daemon.info \
+		  "Using network interface '${iface}' (network device '${ndev}') for direct binding"
+	fi
+	# handle 'Interface'
+	while [ -z "${iface}" ] ; do
+		[ -n "${Interface}" ] || break
+
+		# skip during boot
+		[ -z "${BOOT}" ] || return 0
+
+		case "${Interface}" in
+		*\ *)
+			warn_multiple_interfaces Interface "${Interface}"
+		;;
+		esac
+
+		local c=0
+		# src/sysoptions.h
+		local DROPBEAR_MAX_PORTS=10
+
+		local a n if_ipaddrs
+		for n in ${Interface} ; do
+			[ -n "$n" ] || continue
+
+			if_ipaddrs=
+			network_get_ipaddrs_all if_ipaddrs "$n"
+			[ -n "${if_ipaddrs}" ] || {
+				logger -s -t "${NAME}" -p daemon.err \
+				  "Network interface '$n' has no suitable IP address(es)!"
+				continue
+			}
+
+			[ $c -le ${DROPBEAR_MAX_PORTS} ] || {
+				logger -s -t "${NAME}" -p daemon.err \
+				  "Network interface '$n' is NOT listened due to option limit exceed!"
+				continue
+			}
+
+			for a in ${if_ipaddrs} ; do
+				[ -n "$a" ] || continue
+
+				c=$((c+1))
+				if [ $c -le ${DROPBEAR_MAX_PORTS} ] ; then
+					ipaddrs="${ipaddrs} $a"
+					continue
+				fi
+
+				logger -t "${NAME}" -p daemon.err \
+				  "Endpoint '$a:${Port}' on network interface '$n' is NOT listened due to option limit exceed!"
+			done
+		done
+		break
+	done
+
+	local pid_file="/var/run/${NAME}.${1}.pid"
 
 	procd_open_instance
 	procd_set_param command "$PROG" -F -P "$pid_file"
+	if [ -n "${iface}" ] ; then
+		# if ${iface} is non-empty then ${ndev} is non-empty too
+		procd_append_param command -l "${ndev}" -p "${Port}"
+	else
+		if [ -z "${ipaddrs}" ] ; then
+			procd_append_param command -p "${Port}"
+		else
+			local a
+			for a in ${ipaddrs} ; do
+				[ -n "$a" ] || continue
+				procd_append_param command -p "$a:${Port}"
+			done
+		fi
+	fi
 	[ "${PasswordAuth}" -eq 0 ] && procd_append_param command -s
 	[ "${GatewayPorts}" -eq 1 ] && procd_append_param command -a
+	[ "${LocalPortForward}" -eq 0 ] && procd_append_param command -j
+	[ "${RemotePortForward}" -eq 0 ] && procd_append_param command -k
+	[ -n "${ForceCommand}" ] && procd_append_param command -c "${ForceCommand}"
 	[ "${RootPasswordAuth}" -eq 0 ] && procd_append_param command -g
 	[ "${RootLogin}" -eq 0 ] && procd_append_param command -w
+	config_list_foreach "$1" 'keyfile' hk_config__keyfile
 	if [ -n "${rsakeyfile}" ]; then
-		logger -t ${NAME} -p daemon.warn \
-			"option 'rsakeyfile' is considered to be deprecated and" \
-			"will be removed in future releases, use 'keyfile' instead"
+		logger -s -t "${NAME}" -p daemon.crit \
+		  "Option 'rsakeyfile' is considered to be DEPRECATED and will be REMOVED in future releases, use 'keyfile' list instead"
+		sed -i.before-upgrade -E -e 's/option(\s+)rsakeyfile/list keyfile/' \
+		  "/etc/config/${NAME}"
+		logger -s -t "${NAME}" -p daemon.crit \
+		  "Auto-transition 'option rsakeyfile' => 'list keyfile' in /etc/config/${NAME} is done, please verify your configuration"
 		hk_config 'rsakeyfile' "${rsakeyfile}"
 	fi
-	config_list_foreach "$1" "keyfile" hk_config__keyfile
 	[ -n "${BannerFile}" ] && procd_append_param command -b "${BannerFile}"
-	append_ports "${ipaddrs}" "${Port}"
 	[ "${IdleTimeout}" -ne 0 ] && procd_append_param command -I "${IdleTimeout}"
+	[ "${MaxSessionDuration}" -ne 0 ] && procd_append_param command -M "${MaxSessionDuration}"
 	[ "${SSHKeepAlive}" -ne 0 ] && procd_append_param command -K "${SSHKeepAlive}"
 	[ "${MaxAuthTries}" -ne 0 ] && procd_append_param command -T "${MaxAuthTries}"
-	[ "${RecvWindowSize}" -gt 0 -a "${RecvWindowSize}" -le 1048576 ] && \
+	[ "${RecvWindowSize}" -gt 0 ] && {
+		# NB: OpenWrt increases receive window size to increase throughput on high latency links
+		# ref: validate_section_dropbear()
+		# default receive window size is 24576 (DEFAULT_RECV_WINDOW in default_options.h)
+
+		# src/sysoptions.h
+		local MAX_RECV_WINDOW=10485760
+		if [ "${RecvWindowSize}" -gt ${MAX_RECV_WINDOW} ] ; then
+			# separate logging is required because syslog misses dropbear's message
+			#   Bad recv window '${RecvWindowSize}', using ${MAX_RECV_WINDOW}
+			# it's probably dropbear issue but we should handle this and notify user
+			logger -s -t "${NAME}" -p daemon.warn \
+			  "Option 'RecvWindowSize' is too high (${RecvWindowSize}), limiting to ${MAX_RECV_WINDOW}"
+			RecvWindowSize=${MAX_RECV_WINDOW}
+		fi
 		procd_append_param command -W "${RecvWindowSize}"
+	}
 	[ "${mdns}" -ne 0 ] && procd_add_mdns "ssh" "tcp" "$Port" "daemon=dropbear"
 	procd_set_param respawn
 	procd_close_instance
@@ -182,10 +371,21 @@ dropbear_instance()
 
 load_interfaces()
 {
-	config_get interface "$1" Interface
-	config_get enable "$1" enable 1
+	local enable
+	config_get_bool enable "$1" enable 1
+	[ "${enable}" = "1" ] || return 0
 
-	[ "${enable}" = "1" ] && interfaces=" ${interface} ${interfaces}"
+	local direct_iface iface
+	config_get direct_iface "$1" DirectInterface
+	direct_iface=$(normalize_list "${direct_iface}")
+	# 'DirectInterface' takes precedence over 'Interface'
+	if [ -n "${direct_iface}" ] ; then
+		iface=$(echo "${direct_iface}" | awk '{print $1}')
+	else
+		config_get iface "$1" Interface
+		iface=$(normalize_list "${iface}")
+	fi
+	interfaces="${interfaces} ${iface}"
 }
 
 boot()
@@ -197,6 +397,7 @@ boot()
 start_service()
 {
 	hk_generate_as_needed
+	file_verify /etc/dropbear/authorized_keys config
 
 	. /lib/functions.sh
 	. /lib/functions/network.sh
@@ -209,13 +410,14 @@ service_triggers()
 {
 	local interfaces
 
-	procd_add_config_trigger "config.change" "dropbear" /etc/init.d/dropbear reload
+	procd_add_config_trigger "config.change" "${NAME}" /etc/init.d/dropbear reload
 
 	config_load "${NAME}"
-	config_foreach load_interfaces dropbear
+	config_foreach load_interfaces "${NAME}"
 
 	[ -n "${interfaces}" ] && {
-		for n in $interfaces ; do
+		local n
+		for n in $(printf '%s\n' ${interfaces} | sort -u) ; do
 			procd_add_interface_trigger "interface.*" $n /etc/init.d/dropbear reload
 		done
 	}

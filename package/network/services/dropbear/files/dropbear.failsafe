@@ -1,8 +1,83 @@
 #!/bin/sh
 
-failsafe_dropbear () {
-	dropbearkey -t rsa -s 1024 -f /tmp/dropbear_failsafe_host_key
-	dropbear -r /tmp/dropbear_failsafe_host_key <> /dev/null 2>&1
+db_key_quiet() { dropbearkey "$@" </dev/null >/dev/null 2>&1 ; }
+db_key_types_int() {
+	dropbearkey -h </dev/null 2>&1 \
+	| sed -En '/^\s*-t/,/^\s*-/p' \
+	| sed -En '/^\s*-/n;p'
+}
+db_key_types() {
+	normalize_list "$(db_key_types_int)"
+}
+
+db_key_ensure()
+{
+	db_key_quiet -y -f "$1" && return
+	rm -f "$1"
+	db_key_quiet -f "$@" || {
+		rm -f "$1"
+		return 1
+	}
+}
+
+# $1 - list with whitespace-separated elements
+normalize_list()
+{
+	printf '%s' "$1" | tr -s ' \r\n\t' ' ' | sed -E 's/^ //;s/ $//'
+}
+
+failsafe_dropbear() {
+	local ktype_all kargs kcount ktype tkey
+
+	# don't hardcode supported algorithm list until things go wrong
+	ktype_all=$(db_key_types)
+	[ -n "${ktype_all}" ] || {
+		echo "dropbear: unable to correctly retrieve supported hostkey algorithms!" >&2
+
+		ktype_all='rsa ecdsa ed25519'
+	}
+
+	kargs=
+	kcount=0
+	for ktype in ${ktype_all} ; do
+		case "${ktype}" in
+		rsa ) ;; # skip (see below)
+		* )
+			tkey="/tmp/dropbear_failsafe_${ktype}_host_key"
+
+			db_key_ensure "${tkey}" -t "${ktype}" || :
+			if [ -s "${tkey}" ] ; then
+				chmod 0400 "${tkey}"
+				kargs="${kargs} -r ${tkey}"
+				kcount=$((kcount+1))
+			else
+				rm -f "${tkey}" "${tkey}.pub"
+			fi
+		;;
+		esac
+	done
+
+	# use RSA only if none of the modern algorithms is supported
+	if [ "${kcount}" = 0 ] ; then
+		ktype=rsa
+		tkey="/tmp/dropbear_failsafe_${ktype}_host_key"
+
+		db_key_ensure "${tkey}" -t "${ktype}" || :
+		if [ -s "${tkey}" ] ; then
+			chmod 0400 "${tkey}"
+			kargs="${kargs} -r ${tkey}"
+			kcount=$((kcount+1))
+		else
+			rm -f "${tkey}" "${tkey}.pub"
+		fi
+	fi
+
+	[ "${kcount}" != 0 ] || {
+		echo 'DROPBEAR IS BROKEN' >&2
+		return 1
+	}
+
+	dropbear ${kargs} </dev/null >/dev/null 2>&1
 }
 
 boot_hook_add failsafe failsafe_dropbear
