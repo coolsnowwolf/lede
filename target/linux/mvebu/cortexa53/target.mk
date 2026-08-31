@@ -7,7 +7,7 @@ include $(TOPDIR)/rules.mk
 ARCH:=aarch64
 BOARDNAME:=Marvell Armada 3700LP (ARM64)
 CPU_TYPE:=cortex-a53
-FEATURES+=ext4
+FEATURES+=ext4 emmc
 DEFAULT_PACKAGES+=e2fsprogs ethtool mkf2fs partx-utils
 
 KERNELNAME:=Image dtbs

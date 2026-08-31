@@ -8,31 +8,67 @@ gpio clear 12; gpio clear 40; gpio clear 45;
 # Find eMMC device,
 if mmc dev 0; then
 	setenv mmcdev 0
-	setenv rootdev 'root=/dev/mmcblk0p3'
 elif mmc dev 1; then
 	setenv mmcdev 1
-	setenv rootdev 'root=/dev/mmcblk1p3'
 fi
+
+# Check if bootactive variable exists and if not, default to 1
+if test -z "${bootactive}"; then
+	setenv bootactive 1
+fi
+
+# Check if bootcount variable exists and if not, default to 0
+if test -z "${bootcount}"; then
+	setenv bootcount 0
+fi
+
+if itest ${bootcount} > 2; then
+	if itest ${bootactive} == 2; then
+		setenv bootactive 1
+	else
+		setenv bootactive 2
+	fi
+
+	setenv bootcount 0
+fi
+
+# Find A/B firmware to boot
+if itest ${bootactive} == 2; then
+	setenv kernelpart 3
+	setenv rootfspart 4
+else
+	setenv kernelpart 1
+	setenv rootfspart 2
+fi
+
+setenv rootdev 'root=/dev/mmcblk'${mmcdev}'p'${rootfspart}
 
 # Set the variables if necessary
 if test ${kernel_addr_r}; then
 	setenv kernel_addr_r 0x5000000
 fi
 
-if test ${fdt_add_r}; then
-	setenv fdt_addr_r 0x4f00000
+echo 'Booting firmware:' ${bootactive}
+
+if itest ${bootcount} == 0; then
+	setenv bootcount 1
+elif itest ${bootcount} == 1; then
+	setenv bootcount 2
+elif itest ${bootcount} == 2; then
+	setenv bootcount 3
+else
+	setenv bootcount 4
 fi
 
-setenv console 'console=ttyMV0,115200 earlycon=ar3700_uart,0xd0012000'
-setenv bootargs ${console} $rootdev rw rootwait
+env save
 
-load mmc ${mmcdev}:1 ${fdt_addr_r} @DTB@.dtb
-load mmc ${mmcdev}:1 ${kernel_addr_r} Image
+setenv bootargs $rootdev rootwait fstools_overlay_compression_type=zstd
 
-booti ${kernel_addr_r} - ${fdt_addr_r}
+load mmc ${mmcdev}:${kernelpart} ${kernel_addr_r} Image
 
-# If the boot command fails, fallback to recovery image
-echo '-- Boot failed, falling back to the recovery image --'
-setenv bootargs $console
-load mmc ${mmcdev}:2 ${kernel_addr_r} recovery.itb
 bootm ${kernel_addr_r}
+
+# If booting fails before kernel is loaded then reboot
+# so the bootcount can trigger a slot switch.
+echo 'Booting firmware:' ${bootactive} 'failed, rebooting'
+reset
