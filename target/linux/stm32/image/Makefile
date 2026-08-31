@@ -34,8 +34,8 @@ define Device/Default
   PROFILES := Default
   DEVICE_VENDOR := STMicroelectronics
   IMAGES := factory.img.gz sysupgrade.img.gz
-  IMAGE/factory.img.gz := boot-img-ext4 | sdcard-img | gzip
-  IMAGE/sysupgrade.img.gz := boot-img-ext4 | sdcard-img | gzip | append-metadata
+  IMAGE/factory.img.gz := boot-img-ext4 | sdcard-img | libdeflate-gzip
+  IMAGE/sysupgrade.img.gz := boot-img-ext4 | sdcard-img | libdeflate-gzip | append-metadata
   KERNEL := kernel-bin
   KERNEL_NAME := zImage
   KERNEL_IMG := zImage

@@ -31,8 +31,7 @@ export_bootdevice() {
 		while read line; do
 			export -n "$line"
 		done < "$uevent"
-		export BOOTDEV_MAJOR=$MAJOR
-		export BOOTDEV_MINOR=$MINOR
+		export BOOTDEV_DISKSEQ=$DISKSEQ
 		return 0
 	fi
 

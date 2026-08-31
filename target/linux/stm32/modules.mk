@@ -128,6 +128,32 @@ endef
 $(eval $(call KernelPackage,spi-stm32))
 
 
+define KernelPackage/spi-stm32-ospi
+  SUBMENU=$(SPI_MENU)
+  TITLE:=STMicroelectronics STM32 OCTO SPI controller
+  DEPENDS:=@TARGET_stm32
+  KCONFIG:=CONFIG_SPI_STM32_OSPI \
+	   CONFIG_SPI_MEM=y
+  FILES:=$(LINUX_DIR)/drivers/spi/spi-stm32-ospi.ko
+  AUTOLOAD:=$(call AutoProbe,spi-stm32-ospi)
+endef
+
+$(eval $(call KernelPackage,spi-stm32-ospi))
+
+
+define KernelPackage/spi-stm32-qspi
+  SUBMENU=$(SPI_MENU)
+  TITLE:=STMicroelectronics STM32 QUAD SPI controller
+  DEPENDS:=@TARGET_stm32
+  KCONFIG:=CONFIG_SPI_STM32_QSPI \
+	   CONFIG_SPI_MEM=y
+  FILES:=$(LINUX_DIR)/drivers/spi/spi-stm32-qspi.ko
+  AUTOLOAD:=$(call AutoProbe,spi-stm32-qspi)
+endef
+
+$(eval $(call KernelPackage,spi-stm32-qspi))
+
+
 define KernelPackage/stm32-adc
   TITLE:=STM32 ADC
   KCONFIG:=CONFIG_STM32_ADC_CORE \
@@ -163,6 +189,17 @@ define KernelPackage/stm32-cryp
 endef
 
 $(eval $(call KernelPackage,stm32-cryp))
+
+
+define KernelPackage/stm32-csi
+  TITLE:=STM32 Camera Serial Interface (CSI) support
+  KCONFIG:=CONFIG_VIDEO_STM32_CSI
+  FILES:=$(LINUX_DIR)/drivers/media/platform/st/stm32/stm32-csi.ko
+  AUTOLOAD:=$(call AutoProbe,stm32-csi)
+  $(call AddDepends/video,@TARGET_stm32 +kmod-video-async +kmod-video-fwnode)
+endef
+
+$(eval $(call KernelPackage,stm32-csi))
 
 
 define KernelPackage/stm32-dac
@@ -238,6 +275,19 @@ define KernelPackage/stm32-hash
 endef
 
 $(eval $(call KernelPackage,stm32-hash))
+
+
+define KernelPackage/stm32-omm
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=STM32 Octo Memory Manager
+  DEPENDS:=@TARGET_stm32 \
+	   +kmod-spi-stm32-ospi
+  KCONFIG:=CONFIG_STM32_OMM
+  FILES:=$(LINUX_DIR)/drivers/memory/stm32_omm.ko
+  AUTOLOAD:=$(call AutoProbe,stm32_omm)
+endef
+
+$(eval $(call KernelPackage,stm32-omm))
 
 
 define KernelPackage/stm32-timers
