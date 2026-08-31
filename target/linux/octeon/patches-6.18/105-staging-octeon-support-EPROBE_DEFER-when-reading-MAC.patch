@@ -1,0 +1,66 @@
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Thu, 27 Aug 2026 20:00:00 +0200
+Subject: [PATCH] staging: octeon: support EPROBE_DEFER when reading MAC
+ addresses
+
+The per port MAC addresses are read in cvm_oct_common_init(), which runs
+as ndo_init() from register_netdev(). When the NVMEM provider holding
+them is not available yet - on the Ubiquiti EdgeRouter it is an MTD
+partition on the SPI flash - of_get_ethdev_address() returns
+-EPROBE_DEFER and every port ends up with a random MAC address that
+changes on every boot.
+
+Returning the error from ndo_init() does not help: it only makes
+register_netdev() fail and the interface disappear. cvm_oct_probe() has
+no unwind path either once it started to bring up the packet I/O
+hardware.
+
+Look at all port nodes at the very beginning of cvm_oct_probe() instead,
+where returning an error is still free, and ask to be probed again later
+when one of them is not readable yet.
+
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+---
+ drivers/staging/octeon/ethernet.c | 24 ++++++++++++++++++++++++
+ 1 file changed, 24 insertions(+)
+
+--- a/drivers/staging/octeon/ethernet.c
++++ b/drivers/staging/octeon/ethernet.c
+@@ -670,6 +670,27 @@ static void cvm_set_rgmii_delay(struct o
+ 		priv->phy_mode = PHY_INTERFACE_MODE_RGMII;
+ }
+ 
++/*
++ * The per-port MAC addresses may live in an NVMEM provider that is not there
++ * yet, for example an MTD partition on a SPI flash. The netdevs read them from
++ * ndo_init(), which is far too late to ask for a retry: once cvm_oct_probe()
++ * has begun to bring up the packet I/O hardware there is no way back. Look at
++ * all of them here instead, while returning an error is still free.
++ */
++static bool cvm_oct_mac_addresses_deferred(struct device_node *pip)
++{
++	u8 mac[ETH_ALEN];
++
++	for_each_available_child_of_node_scoped(pip, interface) {
++		for_each_available_child_of_node_scoped(interface, port) {
++			if (of_get_mac_address(port, mac) == -EPROBE_DEFER)
++				return true;
++		}
++	}
++
++	return false;
++}
++
+ static int cvm_oct_probe(struct platform_device *pdev)
+ {
+ 	int num_interfaces;
+@@ -689,6 +710,9 @@ static int cvm_oct_probe(struct platform
+ 		return -EINVAL;
+ 	}
+ 
++	if (cvm_oct_mac_addresses_deferred(pip))
++		return -EPROBE_DEFER;
++
+ 	cvm_oct_configure_common_hw();
+ 
+ 	cvmx_helper_initialize_packet_io_global();
