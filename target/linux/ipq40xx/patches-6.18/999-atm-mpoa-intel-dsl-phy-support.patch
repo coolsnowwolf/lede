@@ -1,0 +1,139 @@
+From: Subhra Banerjee <subhrax.banerjee@intel.com>
+Date: Fri, 31 Aug 2018 12:01:19 +0530
+Subject: [PATCH] UGW_SW-29163: ATM oam support
+
+--- a/drivers/net/ppp/ppp_generic.c
++++ b/drivers/net/ppp/ppp_generic.c
+@@ -3031,6 +3031,24 @@ char *ppp_dev_name(struct ppp_channel *c
+ 	return name;
+ }
+ 
++/*
++ * Return the PPP device interface pointer
++ */
++struct net_device *ppp_device(struct ppp_channel *chan)
++{
++	struct channel *pch = chan->ppp;
++	struct net_device *dev = NULL;
++
++	if (pch) {
++		struct ppp *ppp;
++		rcu_read_lock();
++		ppp = rcu_dereference(pch->ppp);
++		if (ppp)
++			dev = ppp->dev;
++		rcu_read_unlock();
++	}
++	return dev;
++}
+ 
+ /*
+  * Disconnect a channel from the generic layer.
+@@ -3704,6 +3722,7 @@ EXPORT_SYMBOL(ppp_unregister_channel);
+ EXPORT_SYMBOL(ppp_channel_index);
+ EXPORT_SYMBOL(ppp_unit_number);
+ EXPORT_SYMBOL(ppp_dev_name);
++EXPORT_SYMBOL(ppp_device);
+ EXPORT_SYMBOL(ppp_input);
+ EXPORT_SYMBOL(ppp_input_error);
+ EXPORT_SYMBOL(ppp_output_wakeup);
+--- a/include/linux/ppp_channel.h
++++ b/include/linux/ppp_channel.h
+@@ -75,6 +75,9 @@ extern int ppp_unit_number(struct ppp_ch
+ /* Get the device name associated with a channel, or NULL if none */
+ extern char *ppp_dev_name(struct ppp_channel *);
+ 
++/* Get the device pointer associated with a channel, or NULL if none */
++extern struct net_device *ppp_device(struct ppp_channel *);
++
+ /*
+  * SMP locking notes:
+  * The channel code must ensure that when it calls ppp_unregister_channel,
+--- a/net/atm/Kconfig
++++ b/net/atm/Kconfig
+@@ -56,6 +56,12 @@ config ATM_MPOA
+ 	  subnetwork boundaries. These shortcut connections bypass routers
+ 	  enhancing overall network performance.
+ 
++config ATM_MPOA_INTEL_DSL_PHY_SUPPORT
++	bool "Intel DSL Phy MPOA support"
++	depends on ATM && INET && ATM_MPOA!=n
++	help
++	  Add support for Intel DSL Phy ATM MPOA
++
+ config ATM_BR2684
+ 	tristate "RFC1483/2684 Bridged protocols"
+ 	depends on ATM && INET
+--- a/net/atm/br2684.c
++++ b/net/atm/br2684.c
+@@ -598,6 +598,11 @@ static int br2684_regvcc(struct atm_vcc
+ 	atmvcc->push = br2684_push;
+ 	atmvcc->pop = br2684_pop;
+ 	atmvcc->release_cb = br2684_release_cb;
++#if IS_ENABLED(CONFIG_ATM_MPOA_INTEL_DSL_PHY_SUPPORT)
++	if (atm_hook_mpoa_setup) /* IPoA or EoA w/o FCS */
++		atm_hook_mpoa_setup(atmvcc, brdev->payload == p_routed ? 3 : 0,
++			brvcc->encaps == BR2684_ENCAPS_LLC ? 1 : 0, net_dev);
++#endif
+ 	atmvcc->owner = THIS_MODULE;
+ 
+ 	/* initialize netdev carrier state */
+--- a/net/atm/common.c
++++ b/net/atm/common.c
+@@ -137,6 +137,11 @@ static struct proto vcc_proto = {
+ 	.release_cb = vcc_release_cb,
+ };
+ 
++#if IS_ENABLED(CONFIG_ATM_MPOA_INTEL_DSL_PHY_SUPPORT)
++void (*atm_hook_mpoa_setup)(struct atm_vcc *, int, int, struct net_device *) = NULL;
++EXPORT_SYMBOL(atm_hook_mpoa_setup);
++#endif
++
+ int vcc_create(struct net *net, struct socket *sock, int protocol, int family, int kern)
+ {
+ 	struct sock *sk;
+--- a/net/atm/common.h
++++ b/net/atm/common.h
+@@ -53,4 +53,6 @@ int svc_change_qos(struct atm_vcc *vcc,s
+ 
+ void atm_dev_release_vccs(struct atm_dev *dev);
+ 
++extern void (*atm_hook_mpoa_setup)(struct atm_vcc *, int, int, struct net_device *);
++
+ #endif
+--- a/net/atm/mpc.c
++++ b/net/atm/mpc.c
+@@ -31,6 +31,7 @@
+ /* Modular too */
+ #include <linux/module.h>
+ 
++#include "common.h"
+ #include "lec.h"
+ #include "mpc.h"
+ #include "resources.h"
+@@ -645,6 +646,10 @@ static int atm_mpoa_vcc_attach(struct at
+ 	vcc->proto_data = mpc->dev;
+ 	vcc->push = mpc_push;
+ 
++#if IS_ENABLED(CONFIG_ATM_MPOA_INTEL_DSL_PHY_SUPPORT)
++	if (atm_hook_mpoa_setup) /* IPoA, LLC */
++		atm_hook_mpoa_setup(vcc, 3, 1, mpc->dev);
++#endif
+ 	return 0;
+ }
+ 
+--- a/net/atm/pppoatm.c
++++ b/net/atm/pppoatm.c
+@@ -422,6 +422,12 @@ static int pppoatm_assign_vcc(struct atm
+ 	atmvcc->user_back = pvcc;
+ 	atmvcc->push = pppoatm_push;
+ 	atmvcc->pop = pppoatm_pop;
++#if IS_ENABLED(CONFIG_ATM_MPOA_INTEL_DSL_PHY_SUPPORT)
++	if (atm_hook_mpoa_setup) /* PPPoA */
++		atm_hook_mpoa_setup(atmvcc, 2,
++			pvcc->encaps == e_llc ? 1 : 0,
++			ppp_device(&pvcc->chan));
++#endif
+ 	atmvcc->release_cb = pppoatm_release_cb;
+ 	__module_get(THIS_MODULE);
+ 	atmvcc->owner = THIS_MODULE;
