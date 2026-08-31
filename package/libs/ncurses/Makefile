@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2006-2015 OpenWrt.org
+# Copyright (C) 2006-2026 OpenWrt.org
 #
 # This is free software, licensed under the GNU General Public License v2.
 # See /LICENSE for more information.
@@ -9,12 +9,15 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=ncurses
 PKG_CPE_ID:=cpe:/a:gnu:ncurses
-PKG_VERSION:=6.4
-PKG_RELEASE:=3
+PKG_VERSION_MAJOR:=6.6
+PKG_SNAPSHOT_DATE:=20260801
+PKG_VERSION:=$(PKG_VERSION_MAJOR)$(if $(PKG_SNAPSHOT_DATE),.$(PKG_SNAPSHOT_DATE),)
+PKG_RELEASE:=1
 
-PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
-PKG_SOURCE_URL:=@GNU/$(PKG_NAME)
-PKG_HASH:=6931283d9ac87c5073f30b6290c4c75f21632bb4fc3603ac8100812bed248159
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/ThomasDickey/ncurses-snapshots.git
+PKG_SOURCE_VERSION:=v$(subst .,_,$(PKG_VERSION))
+PKG_MIRROR_HASH:=a64061953353818a511e2ec7a284e10e89ac5ec62f3cdccc1ab549eb5f2d9c84
 
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=README
@@ -31,14 +34,14 @@ define Package/terminfo
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Terminal Info Database (ncurses)
-  URL:=http://www.gnu.org/software/ncurses/
+  URL:=https://www.gnu.org/software/ncurses/
 endef
 
 define Package/libncurses
   SECTION:=libs
   CATEGORY:=Libraries
   TITLE:=Terminal handling library (Unicode)
-  URL:=http://www.gnu.org/software/ncurses/
+  URL:=https://www.gnu.org/software/ncurses/
   PROVIDES:=libncursesw
   DEPENDS:= +terminfo
   ABI_VERSION:=6
@@ -50,6 +53,10 @@ define Package/libncurses-dev
   SUBMENU:=Libraries
   DEPENDS:=zlib
   TITLE:=Development files for the ncurses library
+endef
+
+define Package/libncurses/config
+        source "$(SOURCE)/Config.in"
 endef
 
 TARGET_CFLAGS += $(FPIC) -std=gnu17
@@ -90,7 +97,8 @@ HOST_CONFIGURE_ARGS += \
 	--without-manpages \
 	--without-profile \
 	--without-tests \
-	--without-curses-h
+	--without-curses-h \
+	--disable-db-install
 
 
 ifeq ($(HOST_OS),FreeBSD)
@@ -138,7 +146,8 @@ ifneq ($(HOST_OS),FreeBSD)
 		v/vt102 \
 		x/xterm \
 		x/xterm-color \
-		x/xterm-256color; do \
+		x/xterm-256color \
+		$(call qstrip,$(CONFIG_LIBNCURSES_TERMINFO)); do \
 		$(INSTALL_DIR) $(1)/usr/share/terminfo/`dirname $$$$file`; \
 		$(CP) $(PKG_INSTALL_DIR)/usr/share/terminfo/$$$$file \
 			$(1)/usr/share/terminfo/$$$$file; \
