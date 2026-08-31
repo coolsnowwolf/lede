@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=lldpd
-PKG_VERSION:=1.0.16
+PKG_VERSION:=1.0.22
 PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://github.com/lldpd/lldpd/releases/download/$(PKG_VERSION)/
-PKG_HASH:=7753c6e31e938923185f4e10c4ab328929729e22ee4a9687d08881fb82c092ee
+PKG_HASH:=552baa55118bccbcd1e61c51db438930a36ce04e0abd84c4c0b7b20633ca2b5a
 
 PKG_MAINTAINER:=Stijn Tintel <stijn@linux-ipv6.be>
 PKG_LICENSE:=ISC
@@ -21,6 +21,7 @@ PKG_CPE_ID:=cpe:/a:lldpd_project:lldpd
 
 PKG_FIXUP:=autoreconf
 PKG_BUILD_PARALLEL:=1
+PKG_BUILD_FLAGS:=lto
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -30,7 +31,7 @@ define Package/lldpd
   CATEGORY:=Network
   SUBMENU:=Routing and Redirection
   TITLE:=Link Layer Discovery Protocol daemon
-  URL:=https://vincentbernat.github.io/lldpd/
+  URL:=https://lldpd.github.io/
   DEPENDS:=+libcap +libevent2 +USE_GLIBC:libbsd +LLDPD_WITH_JSON:libjson-c +LLDPD_WITH_SNMP:libnetsnmp
   USERID:=lldp=121:lldp=129
   MENU:=1
@@ -67,19 +68,30 @@ define Package/lldpd/install
 	$(INSTALL_BIN) ./files/lldpd.init $(1)/etc/init.d/lldpd
 	$(INSTALL_CONF) ./files/lldpd.config $(1)/etc/config/lldpd
 ifneq ($(CONFIG_LLDPD_WITH_CDP),y)
-	sed -i -e '/cdp/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
+	sed -i -e 's/CONFIG_LLDPD_WITH_CDP=y/CONFIG_LLDPD_WITH_CDP=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/cdp/d' $(1)/etc/config/lldpd
 endif
 ifneq ($(CONFIG_LLDPD_WITH_FDP),y)
-	sed -i -e '/fdp/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
+	sed -i -e 's/CONFIG_LLDPD_WITH_FDP=y/CONFIG_LLDPD_WITH_FDP=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/fdp/d' $(1)/etc/config/lldpd
 endif
 ifneq ($(CONFIG_LLDPD_WITH_EDP),y)
-	sed -i -e '/edp/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
+	sed -i -e 's/CONFIG_LLDPD_WITH_EDP=y/CONFIG_LLDPD_WITH_EDP=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/edp/d' $(1)/etc/config/lldpd
 endif
 ifneq ($(CONFIG_LLDPD_WITH_SONMP),y)
-	sed -i -e '/sonmp/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
+	sed -i -e 's/CONFIG_LLDPD_WITH_SONMP=y/CONFIG_LLDPD_WITH_SONMP=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/sonmp/d' $(1)/etc/config/lldpd
 endif
 ifneq ($(CONFIG_LLDPD_WITH_SNMP),y)
-	sed -i -e '/agentxsocket/d' $(1)/etc/init.d/lldpd $(1)/etc/config/lldpd
+	sed -i -e 's/CONFIG_LLDPD_WITH_SNMP=y/CONFIG_LLDPD_WITH_SNMP=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/agentxsocket/d' $(1)/etc/config/lldpd
+endif
+ifneq ($(CONFIG_LLDPD_WITH_LLDPMED),y)
+	sed -i -e 's/CONFIG_LLDPD_WITH_LLDPMED=y/CONFIG_LLDPD_WITH_LLDPMED=n/g' $(1)/etc/init.d/lldpd
+	sed -i -e '/agentxsocket/d' $(1)/etc/config/lldpd
+	sed -i -e '/lldp_class/d' $(1)/etc/config/lldpd
+	sed -i -e '/lldp_location/d' $(1)/etc/config/lldpd
 endif
 endef
 
@@ -111,7 +123,6 @@ CONFIGURE_ARGS += \
 	$(if $(CONFIG_LLDPD_WITH_SNMP),--with-snmp,) \
 	$(if $(CONFIG_USE_GLIBC),,--without-libbsd)
 
-TARGET_CFLAGS += -flto
-TARGET_LDFLAGS += -flto -Wl,--gc-sections,--as-needed
+TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed
 
 $(eval $(call BuildPackage,lldpd))
