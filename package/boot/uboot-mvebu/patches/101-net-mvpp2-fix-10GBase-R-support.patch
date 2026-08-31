@@ -1,0 +1,108 @@
+From 434bb896d2cb4ec09c9bfd6a178ff4a7e6087ba3 Mon Sep 17 00:00:00 2001
+From: Sergey Sergeev <adron@yapic.net>
+Date: Sun, 16 Jan 2022 17:19:35 +0100
+Subject: [PATCH 1/2] net: mvpp2: fix 10GBase-R support
+
+Due to the lack of XPCS register initialization code and partially incorrect
+initialization of the MPCS network controler registers (tested on Mikrotik RB5009
+in conjunction with MV88E6393X) the network does not work correctly.
+The problem manifests itself as an arbitrary delay (0.4-4 sec) for the actual
+data transmission to the network! Accordingly, an almost completely non-working
+network for U-Boot is obtained. The code is backported from a similar Linux driver.
+
+Signed-off-by: Sergey Sergeev <adron@yapic.net>
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ drivers/net/mvpp2.c | 73 +++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+
+--- a/drivers/net/mvpp2.c
++++ b/drivers/net/mvpp2.c
+@@ -3253,6 +3253,76 @@ static int gop_gpcs_reset(struct mvpp2_p
+ 	return 0;
+ }
+ 
++static void gop_pcs_reset_assert(struct mvpp2_port *port)
++{
++	u32 val;
++
++	if (port->priv->hw_version == MVPP21 || port->gop_id != 0)
++		return;
++
++	val = readl(port->priv->mpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		PCS_CLOCK_RESET);
++	val &= ~(MAC_CLK_RESET_MASK | RX_SD_CLK_RESET_MASK | TX_SD_CLK_RESET_MASK);
++	val |= CLK_DIV_PHASE_SET_MASK;
++	writel(val, port->priv->mpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		PCS_CLOCK_RESET);
++
++	val = readl(port->priv->xpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		MVPP22_XPCS_GLOBAL_CFG_0_REG);
++	val &= ~MVPP22_XPCS_PCSRESET;
++	writel(val,	port->priv->xpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		MVPP22_XPCS_GLOBAL_CFG_0_REG);
++}
++
++static void gps_pcs_reset_deassert(struct mvpp2_port *port)
++{
++	u32 val;
++
++	if (port->priv->hw_version == MVPP21 || port->gop_id != 0)
++		return;
++
++	/* this code is only for case of PHY_INTERFACE_MODE_10GBASER! */
++	val = readl(port->priv->mpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		PCS_CLOCK_RESET);
++	val |= MAC_CLK_RESET_MASK | RX_SD_CLK_RESET_MASK |
++	       TX_SD_CLK_RESET_MASK;
++	val &= ~CLK_DIV_PHASE_SET_MASK;
++	writel(val, port->priv->mpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		PCS_CLOCK_RESET);
++}
++
++/* Set the internal mux's to the required PCS in the PI */
++static int gop_xpcs_mode(struct mvpp2_port *port, int num_of_lanes)
++{
++	u32 val;
++	int lane;
++
++	switch (num_of_lanes) {
++	case 1:
++		lane = 0;
++		break;
++	case 2:
++		lane = 1;
++		break;
++	case 4:
++		lane = 2;
++		break;
++	default:
++		return -1;
++	}
++
++	/* configure XG MAC mode */
++	val = readl(port->priv->xpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		MVPP22_XPCS_GLOBAL_CFG_0_REG);
++	val &= ~MVPP22_XPCS_PCSMODE_MASK;
++	val &= ~MVPP22_XPCS_LANEACTIVE_MASK;
++	val |= (2 * lane) << MVPP22_XPCS_LANEACTIVE_OFFS;
++	writel(val, port->priv->xpcs_base + port->gop_id * MVPP22_PORT_OFFSET +
++		MVPP22_XPCS_GLOBAL_CFG_0_REG);
++
++	return 0;
++}
++
+ static int gop_mpcs_mode(struct mvpp2_port *port)
+ {
+ 	u32 val;
+@@ -3395,7 +3465,10 @@ static int gop_port_init(struct mvpp2_po
+ 		num_of_act_lanes = 2;
+ 		mac_num = 0;
+ 		/* configure PCS */
++		gop_pcs_reset_assert(port);
++		gop_xpcs_mode(port, num_of_act_lanes);
+ 		gop_mpcs_mode(port);
++		gps_pcs_reset_deassert(port);
+ 		/* configure MAC */
+ 		gop_xlg_mac_mode_cfg(port, num_of_act_lanes);
+ 

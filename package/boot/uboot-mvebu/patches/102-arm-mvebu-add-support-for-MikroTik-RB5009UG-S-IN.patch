@@ -1,0 +1,458 @@
+From e05d84829cd692985ebabac8dbe93a98f0aa04a4 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 2 Jan 2022 15:10:34 +0100
+Subject: [PATCH 2/2] arm: mvebu: add support for MikroTik RB5009UG+S+IN
+
+Specifications:
+  - SoC: Marvell Armada 7040 (88F7040) - 4 cores, ARMv8, 1.4GHz, 64bit
+  - RAM: 1024MB DDR4
+  - Flash: 16MB SPI NOR flash, 1024MB NAND
+  - Ethernet: One Marvell 88E6393X - Amethyst: one 2.5G + seven 1G ports and one SFP+
+  - LED: User, SFP, Hdr1, Hdr2
+  - Buttons: Reset
+  - UART: 115200 8n1
+  - USB: One USB3 port
+
+This provides only the basic support required to boot OpenWrt, however
+networking via the switch also works since its preconfigured by MikroTik
+RouterBoot since we are using U-Boot as the secondary bootloader.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ arch/arm/dts/Makefile                         |   1 +
+ arch/arm/dts/armada-7040-rb5009.dts           | 241 ++++++++++++++++++
+ arch/arm/mach-mvebu/arm64-common.c            |  10 +-
+ .../mvebu_armada-8k/mikrotik-rb5009.env       |  52 ++++
+ configs/mvebu_rb5009_defconfig                |  96 +++++++
+ 5 files changed, 397 insertions(+), 3 deletions(-)
+ create mode 100644 arch/arm/dts/armada-7040-rb5009.dts
+ create mode 100644 board/Marvell/mvebu_armada-8k/mikrotik-rb5009.env
+ create mode 100644 configs/mvebu_rb5009_defconfig
+
+--- a/arch/arm/dts/Makefile
++++ b/arch/arm/dts/Makefile
+@@ -177,6 +177,7 @@ dtb-$(CONFIG_ARCH_MVEBU) +=			\
+ 	armada-3720-uDPU.dtb			\
+ 	armada-7040-db-nand.dtb			\
+ 	armada-7040-db.dtb			\
++	armada-7040-rb5009.dtb			\
+ 	armada-8040-clearfog-gt-8k.dtb		\
+ 	armada-8040-db.dtb			\
+ 	armada-8040-mcbin.dtb			\
+--- /dev/null
++++ b/arch/arm/dts/armada-7040-rb5009.dts
+@@ -0,0 +1,241 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2016- 2021 Marvell International Ltd.
++ */
++
++/*
++ * Device Tree file for MikroTik RB5009
++ * Boot device: SPI NOR, 0x0
++ */
++
++#include "armada-7040.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++
++/ {
++	model = "MikroTik RB5009";
++	compatible = "mikrotik,rb5009", "marvell,armada7040",
++		     "marvell,armada-ap806-quad", "marvell,armada-ap806";
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@00000000 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0x40000000>;
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_user: user {
++			label = "green:user";
++			gpios = <&cp0_gpio1 26 GPIO_ACTIVE_LOW>;
++			default-state = "on";
++		};
++
++		sfp {
++			label = "green:sfp";
++			gpios = <&cp0_gpio1 25 GPIO_ACTIVE_LOW>;
++		};
++
++		hdr1 {
++			label = "blue:hdr1";
++			gpios = <&cp0_gpio0 4 GPIO_ACTIVE_LOW>;
++		};
++
++		hdr2 {
++			label = "blue:hdr2";
++			gpios = <&cp0_gpio1 19 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&cp0_gpio0 28 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++};
++
++&ap_pinctl {
++	   /* MPP Bus:
++	    * SPI   [0-3]
++	    * UART0 [11,19]
++	    */
++		  /* 0 1 2 3 4 5 6 7 8 9 */
++	pin-func = < 3 3 3 3 0 0 0 0 0 0
++		     0 3 0 0 0 0 0 0 0 3 >;
++
++	ap_spi_pins: ap-spi-pins {
++		marvell,pins = < 0 1 2 3 >;
++		marvell,function = <3>;
++	};
++};
++
++&uart0 {
++	status = "okay";
++};
++
++&ap_spi0 {
++	status = "okay";
++	pinctrl-names = "default";
++	pinctrl-0 = <&ap_spi_pins>;
++
++	spi-flash@0 {
++		#address-cells = <0x1>;
++		#size-cells = <0x1>;
++		compatible = "jedec,spi-nor";
++		reg = <0x0>;
++		spi-max-frequency = <20000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			/* Empty space on NOR repurposed for U-Boot environment */
++			partition@fe0000 {
++				compatible = "u-boot,env";
++				label = "u-boot-env";
++				reg = <0xfe0000 0x20000>;
++			};
++		};
++	};
++};
++
++&cp0_pinctl {
++		/* MPP Bus:
++		 * NF_RBn  [13]
++		 * DEV_BUS [15-27]
++		 * UART0   [29,30]
++		 * SMI     [35,36]
++		 * I2C0    [37,38]
++		 * SPI1    [47-50]
++		 */
++		/*   0   1   2   3   4   5   6   7   8   9 */
++	pin-func = < 0   0   0   0   0   0   0   0   0   0
++		     0   0   0   2   0   1   1   1   1   1
++		     1   1   1   1   1   1   1   1   0   0xA
++		     0xA 0   0   0   0   8   8   2   2   0
++		     0   0   0   0   0   0   0   5   5   5
++		     5   0   0   0   0   0   0   0   0   0
++		     0   0   0 >;
++
++	cp0_nand_pins: cp0-nand-pins {
++		marvell,pins = < 15 16 17 18 19 20 21 22 23 24 25 26 27 >;
++		marvell,function = <1>;
++	};
++
++	cp0_smi_pins: cp0-smi-pins {
++		marvell,pins = < 35 36 >;
++		marvell,function = <8>;
++	};
++
++	cp0_spi1_pins: cp0-spi-pins-1 {
++		marvell,pins = < 47 48 49 50 >;
++		marvell,function = <5>;
++	};
++};
++
++&cp0_gpio1 {
++	enable-usb-power {
++		gpio-hog;
++		gpios = <23 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "enable USB power";
++	};
++
++	enable-leds-power {
++		gpio-hog;
++		gpios = <27 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "enable LED-s power";
++	};
++};
++
++&cp0_nand {
++	status = "okay";
++
++	pinctrl-names = "default";
++	pinctrl-0 = <&cp0_nand_pins>;
++
++	nand-ecc-strength = <4>;
++
++	partitions {
++		compatible = "fixed-partitions";
++		#address-cells = <1>;
++		#size-cells = <1>;
++
++		partition@0 {
++			label = "YAFFS";
++			reg = <0x0 0x800000>;
++		};
++
++		partition@800000 {
++			label = "ubi";
++			reg = <0x800000 0x3f800000>;
++		};
++	};
++};
++
++&cp0_usb3_1 {
++	status = "okay";
++};
++
++&cp0_utmi1 {
++	status = "okay";
++};
++
++&cp0_i2c0 {
++	status = "okay";
++
++	pinctrl-names = "default";
++	pinctrl-0 = <&cp0_i2c0_pins>;
++	clock-frequency = <100000>;
++};
++
++&cp0_comphy {
++	phy0 {
++		phy-type = <COMPHY_TYPE_UNCONNECTED>;
++	};
++
++	phy1 {
++		phy-type = <COMPHY_TYPE_UNCONNECTED>;
++	};
++
++	phy2 {
++		phy-type = <COMPHY_TYPE_SFI0>;
++		phy-speed = <COMPHY_SPEED_10_3125G>;
++	};
++
++	phy3 {
++		phy-type = <COMPHY_TYPE_USB3_HOST1>;
++		phy-speed = <COMPHY_SPEED_5G>;
++	};
++
++	phy4 {
++		phy-type = <COMPHY_TYPE_UNCONNECTED>;
++	};
++
++	phy5 {
++		phy-type = <COMPHY_TYPE_UNCONNECTED>;
++	};
++};
++
++&cp0_mdio {
++	status = "okay";
++};
++
++&cp0_ethernet {
++	status = "okay";
++};
++
++&cp0_eth0 {
++	status = "okay";
++	phy-mode = "10gbase-r";
++};
+--- a/arch/arm/mach-mvebu/arm64-common.c
++++ b/arch/arm/mach-mvebu/arm64-common.c
+@@ -62,9 +62,13 @@ __weak int dram_init_banksize(void)
+ __weak int dram_init(void)
+ {
+ 	if (IS_ENABLED(CONFIG_ARMADA_8K)) {
+-		gd->ram_size = a8k_dram_scan_ap_sz();
+-		if (gd->ram_size != 0)
+-			return 0;
++		if (of_machine_is_compatible("mikrotik,rb5009"))
++			return fdtdec_setup_mem_size_base();
++		else {
++			gd->ram_size = a8k_dram_scan_ap_sz();
++			if (gd->ram_size != 0)
++				return 0;
++		}
+ 	}
+ 
+ 	if (IS_ENABLED(CONFIG_ARMADA_3700))
+--- /dev/null
++++ b/board/Marvell/mvebu_armada-8k/mikrotik-rb5009.env
+@@ -0,0 +1,52 @@
++openwrt_initramfs=openwrt-mvebu-cortexa72-mikrotik_rb5009-initramfs-uImage.itb
++boot_devices=ubi usb net
++recovery_boot_devices=usb net
++
++button_cmd_0_name=reset
++button_cmd_0=run recovery_bootcmd
++
++recovery_bootcmd=
++	led green:sfp on;
++	led blue:hdr1 on;
++	led blue:hdr2 on;
++
++	for b in ${recovery_boot_devices}; do
++		if test ${b} = usb; then
++			run usbboot;
++		fi;
++		if test ${b} = net; then
++			run netboot;
++		fi;
++	done;
++
++bootcmd=
++	for b in ${boot_devices}; do
++		if test ${b} = ubi; then
++			run ubiboot;
++		fi;
++		if test ${b} = usb; then
++			run usbboot;
++		fi;
++		if test ${b} = net; then
++			run netboot;
++		fi;
++	done;
++
++ubiboot=
++	echo Booting from NAND (UBI);
++	ubi part ubi;
++	setenv loadimagecmd ${ubiloadimage};
++	ubi read ${loadaddr} kernel;
++	bootm ${loadaddr};
++
++usbboot=
++	echo Booting from USB Storage;
++	usb start;
++	load usb 0:1 ${loadaddr} ${openwrt_initramfs};
++	bootm ${loadaddr};
++
++netboot=
++	echo Booting from Network;
++	dhcp;
++	tftpboot ${loadaddr} ${openwrt_initramfs};
++	bootm ${loadaddr};
+--- /dev/null
++++ b/configs/mvebu_rb5009_defconfig
+@@ -0,0 +1,96 @@
++CONFIG_ARM=y
++CONFIG_ARCH_CPU_INIT=y
++CONFIG_ARCH_MVEBU=y
++CONFIG_TEXT_BASE=0x0
++CONFIG_NR_DRAM_BANKS=2
++CONFIG_ENV_SOURCE_FILE="mikrotik-rb5009"
++CONFIG_HAS_CUSTOM_SYS_INIT_SP_ADDR=y
++CONFIG_CUSTOM_SYS_INIT_SP_ADDR=0xff0000
++CONFIG_TARGET_MVEBU_ARMADA_8K=y
++CONFIG_ENV_SIZE=0x20000
++CONFIG_ENV_OFFSET=0xfe0000
++CONFIG_ENV_SECT_SIZE=0x10000
++CONFIG_DM_GPIO=y
++CONFIG_DEFAULT_DEVICE_TREE="armada-7040-rb5009"
++CONFIG_DEBUG_UART_BASE=0xf0512000
++CONFIG_DEBUG_UART_CLOCK=200000000
++CONFIG_SYS_LOAD_ADDR=0x800000
++CONFIG_DEBUG_UART=y
++# CONFIG_SYS_MALLOC_CLEAR_ON_INIT is not set
++CONFIG_REMAKE_ELF=y
++CONFIG_BUTTON_CMD=y
++CONFIG_FIT=y
++CONFIG_FIT_VERBOSE=y
++# CONFIG_BOOTSTD is not set
++CONFIG_SUPPORT_RAW_INITRD=y
++CONFIG_BOOTDELAY=5
++CONFIG_SYS_CONSOLE_INFO_QUIET=y
++CONFIG_LOG=y
++CONFIG_LOG_ERROR_RETURN=y
++# CONFIG_DISPLAY_CPUINFO is not set
++# CONFIG_DISPLAY_BOARDINFO is not set
++CONFIG_DISPLAY_BOARDINFO_LATE=y
++CONFIG_BOARD_EARLY_INIT_F=y
++CONFIG_HUSH_PARSER=y
++CONFIG_CMD_GPIO=y
++CONFIG_CMD_I2C=y
++CONFIG_CMD_MMC=y
++CONFIG_CMD_MTD=y
++CONFIG_CMD_PART=y
++CONFIG_CMD_PCI=y
++CONFIG_CMD_SPI=y
++CONFIG_CMD_USB=y
++# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_DHCP=y
++CONFIG_CMD_TFTPPUT=y
++CONFIG_CMD_MII=y
++CONFIG_CMD_PING=y
++CONFIG_CMD_PXE=y
++CONFIG_CMD_CACHE=y
++CONFIG_CMD_TIME=y
++CONFIG_CMD_SYSBOOT=y
++CONFIG_CMD_EXT4=y
++CONFIG_CMD_EXT4_WRITE=y
++CONFIG_CMD_FAT=y
++CONFIG_CMD_FS_GENERIC=y
++CONFIG_CMD_UBI=y
++CONFIG_EFI_PARTITION=y
++CONFIG_ENV_OVERWRITE=y
++CONFIG_ENV_IS_IN_SPI_FLASH=y
++CONFIG_SYS_RELOC_GD_ENV_ADDR=y
++CONFIG_NET_RANDOM_ETHADDR=y
++CONFIG_BUTTON=y
++CONFIG_BUTTON_GPIO=y
++CONFIG_GPIO_HOG=y
++CONFIG_DM_I2C=y
++CONFIG_SYS_I2C_MVTWSI=y
++CONFIG_LED=y
++CONFIG_LED_GPIO=y
++CONFIG_MISC=y
++CONFIG_MTD_RAW_NAND=y
++CONFIG_SYS_NAND_USE_FLASH_BBT=y
++CONFIG_NAND_PXA3XX=y
++CONFIG_SYS_NAND_ONFI_DETECTION=y
++CONFIG_SPI_FLASH_SFDP_SUPPORT=y
++CONFIG_SPI_FLASH_WINBOND=y
++# CONFIG_SPI_FLASH_USE_4K_SECTORS is not set
++CONFIG_SPI_FLASH_MTD=y
++CONFIG_PHY_MARVELL=y
++CONFIG_PHY_GIGE=y
++CONFIG_MVPP2=y
++CONFIG_PHY=y
++CONFIG_MVEBU_COMPHY_SUPPORT=y
++CONFIG_PINCTRL=y
++CONFIG_PINCTRL_ARMADA_8K=y
++CONFIG_DEBUG_UART_SHIFT=2
++CONFIG_DEBUG_UART_ANNOUNCE=y
++CONFIG_SYS_NS16550=y
++CONFIG_KIRKWOOD_SPI=y
++CONFIG_USB=y
++CONFIG_USB_XHCI_HCD=y
++CONFIG_USB_EHCI_HCD=y
++CONFIG_USB_STORAGE=y
++CONFIG_USB_HOST_ETHER=y
++CONFIG_USB_ETHER_RTL8152=y
++# CONFIG_SHA256 is not set
++# CONFIG_EFI_LOADER is not set
