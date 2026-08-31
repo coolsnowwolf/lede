@@ -1,0 +1,155 @@
+From 74a161cc45b1f68ff4735b31c37329a97e73ea2e Mon Sep 17 00:00:00 2001
+From: Joshua Covington <joshuacov@gmail.com>
+Date: Mon, 8 Jun 2026 22:46:01 +0000
+Subject: [PATCH 1/2] rpifwcrypto: switch from GnuTLS to OpenSSL
+
+Switch rpi-fw-crypto from GnuTLS to OpenSSL
+
+Signed-off-by: Joshua Covington <joshuacov@gmail.com>
+---
+ CMakeLists.txt             |  9 +++---
+ rpifwcrypto/CMakeLists.txt |  8 +++---
+ rpifwcrypto/main.c         | 57 +++++++++++++++++++++++---------------
+ 3 files changed, 43 insertions(+), 31 deletions(-)
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -22,11 +22,10 @@ add_subdirectory(vcgencmd)
+ add_subdirectory(vclog)
+ add_subdirectory(vcmailbox)
+ 
+-# Only build rpifwcrypto if GnuTLS is available
+-include(CheckIncludeFile)
+-check_include_file(gnutls/crypto.h HAVE_GNUTLS_CRYPTO_H)
+-if(HAVE_GNUTLS_CRYPTO_H)
++# Only build rpifwcrypto if OpenSSL is available
++find_package(OpenSSL QUIET)
++if(OpenSSL_FOUND)
+     add_subdirectory(rpifwcrypto)
+ else()
+-    message(STATUS "gnutls/crypto.h not found - skipping rpifwcrypto")
++    message(STATUS "OpenSSL not found - skipping rpifwcrypto")
+ endif()
+--- a/rpifwcrypto/CMakeLists.txt
++++ b/rpifwcrypto/CMakeLists.txt
+@@ -10,8 +10,8 @@ endif()
+ # Set project name
+ project(rpifwcrypto)
+ 
+-# Find GnuTLS package
+-find_package(GnuTLS REQUIRED)
++# Find OpenSSL package
++find_package(OpenSSL REQUIRED)
+ 
+ option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
+ 
+@@ -23,8 +23,8 @@ set_target_properties(rpifwcrypto PROPER
+ 
+ # Create the executable
+ add_executable(rpi-fw-crypto main.c)
+-target_link_libraries(rpi-fw-crypto rpifwcrypto ${GNUTLS_LIBRARIES})
+-target_include_directories(rpi-fw-crypto PRIVATE ${GNUTLS_INCLUDE_DIRS})
++# OpenSSL::Crypto automatically provides the correct include directories.
++target_link_libraries(rpi-fw-crypto PRIVATE rpifwcrypto OpenSSL::Crypto)
+ 
+ # Install rules
+ install(TARGETS rpi-fw-crypto RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+--- a/rpifwcrypto/main.c
++++ b/rpifwcrypto/main.c
+@@ -2,7 +2,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdint.h>
+-#include <gnutls/crypto.h>
++#include <openssl/evp.h>
+ #include "rpifwcrypto.h"
+ 
+ #define SHA256_HASH_SIZE 32
+@@ -69,53 +69,66 @@ static void usage(const char *progname)
+ 
+ static int hash_file(const char *filename, unsigned char *hash, size_t hash_size)
+ {
+-    FILE *f;
+-    gnutls_hash_hd_t hash_handle;
++    FILE *f = NULL;
++    EVP_MD_CTX *hash_ctx = NULL;
+     unsigned char buffer[4096];
+-    unsigned char temp_hash[SHA256_HASH_SIZE];
++    unsigned char temp_hash[EVP_MAX_MD_SIZE];
++    unsigned int temp_hash_len = 0;
+     size_t bytes;
+-    int rc;
++    int rc = -1;
+ 
+     if (hash_size < SHA256_HASH_SIZE) {
+         fprintf(stderr, "Hash buffer too small. Need at least %d bytes\n", SHA256_HASH_SIZE);
+         return -1;
+     }
+ 
+-    if ((rc = gnutls_hash_init(&hash_handle, GNUTLS_DIG_SHA256)) < 0) {
+-        fprintf(stderr, "Error initializing hash: %s\n", gnutls_strerror(rc));
++    hash_ctx = EVP_MD_CTX_new();
++    if (!hash_ctx) {
++        fprintf(stderr, "Error allocating hash context\n");
+         return -1;
+     }
+ 
++    if (EVP_DigestInit_ex(hash_ctx, EVP_sha256(), NULL) != 1) {
++        fprintf(stderr, "Error initializing SHA256 hash\n");
++        goto out;
++    }
++
+     f = fopen(filename, "rb");
+     if (!f) {
+         perror("Failed to open input file");
+-        gnutls_hash_deinit(hash_handle, NULL);
+-        return -1;
++        goto out;
+     }
+ 
+     while ((bytes = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+-        if ((rc = gnutls_hash(hash_handle, buffer, bytes)) < 0) {
+-            fprintf(stderr, "Error updating hash: %s\n", gnutls_strerror(rc));
+-            fclose(f);
+-            gnutls_hash_deinit(hash_handle, NULL);
+-            return -1;
++        if (EVP_DigestUpdate(hash_ctx, buffer, bytes) != 1) {
++            fprintf(stderr, "Error updating SHA256 hash\n");
++            goto out;
+         }
+     }
+ 
+     if (ferror(f)) {
+         perror("Error reading file");
+-        fclose(f);
+-        gnutls_hash_deinit(hash_handle, NULL);
+-        return -1;
++        goto out;
+     }
+ 
+-    fclose(f);
++    if (EVP_DigestFinal_ex(hash_ctx, temp_hash, &temp_hash_len) != 1) {
++        fprintf(stderr, "Error finalizing SHA256 hash\n");
++        goto out;
++    }
++
++    if (temp_hash_len != SHA256_HASH_SIZE) {
++        fprintf(stderr, "Unexpected SHA256 hash length: %u\n", temp_hash_len);
++        goto out;
++    }
+ 
+-    /* Get the hash output, ensuring we don't write beyond the provided buffer */
+-    gnutls_hash_deinit(hash_handle, temp_hash);
+-    memcpy(hash, temp_hash, hash_size < SHA256_HASH_SIZE ? hash_size : SHA256_HASH_SIZE);
++    memcpy(hash, temp_hash, SHA256_HASH_SIZE);
++    rc = 0;
+ 
+-    return 0;
++out:
++    if (f)
++        fclose(f);
++    EVP_MD_CTX_free(hash_ctx);
++    return rc;
+ }
+ 
+ static int write_hex_output_to_stream(FILE *f, const unsigned char *data, size_t len)
