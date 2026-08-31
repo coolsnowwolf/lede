@@ -16,7 +16,7 @@ BIN_FLAGS	:= -O binary -S
 SRC_DIR		:= $(CURDIR)/
 OUT_DIR		:= $(if $(O),$(if $(patsubst %/,,$(O)),$(O)/,$(O)),$(SRC_DIR))
 
-all: $(OUT_DIR)copy-kernel.bin
+all: $(OUT_DIR)copy-kernel-1024k.bin $(OUT_DIR)copy-kernel-2048k.bin $(OUT_DIR)copy-kernel-3072k.bin
 
 # Don't build dependencies, this may die if $(CC) isn't gcc
 dep:
@@ -35,4 +35,6 @@ $(OUT_DIR)%.bin: $(OUT_DIR)%.o
 mrproper: clean
 
 clean:
-	rm -f $(OUT_DIR)copy-kernel.bin $(OUT_DIR)copy-kernel.o
+	rm -f $(OUT_DIR)copy-kernel-1024k.bin $(OUT_DIR)copy-kernel-1024k.o
+	rm -f $(OUT_DIR)copy-kernel-2048k.bin $(OUT_DIR)copy-kernel-2048k.o
+	rm -f $(OUT_DIR)copy-kernel-3072k.bin $(OUT_DIR)copy-kernel-3072k.o
