@@ -1,0 +1,264 @@
+From: Ahmed Naseef <naseefkm@gmail.com>
+Subject: mips: econet: timer: add EN7528 support to EN751221 timer driver
+
+Extend the existing EN751221 timer driver to support EN7528/EN751627 SoCs.
+The driver now auto-detects the IRQ mode based on device tree:
+- EN751221: Single percpu IRQ (legacy interrupt controller)
+- EN7528/EN751627: Separate IRQ per CPU (GIC shared interrupts)
+
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+--- a/drivers/clocksource/Kconfig
++++ b/drivers/clocksource/Kconfig
+@@ -79,7 +79,10 @@ config ECONET_EN751221_TIMER
+ 	select CLKSRC_MMIO
+ 	select TIMER_OF
+ 	help
+-	  Support for CPU timer found on EcoNet MIPS based SoCs.
++	  Support for CPU timer found on EcoNet EN75xx MIPS based SoCs
++	  (EN751221, EN751627, EN7528). The driver supports both GIC-based
++	  (separate IRQ per CPU) and legacy interrupt controller (percpu IRQ)
++	  modes.
+ 
+ config FTTMR010_TIMER
+ 	bool "Faraday Technology timer driver" if COMPILE_TEST
+--- a/drivers/clocksource/timer-econet-en751221.c
++++ b/drivers/clocksource/timer-econet-en751221.c
+@@ -2,12 +2,20 @@
+ /*
+  * Timer present on EcoNet EN75xx MIPS based SoCs.
+  *
++ * This driver supports both:
++ * - EN751221: Single percpu IRQ mode (legacy interrupt controller)
++ * - EN7528/EN751627: Separate IRQ per CPU mode (GIC shared interrupts)
++ *
++ * The mode is auto-detected based on IRQ count in device tree.
++ *
+  * Copyright (C) 2025 by Caleb James DeLisle <cjd@cjdns.fr>
++ * Copyright (C) 2025 by Ahmed Naseef <naseefkm@gmail.com>
+  */
+ 
+ #include <linux/io.h>
+ #include <linux/cpumask.h>
+ #include <linux/interrupt.h>
++#include <linux/irq.h>
+ #include <linux/clockchips.h>
+ #include <linux/sched_clock.h>
+ #include <linux/of.h>
+@@ -21,10 +29,14 @@
+ #define ECONET_MAX_DELTA		GENMASK(ECONET_BITS - 2, 0)
+ /* 34Kc hardware has 1 block and 1004Kc has 2. */
+ #define ECONET_NUM_BLOCKS		DIV_ROUND_UP(NR_CPUS, 2)
++#define ECONET_MAX_IRQS			4
+ 
+ static struct {
+ 	void __iomem	*membase[ECONET_NUM_BLOCKS];
+ 	u32		freq_hz;
++	int		irqs[ECONET_MAX_IRQS];
++	int		num_irqs;
++	bool		use_percpu_irq;
+ } econet_timer __ro_after_init;
+ 
+ static DEFINE_PER_CPU(struct clock_event_device, econet_timer_pcpu);
+@@ -98,12 +110,21 @@ static int cevt_init_cpu(uint cpu)
+ 	struct clock_event_device *cd = &per_cpu(econet_timer_pcpu, cpu);
+ 	u32 reg;
+ 
++	if (!econet_timer.use_percpu_irq && cpu >= econet_timer.num_irqs)
++		return -EINVAL;
++
+ 	pr_debug("%s: Setting up clockevent for CPU %d\n", cd->name, cpu);
+ 
+ 	reg = ioread32(reg_ctl(cpu)) | ctl_bit_enabled(cpu);
+ 	iowrite32(reg, reg_ctl(cpu));
+ 
+-	enable_percpu_irq(cd->irq, IRQ_TYPE_NONE);
++	if (econet_timer.use_percpu_irq) {
++		enable_percpu_irq(cd->irq, IRQ_TYPE_NONE);
++	} else {
++		if (irq_force_affinity(econet_timer.irqs[cpu], cpumask_of(cpu)))
++			pr_warn("%s: failed to set IRQ %d affinity to CPU %d\n",
++				cd->name, econet_timer.irqs[cpu], cpu);
++	}
+ 
+ 	/* Do this last because it synchronously configures the timer */
+ 	clockevents_config_and_register(cd, econet_timer.freq_hz,
+@@ -126,7 +147,21 @@ static void __init cevt_dev_init(uint cp
+ 	iowrite32(U32_MAX, reg_compare(cpu));
+ }
+ 
+-static int __init cevt_init(struct device_node *np)
++static void __init cevt_setup_clockevent(struct clock_event_device *cd,
++					 struct device_node *np,
++					 int irq, int cpu)
++{
++	cd->rating		= 310;
++	cd->features		= CLOCK_EVT_FEAT_ONESHOT |
++				  CLOCK_EVT_FEAT_C3STOP |
++				  CLOCK_EVT_FEAT_PERCPU;
++	cd->set_next_event	= cevt_set_next_event;
++	cd->irq			= irq;
++	cd->cpumask		= cpumask_of(cpu);
++	cd->name		= np->name;
++}
++
++static int __init cevt_init_percpu(struct device_node *np)
+ {
+ 	int i, irq, ret;
+ 
+@@ -137,42 +172,85 @@ static int __init cevt_init(struct devic
+ 	}
+ 
+ 	ret = request_percpu_irq(irq, cevt_interrupt, np->name, &econet_timer_pcpu);
+-
+ 	if (ret < 0) {
+ 		pr_err("%pOFn: IRQ %d setup failed (%d)\n", np, irq, ret);
+-		goto err_unmap_irq;
++		irq_dispose_mapping(irq);
++		return ret;
+ 	}
+ 
+ 	for_each_possible_cpu(i) {
+ 		struct clock_event_device *cd = &per_cpu(econet_timer_pcpu, i);
+ 
+-		cd->rating		= 310;
+-		cd->features		= CLOCK_EVT_FEAT_ONESHOT |
+-					  CLOCK_EVT_FEAT_C3STOP |
+-					  CLOCK_EVT_FEAT_PERCPU;
+-		cd->set_next_event	= cevt_set_next_event;
+-		cd->irq			= irq;
+-		cd->cpumask		= cpumask_of(i);
+-		cd->name		= np->name;
++		cevt_setup_clockevent(cd, np, irq, i);
++		cevt_dev_init(i);
++	}
++
++	return 0;
++}
++
++static int __init cevt_init_separate(struct device_node *np)
++{
++	int i, ret;
++
++	for (i = 0; i < econet_timer.num_irqs; i++) {
++		struct clock_event_device *cd = &per_cpu(econet_timer_pcpu, i);
++
++		econet_timer.irqs[i] = irq_of_parse_and_map(np, i);
++		if (econet_timer.irqs[i] <= 0) {
++			pr_err("%pOFn: irq_of_parse_and_map failed", np);
++			ret = -EINVAL;
++			goto err_free_irqs;
++		}
++
++		ret = request_irq(econet_timer.irqs[i], cevt_interrupt,
++				  IRQF_TIMER | IRQF_NOBALANCING,
++				  np->name, NULL);
++		if (ret < 0) {
++			pr_err("%pOFn: IRQ %d setup failed (%d)\n", np,
++			       econet_timer.irqs[i], ret);
++			irq_dispose_mapping(econet_timer.irqs[i]);
++			goto err_free_irqs;
++		}
+ 
++		cevt_setup_clockevent(cd, np, econet_timer.irqs[i], i);
+ 		cevt_dev_init(i);
+ 	}
+ 
+-	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
+-			  "clockevents/econet/timer:starting",
+-			  cevt_init_cpu, NULL);
+ 	return 0;
+ 
+-err_unmap_irq:
+-	irq_dispose_mapping(irq);
++err_free_irqs:
++	while (--i >= 0) {
++		free_irq(econet_timer.irqs[i], NULL);
++		irq_dispose_mapping(econet_timer.irqs[i]);
++	}
+ 	return ret;
+ }
+ 
++static int __init cevt_init(struct device_node *np)
++{
++	econet_timer.num_irqs = of_irq_count(np);
++	if (econet_timer.num_irqs <= 0 || econet_timer.num_irqs > ECONET_MAX_IRQS) {
++		pr_err("%pOFn: invalid IRQ count %d\n", np, econet_timer.num_irqs);
++		return -EINVAL;
++	}
++
++	/* Auto-detect mode based on IRQ count:
++	 * 1 IRQ = percpu mode (EN751221)
++	 * N IRQs = separate IRQ per CPU (EN7528/EN751627)
++	 */
++	econet_timer.use_percpu_irq = (econet_timer.num_irqs == 1);
++
++	if (econet_timer.use_percpu_irq)
++		return cevt_init_percpu(np);
++	else
++		return cevt_init_separate(np);
++}
++
+ static int __init timer_init(struct device_node *np)
+ {
+ 	int num_blocks = DIV_ROUND_UP(num_possible_cpus(), 2);
+ 	struct clk *clk;
+-	int ret;
++	int ret, i;
+ 
+ 	clk = of_clk_get(np, 0);
+ 	if (IS_ERR(clk)) {
+@@ -182,11 +260,12 @@ static int __init timer_init(struct devi
+ 
+ 	econet_timer.freq_hz = clk_get_rate(clk);
+ 
+-	for (int i = 0; i < num_blocks; i++) {
++	for (i = 0; i < num_blocks; i++) {
+ 		econet_timer.membase[i] = of_iomap(np, i);
+ 		if (!econet_timer.membase[i]) {
+ 			pr_err("%pOFn: failed to map register [%d]\n", np, i);
+-			return -ENXIO;
++			ret = -ENXIO;
++			goto err_unmap;
+ 		}
+ 	}
+ 
+@@ -196,21 +275,34 @@ static int __init timer_init(struct devi
+ 				    clocksource_mmio_readl_up);
+ 	if (ret) {
+ 		pr_err("%pOFn: clocksource_mmio_init failed: %d", np, ret);
+-		return ret;
++		goto err_unmap;
+ 	}
+ 
+ 	ret = cevt_init(np);
+ 	if (ret < 0)
+-		return ret;
++		goto err_unmap;
++
++	cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
++			  "clockevents/econet/timer:starting",
++			  cevt_init_cpu, NULL);
+ 
+ 	sched_clock_register(sched_clock_read, ECONET_BITS,
+ 			     econet_timer.freq_hz);
+ 
+-	pr_info("%pOFn: using %u.%03u MHz high precision timer\n", np,
++	pr_info("%pOFn: using %u.%03u MHz high precision timer (%s mode)\n", np,
+ 		econet_timer.freq_hz / 1000000,
+-		(econet_timer.freq_hz / 1000) % 1000);
++		(econet_timer.freq_hz / 1000) % 1000,
++		econet_timer.use_percpu_irq ? "percpu" : "separate IRQ");
+ 
+ 	return 0;
++
++err_unmap:
++	for (i = 0; i < num_blocks; i++) {
++		if (econet_timer.membase[i])
++			iounmap(econet_timer.membase[i]);
++	}
++	return ret;
+ }
+ 
+-TIMER_OF_DECLARE(econet_timer_hpt, "econet,en751221-timer", timer_init);
++TIMER_OF_DECLARE(econet_en751221_timer, "econet,en751221-timer", timer_init);
++TIMER_OF_DECLARE(econet_en7528_timer, "econet,en7528-timer", timer_init);

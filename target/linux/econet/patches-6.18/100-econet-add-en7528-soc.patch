@@ -1,0 +1,121 @@
+From: Ahmed Naseef <naseefkm@gmail.com>
+Subject: mips: econet: add EN7528 SoC support
+
+The EN7528 is a little endian dual-core MIPS 1004Kc SoC used in xPON
+devices. Unlike the big endian EN751221, EN7528 uses the MIPS GIC
+interrupt controller for SMP.
+
+This adds boot support for the EN7528 SoC family:
+- New SOC_ECONET_EN7528 Kconfig option
+- Little endian support for ECONET platform
+- UART base address adjustment for endianness
+- CPS SMP ops registration for multi-core support
+
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -392,13 +392,13 @@ config MACH_DECSTATION
+ config ECONET
+ 	bool "EcoNet MIPS family"
+ 	select BOOT_RAW
+-	select CPU_BIG_ENDIAN
+ 	select DEBUG_ZBOOT if DEBUG_KERNEL
+ 	select EARLY_PRINTK_8250
+ 	select ECONET_EN751221_TIMER
+ 	select SERIAL_8250
+ 	select SERIAL_OF_PLATFORM
+ 	select SYS_SUPPORTS_BIG_ENDIAN
++	select SYS_SUPPORTS_LITTLE_ENDIAN
+ 	select SYS_HAS_CPU_MIPS32_R1
+ 	select SYS_HAS_CPU_MIPS32_R2
+ 	select SYS_HAS_EARLY_PRINTK
+--- a/arch/mips/econet/Kconfig
++++ b/arch/mips/econet/Kconfig
+@@ -12,6 +12,7 @@ choice
+ 	config SOC_ECONET_EN751221
+ 		bool "EN751221 family"
+ 		select COMMON_CLK
++		select CPU_BIG_ENDIAN
+ 		select ECONET_EN751221_INTC
+ 		select HAVE_PCI
+ 		select IRQ_MIPS_CPU
+@@ -24,6 +25,25 @@ choice
+ 		  They are based on single core MIPS 34Kc processors. To boot
+ 		  this kernel, you will need a device tree such as
+ 		  MIPS_RAW_APPENDED_DTB=y, and a root filesystem.
++
++	config SOC_ECONET_EN7528
++		bool "EN7528 family"
++		select COMMON_CLK
++		select CPU_LITTLE_ENDIAN
++		select HAVE_PCI
++		select IRQ_MIPS_CPU
++		select MIPS_CPU_SCACHE
++		select MIPS_GIC
++		select PCI_DRIVERS_GENERIC
++		select SMP
++		select SMP_UP
++		select SYS_SUPPORTS_HIGHMEM
++		select SYS_SUPPORTS_MIPS_CPS
++		select SYS_SUPPORTS_MULTITHREADING
++		select SYS_SUPPORTS_SMP
++		help
++		  The EN7528 family with dual-core MIPS 1004Kc.
++		  Requires MIPS_RAW_APPENDED_DTB=y for boot.
+ endchoice
+ 
+ choice
+--- a/arch/mips/econet/init.c
++++ b/arch/mips/econet/init.c
+@@ -16,11 +16,16 @@
+ #include <asm/prom.h>
+ #include <asm/smp-ops.h>
+ #include <asm/reboot.h>
++#include <asm/mips-cps.h>
+ 
+ #define CR_AHB_RSTCR		((void __iomem *)CKSEG1ADDR(0x1fb00040))
+ #define RESET			BIT(31)
+ 
+-#define UART_BASE		CKSEG1ADDR(0x1fbf0003)
++#ifdef CONFIG_CPU_LITTLE_ENDIAN
++#define UART_BASE		CKSEG1ADDR(0x1fbf0000)	/* LE: byte at offset 0 */
++#else
++#define UART_BASE		CKSEG1ADDR(0x1fbf0003)	/* BE: byte at offset 3 */
++#endif
+ #define UART_REG_SHIFT		2
+ 
+ static void hw_reset(char *command)
+@@ -51,11 +56,18 @@ void __init plat_mem_setup(void)
+ 	early_init_dt_scan_memory();
+ }
+ 
+-/* 3. Overload __weak device_tree_init(), add SMP_UP ops */
++/* 3. Overload __weak device_tree_init(), register SMP ops */
+ void __init device_tree_init(void)
+ {
+ 	unflatten_and_copy_device_tree();
+ 
++	/* EN7528 dual-core: probe CM/CPC and register CPS SMP ops */
++	mips_cm_probe();
++	mips_cpc_probe();
++
++	if (!register_cps_smp_ops())
++		return;
++
+ 	register_up_smp_ops();
+ }
+ 
+--- a/arch/mips/boot/compressed/uart-16550.c
++++ b/arch/mips/boot/compressed/uart-16550.c
+@@ -21,7 +21,11 @@
+ #endif
+ 
+ #ifdef CONFIG_ECONET
++#ifdef CONFIG_CPU_LITTLE_ENDIAN
++#define EN75_UART_BASE	0x1fbf0000
++#else
+ #define EN75_UART_BASE	0x1fbf0003
++#endif
+ #define PORT(offset)	(CKSEG1ADDR(EN75_UART_BASE) + (4 * (offset)))
+ #endif
+ 

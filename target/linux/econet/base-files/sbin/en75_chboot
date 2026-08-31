@@ -1,0 +1,203 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+
+set -e
+
+. /lib/functions.sh
+
+part=
+offset_blocks=
+block_size=
+code_openwrt=
+code_factory=
+code_offset=
+read_mask=
+
+read_nand() {
+    dd "if=$part" "of=$file" "bs=$block_size" "skip=$offset_blocks" count=1 2>/dev/null
+}
+
+write_nand() {
+    flash_erase -N -q "$part" $((offset_blocks * block_size)) 1
+    dd "if=$file" "of=$part" "bs=$block_size" "seek=$offset_blocks" count=1 2>/dev/null
+}
+
+part_named() {
+    name=$1
+    pn=$(grep "$name" < /proc/mtd | sed 's/:.*//')
+    if [ -z "$pn" ]; then
+        echo "Partition not found: $name"
+        exit 1
+    fi
+    echo "/dev/$pn"
+}
+
+mask() {
+    if [ -z "$2" ]; then
+        echo "$1"
+        return
+    fi
+    echo "$1 $2" | awk '{
+        a=$1; b=$2;
+        res="";
+        for(i=1;i<=length(a);i++){
+            abit=substr(a,i,1);
+            bbit=substr(b,i,1);
+            if(bbit=="X") res=res""abit;
+            else res=res"0";
+        }
+        print res;
+    }'
+}
+
+to_hex() {
+    hexdump -v -e '1/1 "%02x"'
+}
+
+from_hex() {
+    sed 's/\([0-9a-fA-F]\{2\}\)/echo -n -e "\\x\1"\n/g' | sh
+}
+
+check() {
+    local stored_code=$(dd \
+        "if=$part" \
+        bs=1 \
+        skip=$((offset_blocks * block_size + code_offset)) \
+        count=$((${#code_openwrt} / 2)) \
+            2>/dev/null | to_hex
+    )
+    stored_code=$(mask "$stored_code" "$read_mask")
+    local code_owrt=$(mask "$code_openwrt" "$read_mask")
+    local code_fact=$(mask "$code_factory" "$read_mask")
+    if [ "$stored_code" = "$code_owrt" ]; then
+        echo "Current boot flag set to OS A (OpenWrt)"
+    elif [ "$stored_code" = "$code_fact" ]; then
+        echo "Current boot flag set to OS B (Factory)"
+    else
+        echo "Current boot flag unknown: $stored_code"
+    fi
+}
+
+switch() {
+    switch_to=$1
+
+    echo "Switching boot flag to $switch_to"
+    file=$(mktemp)
+    read_nand
+    if [ "$switch_to" = "factory" ]; then
+        echo "$code_factory" | from_hex | \
+            dd "of=$file" bs=1 "seek=$code_offset" conv=notrunc 2>/dev/null
+    elif [ "$switch_to" = "openwrt" ]; then
+        echo "$code_openwrt" | from_hex | \
+            dd "of=$file" bs=1 "seek=$code_offset" conv=notrunc 2>/dev/null
+    else
+        echo "Invalid switch_to: $switch_to"
+        exit 1
+    fi
+    write_nand
+    rm "$file"
+    echo "Flash write complete"
+    check
+}
+
+main() {
+    case "$(board_name)" in
+    tplink,archer-vr1200v-v2)
+        # 03fe0000
+        part=$(part_named '"reserve"')
+        offset_blocks=0
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=0000000101000002
+        code_factory=0000000101010003
+        ;;
+    huawei,hg2821t-u)
+        part=$(part_named '"flag"')
+        offset_blocks=14
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=30ffffff30ffffff
+        code_factory=31ffffff31ffffff
+        ;;
+    nokia,g240g-e)
+        part=$(part_named '"flag"')
+        offset_blocks=0
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=000000000000000000000001000000010000000000000000
+        code_factory=000000000000000100000001000000010000000000000000
+           read_mask=000000000000000X00000000000000000000000000000000
+        ;;
+    smartfiber,xp8421-b)
+        # 0dfc0000
+        part=$(part_named '"reservearea"')
+        offset_blocks=12
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=30000000
+        code_factory=31000000
+        ;;
+    zyxel,ex3301-t0)
+        part=$(part_named '"reservearea"')
+        offset_blocks=5
+        block_size=$((1024 * 128))
+        code_offset=4095
+        code_openwrt=30
+        code_factory=31
+        ;;
+    zyxel,pmg5617ga)
+        # 00060fff
+        part=$(part_named '"reservearea"')
+        offset_blocks=3
+        block_size=$((1024 * 128))
+        code_offset=4095
+        code_openwrt=30
+        code_factory=31
+        ;;
+    dasan,h660gm-a-airtel|\
+    dasan,h660gm-a-generic)
+        # bootflag stored in dzs partition at offset 0x49
+        part=$(part_named '"dzs"')
+        offset_blocks=0
+        block_size=$((1024 * 128))
+        code_offset=73
+        code_openwrt=0000
+        code_factory=0101
+        ;;
+    jiofiber,jcow407|\
+    jiofiber,jcow414)
+        part=$(part_named '"reservearea"')
+        offset_blocks=16
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=30
+        code_factory=31
+        ;;
+    chinamobile,gs3101)
+        part=$(part_named '"reservearea"')
+        offset_blocks=12
+        block_size=$((1024 * 128))
+        code_offset=0
+        code_openwrt=31
+        code_factory=30
+        # Slot B is never used on this platform so switching will brick
+        echo "GS3101 does not support A/B partitioning"
+        exit 1
+        ;;
+    *)
+        echo "Unsupported machine: $machine"
+        exit 1
+        ;;
+    esac
+
+    if [ "$1" = "factory" ]; then
+        switch factory
+    elif [ "$1" = "openwrt" ]; then
+        switch openwrt
+    else
+        echo "Usage: $0 factory|openwrt  # Change boot flag to Factory OS or OpenWrt"
+        check
+        exit 1
+    fi
+}
+main "$@"

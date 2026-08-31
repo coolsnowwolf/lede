@@ -1,0 +1,66 @@
+From 92427ab4378faa168d6953d0f8574b8fc1edcc14 Mon Sep 17 00:00:00 2001
+From: Ahmed Naseef <naseefkm@gmail.com>
+Date: Thu, 12 Mar 2026 16:53:32 +0000
+Subject: [PATCH] PCI: Prevent assignment to unsupported bridge windows
+
+Previously, pci_read_bridge_io() and pci_read_bridge_mmio_pref()
+unconditionally set resource type flags (IORESOURCE_IO or IORESOURCE_MEM |
+IORESOURCE_PREFETCH) when reading bridge window registers. For windows that
+are not implemented in hardware, this may cause the allocator to assign
+space for a window that doesn't exist.
+
+For example, the EcoNET EN7528 SoC Root Port doesn't support the
+prefetchable window, but since a downstream device had a prefetchable BAR,
+the allocator mistakenly assigned a prefetchable window:
+
+  pci 0001:00:01.0: [14c3:0811] type 01 class 0x060400 PCIe Root Port
+  pci 0001:00:01.0: PCI bridge to [bus 01-ff]
+  pci 0001:00:01.0: bridge window [mem 0x28000000-0x280fffff]: assigned
+  pci 0001:00:01.0: bridge window [mem 0x28100000-0x282fffff pref]: assigned
+  pci 0001:01:00.0: BAR 0 [mem 0x28100000-0x281fffff 64bit pref]: assigned
+
+pci_read_bridge_windows() already detects unsupported windows by testing
+register writability and sets dev->io_window/pref_window accordingly.
+
+Check dev->io_window/pref_window so we don't set the resource flags for
+unsupported windows, which prevents the allocator from assigning space to
+them.
+
+After this commit, the prefetchable BAR is correctly allocated from the
+non-prefetchable window:
+
+  pci 0001:00:01.0: bridge window [mem 0x28000000-0x281fffff]: assigned
+  pci 0001:01:00.0: BAR 0 [mem 0x28000000-0x280fffff 64bit pref]: assigned
+
+Suggested-by: Bjorn Helgaas <helgaas@kernel.org>
+Link: https://lore.kernel.org/all/20260113210259.GA715789@bhelgaas/
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+Signed-off-by: Caleb James DeLisle <cjd@cjdns.fr>
+Signed-off-by: Bjorn Helgaas <bhelgaas@google.com>
+Link: https://patch.msgid.link/20260312165332.569772-4-cjd@cjdns.fr
+---
+ drivers/pci/probe.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+--- a/drivers/pci/probe.c
++++ b/drivers/pci/probe.c
+@@ -396,6 +396,9 @@ static void pci_read_bridge_io(struct pc
+ 	unsigned long io_mask, io_granularity, base, limit;
+ 	struct pci_bus_region region;
+ 
++	if (!dev->io_window)
++		return;
++
+ 	io_mask = PCI_IO_RANGE_MASK;
+ 	io_granularity = 0x1000;
+ 	if (dev->io_window_1k) {
+@@ -466,6 +469,9 @@ static void pci_read_bridge_mmio_pref(st
+ 	pci_bus_addr_t base, limit;
+ 	struct pci_bus_region region;
+ 
++	if (!dev->pref_window)
++		return;
++
+ 	pci_read_config_word(dev, PCI_PREF_MEMORY_BASE, &mem_base_lo);
+ 	pci_read_config_word(dev, PCI_PREF_MEMORY_LIMIT, &mem_limit_lo);
+ 	base64 = (mem_base_lo & PCI_PREF_RANGE_MASK) << 16;

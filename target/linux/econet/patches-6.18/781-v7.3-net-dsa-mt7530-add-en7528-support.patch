@@ -1,0 +1,144 @@
+From 8c7dfabd860ab0a6dd771c2bac7b7599eb369a4f Mon Sep 17 00:00:00 2001
+From: Ahmed Naseef <naseefkm@gmail.com>
+Date: Thu, 9 Jul 2026 21:29:45 +0400
+Subject: [PATCH] net: dsa: mt7530: add EN7528 support
+
+The EcoNet EN7528 SoC integrates an MT7530 switch (the chip revision
+register reads 0x7530), memory-mapped in the SoC register space and
+reached through the same MMIO glue used for the built-in switches of the
+MediaTek MT7988 and Airoha EN7581/AN7583 SoCs. Its reset sequence and its
+PHY indirect access registers are the same as on those switches, so add
+an ID_EN7528 variant bound with the "econet,en7528-switch" compatible,
+reusing mt7988_setup() and the indirect PHY accessors.
+
+The switch core, however, is an MT7530 and not an MT7531 derivative: the
+CPU port to trap frames to is set through the MT7530-style CPU_EN /
+CPU_PORT fields of the MFC register rather than the MT7531 CFC register,
+so add it to the MT7530 handling in mt753x_conduit_state_change(). For the
+same reason the MT7530 mirror and force-mode register layouts already
+apply to it as the default of the MT753X_*() macros.
+
+The four user ports (1-4) are connected to integrated Gigabit PHYs at
+MDIO addresses 9-12 of the switch internal MDIO bus. The CPU port (port
+6) is connected to the SoC Ethernet MAC at a fixed 1000 Mbps full duplex
+link, so the port capabilities cannot be shared with the MT7988 and
+EN7581 switches, whose CPU ports run at 10 Gbps.
+
+The LAN GPHYs advertise EEE by default, but negotiating EEE with some
+link partners results in an unstable link with dropped frames. Leave the
+LPI capabilities empty for the EN7528 so that phylink disables EEE on
+these PHYs and refuses to enable it from userspace.
+
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+--- a/drivers/net/dsa/mt7530-mmio.c
++++ b/drivers/net/dsa/mt7530-mmio.c
+@@ -13,6 +13,7 @@
+ static const struct of_device_id mt7988_of_match[] = {
+ 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
+ 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },
++	{ .compatible = "econet,en7528-switch", .data = &mt753x_table[ID_EN7528], },
+ 	{ .compatible = "mediatek,mt7988-switch", .data = &mt753x_table[ID_MT7988], },
+ 	{ /* sentinel */ },
+ };
+--- a/drivers/net/dsa/mt7530.c
++++ b/drivers/net/dsa/mt7530.c
+@@ -2829,6 +2829,30 @@ static void en7581_mac_port_get_caps(str
+ 	}
+ }
+ 
++static void en7528_mac_port_get_caps(struct dsa_switch *ds, int port,
++				     struct phylink_config *config)
++{
++	switch (port) {
++	/* Ports which are connected to switch PHYs. There is no MII pinout. */
++	case 1 ... 4:
++		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
++			  config->supported_interfaces);
++
++		config->mac_capabilities |= MAC_10 | MAC_100 | MAC_1000FD;
++		break;
++
++	/* Port 6 is connected to SoC's GMAC at 1000 Mbps full duplex. There
++	 * is no MII pinout.
++	 */
++	case 6:
++		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
++			  config->supported_interfaces);
++
++		config->mac_capabilities |= MAC_1000FD;
++		break;
++	}
++}
++
+ static void
+ mt7530_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
+ 		  phy_interface_t interface)
+@@ -3018,17 +3042,24 @@ static void mt753x_phylink_get_caps(stru
+ 				    struct phylink_config *config)
+ {
+ 	struct mt7530_priv *priv = ds->priv;
+-	u32 eeecr;
+ 
+ 	config->mac_capabilities = MAC_ASYM_PAUSE | MAC_SYM_PAUSE;
+ 
+-	config->lpi_capabilities = MAC_100FD | MAC_1000FD | MAC_2500FD;
+-
+-	eeecr = mt7530_read(priv, MT753X_PMEEECR_P(port));
+-	/* tx_lpi_timer should be in microseconds. The time units for
+-	 * LPI threshold are unspecified.
++	/* The EN7528 GPHYs report EEE capability, but negotiating EEE with
++	 * common link partners (e.g. Realtek GbE NICs) results in an unstable
++	 * link with dropped frames. Leave the LPI capabilities empty so that
++	 * phylink disables EEE on these PHYs and refuses to enable it from
++	 * userspace.
+ 	 */
+-	config->lpi_timer_default = FIELD_GET(LPI_THRESH_MASK, eeecr);
++	if (priv->id != ID_EN7528) {
++		u32 eeecr = mt7530_read(priv, MT753X_PMEEECR_P(port));
++
++		config->lpi_capabilities = MAC_100FD | MAC_1000FD | MAC_2500FD;
++		/* tx_lpi_timer should be in microseconds. The time units for
++		 * LPI threshold are unspecified.
++		 */
++		config->lpi_timer_default = FIELD_GET(LPI_THRESH_MASK, eeecr);
++	}
+ 
+ 	priv->info->mac_port_get_caps(ds, port, config);
+ }
+@@ -3156,7 +3187,8 @@ mt753x_conduit_state_change(struct dsa_s
+ 	 * forwarded to the numerically smallest CPU port whose conduit
+ 	 * interface is up.
+ 	 */
+-	if (priv->id != ID_MT7530 && priv->id != ID_MT7621)
++	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
++	    priv->id != ID_EN7528)
+ 		return;
+ 
+ 	mask = BIT(cpu_dp->index);
+@@ -3359,6 +3391,16 @@ const struct mt753x_info mt753x_table[]
+ 		.phy_write_c45 = mt7531_ind_c45_phy_write,
+ 		.mac_port_get_caps = en7581_mac_port_get_caps,
+ 	},
++	[ID_EN7528] = {
++		.id = ID_EN7528,
++		.pcs_ops = &mt7530_pcs_ops,
++		.sw_setup = mt7988_setup,
++		.phy_read_c22 = mt7531_ind_c22_phy_read,
++		.phy_write_c22 = mt7531_ind_c22_phy_write,
++		.phy_read_c45 = mt7531_ind_c45_phy_read,
++		.phy_write_c45 = mt7531_ind_c45_phy_write,
++		.mac_port_get_caps = en7528_mac_port_get_caps,
++	},
+ };
+ EXPORT_SYMBOL_GPL(mt753x_table);
+ 
+--- a/drivers/net/dsa/mt7530.h
++++ b/drivers/net/dsa/mt7530.h
+@@ -21,6 +21,7 @@ enum mt753x_id {
+ 	ID_MT7988 = 3,
+ 	ID_EN7581 = 4,
+ 	ID_AN7583 = 5,
++	ID_EN7528 = 6,
+ };
+ 
+ #define	NUM_TRGMII_CTRL			5
