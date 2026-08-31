@@ -1,0 +1,138 @@
+From aaa675f07e781e248fcf169ce9a917b48bc2cc9b Mon Sep 17 00:00:00 2001
+From: Brian Norris <computersforpeace@gmail.com>
+Date: Fri, 28 Jul 2023 12:06:23 +0200
+Subject: [PATCH 3/3] firmware: qcom: scm: fix SCM cold boot address
+
+This effectively reverts upstream Linux commit 13e77747800e ("firmware:
+qcom: scm: Use atomic SCM for cold boot"), because Google WiFi boot
+firmwares don't support the atomic variant.
+
+This fixes SMP support for Google WiFi.
+
+Signed-off-by: Brian Norris <computersforpeace@gmail.com>
+---
+ drivers/firmware/qcom/qcom_scm-legacy.c | 62 +++++++++++++++++++++++++-----
+ drivers/firmware/qcom/qcom_scm.c        | 11 ++++++
+ 2 files changed, 63 insertions(+), 10 deletions(-)
+
+--- a/drivers/firmware/qcom/qcom_scm-legacy.c
++++ b/drivers/firmware/qcom/qcom_scm-legacy.c
+@@ -13,6 +13,9 @@
+ #include <linux/arm-smccc.h>
+ #include <linux/dma-mapping.h>
+ 
++#include <asm/cacheflush.h>
++#include <asm/outercache.h>
++
+ #include "qcom_scm.h"
+ 
+ static DEFINE_MUTEX(qcom_scm_lock);
+@@ -117,6 +120,25 @@ static void __scm_legacy_do(const struct
+ 	} while (res->a0 == QCOM_SCM_INTERRUPTED);
+ }
+ 
++static void qcom_scm_inv_range(unsigned long start, unsigned long end)
++{
++	u32 cacheline_size, ctr;
++
++	asm volatile("mrc p15, 0, %0, c0, c0, 1" : "=r" (ctr));
++	cacheline_size = 4 << ((ctr >> 16) & 0xf);
++
++	start = round_down(start, cacheline_size);
++	end = round_up(end, cacheline_size);
++	outer_inv_range(start, end);
++	while (start < end) {
++		asm ("mcr p15, 0, %0, c7, c6, 1" : : "r" (start)
++		     : "memory");
++		start += cacheline_size;
++	}
++	dsb();
++	isb();
++}
++
+ /**
+  * scm_legacy_call() - Sends a command to the SCM and waits for the command to
+  * finish processing.
+@@ -163,10 +185,16 @@ int scm_legacy_call(struct device *dev,
+ 
+ 	rsp = scm_legacy_command_to_response(cmd);
+ 
+-	cmd_phys = dma_map_single(dev, cmd, alloc_len, DMA_TO_DEVICE);
+-	if (dma_mapping_error(dev, cmd_phys)) {
+-		kfree(cmd);
+-		return -ENOMEM;
++	if (dev) {
++		cmd_phys = dma_map_single(dev, cmd, alloc_len, DMA_TO_DEVICE);
++		if (dma_mapping_error(dev, cmd_phys)) {
++			kfree(cmd);
++			return -ENOMEM;
++		}
++	} else {
++		cmd_phys = virt_to_phys(cmd);
++		__cpuc_flush_dcache_area(cmd, alloc_len);
++		outer_flush_range(cmd_phys, cmd_phys + alloc_len);
+ 	}
+ 
+ 	smc.args[0] = 1;
+@@ -182,13 +210,26 @@ int scm_legacy_call(struct device *dev,
+ 		goto out;
+ 
+ 	do {
+-		dma_sync_single_for_cpu(dev, cmd_phys + sizeof(*cmd) + cmd_len,
+-					sizeof(*rsp), DMA_FROM_DEVICE);
++		if (dev) {
++			dma_sync_single_for_cpu(dev, cmd_phys + sizeof(*cmd) +
++						cmd_len, sizeof(*rsp),
++						DMA_FROM_DEVICE);
++		} else {
++			unsigned long start = (uintptr_t)cmd + sizeof(*cmd) +
++					      cmd_len;
++			qcom_scm_inv_range(start, start + sizeof(*rsp));
++		}
+ 	} while (!rsp->is_complete);
+ 
+-	dma_sync_single_for_cpu(dev, cmd_phys + sizeof(*cmd) + cmd_len +
+-				le32_to_cpu(rsp->buf_offset),
+-				resp_len, DMA_FROM_DEVICE);
++	if (dev) {
++		dma_sync_single_for_cpu(dev, cmd_phys + sizeof(*cmd) + cmd_len +
++					le32_to_cpu(rsp->buf_offset),
++					resp_len, DMA_FROM_DEVICE);
++	} else {
++		unsigned long start = (uintptr_t)cmd + sizeof(*cmd) + cmd_len +
++				      le32_to_cpu(rsp->buf_offset);
++		qcom_scm_inv_range(start, start + resp_len);
++	}
+ 
+ 	if (res) {
+ 		res_buf = scm_legacy_get_response_buffer(rsp);
+@@ -196,7 +237,8 @@ int scm_legacy_call(struct device *dev,
+ 			res->result[i] = le32_to_cpu(res_buf[i]);
+ 	}
+ out:
+-	dma_unmap_single(dev, cmd_phys, alloc_len, DMA_TO_DEVICE);
++	if (dev)
++		dma_unmap_single(dev, cmd_phys, alloc_len, DMA_TO_DEVICE);
+ 	kfree(cmd);
+ 	return ret;
+ }
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -391,6 +391,17 @@ static int qcom_scm_set_boot_addr(void *
+ 	desc.args[0] = flags;
+ 	desc.args[1] = virt_to_phys(entry);
+ 
++	/*
++	 * Factory firmware doesn't support the atomic variant. Non-atomic SCMs
++	 * require ugly DMA invalidation support that was dropped upstream a
++	 * while ago. For more info, see:
++	 *
++	 *  [RFC] qcom_scm: IPQ4019 firmware does not support atomic API?
++	 *  https://lore.kernel.org/linux-arm-msm/20200913201608.GA3162100@bDebian/
++	 */
++	if (of_machine_is_compatible("google,wifi"))
++		return qcom_scm_call(__scm ? __scm->dev : NULL, &desc, NULL);
++
+ 	return qcom_scm_call_atomic(__scm ? __scm->dev : NULL, &desc, NULL);
+ }
+ 

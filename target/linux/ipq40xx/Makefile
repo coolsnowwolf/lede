@@ -6,10 +6,10 @@ BOARDNAME:=Qualcomm Atheros IPQ40XX
 FEATURES:=squashfs fpu ramdisk nand
 CPU_TYPE:=cortex-a7
 CPU_SUBTYPE:=neon-vfpv4
-SUBTARGETS:=generic mikrotik
+SUBTARGETS:=generic chromium mikrotik
 
 KERNEL_PATCHVER:=5.10
-KERNEL_TESTING_PATCHVER:=5.10
+KERNEL_TESTING_PATCHVER:=6.18
 
 KERNELNAME:=zImage Image dtbs
 
