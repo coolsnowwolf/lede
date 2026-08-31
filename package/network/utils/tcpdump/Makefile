@@ -8,18 +8,19 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=tcpdump
-PKG_VERSION:=4.9.3
-PKG_RELEASE:=4
+PKG_VERSION:=4.99.6
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=https://www.tcpdump.org/release/
-PKG_HASH:=2cd47cb3d460b6ff75f4a9940f594317ad456cfbf2bd2c8e5151e16559db6410
+PKG_HASH:=5839921a0f67d7d8fa3dacd9cd41e44c89ccb867e8a6db216d62628c7fd14b09
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=BSD-3-Clause
 PKG_CPE_ID:=cpe:/a:tcpdump:tcpdump
 
 PKG_INSTALL:=1
+PKG_BUILD_FLAGS:=gc-sections
 PKG_BUILD_PARALLEL:=1
 
 include $(INCLUDE_DIR)/package.mk
@@ -29,7 +30,7 @@ define Package/tcpdump/default
   CATEGORY:=Network
   DEPENDS:=+libpcap
   TITLE:=Network monitoring and data acquisition tool
-  URL:=http://www.tcpdump.org/
+  URL:=https://www.tcpdump.org/
 endef
 
 define Package/tcpdump
@@ -41,15 +42,13 @@ define Package/tcpdump-mini
   $(Package/tcpdump/default)
   TITLE+= (minimal version)
   VARIANT:=mini
+  PROVIDES:=tcpdump
 endef
 
 CONFIGURE_ARGS += \
 	--without-cap-ng \
 	--without-crypto \
 	$(call autoconf_bool,CONFIG_IPV6,ipv6)
-
-TARGET_CFLAGS += -ffunction-sections -fdata-sections
-TARGET_LDFLAGS += -Wl,--gc-sections
 
 ifeq ($(BUILD_VARIANT),mini)
   TARGET_CFLAGS += -DTCPDUMP_MINI
@@ -58,8 +57,8 @@ ifeq ($(BUILD_VARIANT),mini)
 endif
 
 define Package/tcpdump/install
-	$(INSTALL_DIR) $(1)/usr/sbin
-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/tcpdump $(1)/usr/sbin/
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/tcpdump $(1)/usr/bin/
 endef
 
 Package/tcpdump-mini/install = $(Package/tcpdump/install)
