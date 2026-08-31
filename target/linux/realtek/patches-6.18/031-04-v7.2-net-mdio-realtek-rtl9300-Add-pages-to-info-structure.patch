@@ -1,0 +1,90 @@
+From 38c9d5b644049e9e78fafa385d420b2ae8485b81 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Thu, 21 May 2026 19:59:13 +0200
+Subject: [PATCH 04/20] net: mdio: realtek-rtl9300: Add pages to info structure
+
+The Realtek ethernet MDIO controller has a proprietary paging feature
+that is closely aligned with Realtek based PHYs. These PHY know "pages"
+for C22 access. Those can be switched via reads/writes to register 31.
+Usually the paged access must be programmed in four steps.
+
+1. read/save page register
+2. change "page" register 31
+3. read/write data register (on the given page)
+4. restore page register
+
+The controller can run all this in hardware with one single request
+from the driver. It is given the page, the register and the data
+and takes care of all the rest. This reduces CPU load. The number
+of supported pages depend on the model. This is either 4096 for low
+port count SOCs (up to 28 ports) or 8192 for high port count SOCs
+(up to 56 ports).
+
+There is however one special page that allows to pass through all C22
+commands directly to the PHY - without any caching. This so called raw
+page is dependent of the hardware. It is the highest supported page
+number minus 1.
+
+Provide the number of supported pages as a device specific property.
+This new "num_pages" aligns with the existing properties and gives
+an better insight into the hardware layout than just defining the
+number of the raw page. The later directly derives from that and
+can be accessed with the new RAW_PAGE() macro. Make use of it where
+needed.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Link: https://patch.msgid.link/20260521175918.1494797-5-markus.stockhausen@gmx.de
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -52,6 +52,7 @@
+ #include <linux/regmap.h>
+ 
+ #define RTL9300_NUM_BUSES		4
++#define RTL9300_NUM_PAGES		4096
+ #define RTL9300_NUM_PORTS		28
+ #define SMI_GLB_CTRL			0xca00
+ #define   GLB_CTRL_INTF_SEL(intf)	BIT(16 + (intf))
+@@ -78,10 +79,12 @@
+ #define MAX_PORTS       28
+ #define MAX_SMI_BUSSES  4
+ #define MAX_SMI_ADDR	0x1f
++#define RAW_PAGE(priv)	((priv)->info->num_pages - 1)
+ 
+ struct otto_emdio_info {
+ 	u8 num_buses;
+ 	u8 num_ports;
++	u16 num_pages;
+ };
+ 
+ struct otto_emdio_priv {
+@@ -154,7 +157,7 @@ static int otto_emdio_9300_read_c22(stru
+ 
+ 	val = FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
+ 	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+-	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, 0xfff) |
++	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+ 	      PHY_CTRL_READ | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+ 	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1, val);
+ 	if (err)
+@@ -207,7 +210,7 @@ static int otto_emdio_9300_write_c22(str
+ 
+ 	val = FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
+ 	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+-	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, 0xfff) |
++	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+ 	      PHY_CTRL_WRITE | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+ 	err = regmap_write(regmap, SMI_ACCESS_PHY_CTRL_1, val);
+ 	if (err)
+@@ -540,6 +543,7 @@ static int otto_emdio_probe(struct platf
+ static const struct otto_emdio_info otto_emdio_9300_info = {
+ 	.num_buses = RTL9300_NUM_BUSES,
+ 	.num_ports = RTL9300_NUM_PORTS,
++	.num_pages = RTL9300_NUM_PAGES,
+ };
+ 
+ static const struct of_device_id otto_emdio_ids[] = {

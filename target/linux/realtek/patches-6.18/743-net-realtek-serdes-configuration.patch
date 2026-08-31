@@ -1,0 +1,203 @@
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -185,6 +185,41 @@
+ 
+ #define RTL8224_SRAM_RTCT_LEN(pair)		(0x8028 + (pair) * 4)
+ 
++#define RTL8224_VND1_SERDES_CMD			0x3f8
++#define RTL8224_VND1_SERDES_READ		0x3fc
++#define RTL8224_VND1_SERDES_WRITE		0x400
++#define RTL8224_SDS_CMD_READ			BIT(15)
++#define RTL8224_SDS_CMD_WRITE			(BIT(15) | BIT(14))
++
++#define RTL8224_VND1_SERDES_MODE		0x7b20
++#define RTL8224_VND1_SERDES_MODE_MASK		GENMASK(4, 0)
++#define RTL8224_VND1_SERDES_MODE_OFF		0x1f
++#define RTL8224_VND1_SERDES_MODE_USXGMII	0x0d
++#define RTL8224_VND1_SERDES_SUBMODE_MASK	GENMASK(14, 10)
++#define RTL8224_VND1_SERDES_SUBMODE_10G_QXGMII	(0x2 << 10)
++
++#define RTL8224_SDS_AM_PAGE			0x6
++#define RTL8224_SDS_AM_PERIOD_REG		0x12
++
++#define RTL8224_SDS_AM_CFG0_REG			0x13
++#define RTL8224_SDS_AM_CFG1_REG			0x14
++#define RTL8224_SDS_AM_CFG2_REG			0x15
++#define RTL8224_SDS_AM_CFG3_REG			0x16
++#define RTL8224_SDS_AM_CFG4_REG			0x17
++#define RTL8224_SDS_AM_CFG5_REG			0x18
++
++#define RTL8224_SDS_NWAY_PAGE			0x7
++#define RTL8224_SDS_NWAY_OPCODE_REG		0x10
++#define RTL8224_SDS_NWAY_OPCODE_MASK		GENMASK(7, 0)
++#define RTL8224_SDS_NWAY_AN_REG			0x11
++#define RTL8224_SDS_NWAY_AN_EN_MASK		GENMASK(3, 0)
++
++#define RTL8224_SDS_REG0_TX_PAGE		0x2e
++#define RTL8224_SDS_REG0_TX_POST1_REG		0x6
++#define RTL8224_SDS_REG0_TX_REG			0x7
++#define RTL8224_SDS_REG0_TX_Z0_REG		0xb
++
++
+ #define RTL8221B_PHYCR1				0xa430
+ #define RTL8221B_PHYCR1_ALDPS_EN		BIT(2)
+ #define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
+@@ -2228,6 +2263,147 @@ exit:
+ 	return ret;
+ }
+ 
++static int rtl8224_sds_read(struct phy_device *phydev, int page, u32 reg)
++{
++	int ret;
++	u32 val;
++	u32 cmd = RTL8224_SDS_CMD_READ | (reg << 7) | (page << 1);
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_CMD, cmd);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
++					RTL8224_VND1_SERDES_CMD, val,
++					!(val & BIT(15)), 500, 500000000,
++					false);
++	if (ret < 0)
++		return ret;
++
++	return phy_read_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_READ);
++}
++
++static int rtl8224_sds_write(struct phy_device *phydev, int page, int reg, u32 data)
++{
++	int ret;
++	u32 tmp;
++	u32 cmd = RTL8224_SDS_CMD_WRITE | (reg << 7) | (page << 1);
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_WRITE,
++			    data);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_CMD, cmd);
++	if (ret < 0)
++		return ret;
++
++	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
++					 RTL8224_VND1_SERDES_CMD, tmp,
++					 !(tmp & BIT(15)), 500, 500000000,
++					 false);
++}
++
++static int rtl8224_sds_modify(struct phy_device *phydev, int page, int reg, u32 mask, u32 data)
++{
++	int ret;
++	u32 val;
++
++	ret = rtl8224_sds_read(phydev, page, reg);
++	if (ret < 0)
++		return ret;
++
++	val = (u32)ret;
++	val = (val & ~mask) | (data & mask);
++
++	ret = rtl8224_sds_write(phydev, page, reg, val);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int rtl8224_serdes_config(struct phy_device *phydev)
++{
++	if ((phydev->mdio.addr & 3) != 0)
++		return 0;
++
++	/* Turn SerDes OFF */
++	phy_modify_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_MODE,
++		       RTL8224_VND1_SERDES_MODE_MASK,
++		       RTL8224_VND1_SERDES_MODE_OFF);
++
++	/* Use generic/standard-compliant AN mode */
++	rtl8224_sds_modify(phydev, RTL8224_SDS_NWAY_PAGE,
++			   RTL8224_SDS_NWAY_OPCODE_REG,
++			   RTL8224_SDS_NWAY_OPCODE_MASK, 0x0003);
++
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_PERIOD_REG, 0x00a4);
++
++	/* Set all AM markers to 0 */
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG0_REG, 0);
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG1_REG, 0);
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG2_REG, 0);
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG3_REG, 0);
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG4_REG, 0);
++	rtl8224_sds_write(phydev, RTL8224_SDS_AM_PAGE,
++			  RTL8224_SDS_AM_CFG5_REG, 0);
++
++	/* Enable USXGMII autoneg on all 4 channels */
++	rtl8224_sds_modify(phydev, RTL8224_SDS_NWAY_PAGE,
++			   RTL8224_SDS_NWAY_AN_REG,
++			   RTL8224_SDS_NWAY_AN_EN_MASK, 0xf);
++
++	rtl8224_sds_modify(phydev, 0x06, 0x03, BIT(15), BIT(15));
++	rtl8224_sds_modify(phydev, 0x06, 0x1d, BIT(9), BIT(9));
++	rtl8224_sds_modify(phydev, 0x06, 0x1f, BIT(13), BIT(13));
++	rtl8224_sds_write(phydev, 0x21, 0x10, 0x4480);
++	rtl8224_sds_write(phydev, 0x21, 0x13, 0x0400);
++	rtl8224_sds_write(phydev, 0x21, 0x18, 0x6d02);
++	rtl8224_sds_write(phydev, 0x21, 0x1b, 0x424e);
++	rtl8224_sds_write(phydev, 0x21, 0x1d, 0x0002);
++	rtl8224_sds_write(phydev, 0x36, 0x1c, 0x1390);
++	rtl8224_sds_write(phydev, 0x2e, 0x04, 0x0080);
++
++	rtl8224_sds_write(phydev, RTL8224_SDS_REG0_TX_PAGE,
++			  RTL8224_SDS_REG0_TX_POST1_REG, 0x0408);
++
++	rtl8224_sds_write(phydev, RTL8224_SDS_REG0_TX_PAGE,
++			  RTL8224_SDS_REG0_TX_REG, 0x020d);
++
++	rtl8224_sds_write(phydev, 0x2e, 0x09, 0x0601);
++
++	rtl8224_sds_write(phydev, RTL8224_SDS_REG0_TX_PAGE,
++			  RTL8224_SDS_REG0_TX_Z0_REG, 0x222c);
++
++	rtl8224_sds_write(phydev, 0x2e, 0x0c, 0xa217);
++	rtl8224_sds_write(phydev, 0x2e, 0x0d, 0xfe40);
++	rtl8224_sds_write(phydev, 0x2e, 0x15, 0xf5f1);
++	rtl8224_sds_write(phydev, 0x2e, 0x16, 0x0443);
++	rtl8224_sds_write(phydev, 0x2e, 0x1d, 0xabb0);
++
++	/* Turn SerDes ON in 10G_QXGMII mode */
++	phy_modify_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_MODE,
++		       RTL8224_VND1_SERDES_SUBMODE_MASK,
++		       RTL8224_VND1_SERDES_SUBMODE_10G_QXGMII);
++	phy_modify_mmd(phydev, MDIO_MMD_VEND1, RTL8224_VND1_SERDES_MODE,
++		       RTL8224_VND1_SERDES_MODE_MASK,
++		       RTL8224_VND1_SERDES_MODE_USXGMII);
++
++	rtl8224_sds_modify(phydev, 0x20, 0x00, GENMASK(5, 4), 0x30);
++	rtl8224_sds_modify(phydev, 0x20, 0x00, GENMASK(5, 4), 0x10);
++	rtl8224_sds_modify(phydev, 0x20, 0x00, GENMASK(5, 4), 0x30);
++	rtl8224_sds_modify(phydev, 0x20, 0x00, GENMASK(5, 4), 0x00);
++
++	return 0;
++}
++
+ static int rtl8224_mdi_config_order(struct phy_device *phydev)
+ {
+ 	struct device_node *np = phydev->mdio.dev.of_node;
+@@ -2282,6 +2458,10 @@ static int rtl8224_config_init(struct ph
+ {
+ 	int ret;
+ 
++	ret = rtl8224_serdes_config(phydev);
++	if (ret)
++		return ret;
++
+ 	ret = rtl8224_mdi_config_order(phydev);
+ 	if (ret)
+ 		return ret;

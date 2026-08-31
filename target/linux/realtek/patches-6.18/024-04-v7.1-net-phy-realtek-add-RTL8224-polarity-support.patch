@@ -1,0 +1,76 @@
+From beed9c0e9b53c98bc66d28d46fbe38c347e9aa74 Mon Sep 17 00:00:00 2001
+From: Damien Dejean <dam.dejean@gmail.com>
+Date: Wed, 18 Mar 2026 22:55:01 +0100
+Subject: [PATCH 4/4] net: phy: realtek: add RTL8224 polarity support
+
+The RTL8224 has a register to configure the polarity of every pair of
+each port. It provides device designers more flexbility when wiring the
+chip.
+
+Unfortunately, the register is left in an unknown state after a reset.
+Thus on devices where the bootloader don't initialize it, the driver has
+to do it to detect and use a link.
+
+The MDI polarity swap can be set in the device tree using the property
+enet-phy-pair-polarity. The u32 value is a bitfield where bit[0..3]
+control the polarity of pairs A..D.
+
+Signed-off-by: Damien Dejean <dam.dejean@gmail.com>
+Link: https://patch.msgid.link/20260318215502.106528-5-dam.dejean@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/realtek_main.c | 34 +++++++++++++++++++++++++-
+ 1 file changed, 33 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -191,6 +191,7 @@
+ #define RTL8221B_PHYCR1_PHYAD_0_EN		BIT(13)
+ 
+ #define RTL8224_VND1_MDI_PAIR_SWAP		0xa90
++#define RTL8224_VND1_MDI_POLARITY_SWAP		0xa94
+ 
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+@@ -2099,9 +2100,40 @@ static int rtl8224_mdi_config_order(stru
+ 					  order ? BIT(port_offset) : 0);
+ }
+ 
++static int rtl8224_mdi_config_polarity(struct phy_device *phydev)
++{
++	struct device_node *np = phydev->mdio.dev.of_node;
++	u8 offset = (phydev->mdio.addr & 3) * 4;
++	u32 polarity = 0;
++	int ret;
++
++	ret = of_property_read_u32(np, "enet-phy-pair-polarity", &polarity);
++
++	/* Do nothing if the property is not present */
++	if (ret == -EINVAL || ret == -ENOSYS)
++		return 0;
++
++	if (ret)
++		return ret;
++
++	if (polarity & ~0xf)
++		return -EINVAL;
++
++	return rtl8224_package_modify_mmd(phydev, MDIO_MMD_VEND1,
++					  RTL8224_VND1_MDI_POLARITY_SWAP,
++					  0xf << offset,
++					  polarity << offset);
++}
++
+ static int rtl8224_config_init(struct phy_device *phydev)
+ {
+-	return rtl8224_mdi_config_order(phydev);
++	int ret;
++
++	ret = rtl8224_mdi_config_order(phydev);
++	if (ret)
++		return ret;
++
++	return rtl8224_mdi_config_polarity(phydev);
+ }
+ 
+ static int rtl8224_probe(struct phy_device *phydev)

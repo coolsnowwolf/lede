@@ -5,9 +5,16 @@ define Device/cameo-fw
   KERNEL := \
 	kernel-bin | \
 	append-dtb | \
-	libdeflate-gzip | \
-	uImage gzip | \
+	rt-compress | \
+	rt-loader | \
+	uImage none | \
 	cameo-tag
+  KERNEL_INITRAMFS := \
+	kernel-bin | \
+	append-dtb | \
+	rt-compress | \
+	rt-loader | \
+	uImage none
   IMAGES += factory_image1.bin
   IMAGE/factory_image1.bin := \
 	append-kernel | \
@@ -29,6 +36,18 @@ define Device/d-link_dgs-1210
   CAMEO_ROOTFS_PART := 3
   CAMEO_CUSTOMER_SIGNATURE := 2
   CAMEO_BOARD_VERSION := 32
+endef
+
+# The "IMG-" uImage name allows flashing the iniramfs from the vendor Web UI.
+# Avoided for sysupgrade, as the vendor FW would do an incomplete flash.
+define Device/engenius_ews2910p
+  IMAGE_SIZE := 8192k
+  DEVICE_VENDOR := EnGenius
+  KERNEL_INITRAMFS := \
+	kernel-bin | \
+	append-dtb | \
+	libdeflate-gzip | \
+	uImage gzip -n 'IMG-0.00.00-c0.0.00'
 endef
 
 define Device/hpe_1920
@@ -65,6 +84,7 @@ define Device/hwmon-fan-migration
 endef
 
 define Device/zyxel_gs1900
+  $(Device/uimage-rt-loader)
   DEVICE_COMPAT_VERSION := 2.0
   DEVICE_COMPAT_MESSAGE := Dual firmware paritition merged due to size constraints. \
 	Upgrade requires a new factory install. Regular sysupgrade is not possible.
@@ -74,8 +94,58 @@ define Device/zyxel_gs1900
   KERNEL_INITRAMFS := \
 	kernel-bin | \
 	append-dtb | \
-	libdeflate-gzip | \
+	rt-compress | \
 	zyxel-vers | \
-	uImage gzip | \
+	rt-loader | \
+	uImage none | \
 	check-size 6976k
+endef
+
+define Device/zyxel_xgs1010-12
+  SOC := rtl9302
+  UIMAGE_MAGIC := 0x93001010
+  DEVICE_VENDOR := Zyxel
+  DEVICE_MODEL := XGS1010-12
+  KERNEL_SIZE := 7168k
+  IMAGE_SIZE := 13184k
+  $(Device/kernel-lzma)
+endef
+
+define Device/zyxel_xgs1210-12
+  SOC := rtl9302
+  UIMAGE_MAGIC := 0x93001210
+  ZYXEL_VERS := ABTY
+  DEVICE_VENDOR := Zyxel
+  DEVICE_MODEL := XGS1210-12
+  IMAGE_SIZE := 13312k
+  KERNEL := \
+        kernel-bin | \
+        append-dtb | \
+        rt-compress | \
+        rt-loader | \
+        uImage none
+  KERNEL_INITRAMFS := \
+        kernel-bin | \
+        append-dtb | \
+        rt-compress | \
+        zyxel-vers | \
+        rt-loader | \
+        uImage none
+endef
+
+define Device/zyxel_zynos
+  $(Device/rt-loader-bootbase)
+  DEVICE_VENDOR := Zyxel
+  ZYNFW_BOARD := $$(DEVICE_MODEL)
+  COMPILE := loader-$(1).bin
+  COMPILE/loader-$(1).bin := rt-loader-standalone
+  IMAGES += factory.bin
+  IMAGE/factory.bin := \
+	append-kernel | \
+	pad-to 64k | \
+	append-rootfs | \
+	pad-rootfs | \
+	check-size | \
+	zynos-firmware
+  IMAGE/sysupgrade.bin := $$(IMAGE/factory.bin) | append-metadata
 endef

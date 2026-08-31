@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 ARCH:=mips
 SUBTARGET:=rtl838x
-CPU_TYPE:=4kec
+CPU_TYPE:=24kc
 BOARD:=realtek
 BOARDNAME:=Realtek MIPS RTL838X
 

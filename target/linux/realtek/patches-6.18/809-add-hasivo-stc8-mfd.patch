@@ -1,0 +1,332 @@
+From 7e59fb5d3f2d8b4280ed0bc408c73c0aa9cd8934 Mon Sep 17 00:00:00 2001
+From: Bevan Weiss <bevan.weiss@gmail.com>
+Date: Mon, 9 Feb 2026 18:31:46 +1100
+Subject: mfd: Add Hasivo STC8 mfd
+
+This STC8 microcontroller is used on a range of Hasivo managed switches.
+It typically performs some fan/thermal control, and also has some
+discrete IO hanging off of it.
+The fan/thermal control is still somewhat unknown at this stage, but the
+LED / gpio control has been determined as being two I2C registers which
+need to be written to with a 'typical' Hasivo 0x40 execute mask set, to
+change values.
+
+Rather than having this expose the LED functionality / thermal control
+directly, just represent it as an mfd, with some configurable OR'ing of
+an execute-bit to certain registers (execute-bit-regs).  This way different
+STC8 arrangements can hopefully be handled by devicetree configs rather
+than needing new driver code.
+
+
+Signed-off-by: Bevan Weiss <bevan.weiss@gmail.com>
+---
+ .../bindings/mfd/hasivo,stc8-mfd.yaml         |  99 ++++++++++
+ drivers/mfd/Kconfig                           |  11 ++
+ drivers/mfd/Makefile                          |   2 +
+ drivers/mfd/hasivo-stc8-mfd.c                 | 182 ++++++++++++++++++
+ 4 files changed, 294 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/mfd/hasivo,stc8-mfd.yaml
+ create mode 100644 drivers/mfd/hasivo-stc8-mfd.c
+
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/hasivo,stc8-mfd.yaml
+@@ -0,0 +1,99 @@
++# SPDX-License-Identifier: GPL-2.0
++# STC8 MFD binding for Hasivo STC8 microcontroller used in managed switches
++
++title: "STC8 multi-function device"
++description: |
++  This binding describes the Hasivo STC8 multi-function device.
++  This is an STC8 microcontroller with custom firmware used by Hasivo to
++  provide various functions on their managed switch products.
++  The main known functionality currently is to allow for discrete GPIO control
++  which turns on/off LEDs and controls PWM for fan speed.
++  It is known that for the discrete IO however, the host must send an execute
++  flag (0x40) along with the register write to have the STC8 apply the change.
++  This binding allows for specifying which registers require this execute flag
++  to be set automatically by the MFD driver.
++
++maintainers:
++  - bevan.weiss@gmail.com
++
++properties:
++  compatible:
++    description: >
++      Must be "hasivo,stc8-mfd" for the MFD driver to bind.
++      Child devices will require that this also expose the "syscon" binding,
++      such that registers can be mapped through this MFD.
++    type: string
++    required: true
++
++  reg:
++    description: >
++      I2C address of the STC8 device on the bus.
++    type: integer
++    required: true
++
++  hasivo,execute-bit:
++    description: >
++      The mask that will be automatically ORd on writes to the registers
++      specified in hasivo,execute-bit-regs.  This mask is used to signal to
++      the STC8 that the write should be executed.
++      If not specified, defaults to 0x40.
++    type: unsigned integer
++    defaults: 0x40
++    required: false
++
++  hasivo,execute-bit-registers:
++    description: >
++      Array of registers for which the execute-bit mask should be
++      applied.  Writes to other registers will not have the execute-bit mask
++      applied.
++      If not specified, no registers will have the execute-bit mask applied.
++    type: array of unsigned integers
++    required: false
++
++required:
++  - compatible
++  - reg
++
++children:
++
++examples:
++  - |
++    &i2c0 {
++        status = "okay";
++
++        stc8: stc8-mfd@0x4d {
++            compatible = "hasivo,stc8-mfd", "syscon";
++            reg = <0x4d>;
++            hasivo,execute-bit = <0x40>;
++            hasivo,execute-bit-regs = <0x01 0x02>;
++
++            poe_led_lan1: led@1,1 {
++                compatible = "register-bit-led";
++                offset = <0x01>;
++                mask = <0x01>;
++                label = "orange:poe_led_lan1";
++                default-state = "off";
++            };
++            poe_led_lan2: led@1,2 {
++                compatible = "register-bit-led";
++                offset = <0x01>;
++                mask = <0x02>;
++                label = "orange:poe_led_lan2";
++                default-state = "off";
++            };
++            poe_led_lan3: led@1,3 {
++                compatible = "register-bit-led";
++                offset = <0x01>;
++                mask = <0x04>;
++                label = "orange:poe_led_lan3";
++                default-state = "off";
++            };
++            poe_led_lan4: led@1,4 {
++                compatible = "register-bit-led";
++                offset = <0x01>;
++                mask = <0x08>;
++                label = "orange:poe_led_lan4";
++                default-state = "off";
++            };
++        };
++    };
+--- a/drivers/mfd/Kconfig
++++ b/drivers/mfd/Kconfig
+@@ -616,6 +616,17 @@ config MFD_MX25_TSADC
+ 	  i.MX25 processors. They consist of a conversion queue for general
+ 	  purpose ADC and a queue for Touchscreens.
+ 
++config MFD_HASIVO_STC8
++	tristate "Hasivo STC8 Multifunction Device"
++	select MFD_CORE
++	select REGMAP_I2C
++	depends on I2C
++	help
++	  Support for the Hasivo STC8 multifunction device over I2C.
++	  This driver provides common support for accessing the device,
++	  additional drivers must be enabled in order to use the
++	  functionality of the device.
++
+ config MFD_HI6421_PMIC
+ 	tristate "HiSilicon Hi6421 PMU/Codec IC"
+ 	depends on OF
+--- a/drivers/mfd/Makefile
++++ b/drivers/mfd/Makefile
+@@ -304,3 +304,5 @@ obj-$(CONFIG_MFD_RSMU_SPI)	+= rsmu_spi.o
+ obj-$(CONFIG_MFD_UPBOARD_FPGA)	+= upboard-fpga.o
+ 
+ obj-$(CONFIG_MFD_LOONGSON_SE)	+= loongson-se.o
++
++obj-$(CONFIG_MFD_HASIVO_STC8)	+= hasivo-stc8-mfd.o
+--- /dev/null
++++ b/drivers/mfd/hasivo-stc8-mfd.c
+@@ -0,0 +1,169 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Hasivo STC8 MFD driver with configurable write ORing for execute bit
++ * I2C implementation
++ */
++
++#include <linux/module.h>
++#include <linux/i2c.h>
++#include <linux/regmap.h>
++#include <linux/of.h>
++#include <linux/of_platform.h>
++#include <linux/slab.h>
++#include <linux/mfd/syscon.h>
++
++struct stc8_mfd {
++	struct device *dev;
++	struct regmap *parent_regmap;
++	struct regmap *child_regmap;
++	u32 exec_bit;
++	size_t num_exec_regs;
++	u32 exec_regs[] __counted_by(num_exec_regs);
++};
++
++/* Check if register requires execute bit */
++static bool is_exec_reg(struct stc8_mfd *mfd, unsigned int reg)
++{
++	for (size_t i = 0; i < mfd->num_exec_regs; i++) {
++		if (mfd->exec_regs[i] == reg)
++			return true;
++	}
++	return false;
++}
++
++/* Custom regmap write wrapper */
++static int stc8_child_reg_write(void *context, unsigned int reg, unsigned int val)
++{
++	struct stc8_mfd *mfd = context;
++	const unsigned int orig_val = val;
++
++	/* Apply execute bit if this register is in the list */
++	if (is_exec_reg(mfd, reg)) {
++		val |= mfd->exec_bit;
++		dev_dbg(mfd->dev, "Applying exec bit to reg 0x%02x, orig_val=0x%02x, new_val=0x%02x\n", reg, orig_val, val);
++	}
++
++	/* Forward to parent regmap (I2C bus) */
++	return regmap_write(mfd->parent_regmap, reg, val);
++}
++
++/* Custom regmap read - transparent passthrough */
++static int stc8_child_reg_read(void *context, unsigned int reg, unsigned int *val)
++{
++	struct stc8_mfd *mfd = context;
++
++	return regmap_read(mfd->parent_regmap, reg, val);
++}
++
++static const struct regmap_config stc8_parent_regmap_config = {
++	.name = "stc8-mfd-parent",
++	.reg_bits = 8,
++	.val_bits = 8,
++};
++
++static const struct regmap_config stc8_child_regmap_config = {
++	.name = "stc8-mfd-child",
++	.reg_bits = 8,
++	.val_bits = 8,
++	.reg_read = stc8_child_reg_read,
++	.reg_write = stc8_child_reg_write,
++};
++
++static int stc8_i2c_probe(struct i2c_client *client)
++{
++	struct device_node *np = client->dev.of_node;
++	struct stc8_mfd *mfd;
++	u32 exec_bit;
++	int count;
++	int ret;
++
++	/* Get execute bit value (default 0x40) */
++	if (of_property_read_u32(np, "hasivo,execute-bit", &exec_bit))
++		exec_bit = 0x40;
++
++	/* Get count of execute registers */
++	count = of_property_count_u32_elems(np, "hasivo,execute-bit-registers");
++	if (count < 0)
++		count = 0;
++
++	mfd = devm_kzalloc(&client->dev, struct_size(mfd, exec_regs, count), GFP_KERNEL);
++	if (!mfd)
++		return -ENOMEM;
++
++	mfd->num_exec_regs = count;
++	mfd->dev = &client->dev;
++	if (count > 0) {
++		ret = of_property_read_u32_array(np, "hasivo,execute-bit-registers",
++						mfd->exec_regs, count);
++		if (ret) {
++			dev_err(mfd->dev, "Failed to read execute-bit-registers: %d\n", ret);
++			return ret;
++		}
++	}
++
++	mfd->exec_bit = exec_bit;
++	dev_info(mfd->dev, "execute-bit=0x%02x, %zu execute-bit-registers\n",
++		 mfd->exec_bit, mfd->num_exec_regs);
++
++	dev_dbg(mfd->dev, "Hasivo STC8 MFD driver probed started\n");
++
++	i2c_set_clientdata(client, mfd);
++
++	/* Create parent regmap for direct I2C access */
++	mfd->parent_regmap = devm_regmap_init_i2c(client,
++						   &stc8_parent_regmap_config);
++	if (IS_ERR(mfd->parent_regmap)) {
++		dev_err(&client->dev, "Failed to init parent regmap\n");
++		return PTR_ERR(mfd->parent_regmap);
++	}
++
++	/* Create child regmap with custom read/write for masking */
++	mfd->child_regmap = devm_regmap_init(&client->dev, NULL, mfd,
++					      &stc8_child_regmap_config);
++	if (IS_ERR(mfd->child_regmap)) {
++		dev_err(&client->dev, "Failed to init child regmap\n");
++		return PTR_ERR(mfd->child_regmap);
++	}
++	/* Set the child regmap as the syscon regmap */
++	ret = of_syscon_register_regmap(mfd->dev->of_node, mfd->child_regmap);
++	if (ret)
++		return ret;
++
++	/* Automatically populate child devices from device tree */
++	ret = of_platform_populate(client->dev.of_node, NULL, NULL,
++				    &client->dev);
++	if (ret) {
++		dev_err(&client->dev, "Failed to add child devices: %d\n", ret);
++		return ret;
++	}
++
++	dev_dbg(&client->dev, "Hasivo STC8 MFD driver probed successfully\n");
++
++	return 0;
++}
++
++static void stc8_i2c_remove(struct i2c_client *client)
++{
++	of_platform_depopulate(&client->dev);
++	dev_dbg(&client->dev, "Hasivo STC8 MFD driver removed\n");
++}
++
++static const struct of_device_id stc8_of_match[] = {
++	{ .compatible = "hasivo,stc8-mfd" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, stc8_of_match);
++
++static struct i2c_driver stc8_i2c_driver = {
++	.driver = {
++		.name = "hasivo-stc8-mfd",
++		.of_match_table = stc8_of_match,
++	},
++	.probe = stc8_i2c_probe,
++	.remove = stc8_i2c_remove,
++};
++module_i2c_driver(stc8_i2c_driver);
++
++MODULE_AUTHOR("Bevan Weiss <bevan.weiss@gmail.com>");
++MODULE_DESCRIPTION("Hasivo STC8 MFD driver with configurable write masking");
++MODULE_LICENSE("GPL");

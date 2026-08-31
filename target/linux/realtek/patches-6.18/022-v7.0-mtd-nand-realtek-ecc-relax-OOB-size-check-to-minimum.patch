@@ -1,0 +1,67 @@
+From 0c741b8b6963e584b41c284cd743c545636edb04 Mon Sep 17 00:00:00 2001
+From: Ahmed Naseef <naseefkm@gmail.com>
+Date: Sat, 7 Feb 2026 11:02:43 +0400
+Subject: mtd: nand: realtek-ecc: relax OOB size check to minimum
+
+The ECC engine strictly validates that flash OOB size equals exactly
+64 bytes. However, some NAND chips have a larger physical OOB while
+vendor firmware only uses the first 64 bytes for the ECC layout. For
+example the Macronix MX35LF1G24AD found in the Netlink HG323DAC has
+128 byte physical OOB but vendor firmware only uses the first 64
+bytes (24 bytes free + 40 bytes BCH6 parity), leaving bytes 64-127
+unused.
+
+Since the engine only operates on the first 64 bytes of OOB
+regardless of the physical size, change the check from exact match
+to minimum size. Flash with OOB >= 64 bytes works correctly with
+the engine's 64-byte layout.
+
+Suggested-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Signed-off-by: Ahmed Naseef <naseefkm@gmail.com>
+Signed-off-by: Miquel Raynal <miquel.raynal@bootlin.com>
+---
+ drivers/mtd/nand/ecc-realtek.c | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+--- a/drivers/mtd/nand/ecc-realtek.c
++++ b/drivers/mtd/nand/ecc-realtek.c
+@@ -17,10 +17,12 @@
+  * - BCH12 : Generate 20 ECC bytes from 512 data bytes plus 6 free bytes
+  *
+  * It can run for arbitrary NAND flash chips with different block and OOB sizes. Currently there
+- * are only two known devices in the wild that have NAND flash and make use of this ECC engine
+- * (Linksys LGS328C & LGS352C). To keep compatibility with vendor firmware, new modes can only
+- * be added when new data layouts have been analyzed. For now allow BCH6 on flash with 2048 byte
+- * blocks and 64 bytes oob.
++ * are a few known devices in the wild that make use of this ECC engine
++ * (Linksys LGS328C, LGS352C & Netlink HG323DAC). To keep compatibility with vendor firmware,
++ * new modes can only be added when new data layouts have been analyzed. For now allow BCH6 on
++ * flash with 2048 byte blocks and at least 64 bytes oob. Some vendors make use of
++ * 128 bytes OOB NAND chips (e.g. Macronix MX35LF1G24AD) but only use BCH6 and thus the first
++ * 64 bytes of the OOB area. In this case the engine leaves any extra bytes unused.
+  *
+  * This driver aligns with kernel ECC naming conventions. Neverthless a short notice on the
+  * Realtek naming conventions for the different structures in the OOB area.
+@@ -39,7 +41,7 @@
+  */
+ 
+ #define RTL_ECC_ALLOWED_PAGE_SIZE 	2048
+-#define RTL_ECC_ALLOWED_OOB_SIZE	64
++#define RTL_ECC_ALLOWED_MIN_OOB_SIZE	64
+ #define RTL_ECC_ALLOWED_STRENGTH	6
+ 
+ #define RTL_ECC_BLOCK_SIZE 		512
+@@ -310,10 +312,10 @@ static int rtl_ecc_check_support(struct
+ 	struct mtd_info *mtd = nanddev_to_mtd(nand);
+ 	struct device *dev = nand->ecc.engine->dev;
+ 
+-	if (mtd->oobsize != RTL_ECC_ALLOWED_OOB_SIZE ||
++	if (mtd->oobsize < RTL_ECC_ALLOWED_MIN_OOB_SIZE ||
+ 	    mtd->writesize != RTL_ECC_ALLOWED_PAGE_SIZE) {
+-		dev_err(dev, "only flash geometry data=%d, oob=%d supported\n",
+-			RTL_ECC_ALLOWED_PAGE_SIZE, RTL_ECC_ALLOWED_OOB_SIZE);
++		dev_err(dev, "only flash geometry data=%d, oob>=%d supported\n",
++			RTL_ECC_ALLOWED_PAGE_SIZE, RTL_ECC_ALLOWED_MIN_OOB_SIZE);
+ 		return -EINVAL;
+ 	}
+ 

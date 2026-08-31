@@ -1,0 +1,241 @@
+From 9ccb438210c4838962dfa1a10d4c198391dcc284 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 27 May 2026 18:34:46 +0200
+Subject: [PATCH 10/20] net: mdio: realtek-rtl9300: provide generic command
+ runner
+
+The current bus read/write commands for C22/C45 are RTL930x specific.
+Avoid to duplicate those 200 lines of code for the RTL838x, RTL839x and
+RTL931x targets. Instead provide a generic command runner that is SoC
+independent. The implementation works as follows:
+
+The runner will take a prepared list of the four MDIO registers. It will
+feed the data into the registers. This generic write to all registers
+(or to say "a little bit too much") is no issue. The hardware looks at
+the to be executed command and will only take the pieces of data that
+are really required. No side effects have been observed on any of the
+four SoCs during the time this mechanism exists in downstream OpenWrt.
+
+The last fed register is the C22/command register. This will be enriched
+with the proper command flags from the caller. The hardware issues the
+command and the runner will wait for its finalization.
+
+Besides from feeding all registers the runner emulates the behaviour of
+the old code as best as possible
+
+- check defensively for a running command in advance
+- Before this commit the driver had different MMIO timeout values.
+  1000s for command preparation, 100us after writes and 1000us after
+  reads. The new version uses a consistent 1000us timeout for all
+  of these.
+- return -ENXIO in case of hardware failure (fail bit)
+
+As a first consumer of this runner convert the write_c45() function.
+This is realized in a multi stage approach
+
+- a generic otto_emdio_write_c45() will be called by the bus
+- this will forward the request to the device specific writer. In this
+  case otto_emdio_9300_write_c45().
+- There the command data is filled in and the additional helper
+  otto_emdio_write_cmd() will be called
+- That adds the write flag and issues the generic command runner.
+
+With all the above mentioned in place, there is not much left to do in
+otto_emdio_9300_write_c45(). It just fills the register fields and
+calls the write helper with the right command bits.
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20260527163449.1294961-2-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 135 +++++++++++++++---------
+ 1 file changed, 83 insertions(+), 52 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -90,6 +90,8 @@ struct otto_emdio_cmd_regs {
+ };
+ 
+ struct otto_emdio_info {
++	u32 cmd_fail;
++	u32 cmd_write;
+ 	struct otto_emdio_cmd_regs cmd_regs;
+ 	u8 num_buses;
+ 	u8 num_ports;
+@@ -97,7 +99,7 @@ struct otto_emdio_info {
+ 	int (*read_c22)(struct mii_bus *bus, int phy_id, int regnum);
+ 	int (*read_c45)(struct mii_bus *bus, int phy_id, int dev_addr, int regnum);
+ 	int (*write_c22)(struct mii_bus *bus, int phy_id, int regnum, u16 value);
+-	int (*write_c45)(struct mii_bus *bus, int phy_id, int dev_addr, int regnum, u16 value);
++	int (*write_c45)(struct mii_bus *bus, int port, int dev_addr, int regnum, u16 value);
+ };
+ 
+ struct otto_emdio_priv {
+@@ -132,6 +134,64 @@ static int otto_emdio_phy_to_port(struct
+ 	return -ENOENT;
+ }
+ 
++static struct otto_emdio_priv *otto_emdio_bus_to_priv(struct mii_bus *bus)
++{
++	struct otto_emdio_chan *chan = bus->priv;
++
++	return chan->priv;
++}
++
++static int otto_emdio_run_cmd(struct mii_bus *bus, u32 cmd,
++			      struct otto_emdio_cmd_regs *cmd_data)
++{
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	const struct otto_emdio_info *info = priv->info;
++	u32 cmdstate;
++	int ret;
++
++	/* Defensive pre check just in case something goes horrible wrong */
++	ret = regmap_read_poll_timeout(priv->regmap, info->cmd_regs.c22_data,
++				       cmdstate, !(cmdstate & PHY_CTRL_CMD), 10, 1000);
++	if (ret)
++		return ret;
++
++	/* Fill all registers. Hardware will read only the needed bits depending on command */
++	ret = regmap_write(priv->regmap, info->cmd_regs.port_mask_low, cmd_data->port_mask_low);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(priv->regmap, info->cmd_regs.io_data, cmd_data->io_data);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(priv->regmap, info->cmd_regs.c45_data, cmd_data->c45_data);
++	if (ret)
++		return ret;
++
++	/* C22 data and command bits share the same register. */
++	ret = regmap_write(priv->regmap, info->cmd_regs.c22_data,
++			   cmd_data->c22_data | cmd | PHY_CTRL_CMD);
++	if (ret)
++		return ret;
++
++	ret = regmap_read_poll_timeout(priv->regmap, info->cmd_regs.c22_data,
++				       cmdstate, !(cmdstate & PHY_CTRL_CMD), 10, 1000);
++	if (ret)
++		return ret;
++
++	return cmdstate & info->cmd_fail ? -ENXIO : 0;
++}
++
++static int otto_emdio_write_cmd(struct mii_bus *bus, u32 cmd,
++				struct otto_emdio_cmd_regs *cmd_data)
++{
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++
++	lockdep_assert_held(&priv->lock);
++
++	return otto_emdio_run_cmd(bus, cmd | priv->info->cmd_write, cmd_data);
++}
++
+ static int otto_emdio_wait_ready(struct otto_emdio_priv *priv)
+ {
+ 	struct regmap *regmap = priv->regmap;
+@@ -304,64 +364,33 @@ out_err:
+ 	return err;
+ }
+ 
+-static int otto_emdio_9300_write_c45(struct mii_bus *bus, int phy_id, int dev_addr,
+-				  int regnum, u16 value)
++static int otto_emdio_9300_write_c45(struct mii_bus *bus, int port,
++				     int dev_addr, int regnum, u16 value)
+ {
+-	struct otto_emdio_chan *chan = bus->priv;
+-	struct otto_emdio_priv *priv;
+-	u32 io_reg, cmd_reg, val;
+-	struct regmap *regmap;
+-	int port;
+-	int err;
++	struct otto_emdio_cmd_regs cmd_data = {
++		.c45_data	= FIELD_PREP(PHY_CTRL_MMD_DEVAD, dev_addr) |
++				  FIELD_PREP(PHY_CTRL_MMD_REG, regnum),
++		.io_data	= FIELD_PREP(PHY_CTRL_INDATA, value),
++		.port_mask_low	= BIT(port),
++	};
+ 
+-	priv = chan->priv;
+-	regmap = priv->regmap;
+-	io_reg = priv->info->cmd_regs.io_data;
+-	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
++	return otto_emdio_write_cmd(bus, PHY_CTRL_TYPE_C45, &cmd_data);
++}
++
++static int otto_emdio_write_c45(struct mii_bus *bus, int phy_id,
++				int dev_addr, int regnum, u16 value)
++{
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	int ret, port;
+ 
+ 	port = otto_emdio_phy_to_port(bus, phy_id);
+ 	if (port < 0)
+ 		return port;
+ 
+-	mutex_lock(&priv->lock);
+-	err = otto_emdio_wait_ready(priv);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_write(regmap, priv->info->cmd_regs.port_mask_low, BIT(port));
+-	if (err)
+-		goto out_err;
+-
+-	val = FIELD_PREP(PHY_CTRL_INDATA, value);
+-	err = regmap_write(regmap, io_reg, val);
+-	if (err)
+-		goto out_err;
+-
+-	val = FIELD_PREP(PHY_CTRL_MMD_DEVAD, dev_addr) |
+-	      FIELD_PREP(PHY_CTRL_MMD_REG, regnum);
+-	err = regmap_write(regmap, priv->info->cmd_regs.c45_data, val);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_write(regmap, cmd_reg, PHY_CTRL_TYPE_C45 | PHY_CTRL_WRITE | PHY_CTRL_CMD);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 100);
+-	if (err)
+-		goto out_err;
+-
+-	if (val & PHY_CTRL_FAIL) {
+-		err = -ENXIO;
+-		goto out_err;
+-	}
+-
+-	mutex_unlock(&priv->lock);
+-	return 0;
++	scoped_guard(mutex, &priv->lock)
++		ret = priv->info->write_c45(bus, port, dev_addr, regnum, value);
+ 
+-out_err:
+-	mutex_unlock(&priv->lock);
+-	return err;
++	return ret;
+ }
+ 
+ static int otto_emdio_9300_mdiobus_init(struct otto_emdio_priv *priv)
+@@ -438,7 +467,7 @@ static int otto_emdio_probe_one(struct d
+ 	bus->name = "Realtek Switch MDIO Bus";
+ 	if (priv->smi_bus_is_c45[mdio_bus]) {
+ 		bus->read_c45 = priv->info->read_c45;
+-		bus->write_c45 = priv->info->write_c45;
++		bus->write_c45 = otto_emdio_write_c45;
+ 	} else {
+ 		bus->read = priv->info->read_c22;
+ 		bus->write = priv->info->write_c22;
+@@ -558,6 +587,8 @@ static int otto_emdio_probe(struct platf
+ }
+ 
+ static const struct otto_emdio_info otto_emdio_9300_info = {
++	.cmd_fail = PHY_CTRL_FAIL,
++	.cmd_write = PHY_CTRL_WRITE,
+ 	.cmd_regs = {
+ 		.c22_data = RTL9300_SMI_ACCESS_PHY_CTRL_1,
+ 		.c45_data = RTL9300_SMI_ACCESS_PHY_CTRL_3,

@@ -1,0 +1,132 @@
+From 330296ea9e158758aa65631f5ec64aa74806b7e2 Mon Sep 17 00:00:00 2001
+From: Damien Dejean <dam.dejean@gmail.com>
+Date: Wed, 18 Mar 2026 22:54:59 +0100
+Subject: [PATCH 2/4] net: phy: realtek: add RTL8224 pair order support
+
+The RTL8224 has a register to configure a pair swap (from ABCD order to
+DCBA) providing PCB designers more flexbility when wiring the chip. The
+swap parameter has to be set correctly for each of the 4 ports before
+the chip can detect a link.
+
+After a reset, this register is (unfortunately) left in a random state,
+thus it has to be initialized. On most of the devices the bootloader
+does it once for all and we can rely on the value set, on some other it
+is not and the kernel has to do it.
+
+The MDI pair swap can be set in the device tree using the property
+enet-phy-pair-order. The property is set to 0 to keep the default order
+(ABCD), or 1 to reverse the pairs (DCBA).
+
+Signed-off-by: Damien Dejean <dam.dejean@gmail.com>
+Link: https://patch.msgid.link/20260318215502.106528-3-dam.dejean@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/phy/realtek/Kconfig        |  1 +
+ drivers/net/phy/realtek/realtek_main.c | 64 ++++++++++++++++++++++++++
+ 2 files changed, 65 insertions(+)
+
+--- a/drivers/net/phy/realtek/Kconfig
++++ b/drivers/net/phy/realtek/Kconfig
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ config REALTEK_PHY
+ 	tristate "Realtek PHYs"
++	select PHY_PACKAGE
+ 	help
+ 	  Currently supports RTL821x/RTL822x and fast ethernet PHYs
+ 
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -21,6 +21,7 @@
+ #include <linux/string_choices.h>
+ #include <net/phy/realtek_phy.h>
+ 
++#include "../phylib.h"
+ #include "realtek.h"
+ 
+ #define RTL8201F_IER				0x13
+@@ -189,6 +190,8 @@
+ #define RTL8221B_PHYCR1_ALDPS_XTAL_OFF_EN	BIT(12)
+ #define RTL8221B_PHYCR1_PHYAD_0_EN		BIT(13)
+ 
++#define RTL8224_VND1_MDI_PAIR_SWAP		0xa90
++
+ #define RTL8366RB_POWER_SAVE			0x15
+ #define RTL8366RB_POWER_SAVE_ON			BIT(12)
+ 
+@@ -2048,6 +2051,66 @@ static int rtl8224_cable_test_get_status
+ 	return rtl8224_cable_test_report(phydev, finished);
+ }
+ 
++static int rtl8224_package_modify_mmd(struct phy_device *phydev, int devad,
++				      u32 regnum, u16 mask, u16 set)
++{
++	int val, ret;
++
++	phy_lock_mdio_bus(phydev);
++
++	val = __phy_package_read_mmd(phydev, 0, devad, regnum);
++	if (val < 0) {
++		ret = val;
++		goto exit;
++	}
++
++	val &= ~mask;
++	val |= set;
++
++	ret = __phy_package_write_mmd(phydev, 0, devad, regnum, val);
++
++exit:
++	phy_unlock_mdio_bus(phydev);
++	return ret;
++}
++
++static int rtl8224_mdi_config_order(struct phy_device *phydev)
++{
++	struct device_node *np = phydev->mdio.dev.of_node;
++	u8 port_offset = phydev->mdio.addr & 3;
++	u32 order = 0;
++	int ret;
++
++	ret = of_property_read_u32(np, "enet-phy-pair-order", &order);
++
++	/* Do nothing in case the property is not present */
++	if (ret == -EINVAL || ret == -ENOSYS)
++		return 0;
++
++	if (ret)
++		return ret;
++
++	if (order & ~1)
++		return -EINVAL;
++
++	return rtl8224_package_modify_mmd(phydev, MDIO_MMD_VEND1,
++					  RTL8224_VND1_MDI_PAIR_SWAP,
++					  BIT(port_offset),
++					  order ? BIT(port_offset) : 0);
++}
++
++static int rtl8224_config_init(struct phy_device *phydev)
++{
++	return rtl8224_mdi_config_order(phydev);
++}
++
++static int rtl8224_probe(struct phy_device *phydev)
++{
++	/* Chip exposes 4 ports, join all of them in the same package */
++	return devm_phy_package_join(&phydev->mdio.dev, phydev,
++				     phydev->mdio.addr & ~3, 0);
++}
++
+ static bool rtlgen_supports_2_5gbps(struct phy_device *phydev)
+ {
+ 	int val;
+@@ -3252,6 +3315,8 @@ static struct phy_driver realtek_drvs[]
+ 		PHY_ID_MATCH_EXACT(0x001ccad0),
+ 		.name		= "RTL8224 2.5Gbps PHY",
+ 		.flags		= PHY_POLL_CABLE_TEST,
++		.probe		= rtl8224_probe,
++		.config_init	= rtl8224_config_init,
+ 		.get_features	= rtl822x_c45_get_features,
+ 		.config_aneg	= rtl822x_c45_config_aneg,
+ 		.read_status	= rtl822x_c45_read_status,

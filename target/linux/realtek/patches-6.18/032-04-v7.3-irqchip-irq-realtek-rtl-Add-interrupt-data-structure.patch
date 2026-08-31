@@ -1,0 +1,117 @@
+From 1f922b06f4a1aa292af1c45d00de41f259cc7f17 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Fri, 5 Jun 2026 18:07:24 +0200
+Subject: [PATCH 4/8] irqchip/irq-realtek-rtl: Add interrupt data structure
+
+To prepare for multiple parent interrupt domains add an intermediate
+data structure. For now this will only host the link to the domain.
+Additionally adapt a deviating variable name to driver standard "hw_irq".
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+---
+ drivers/irqchip/irq-realtek-rtl.c | 48 ++++++++++++++++++++++---------
+ 1 file changed, 34 insertions(+), 14 deletions(-)
+
+--- a/drivers/irqchip/irq-realtek-rtl.c
++++ b/drivers/irqchip/irq-realtek-rtl.c
+@@ -25,6 +25,10 @@
+ 
+ #define REG(cpu, x)		(realtek_ictl_base[cpu] + x)
+ 
++struct realtek_ictl_output {
++	struct irq_domain *domain;
++};
++
+ static DEFINE_RAW_SPINLOCK(irq_lock);
+ static void __iomem *realtek_ictl_base[NR_CPUS];
+ 
+@@ -125,11 +129,11 @@ static const struct irq_domain_ops irq_d
+ 
+ static void realtek_irq_dispatch(struct irq_desc *desc)
+ {
++	struct realtek_ictl_output *output = irq_desc_get_handler_data(desc);
+ 	struct irq_chip *chip = irq_desc_get_chip(desc);
+ 	unsigned int cpu = smp_processor_id();
+-	struct irq_domain *domain;
+ 	unsigned long pending;
+-	unsigned int soc_int;
++	unsigned int hw_irq;
+ 
+ 	chained_irq_enter(chip, desc);
+ 	pending = readl(REG(cpu, RTL_ICTL_GIMR)) & readl(REG(cpu, RTL_ICTL_GISR));
+@@ -139,9 +143,8 @@ static void realtek_irq_dispatch(struct
+ 		goto out;
+ 	}
+ 
+-	domain = irq_desc_get_handler_data(desc);
+-	for_each_set_bit(soc_int, &pending, RTL_ICTL_NUM_INPUTS)
+-		generic_handle_domain_irq(domain, soc_int);
++	for_each_set_bit(hw_irq, &pending, RTL_ICTL_NUM_INPUTS)
++		generic_handle_domain_irq(output->domain, hw_irq);
+ 
+ out:
+ 	chained_irq_exit(chip, desc);
+@@ -149,10 +152,15 @@ out:
+ 
+ static int __init realtek_setup_parents(struct device_node *node)
+ {
+-	int parent_irq, num_parents = of_irq_count(node);
++	int err, parent_irq, num_parents = of_irq_count(node);
++	struct realtek_ictl_output *output;
+ 	struct of_phandle_args oirq;
+ 	struct irq_domain *domain;
+ 
++	output = kcalloc(1, sizeof(*output), GFP_KERNEL);
++	if (!output)
++		return -ENOMEM;
++
+ 	if (WARN_ON(!num_parents)) {
+ 		/*
+ 		 * If DT contains no parent interrupts, assume MIPS IRQ 2 (HW0) is
+@@ -160,8 +168,10 @@ static int __init realtek_setup_parents(
+ 		 */
+ 		oirq.np = of_find_compatible_node(NULL, NULL,
+ 						  "mti,cpu-interrupt-controller");
+-		if (!oirq.np)
+-			return -EINVAL;
++		if (!oirq.np) {
++			err = -EINVAL;
++			goto err_out;
++		}
+ 
+ 		oirq.args_count = 1;
+ 		oirq.args[0] = 2;
+@@ -171,17 +181,27 @@ static int __init realtek_setup_parents(
+ 		parent_irq = of_irq_get(node, 0);
+ 	}
+ 
+-	if (parent_irq <= 0)
+-		return parent_irq ? parent_irq : -ENODEV;
++	if (parent_irq <= 0) {
++		err = parent_irq ? parent_irq : -ENODEV;
++		goto err_out;
++	}
+ 
+ 	domain = irq_domain_create_linear(of_fwnode_handle(node), RTL_ICTL_NUM_INPUTS,
+-					  &irq_domain_ops, NULL);
+-	if (!domain)
+-		return -ENOMEM;
++					  &irq_domain_ops, output);
++	if (!domain) {
++		err = -ENOMEM;
++		goto err_out;
++	}
+ 
+-	irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, domain);
++	output->domain = domain;
++	irq_set_chained_handler_and_data(parent_irq, realtek_irq_dispatch, output);
+ 
+ 	return 0;
++
++err_out:
++	kfree(output);
++
++	return err;
+ }
+ 
+ static int __init realtek_rtl_of_init(struct device_node *node, struct device_node *parent)

@@ -1,0 +1,275 @@
+From bbb5e80bbaf0d73b73c4bcd85c7941439436ef5c Mon Sep 17 00:00:00 2001
+From: Jonas Jelonek <jelonek.jonas@gmail.com>
+Date: Tue, 30 Jun 2026 20:46:30 +0000
+Subject: [PATCH] net: pse-pd: realtek-pse-mcu: add per-port legacy-detection
+ sysfs control
+
+Some PDs are rejected during detection (the PSE reports Rlow) and never
+get powered, because the standard detection window is deliberately narrow:
+it is the safety check that keeps the PSE from energizing something that is
+not a compliant PD. Enabling legacy detection also accepts legacy/quirky
+PDs (higher signature resistance, larger input capacitance), at the cost of
+admitting the same signatures a non-PD or faulty port can present.
+
+Expose this as an opt-in, root-only, per-port boolean rather than a
+default. Each port gets a sysfs directory with a detection_legacy file:
+
+ <dev>/port<N>/detection_legacy
+
+Writing 1 widens detection to accept legacy PDs, 0 restores standard-only
+detection; reads report the current mode decoded from the port config.
+
+The detection-type command and its value encoding are dialect-specific,
+so both are taken from the dialect: the command opcode (0x10 on Gen1,
+0x09 on Gen2) goes through the opcode table, and the standard/legacy byte
+values come from the dialect too. These differ - standard detection is 0x0
+on Gen2 but 0x2 on Gen1, where 0x0 instead disables detection - so a
+shared value would misprogram one of them. Finer modes the firmware offers
+(disabling detection, force-powering devices that fail classification) are
+deliberately kept out of this stable interface. Each port has its own
+attribute group so further per-port controls can be added later.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+
+--- a/drivers/net/pse-pd/realtek-pse-mcu-core.c
++++ b/drivers/net/pse-pd/realtek-pse-mcu-core.c
+@@ -34,10 +34,12 @@
+ #include <linux/delay.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/jiffies.h>
++#include <linux/kstrtox.h>
+ #include <linux/minmax.h>
+ #include <linux/module.h>
+ #include <linux/property.h>
+ #include <linux/pse-pd/pse.h>
++#include <linux/sysfs.h>
+ #include <linux/unaligned.h>
+ 
+ #include "realtek-pse-mcu.h"
+@@ -78,6 +80,7 @@ enum rtpse_mcu_cmd {
+ 	RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT,
+ 	RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_EXT,
+ 	RTPSE_MCU_CMD_PORT_SET_PRIORITY,
++	RTPSE_MCU_CMD_PORT_SET_DETECTION_TYPE,
+ 	RTPSE_MCU_CMD_PORT_GET_STATUS,
+ 	RTPSE_MCU_CMD_PORT_GET_POWER_STATS,
+ 	RTPSE_MCU_CMD_PORT_GET_CONFIG,
+@@ -122,6 +125,7 @@ struct rtpse_mcu_port_measurement {
+ 
+ struct rtpse_mcu_port_config {
+ 	bool enable;
++	u8 detection_type;
+ };
+ 
+ struct rtpse_mcu_port_ext_config {
+@@ -141,6 +145,15 @@ struct rtpse_mcu_dialect {
+ 	void (*parse_system_info)(const u8 *payload, struct rtpse_mcu_info *info);
+ 	int (*parse_port_class)(const struct rtpse_mcu_port_status *status);
+ 	const char *(*mcu_type_str)(unsigned int mcu_type);
++
++	/*
++	 * Detection-mode byte written by the per-port legacy-detection knob.
++	 * The encoding is dialect-specific: standard detection is 0x0 on Gen2
++	 * but 0x2 on Gen1 (where 0x0 instead disables detection entirely), so
++	 * these cannot be shared. Legacy acceptance is the odd value in both.
++	 */
++	u8 detect_standard;
++	u8 detect_legacy;
+ };
+ 
+ struct rtpse_mcu_chip_info {
+@@ -432,6 +445,7 @@ static int rtpse_mcu_port_get_config(str
+ 		return ret;
+ 
+ 	config->enable = (resp.payload[1] == 1);
++	config->detection_type = resp.payload[3];
+ 
+ 	return 0;
+ }
+@@ -718,6 +732,138 @@ static const struct pse_controller_ops r
+ 	.pi_set_prio = rtpse_mcu_port_set_prio,
+ };
+ 
++/*
++ * Per-port controls, exposed under sysfs as one directory per port:
++ *
++ *   <dev>/port<N>/detection_legacy
++ *
++ * Each port gets its own attribute group so further per-port knobs can be
++ * added as files alongside detection_legacy later.
++ *
++ * detection_legacy widens the PD detection window. That window is normally
++ * kept narrow on purpose: it is the safety check that stops the PSE from
++ * energizing something that is not a compliant PD. Enabling legacy detection
++ * also admits legacy/quirky PDs (higher signature resistance, larger input
++ * capacitance), at the cost of admitting the same signatures a non-PD or
++ * faulty port can present. It is therefore an opt-in, root-only, per-port
++ * boolean and never a default.
++ *
++ * The MCU expresses this as a detection-mode byte whose opcode and encoding
++ * are dialect-specific (see rtpse_mcu_dialect.detect_*); only the standard and
++ * legacy endpoints are exposed here. Finer modes (e.g. disabling detection, or
++ * force-powering devices that fail classification) are deliberately left out
++ * of this stable interface.
++ */
++static int rtpse_mcu_port_set_detection_type(struct rtpse_mcu_ctrl *pse, unsigned int port,
++					     u8 type)
++{
++	const struct rtpse_mcu_opcode *opc;
++
++	opc = &pse->dialect->opcode[RTPSE_MCU_CMD_PORT_SET_DETECTION_TYPE];
++	if (!opc->valid)
++		return -EOPNOTSUPP;
++
++	return rtpse_mcu_port_cmd(pse, port, opc->op, type);
++}
++
++/* A device_attribute that also carries the port it belongs to. */
++struct rtpse_mcu_port_attr {
++	struct device_attribute attr;
++	struct rtpse_mcu_ctrl *pse;
++	unsigned int port;
++};
++
++/* sysfs plumbing for one port: its files, the NULL-terminated attr list, and
++ * the per-port group (the "port<N>" directory). Grow rtpse_mcu_port_attr
++ * members and @attrs together when adding more per-port files.
++ */
++struct rtpse_mcu_port_sysfs {
++	struct rtpse_mcu_port_attr detection_legacy;
++	struct attribute *attrs[2];
++	struct attribute_group group;
++};
++
++static ssize_t detection_legacy_show(struct device *dev, struct device_attribute *attr,
++				     char *buf)
++{
++	struct rtpse_mcu_port_attr *pa =
++		container_of(attr, struct rtpse_mcu_port_attr, attr);
++	struct rtpse_mcu_port_config config;
++	bool legacy;
++	int ret;
++
++	ret = rtpse_mcu_port_get_config(pa->pse, pa->port, &config);
++	if (ret)
++		return ret;
++
++	/* Legacy acceptance is the odd detection mode in both dialects. */
++	legacy = config.detection_type & 0x1;
++
++	return sysfs_emit(buf, "%u\n", legacy);
++}
++
++static ssize_t detection_legacy_store(struct device *dev, struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	struct rtpse_mcu_port_attr *pa =
++		container_of(attr, struct rtpse_mcu_port_attr, attr);
++	bool legacy;
++	int ret;
++
++	ret = kstrtobool(buf, &legacy);
++	if (ret)
++		return ret;
++
++	ret = rtpse_mcu_port_set_detection_type(pa->pse, pa->port,
++						legacy ? pa->pse->dialect->detect_legacy :
++							 pa->pse->dialect->detect_standard);
++	if (ret)
++		return ret;
++
++	return count;
++}
++
++static int rtpse_mcu_sysfs_init(struct rtpse_mcu_ctrl *pse)
++{
++	unsigned int n = pse->pcdev.nr_lines, i;
++	struct rtpse_mcu_port_sysfs *ports;
++	int ret;
++
++	/* Nothing to expose if the dialect has no detection-type command. */
++	if (!pse->dialect->opcode[RTPSE_MCU_CMD_PORT_SET_DETECTION_TYPE].valid)
++		return 0;
++
++	ports = devm_kcalloc(pse->dev, n, sizeof(*ports), GFP_KERNEL);
++	if (!ports)
++		return -ENOMEM;
++
++	for (i = 0; i < n; i++) {
++		struct rtpse_mcu_port_sysfs *p = &ports[i];
++
++		sysfs_attr_init(&p->detection_legacy.attr.attr);
++		p->detection_legacy.attr.attr.name = "detection_legacy";
++		p->detection_legacy.attr.attr.mode = 0600;
++		p->detection_legacy.attr.show = detection_legacy_show;
++		p->detection_legacy.attr.store = detection_legacy_store;
++		p->detection_legacy.pse = pse;
++		p->detection_legacy.port = i;
++
++		p->attrs[0] = &p->detection_legacy.attr.attr;
++		p->attrs[1] = NULL;
++
++		p->group.name = devm_kasprintf(pse->dev, GFP_KERNEL, "port%u", i);
++		if (!p->group.name)
++			return -ENOMEM;
++		p->group.attrs = p->attrs;
++
++		ret = devm_device_add_group(pse->dev, &p->group);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static int rtpse_mcu_discover(struct rtpse_mcu_ctrl *pse, struct rtpse_mcu_info *info)
+ {
+ 	struct rtpse_mcu_ext_config ext_config;
+@@ -870,7 +1016,11 @@ int rtpse_mcu_register(struct rtpse_mcu_
+ 	pse->pcdev.pis_prio_max = RTPSE_MCU_PORT_MAX_PRIORITY;
+ 	pse->pcdev.supp_budget_eval_strategies = PSE_BUDGET_EVAL_STRAT_DYNAMIC;
+ 
+-	return devm_pse_controller_register(pse->dev, &pse->pcdev);
++	ret = devm_pse_controller_register(pse->dev, &pse->pcdev);
++	if (ret)
++		return ret;
++
++	return rtpse_mcu_sysfs_init(pse);
+ }
+ EXPORT_SYMBOL_GPL(rtpse_mcu_register);
+ 
+@@ -940,6 +1090,8 @@ static const struct rtpse_mcu_dialect rt
+ 	.parse_system_info = rtpse_mcu_gen2_parse_system_info,
+ 	.parse_port_class  = rtpse_mcu_gen2_parse_port_class,
+ 	.mcu_type_str      = rtpse_mcu_gen2_mcu_type_str,
++	.detect_standard   = 0x0,
++	.detect_legacy     = 0x1,
+ 	.opcode = {
+ 		[RTPSE_MCU_CMD_SET_GLOBAL_STATE]	= RTPSE_MCU_OP(0x00),
+ 		[RTPSE_MCU_CMD_GET_SYSTEM_INFO]		= RTPSE_MCU_OP(0x40),
+@@ -950,6 +1102,7 @@ static const struct rtpse_mcu_dialect rt
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT]	= RTPSE_MCU_OP(0x13),
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_EXT] = RTPSE_MCU_OP(0x14),
+ 		[RTPSE_MCU_CMD_PORT_SET_PRIORITY]	= RTPSE_MCU_OP(0x15),
++		[RTPSE_MCU_CMD_PORT_SET_DETECTION_TYPE]	= RTPSE_MCU_OP(0x09),
+ 		[RTPSE_MCU_CMD_PORT_GET_STATUS]		= RTPSE_MCU_OP(0x42),
+ 		[RTPSE_MCU_CMD_PORT_GET_POWER_STATS]	= RTPSE_MCU_OP(0x44),
+ 		[RTPSE_MCU_CMD_PORT_GET_CONFIG]		= RTPSE_MCU_OP(0x48),
+@@ -961,6 +1114,8 @@ static const struct rtpse_mcu_dialect rt
+ 	.parse_system_info = rtpse_mcu_gen1_parse_system_info,
+ 	.parse_port_class  = rtpse_mcu_gen1_parse_port_class,
+ 	.mcu_type_str      = rtpse_mcu_gen1_mcu_type_str,
++	.detect_standard   = 0x2,
++	.detect_legacy     = 0x3,
+ 	.opcode = {
+ 		[RTPSE_MCU_CMD_GET_SYSTEM_INFO]		= RTPSE_MCU_OP(0x20),
+ 		[RTPSE_MCU_CMD_GET_EXT_CONFIG]		= RTPSE_MCU_OP(0x2b),
+@@ -969,6 +1124,7 @@ static const struct rtpse_mcu_dialect rt
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT_TYPE] = RTPSE_MCU_OP(0x15),
+ 		[RTPSE_MCU_CMD_PORT_SET_POWER_LIMIT]	= RTPSE_MCU_OP(0x16),
+ 		[RTPSE_MCU_CMD_PORT_SET_PRIORITY]	= RTPSE_MCU_OP(0x1a),
++		[RTPSE_MCU_CMD_PORT_SET_DETECTION_TYPE]	= RTPSE_MCU_OP(0x10),
+ 		[RTPSE_MCU_CMD_PORT_GET_STATUS]		= RTPSE_MCU_OP(0x21),
+ 		[RTPSE_MCU_CMD_PORT_GET_POWER_STATS]	= RTPSE_MCU_OP(0x30),
+ 		[RTPSE_MCU_CMD_PORT_GET_CONFIG]		= RTPSE_MCU_OP(0x25),

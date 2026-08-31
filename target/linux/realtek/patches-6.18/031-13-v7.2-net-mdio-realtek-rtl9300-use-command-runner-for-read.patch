@@ -1,0 +1,142 @@
+From 2e3c28c715e913decf228dcd656bbb0dfc18133b Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Wed, 27 May 2026 18:34:49 +0200
+Subject: [PATCH 13/20] net: mdio: realtek-rtl9300: use command runner for
+ read_c22()
+
+Convert the final missing read_c22() path to the new read enabled command
+runner. Do it the same way as other implementations.
+
+- bus calls otto_emdio_read_c22()
+- this hands over to SoC specific otto_emdio_9300_read_c22()
+- finally the registers are filled and the runner issued
+
+With this cleanup remove the obsolete helper otto_emdio_wait_ready()
+
+Signed-off-by: Markus Stockhausen <markus.stockhausen@gmx.de>
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20260527163449.1294961-5-markus.stockhausen@gmx.de
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+---
+ drivers/net/mdio/mdio-realtek-rtl9300.c | 87 ++++++++-----------------
+ 1 file changed, 27 insertions(+), 60 deletions(-)
+
+--- a/drivers/net/mdio/mdio-realtek-rtl9300.c
++++ b/drivers/net/mdio/mdio-realtek-rtl9300.c
+@@ -97,7 +97,7 @@ struct otto_emdio_info {
+ 	u8 num_buses;
+ 	u8 num_ports;
+ 	u16 num_pages;
+-	int (*read_c22)(struct mii_bus *bus, int phy_id, int regnum);
++	int (*read_c22)(struct mii_bus *bus, int port, int regnum, u32 *value);
+ 	int (*read_c45)(struct mii_bus *bus, int port, int dev_addr, int regnum, u32 *value);
+ 	int (*write_c22)(struct mii_bus *bus, int port, int regnum, u16 value);
+ 	int (*write_c45)(struct mii_bus *bus, int port, int dev_addr, int regnum, u16 value);
+@@ -213,66 +213,17 @@ static int otto_emdio_write_cmd(struct m
+ 	return otto_emdio_run_cmd(bus, cmd | priv->info->cmd_write, cmd_data);
+ }
+ 
+-static int otto_emdio_wait_ready(struct otto_emdio_priv *priv)
++static int otto_emdio_9300_read_c22(struct mii_bus *bus, int port, int regnum, u32 *value)
+ {
+-	struct regmap *regmap = priv->regmap;
+-	u32 cmd_reg, val;
+-
+-	lockdep_assert_held(&priv->lock);
+-	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+-
+-	return regmap_read_poll_timeout(regmap, cmd_reg, val, !(val & PHY_CTRL_CMD), 10, 1000);
+-}
+-
+-static int otto_emdio_9300_read_c22(struct mii_bus *bus, int phy_id, int regnum)
+-{
+-	struct otto_emdio_chan *chan = bus->priv;
+-	struct otto_emdio_priv *priv;
+-	u32 io_reg, cmd_reg, val;
+-	struct regmap *regmap;
+-	int port;
+-	int err;
+-
+-	priv = chan->priv;
+-	regmap = priv->regmap;
+-	io_reg = priv->info->cmd_regs.io_data;
+-	cmd_reg = priv->info->cmd_regs.c22_data; /* shared command/C22 register */
+-
+-	port = otto_emdio_phy_to_port(bus, phy_id);
+-	if (port < 0)
+-		return port;
+-
+-	mutex_lock(&priv->lock);
+-	err = otto_emdio_wait_ready(priv);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_write(regmap, io_reg, FIELD_PREP(PHY_CTRL_INDATA, port));
+-	if (err)
+-		goto out_err;
+-
+-	val = FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
+-	      FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
+-	      FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)) |
+-	      PHY_CTRL_READ | PHY_CTRL_TYPE_C22 | PHY_CTRL_CMD;
+-	err = regmap_write(regmap, cmd_reg, val);
+-	if (err)
+-		goto out_err;
+-
+-	err = otto_emdio_wait_ready(priv);
+-	if (err)
+-		goto out_err;
+-
+-	err = regmap_read(regmap, io_reg, &val);
+-	if (err)
+-		goto out_err;
+-
+-	mutex_unlock(&priv->lock);
+-	return FIELD_GET(PHY_CTRL_DATA, val);
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	struct otto_emdio_cmd_regs cmd_data = {
++		.c22_data	= FIELD_PREP(PHY_CTRL_REG_ADDR, regnum) |
++				  FIELD_PREP(PHY_CTRL_PARK_PAGE, 0x1f) |
++				  FIELD_PREP(PHY_CTRL_MAIN_PAGE, RAW_PAGE(priv)),
++		.io_data	= FIELD_PREP(PHY_CTRL_INDATA, port),
++	};
+ 
+-out_err:
+-	mutex_unlock(&priv->lock);
+-	return err;
++	return otto_emdio_read_cmd(bus, PHY_CTRL_TYPE_C22, &cmd_data, value);
+ }
+ 
+ static int otto_emdio_9300_write_c22(struct mii_bus *bus, int port, int regnum, u16 value)
+@@ -314,6 +265,22 @@ static int otto_emdio_9300_write_c45(str
+ 	return otto_emdio_write_cmd(bus, PHY_CTRL_TYPE_C45, &cmd_data);
+ }
+ 
++static int otto_emdio_read_c22(struct mii_bus *bus, int phy_id, int regnum)
++{
++	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
++	int ret, port;
++	u32 value;
++
++	port = otto_emdio_phy_to_port(bus, phy_id);
++	if (port < 0)
++		return port;
++
++	scoped_guard(mutex, &priv->lock)
++		ret = priv->info->read_c22(bus, port, regnum, &value);
++
++	return ret ? ret : value;
++}
++
+ static int otto_emdio_write_c22(struct mii_bus *bus, int phy_id, int regnum, u16 value)
+ {
+ 	struct otto_emdio_priv *priv = otto_emdio_bus_to_priv(bus);
+@@ -437,7 +404,7 @@ static int otto_emdio_probe_one(struct d
+ 		bus->read_c45 = otto_emdio_read_c45;
+ 		bus->write_c45 = otto_emdio_write_c45;
+ 	} else {
+-		bus->read = priv->info->read_c22;
++		bus->read = otto_emdio_read_c22;
+ 		bus->write = otto_emdio_write_c22;
+ 	}
+ 	bus->parent = dev;

@@ -1,0 +1,58 @@
+From f2a138abfb719a3bfd370ca79f00055ec81e4f59 Mon Sep 17 00:00:00 2001
+From: Jonas Jelonek <jelonek.jonas@gmail.com>
+Date: Sun, 14 Jun 2026 13:34:17 +0000
+Subject: [PATCH 1/2] net: sfp: apply I2C adapter quirks to limit block size
+
+The SFP driver assumes all I2C adapters support reading and writing the
+pre-defined block size SFP_EEPROM_BLOCK_SIZE of 16 bytes. This constant
+was probably chosen based on good guesses and known limitations of a
+range of I2C adapters and SFP modules.
+
+However, I2C adapters may even support less and usually need to specify
+this via I2C quirks. Theoretically, such an adapter may provide full
+functionality but only support a read and write length of e.g. 8 bytes.
+Currently, the SFP driver doesn't account for that.
+
+Add handling for I2C quirks in SFP I2C configuration taking the fields
+max_read_len and max_write_len in struct i2c_adapter_quirks into account
+to further limit the maximum block size if needed.
+
+Signed-off-by: Jonas Jelonek <jelonek.jonas@gmail.com>
+Reviewed-by: Maxime Chevallier <maxime.chevallier@bootlin.com>
+Link: https://patch.msgid.link/20260614133418.2068201-2-jelonek.jonas@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+
+--- a/drivers/net/phy/sfp.c
++++ b/drivers/net/phy/sfp.c
+@@ -829,21 +829,29 @@ static int sfp_smbus_byte_write(struct s
+ 
+ static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
+ {
++	size_t max_block_size;
++
+ 	sfp->i2c = i2c;
+ 
+ 	if (i2c_check_functionality(i2c, I2C_FUNC_I2C)) {
+ 		sfp->read = sfp_i2c_read;
+ 		sfp->write = sfp_i2c_write;
+-		sfp->i2c_max_block_size = SFP_EEPROM_BLOCK_SIZE;
++		max_block_size = SFP_EEPROM_BLOCK_SIZE;
+ 	} else if (i2c_check_functionality(i2c, I2C_FUNC_SMBUS_BYTE_DATA)) {
+ 		sfp->read = sfp_smbus_byte_read;
+ 		sfp->write = sfp_smbus_byte_write;
+-		sfp->i2c_max_block_size = 1;
++		max_block_size = 1;
+ 	} else {
+ 		sfp->i2c = NULL;
+ 		return -EINVAL;
+ 	}
+ 
++	if (i2c->quirks && i2c->quirks->max_read_len)
++		max_block_size = min(max_block_size, i2c->quirks->max_read_len);
++	if (i2c->quirks && i2c->quirks->max_write_len)
++		max_block_size = min(max_block_size, i2c->quirks->max_write_len);
++
++	sfp->i2c_max_block_size = max_block_size;
+ 	sfp->i2c_block_size = sfp->i2c_max_block_size;
+ 	return 0;
+ }
