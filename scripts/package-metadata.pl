@@ -160,6 +160,8 @@ sub mconf_depends {
 		$depend =~ s/^([@\+]+)// and $flags = $1;
 		my $condition = $parent_condition;
 
+		$depend = $2 if	$depend =~ /^(.+):(.+)$/ and $dep->{$1} eq 'select';
+
 		next if $condition eq $depend;
 		next if $seen->{"$parent_condition:$depend"};
 		next if $seen->{":$depend"};
