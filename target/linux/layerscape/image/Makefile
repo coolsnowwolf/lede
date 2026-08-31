@@ -8,8 +8,11 @@ include $(INCLUDE_DIR)/image.mk
 LS_SD_KERNELPART_SIZE = 40
 LS_SD_KERNELPART_OFFSET = 16
 LS_SD_ROOTFSPART_OFFSET = 64
+
+ifeq ($(DUMP),)
 LS_SD_IMAGE_SIZE = $(shell echo $$((($(LS_SD_ROOTFSPART_OFFSET) + \
 	$(CONFIG_TARGET_ROOTFS_PARTSIZE)))))
+endif
 
 # The limitation of flash sysupgrade.bin is 1MB dtb + 16MB kernel + 32MB rootfs
 LS_SYSUPGRADE_IMAGE_SIZE = 49m
@@ -30,7 +33,7 @@ define Build/ls-append
 endef
 
 define Build/ls-append-dtb
-	dd if=$(DTS_DIR)/$(1).dtb >> $@
+	dd if=$(DEVICE_DTS_DIR)/$(1).dtb >> $@
 endef
 
 define Build/ls-append-kernel
@@ -51,15 +54,15 @@ define Build/ls-append-sdhead
 	dd if=$(STAGING_DIR_IMAGE)/$(1)-sdcard-head.img >> $@
 endef
 
-define Build/traverse-fit
-	./mkits-multiple-config.sh -o $@.its -A $(LINUX_KARCH) \
-		-v $(LINUX_VERSION) -k $@ -a $(KERNEL_LOADADDR) \
-		-e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
-		-C gzip -c 1 -c 2 \
-		-d $(DEVICE_DTS_DIR)/freescale/traverse-ls1043s.dtb \
-		-D "Traverse_LS1043S" -n "ls1043s" -a $(FDT_LOADADDR) -c 1 \
-		-d $(DEVICE_DTS_DIR)/freescale/traverse-ls1043v.dtb \
-		-D "Traverse_LS1043V" -n "ls1043v" -a $(FDT_LOADADDR) -c 2
+define Build/traverse-fit-ls1088
+    ./mkits-multiple-config.sh -o $@.its -A $(LINUX_KARCH) \
+	-v $(LINUX_VERSION) -k $@ -a $(KERNEL_LOADADDR) \
+	-e $(if $(KERNEL_ENTRY),$(KERNEL_ENTRY),$(KERNEL_LOADADDR)) \
+	-C gzip -c 1 -c 2 \
+	-d $(DTS_DIR)/freescale/fsl-ls1088a-ten64.dtb \
+	-D "TEN64" -n "ten64" -a $(FDT_LOADADDR) -c 1 \
+	-d $(DTS_DIR)/freescale/fsl-ls1088a-rdb.dtb \
+	-D "LS1088ARDB" -n "ls1088ardb" -a $(FDT_LOADADDR) -c 2
 	PATH=$(LINUX_DIR)/scripts/dtc:$(PATH) mkimage -f $@.its $@.new
 	@mv -f $@.new $@
 endef
