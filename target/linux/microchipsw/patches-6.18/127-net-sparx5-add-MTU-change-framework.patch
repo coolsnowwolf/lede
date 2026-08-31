@@ -1,0 +1,264 @@
+From 372e0295a1dbf0ea4333183ac82b8620bef9c0dc Mon Sep 17 00:00:00 2001
+From: Robert Marko <robert.marko@sartura.hr>
+Date: Tue, 24 Mar 2026 12:19:03 +0100
+Subject: [PATCH 127/130] net: sparx5: add MTU change framework
+
+Port the MTU change framework from Microchip BSP kernel.
+This only wires the generic SparX-5 and LAN969x code.
+
+SparX-5 and LAN969x specific code to actually change the MTU will follow.
+
+Signed-off-by: Robert Marko <robert.marko@sartura.hr>
+---
+ .../net/ethernet/microchip/sparx5/Makefile    |   2 +-
+ .../ethernet/microchip/sparx5/sparx5_fdma.c   |  20 +++
+ .../ethernet/microchip/sparx5/sparx5_main.h   |   8 ++
+ .../microchip/sparx5/sparx5_main_regs.h       |  11 ++
+ .../ethernet/microchip/sparx5/sparx5_mtu.c    | 130 ++++++++++++++++++
+ 5 files changed, 170 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/net/ethernet/microchip/sparx5/sparx5_mtu.c
+
+--- a/drivers/net/ethernet/microchip/sparx5/Makefile
++++ b/drivers/net/ethernet/microchip/sparx5/Makefile
+@@ -11,7 +11,7 @@ sparx5-switch-y  := sparx5_main.o sparx5
+  sparx5_ptp.o sparx5_pgid.o sparx5_tc.o sparx5_qos.o \
+  sparx5_vcap_impl.o sparx5_vcap_ag_api.o sparx5_tc_flower.o \
+  sparx5_tc_matchall.o sparx5_pool.o sparx5_sdlb.o sparx5_police.o \
+- sparx5_psfp.o sparx5_mirror.o sparx5_regs.o
++ sparx5_psfp.o sparx5_mirror.o sparx5_regs.o sparx5_mtu.o
+ 
+ sparx5-switch-$(CONFIG_SPARX5_DCB) += sparx5_dcb.o
+ sparx5-switch-$(CONFIG_DEBUG_FS) += sparx5_vcap_debugfs.o
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_fdma.c
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_fdma.c
+@@ -462,6 +462,15 @@ int sparx5_fdma_start(struct sparx5 *spa
+ 	sparx5_fdma_rx_activate(sparx5, rx);
+ 	sparx5_fdma_tx_activate(sparx5, tx);
+ 
++	for (int i = 0; i < sparx5->data->consts->n_ports; i++) {
++		struct sparx5_port *port = sparx5->ports[i];
++
++		if (!port)
++			continue;
++		if (netif_queue_stopped(port->ndev))
++			netif_wake_queue(port->ndev);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -471,6 +480,7 @@ int sparx5_fdma_stop(struct sparx5 *spar
+ 	struct sparx5_tx *tx = &sparx5->tx;
+ 	u32 val;
+ 
++	napi_synchronize(&sparx5->rx.napi);
+ 	napi_disable(&rx->napi);
+ 
+ 	/* Stop the fdma and channel interrupts */
+@@ -482,5 +492,15 @@ int sparx5_fdma_stop(struct sparx5 *spar
+ 			  FDMA_PORT_CTRL_XTR_BUF_IS_EMPTY_GET(val) == 0,
+ 			  500, 10000, 0, sparx5);
+ 
++	for (int i = 0; i < sparx5->data->consts->n_ports; i++) {
++		struct sparx5_port *port = sparx5->ports[i];
++
++		if (!port)
++			continue;
++		netif_stop_queue(port->ndev);
++	}
++
++	netif_napi_del(&sparx5->rx.napi);
++
+ 	return 0;
+ }
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_main.h
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_main.h
+@@ -102,6 +102,7 @@ enum sparx5_feature {
+ #define PGID_TABLE_SIZE	       3290
+ 
+ #define IFH_LEN                9 /* 36 bytes */
++#define IFH_LEN_BYTES          (IFH_LEN * sizeof(u32))
+ #define NULL_VID               0
+ #define SPX5_MACT_PULL_DELAY   (2 * HZ)
+ #define SPX5_STATS_CHECK_DELAY (1 * HZ)
+@@ -188,6 +189,7 @@ struct sparx5_tx {
+ 	struct sparx5_tx_buf *dbs;
+ 	u64 packets;
+ 	u64 dropped;
++	u16 max_mtu;
+ };
+ 
+ struct sparx5_port_config {
+@@ -348,6 +350,8 @@ struct sparx5_ops {
+ 	int (*fdma_poll)(struct napi_struct *napi, int weight);
+ 	int (*fdma_xmit)(struct sparx5 *sparx5, u32 *ifh, struct sk_buff *skb,
+ 			 struct net_device *dev);
++	int (*fdma_resize)(struct sparx5 *sparx5);
++	u32 (*get_mtu)(struct sparx5 *sparx5);
+ };
+ 
+ struct sparx5_main_io_resource {
+@@ -712,6 +716,10 @@ void sparx5_mirror_del(struct sparx5_mal
+ void sparx5_mirror_stats(struct sparx5_mall_entry *entry,
+ 			 struct flow_stats *fstats);
+ 
++/* sparx5_mtu.c */
++int sparx5_mtu_change(struct net_device *dev, int new_mtu);
++u32 sparx5_mtu_max(struct sparx5 *sparx5);
++
+ /* Clock period in picoseconds */
+ static inline u32 sparx5_clk_period(enum sparx5_core_clockfreq cclock)
+ {
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_main_regs.h
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_main_regs.h
+@@ -8216,6 +8216,17 @@ extern const struct sparx5_regs *regs;
+ 	FIELD_GET(DEVRGMII_MAC_ENA_CFG_TX_ENA, x)
+ 
+ /* LAN969X ONLY */
++/* DEV1G:MAC_CFG_STATUS:MAC_MAXLEN_CFG */
++#define DEVRGMII_MAC_MAXLEN_CFG(t)                                             \
++	__REG(TARGET_DEVRGMII, t, 2, 36, 0, 1, 36, 8, 0, 1, 4)
++
++#define DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN          GENMASK(15, 0)
++#define DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN_SET(x)\
++	FIELD_PREP(DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN, x)
++#define DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN_GET(x)\
++	FIELD_GET(DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN, x)
++
++/* LAN969X ONLY */
+ /* DEV1G:MAC_CFG_STATUS:MAC_TAGS_CFG */
+ #define DEVRGMII_MAC_TAGS_CFG(t)                                               \
+ 	__REG(TARGET_DEVRGMII, t, 2, 36, 0, 1, 36, 12, 0, 1, 4)
+--- /dev/null
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_mtu.c
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* Microchip Sparx5 Switch driver
++ *
++ * Copyright (c) 2024 Microchip Technology Inc. and its subsidiaries.
++ */
++
++#include "sparx5_main.h"
++
++#define SPX5_HW_MTU(mtu) ((mtu) + ETH_ALEN + IFH_LEN * 4 + ETH_FCS_LEN)
++
++/* Get the MTU for this port */
++static u32 sparx5_mtu_get(struct sparx5_port *port)
++{
++	struct sparx5 *sparx5 = port->sparx5;
++	const struct sparx5_ops *ops = sparx5->data->ops;
++	u32 val;
++
++	/* We always set 2G5 or RGMII MTU, so there is no point in trying to
++	 * read high-speed MAC MTU here
++	 */
++	if (ops->is_port_rgmii(port->portno)) {
++		u32 idx = ops->get_port_dev_index(sparx5, port->portno);
++		val = spx5_rd(sparx5, DEVRGMII_MAC_MAXLEN_CFG(idx));
++		return DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN_GET(val);
++	} else {
++		val = spx5_rd(sparx5, DEV2G5_MAC_MAXLEN_CFG(port->portno));
++		return DEV2G5_MAC_MAXLEN_CFG_MAX_LEN_GET(val);
++	}
++}
++
++/* Set the MTU for this port. */
++static void sparx5_mtu_set(struct sparx5_port *port, u32 new_mtu)
++{
++	struct sparx5 *sparx5 = port->sparx5;
++	const struct sparx5_ops *ops;
++	u32 idx, hw_mtu;
++
++	ops = sparx5->data->ops;
++	idx = ops->get_port_dev_index(sparx5, port->portno);
++	hw_mtu = SPX5_HW_MTU(new_mtu);
++
++	pr_debug("Setting MTU to: %u for portno (idx: %u): %u\n", new_mtu,
++		 port->portno, idx);
++
++	/* All port modules have a 2g5 shadow device (and DEV2G5 is indexed
++	 * by port number). Except the RGMII ports
++	 */
++	if (!ops->is_port_rgmii(port->portno))
++		spx5_rmw(DEV2G5_MAC_MAXLEN_CFG_MAX_LEN_SET(hw_mtu),
++			 DEV2G5_MAC_MAXLEN_CFG_MAX_LEN, sparx5,
++			 DEV2G5_MAC_MAXLEN_CFG(port->portno));
++
++	if (ops->is_port_rgmii(port->portno))
++		spx5_rmw(DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN_SET(hw_mtu),
++			DEVRGMII_MAC_MAXLEN_CFG_MAX_LEN, sparx5,
++			DEVRGMII_MAC_MAXLEN_CFG(idx));
++	else if (ops->is_port_2g5(port->portno))
++		return; /* Already configured. */
++	else if (ops->is_port_5g(port->portno))
++		spx5_rmw(DEV5G_MAC_MAXLEN_CFG_MAX_LEN_SET(hw_mtu),
++			 DEV5G_MAC_MAXLEN_CFG_MAX_LEN, sparx5,
++			 DEV5G_MAC_MAXLEN_CFG(idx));
++	else if (ops->is_port_10g(port->portno))
++		spx5_rmw(DEV10G_MAC_MAXLEN_CFG_MAX_LEN_SET(hw_mtu),
++			 DEV10G_MAC_MAXLEN_CFG_MAX_LEN, sparx5,
++			 DEV10G_MAC_MAXLEN_CFG(idx));
++	else
++		spx5_rmw(DEV25G_MAC_MAXLEN_CFG_MAX_LEN_SET(hw_mtu),
++			 DEV25G_MAC_MAXLEN_CFG_MAX_LEN, sparx5,
++			 DEV25G_MAC_MAXLEN_CFG(idx));
++}
++
++u32 sparx5_mtu_max(struct sparx5 *sparx5)
++{
++	u32 mtu_max = 0;
++
++	for (int i = 0; i < sparx5->data->consts->n_ports; i++) {
++		struct sparx5_port *port = sparx5->ports[i];
++		u32 mtu;
++
++		if (!port)
++			continue;
++
++		mtu = sparx5_mtu_get(port) + IFH_LEN_BYTES +
++		      SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) +
++		      VLAN_HLEN * 2 + XDP_PACKET_HEADROOM;
++
++		if (mtu > mtu_max)
++			mtu_max = mtu;
++	}
++
++	return mtu_max;
++}
++
++static int sparx5_mtu_fdma_set(struct sparx5 *sparx5)
++{
++	const struct sparx5_ops *ops = sparx5->data->ops;
++	u32 mtu_max = sparx5_mtu_max(sparx5);
++
++	/* We might not be using FDMA */
++	if (sparx5->fdma_irq <= 0)
++		return 0;
++
++	/* No need to restart FDMA if the MTU reflects the buffer size */
++	if (mtu_max == sparx5->tx.max_mtu)
++		return 0;
++
++	return ops->fdma_resize(sparx5);
++}
++
++int sparx5_mtu_change(struct net_device *dev, int new_mtu)
++{
++	struct sparx5_port *port = netdev_priv(dev);
++	struct sparx5 *sparx5 = port->sparx5;
++	int err, orig_mtu = dev->mtu;
++
++	/* Write MTU to hardware */
++	sparx5_mtu_set(port, new_mtu);
++
++	err = sparx5_mtu_fdma_set(sparx5);
++	if (err) {
++		sparx5_mtu_set(port, orig_mtu);
++		return err;
++	}
++
++	/* Let the stack know */
++	WRITE_ONCE(dev->mtu, new_mtu);
++
++	return 0;
++}

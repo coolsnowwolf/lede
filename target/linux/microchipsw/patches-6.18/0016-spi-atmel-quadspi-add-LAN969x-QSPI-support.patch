@@ -1,0 +1,117 @@
+From a3e4130b6ef964e2cf4d7f0a5b33b5c4862c5279 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robert.marko@sartura.hr>
+Date: Thu, 9 Jul 2026 13:19:10 +0200
+Subject: [PATCH 16/16] spi: atmel-quadspi: add LAN969x QSPI support
+
+Microchip LAN969x has two QSPI controllers based on SAMA7G5 QSPI.
+
+It requires pad calibration, supports DMA, and supports 100 MHz operation.
+
+Signed-off-by: Robert Marko <robert.marko@sartura.hr>
+Link: https://patch.msgid.link/20260709112006.390742-5-robert.marko@sartura.hr
+Signed-off-by: Mark Brown <broonie@kernel.org>
+---
+ drivers/spi/Kconfig         |  2 +-
+ drivers/spi/atmel-quadspi.c | 66 ++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 66 insertions(+), 2 deletions(-)
+
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -180,7 +180,7 @@ config SPI_AT91_USART
+ 
+ config SPI_ATMEL_QUADSPI
+ 	tristate "Atmel Quad SPI Controller"
+-	depends on ARCH_AT91 || COMPILE_TEST
++	depends on ARCH_MICROCHIP || COMPILE_TEST
+ 	depends on OF && HAS_IOMEM
+ 	help
+ 	  This enables support for the Quad SPI controller in master mode.
+--- a/drivers/spi/atmel-quadspi.c
++++ b/drivers/spi/atmel-quadspi.c
+@@ -1152,6 +1152,58 @@ static int atmel_qspi_sama7g5_init(struc
+ 	return ret;
+ }
+ 
++static int atmel_qspi_lan969x_init(struct atmel_qspi *aq)
++{
++	u32 val;
++	int ret;
++
++	atmel_qspi_write(QSPI_CR_DLLOFF, aq, QSPI_CR);
++	ret = readl_poll_timeout(aq->regs + QSPI_SR2, val,
++				 !(val & QSPI_SR2_DLOCK), 40,
++				 ATMEL_QSPI_TIMEOUT);
++	if (ret)
++		return ret;
++
++	ret = atmel_qspi_set_gclk(aq);
++	if (ret)
++		return ret;
++
++	/* Start the DLL before resetting the controller. */
++	atmel_qspi_write(QSPI_CR_DLLON | QSPI_CR_STPCAL, aq, QSPI_CR);
++	ret = readl_poll_timeout(aq->regs + QSPI_SR2, val,
++				 (val & QSPI_SR2_DLOCK) &&
++				 !(val & QSPI_SR2_CALBSY), 40,
++				 ATMEL_QSPI_TIMEOUT);
++	if (ret)
++		return ret;
++
++	atmel_qspi_write(QSPI_CR_QSPIDIS, aq, QSPI_CR);
++	ret = atmel_qspi_reg_sync(aq);
++	if (ret)
++		return ret;
++
++	atmel_qspi_write(QSPI_CR_SWRST, aq, QSPI_CR);
++	ret = atmel_qspi_reg_sync(aq);
++	if (ret)
++		return ret;
++
++	ret = atmel_qspi_set_pad_calibration(aq);
++	if (ret)
++		return ret;
++
++	aq->mr = 0;
++	aq->scr = 0;
++
++	ret = atmel_qspi_set_serial_memory_mode(aq);
++	if (ret)
++		return ret;
++
++	atmel_qspi_write(QSPI_CR_QSPIEN, aq, QSPI_CR);
++	return readl_poll_timeout(aq->regs + QSPI_SR2, val,
++				  (val & QSPI_SR2_QSPIENS), 40,
++				  ATMEL_QSPI_TIMEOUT);
++}
++
+ static int atmel_qspi_sama7g5_setup(struct spi_device *spi)
+ {
+ 	struct atmel_qspi *aq = spi_controller_get_devdata(spi->controller);
+@@ -1680,6 +1732,15 @@ static const struct atmel_qspi_caps atme
+ 	.has_dllon = true,
+ };
+ 
++static const struct atmel_qspi_caps atmel_lan969x_qspi_caps = {
++	.max_speed_hz = SAM9X7_QSPI_MAX_SPEED_HZ,
++	.init = atmel_qspi_lan969x_init,
++	.has_gclk = true,
++	.has_dma = true,
++	.has_padcalib = true,
++	.has_dllon = true,
++};
++
+ static const struct of_device_id atmel_qspi_dt_ids[] = {
+ 	{
+ 		.compatible = "atmel,sama5d2-qspi",
+@@ -1709,7 +1770,10 @@ static const struct of_device_id atmel_q
+ 		.compatible = "microchip,sama7d65-qspi",
+ 		.data = &atmel_sama7d65_qspi_caps,
+ 	},
+-
++	{
++		.compatible = "microchip,lan9691-qspi",
++		.data = &atmel_lan969x_qspi_caps,
++	},
+ 
+ 	{ /* sentinel */ }
+ };

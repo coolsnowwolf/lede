@@ -1,0 +1,107 @@
+From 466d22c9d3bdb2feda284c582d4f183879fc57ad Mon Sep 17 00:00:00 2001
+From: Robert Marko <robert.marko@sartura.hr>
+Date: Tue, 24 Mar 2026 12:26:51 +0100
+Subject: [PATCH 128/130] net: sparx5: add MTU change
+
+Add the required SparX-5 specific code to change the MTU.
+
+Signed-off-by: Robert Marko <robert.marko@sartura.hr>
+---
+ .../ethernet/microchip/sparx5/sparx5_fdma.c   | 52 +++++++++++++++++++
+ .../ethernet/microchip/sparx5/sparx5_main.c   |  2 +
+ .../ethernet/microchip/sparx5/sparx5_main.h   |  1 +
+ 3 files changed, 55 insertions(+)
+
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_fdma.c
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_fdma.c
+@@ -278,6 +278,8 @@ static void sparx5_fdma_rx_init(struct s
+ 	struct fdma *fdma = &rx->fdma;
+ 	int idx;
+ 
++	sparx5->rx.page_order =
++		round_up(sparx5->tx.max_mtu, PAGE_SIZE) / PAGE_SIZE - 1;
+ 	fdma->channel_id = channel;
+ 	fdma->n_dcbs = FDMA_DCB_MAX;
+ 	fdma->n_dbs = FDMA_RX_DCB_MAX_DBS;
+@@ -403,6 +405,8 @@ int sparx5_fdma_init(struct sparx5 *spar
+ {
+ 	int err;
+ 
++	sparx5->tx.max_mtu = sparx5->data->ops->get_mtu(sparx5);
++
+ 	/* Reset FDMA state */
+ 	spx5_wr(FDMA_CTRL_NRESET_SET(0), sparx5, FDMA_CTRL);
+ 	spx5_wr(FDMA_CTRL_NRESET_SET(1), sparx5, FDMA_CTRL);
+@@ -504,3 +508,51 @@ int sparx5_fdma_stop(struct sparx5 *spar
+ 
+ 	return 0;
+ }
++
++int sparx5_fdma_resize(struct sparx5 *sparx5)
++{
++	u32 old_mtu = sparx5->tx.max_mtu;
++	struct fdma tx_fdma_old = {0};
++	struct fdma rx_fdma_old = {0};
++	int err;
++
++	memcpy(&tx_fdma_old, &sparx5->tx.fdma, sizeof(struct fdma));
++	memcpy(&rx_fdma_old, &sparx5->rx.fdma, sizeof(struct fdma));
++
++	sparx5_fdma_stop(sparx5);
++
++	err = sparx5_fdma_init(sparx5);
++	if (err)
++		goto restore;
++
++	fdma_free_phys(&rx_fdma_old);
++	fdma_free_phys(&tx_fdma_old);
++
++	goto start;
++
++restore:
++
++	/* At this point, the FDMA engine is stopped and the stack is not
++	 * calling us for xmit. Restore the old MTU and rx,tx buffers and
++	 * restart the engine.
++	 */
++
++	sparx5->tx.max_mtu = old_mtu;
++	memcpy(&sparx5->tx.fdma, &tx_fdma_old, sizeof(struct fdma));
++	memcpy(&sparx5->rx.fdma, &rx_fdma_old, sizeof(struct fdma));
++
++	/* Old buffers have to be re-initialized. */
++
++	fdma_dcbs_init(&sparx5->rx.fdma,
++		       FDMA_DCB_INFO_DATAL(sparx5->rx.fdma.db_size),
++		       FDMA_DCB_STATUS_INTR);
++
++	fdma_dcbs_init(&sparx5->tx.fdma,
++		       FDMA_DCB_INFO_DATAL(sparx5->tx.fdma.db_size),
++		       FDMA_DCB_STATUS_DONE);
++
++start:
++	sparx5_fdma_start(sparx5);
++
++	return err;
++}
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_main.c
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_main.c
+@@ -1107,6 +1107,8 @@ static const struct sparx5_ops sparx5_op
+ 	.fdma_deinit             = &sparx5_fdma_deinit,
+ 	.fdma_poll               = &sparx5_fdma_napi_callback,
+ 	.fdma_xmit               = &sparx5_fdma_xmit,
++	.fdma_resize             = &sparx5_fdma_resize,
++	.get_mtu                 = &sparx5_mtu_max,
+ };
+ 
+ static const struct sparx5_match_data sparx5_desc = {
+--- a/drivers/net/ethernet/microchip/sparx5/sparx5_main.h
++++ b/drivers/net/ethernet/microchip/sparx5/sparx5_main.h
+@@ -472,6 +472,7 @@ int sparx5_fdma_xmit(struct sparx5 *spar
+ irqreturn_t sparx5_fdma_handler(int irq, void *args);
+ void sparx5_fdma_reload(struct sparx5 *sparx5, struct fdma *fdma);
+ void sparx5_fdma_injection_mode(struct sparx5 *sparx5);
++int sparx5_fdma_resize(struct sparx5 *sparx5);
+ 
+ /* sparx5_mactable.c */
+ void sparx5_mact_pull_work(struct work_struct *work);
