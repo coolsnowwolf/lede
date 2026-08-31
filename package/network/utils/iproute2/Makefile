@@ -8,16 +8,18 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iproute2
-PKG_VERSION:=6.2.0
-PKG_RELEASE:=1
+PKG_VERSION:=6.18.0
+PKG_RELEASE:=2
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/net/iproute2
-PKG_HASH:=4d72730200ec5b2aabaa1a2f20553c6748292f065d9a154c7d5e22559df9fd62
+PKG_HASH:=6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_DEPENDS:=iptables
 PKG_LICENSE:=GPL-2.0
 PKG_CPE_ID:=cpe:/a:iproute2_project:iproute2
+
+PKG_BUILD_FLAGS:=gc-sections lto
 
 include $(INCLUDE_DIR)/kernel.mk
 include $(INCLUDE_DIR)/package.mk
@@ -26,7 +28,7 @@ include $(INCLUDE_DIR)/nls.mk
 define Package/iproute2/Default
   SECTION:=net
   CATEGORY:=Network
-  URL:=http://www.linuxfoundation.org/collaborate/workgroups/networking/iproute2
+  URL:=https://wiki.linuxfoundation.org/networking/iproute2
   SUBMENU:=Routing and Redirection
   MAINTAINER:=Russell Senior <russell@personaltelco.net>
 endef
@@ -38,7 +40,7 @@ $(call Package/iproute2/Default)
   DEFAULT_VARIANT:=1
   PROVIDES:=ip
   ALTERNATIVES:=200:/sbin/ip:/usr/libexec/ip-tiny
-  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/ip-full
@@ -47,7 +49,7 @@ $(call Package/iproute2/Default)
   VARIANT:=ipfull
   PROVIDES:=ip
   ALTERNATIVES:=300:/sbin/ip:/usr/libexec/ip-full
-  DEPENDS:=+libnl-tiny +libbpf +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+libnl-tiny +libbpf +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/tc-tiny
@@ -57,7 +59,7 @@ $(call Package/iproute2/Default)
   DEFAULT_VARIANT:=1
   PROVIDES:=tc
   ALTERNATIVES:=200:/sbin/tc:/usr/libexec/tc-tiny
-  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/tc-bpf
@@ -66,7 +68,7 @@ $(call Package/iproute2/Default)
   VARIANT:=tcbpf
   PROVIDES:=tc
   ALTERNATIVES:=300:/sbin/tc:/usr/libexec/tc-bpf
-  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma):libmnl +libbpf
+  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl +libbpf
 endef
 
 define Package/tc-full
@@ -75,38 +77,31 @@ $(call Package/iproute2/Default)
   VARIANT:=tcfull
   PROVIDES:=tc
   ALTERNATIVES:=400:/sbin/tc:/usr/libexec/tc-full
-  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma):libmnl +libbpf +libxtables +tc-mod-iptables
-endef
-
-define Package/tc-mod-iptables
-$(call Package/iproute2/Default)
-  TITLE:=Traffic control module - iptables action
-  VARIANT:=tcfull
-  DEPENDS:=+libxtables +libbpf
+  DEPENDS:=+kmod-sched-core +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl +libbpf +libxtables
 endef
 
 define Package/genl
 $(call Package/iproute2/Default)
   TITLE:=General netlink utility frontend
-  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/ip-bridge
 $(call Package/iproute2/Default)
   TITLE:=Bridge configuration utility from iproute2
-  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/ss
 $(call Package/iproute2/Default)
   TITLE:=Socket statistics utility
-  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma):libmnl +kmod-netlink-diag
+  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl +libbpf +kmod-netlink-diag
 endef
 
 define Package/nstat
 $(call Package/iproute2/Default)
   TITLE:=Network statistics utility
-  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma):libmnl
+  DEPENDS:=+libnl-tiny +(PACKAGE_devlink||PACKAGE_rdma||PACKAGE_dcb):libmnl
 endef
 
 define Package/devlink
@@ -118,6 +113,12 @@ endef
 define Package/rdma
 $(call Package/iproute2/Default)
   TITLE:=Network rdma utility
+  DEPENDS:=+libmnl
+endef
+
+define Package/dcb
+$(call Package/iproute2/Default)
+  TITLE:=Network DCB (Data Center Bridging) utility
   DEPENDS:=+libmnl
 endef
 
@@ -166,25 +167,28 @@ ifdef CONFIG_PACKAGE_rdma
   HAVE_MNL:=y
 endif
 
-define Build/Configure
-	echo "static const char SNAPSHOT[] = \"$(PKG_VERSION)-$(PKG_RELEASE)-openwrt\";" \
-		> $(PKG_BUILD_DIR)/include/SNAPSHOT.h
-endef
+ifdef CONFIG_PACKAGE_dcb
+  HAVE_MNL:=y
+endif
 
-TARGET_CFLAGS += -ffunction-sections -fdata-sections -flto
-TARGET_LDFLAGS += -Wl,--gc-sections -Wl,--as-needed
+TARGET_LDFLAGS += -Wl,--as-needed
 TARGET_CPPFLAGS += -I$(STAGING_DIR)/usr/include/libnl-tiny
 
-MAKE_FLAGS += \
-	KERNEL_INCLUDE="$(LINUX_DIR)/include/uapi" \
-	SHARED_LIBS=$(SHARED_LIBS) \
-	IP_CONFIG_TINY=$(IP_CONFIG_TINY) \
-	BUILD_VARIANT=$(BUILD_VARIANT) \
-	LIBBPF_FORCE=$(LIBBPF_FORCE) \
+CONFIGURE_VARS += \
 	HAVE_ELF=$(HAVE_ELF) \
 	HAVE_MNL=$(HAVE_MNL) \
 	HAVE_CAP=$(HAVE_CAP) \
-	HAVE_TIRPC=n \
+	HAVE_TIRPC=n
+
+CONFIGURE_ARGS += \
+	--include_dir="$(TOOLCHAIN_ROOT_DIR)/usr/include" \
+	--libbpf_force=$(LIBBPF_FORCE) \
+	--color=auto
+
+MAKE_FLAGS += \
+	SHARED_LIBS=$(SHARED_LIBS) \
+	IP_CONFIG_TINY=$(IP_CONFIG_TINY) \
+	BUILD_VARIANT=$(BUILD_VARIANT) \
 	IPT_LIB_DIR=/usr/lib/iptables \
 	XT_LIB_DIR=/usr/lib/iptables \
 	TC_CONFIG_XT=$(TC_CONFIG_XT) \
@@ -231,11 +235,6 @@ define Package/tc-full/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/tc/tc $(1)/usr/libexec/tc-full
 endef
 
-define Package/tc-mod-iptables/install
-	$(INSTALL_DIR) $(1)/usr/lib/tc
-	$(CP) $(PKG_BUILD_DIR)/tc/m_xt.so $(1)/usr/lib/tc
-endef
-
 define Package/genl/install
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/genl/genl $(1)/usr/sbin/
@@ -266,11 +265,13 @@ define Package/rdma/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/rdma/rdma $(1)/usr/sbin/
 endef
 
+define Package/dcb/install
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/dcb/dcb $(1)/usr/sbin/
+endef
+
 $(eval $(call BuildPackage,ip-tiny))
 $(eval $(call BuildPackage,ip-full))
-# build tc-mod-iptables before its dependents, to avoid
-# spurious rebuilds when building multiple variants.
-$(eval $(call BuildPackage,tc-mod-iptables))
 $(eval $(call BuildPackage,tc-tiny))
 $(eval $(call BuildPackage,tc-bpf))
 $(eval $(call BuildPackage,tc-full))
@@ -280,3 +281,4 @@ $(eval $(call BuildPackage,ss))
 $(eval $(call BuildPackage,nstat))
 $(eval $(call BuildPackage,devlink))
 $(eval $(call BuildPackage,rdma))
+$(eval $(call BuildPackage,dcb))
