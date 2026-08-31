@@ -1,106 +1,96 @@
---- a/svr-authpubkey.c
-+++ b/svr-authpubkey.c
-@@ -77,6 +77,13 @@ static void send_msg_userauth_pk_ok(cons
+ src/svr-authpubkey.c | 59 ++++++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 55 insertions(+), 4 deletions(-)
+
+--- a/src/svr-authpubkey.c
++++ b/src/svr-authpubkey.c
+@@ -84,6 +84,39 @@ static void send_msg_userauth_pk_ok(cons
  		const unsigned char* keyblob, unsigned int keybloblen);
  static int checkfileperm(char * filename);
  
 +static const char * const global_authkeys_dir = "/etc/dropbear";
-+static const int        n_global_authkeys_dir = 14; /* + 1 extra byte */
-+static const char * const user_authkeys_dir = ".ssh";
-+static const int        n_user_authkeys_dir = 5; /* + 1 extra byte */
++/* strlen(global_authkeys_dir) */
++#define  n_global_authkeys_dir  13
 +static const char * const authkeys_file = "authorized_keys";
-+static const int        n_authkeys_file = 16; /* + 1 extra byte */
++/* strlen(authkeys_file) */
++#define  n_authkeys_file  15
++
++/* OpenWrt-specific:
++   use OpenWrt' global authorized keys directory if:
++   1. logging as uid 0 (typically root).
++   2. "svr_opts.authorized_keys_dir" is set to default i.e. no "-D" option was specified
++      OR
++      "-D" option is specified as homedir-relative path ("~" or "~/...")
++      OR
++      "-D" option is specified as "/etc/dropbear".
++ */
++static int is_openwrt_defaults(void) {
++	if (ses.authstate.pw_uid != 0) return 0;
++	switch (svr_opts.authorized_keys_dir[0]) {
++		case '~':
++			switch (svr_opts.authorized_keys_dir[1]) {
++				case 0:
++					return 1;
++				case '/':
++					return 1;
++			}
++			break;
++		case '/':
++			return (strcmp(svr_opts.authorized_keys_dir, global_authkeys_dir) == 0);
++	}
++	return 0;
++}
 +
  /* process a pubkey auth request, sending success or failure message as
   * appropriate */
  void svr_auth_pubkey(int valid_user) {
-@@ -439,14 +446,21 @@ static int checkpubkey(const char* keyal
- 	if (checkpubkeyperms() == DROPBEAR_FAILURE) {
- 		TRACE(("bad authorized_keys permissions, or file doesn't exist"))
- 	} else {
--		/* we don't need to check pw and pw_dir for validity, since
--		 * its been done in checkpubkeyperms. */
--		len = strlen(ses.authstate.pw_dir);
--		/* allocate max required pathname storage,
--		 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
--		filename = m_malloc(len + 22);
--		snprintf(filename, len + 22, "%s/.ssh/authorized_keys",
--					ses.authstate.pw_dir);
-+		if (ses.authstate.pw_uid == 0) {
-+			len = n_global_authkeys_dir + n_authkeys_file;
-+			filename = m_malloc(len);
-+			snprintf(filename, len, "%s/%s", global_authkeys_dir, authkeys_file);
-+		} else {
-+			/* we don't need to check pw and pw_dir for validity, since
-+			 * its been done in checkpubkeyperms. */
-+			len = strlen(ses.authstate.pw_dir);
-+			/* allocate max required pathname storage,
-+			 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
-+			len += n_user_authkeys_dir + n_authkeys_file + 1;
-+			filename = m_malloc(len);
-+			snprintf(filename, len, "%s/%s/%s", ses.authstate.pw_dir,
-+			        user_authkeys_dir, authkeys_file);
-+		}
+@@ -463,16 +496,22 @@ out:
+ static char *authorized_keys_filepath() {
+ 	size_t len = 0;
+ 	char *pathname = NULL, *dir = NULL;
+-	const char *filename = "authorized_keys";
++
++	if (is_openwrt_defaults()) {
++		len = n_global_authkeys_dir + n_authkeys_file + 2;
++		pathname = m_malloc(len);
++		snprintf(pathname, len, "%s/%s", global_authkeys_dir, authkeys_file);
++		return pathname;
++	}
  
- 		authfile = fopen(filename, "r");
- 		if (!authfile) {
-@@ -520,27 +534,41 @@ static int checkpubkeyperms() {
- 		goto out;
- 	}
+ 	dir = expand_homedir_path_home(svr_opts.authorized_keys_dir,
+ 				       ses.authstate.pw_dir);
  
--	/* allocate max required pathname storage,
--	 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
--	len += 22;
--	filename = m_malloc(len);
--	strlcpy(filename, ses.authstate.pw_dir, len);
-+	if (ses.authstate.pw_uid == 0) {
+ 	/* allocate max required pathname storage,
+ 	 * = dir + "/" + "authorized_keys" + '\0' */;
+-	len = strlen(dir) + strlen(filename) + 2;
++	len = strlen(dir) + n_authkeys_file + 2;
+ 	pathname = m_malloc(len);
+-	snprintf(pathname, len, "%s/%s", dir, filename);
++	snprintf(pathname, len, "%s/%s", dir, authkeys_file);
+ 	m_free(dir);
+ 	return pathname;
+ }
+@@ -576,11 +615,23 @@ out:
+  * When this path is inside the user's home dir it checks up to and including
+  * the home dir, otherwise it checks every path component. */
+ static int checkpubkeyperms() {
+-	char *path = authorized_keys_filepath(), *sep = NULL;
++	char *path = NULL, *sep = NULL;
+ 	int ret = DROPBEAR_SUCCESS;
+ 
++	if (is_openwrt_defaults()) {
++		TRACE(("enter checkpubkeyperms/openwrt"))
 +		if (checkfileperm(global_authkeys_dir) != DROPBEAR_SUCCESS) {
-+			goto out;
++			TRACE(("checkpubkeyperms: bad perm on %s", global_authkeys_dir))
++			ret = DROPBEAR_FAILURE;
 +		}
- 
--	/* check ~ */
--	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
--		goto out;
--	}
-+		len = n_global_authkeys_dir + n_authkeys_file;
-+		filename = m_malloc(len);
- 
--	/* check ~/.ssh */
--	strlcat(filename, "/.ssh", len);
--	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
--		goto out;
--	}
-+		snprintf(filename, len, "%s/%s", global_authkeys_dir, authkeys_file);
-+		if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
-+			goto out;
-+		}
-+	} else {
-+		/* check ~ */
-+		if (checkfileperm(ses.authstate.pw_dir) != DROPBEAR_SUCCESS) {
-+			goto out;
-+		}
- 
--	/* now check ~/.ssh/authorized_keys */
--	strlcat(filename, "/authorized_keys", len);
--	if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
--		goto out;
-+		/* allocate max required pathname storage,
-+		 * = path + "/.ssh/authorized_keys" + '\0' = pathlen + 22 */
-+		len += n_user_authkeys_dir + n_authkeys_file + 1;
-+		filename = m_malloc(len);
++		TRACE(("leave checkpubkeyperms/openwrt"))
++		return ret;
++	}
 +
-+		/* check ~/.ssh */
-+		snprintf(filename, len, "%s/%s", ses.authstate.pw_dir, user_authkeys_dir);
-+		if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
-+			goto out;
-+		}
-+
-+		/* now check ~/.ssh/authorized_keys */
-+		snprintf(filename, len, "%s/%s/%s", ses.authstate.pw_dir,
-+		         user_authkeys_dir, authkeys_file);
-+		if (checkfileperm(filename) != DROPBEAR_SUCCESS) {
-+			goto out;
-+		}
- 	}
+ 	TRACE(("enter checkpubkeyperms"))
  
- 	/* file looks ok, return success */
++	path = authorized_keys_filepath();
++
+ 	/* Walk back up path checking permissions, stopping at either homedir,
+ 	 * or root if the path is outside of the homedir. */
+ 	while ((sep = strrchr(path, '/')) != NULL) {
