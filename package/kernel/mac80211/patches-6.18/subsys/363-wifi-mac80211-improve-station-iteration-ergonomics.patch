@@ -1,0 +1,102 @@
+From: Johannes Berg <johannes.berg@intel.com>
+Date: Thu, 8 Jan 2026 14:34:32 +0100
+Subject: [PATCH] wifi: mac80211: improve station iteration ergonomics
+
+Right now, the only way to iterate stations is to declare an
+iterator function, possibly data structure to use, and pass all
+that to the iteration helper function. This is annoying, and
+there's really no inherent need for it.
+
+Add a new for_each_station() macro that does the iteration in
+a more ergonomic way. To avoid even more exported functions, do
+the old ieee80211_iterate_stations_mtx() as an inline using the
+new way, which may also let the compiler optimise it a bit more,
+e.g. via inlining the iterator function.
+
+Link: https://patch.msgid.link/20260108143431.d2b641f6f6af.I4470024f7404446052564b15bcf8b3f1ada33655@changeid
+Signed-off-by: Johannes Berg <johannes.berg@intel.com>
+---
+
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -6336,6 +6336,20 @@ void ieee80211_iterate_stations_atomic(s
+ 						struct ieee80211_sta *sta),
+ 				       void *data);
+ 
++struct ieee80211_sta *
++__ieee80211_iterate_stations(struct ieee80211_hw *hw,
++			     struct ieee80211_sta *prev);
++
++/**
++ * for_each_station - iterate stations under wiphy mutex
++ * @sta: the iterator variable
++ * @hw: the HW to iterate for
++ */
++#define for_each_station(sta, hw)					\
++	for (sta = __ieee80211_iterate_stations(hw, NULL);		\
++	     sta;							\
++	     sta = __ieee80211_iterate_stations(hw, sta))
++
+ /**
+  * ieee80211_iterate_stations_mtx - iterate stations
+  *
+@@ -6348,10 +6362,17 @@ void ieee80211_iterate_stations_atomic(s
+  * @iterator: the iterator function to call
+  * @data: first argument of the iterator function
+  */
+-void ieee80211_iterate_stations_mtx(struct ieee80211_hw *hw,
+-				    void (*iterator)(void *data,
+-						     struct ieee80211_sta *sta),
+-				    void *data);
++static inline void
++ieee80211_iterate_stations_mtx(struct ieee80211_hw *hw,
++			       void (*iterator)(void *data,
++						struct ieee80211_sta *sta),
++			       void *data)
++{
++	struct ieee80211_sta *sta;
++
++	for_each_station(sta, hw)
++		iterator(data, sta);
++}
+ 
+ /**
+  * ieee80211_queue_work - add work onto the mac80211 workqueue
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -880,18 +880,29 @@ void ieee80211_iterate_stations_atomic(s
+ }
+ EXPORT_SYMBOL_GPL(ieee80211_iterate_stations_atomic);
+ 
+-void ieee80211_iterate_stations_mtx(struct ieee80211_hw *hw,
+-				    void (*iterator)(void *data,
+-						     struct ieee80211_sta *sta),
+-				    void *data)
++struct ieee80211_sta *
++__ieee80211_iterate_stations(struct ieee80211_hw *hw,
++			     struct ieee80211_sta *prev)
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
++	struct sta_info *sta = NULL;
+ 
+ 	lockdep_assert_wiphy(local->hw.wiphy);
+ 
+-	__iterate_stations(local, iterator, data);
++	if (prev)
++		sta = container_of(prev, struct sta_info, sta);
++
++	sta = list_prepare_entry(sta, &local->sta_list, list);
++	list_for_each_entry_continue(sta, &local->sta_list, list) {
++		if (!sta->uploaded)
++			continue;
++
++		return &sta->sta;
++	}
++
++	return NULL;
+ }
+-EXPORT_SYMBOL_GPL(ieee80211_iterate_stations_mtx);
++EXPORT_SYMBOL_GPL(__ieee80211_iterate_stations);
+ 
+ struct ieee80211_vif *wdev_to_ieee80211_vif(struct wireless_dev *wdev)
+ {

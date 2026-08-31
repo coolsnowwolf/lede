@@ -1,0 +1,99 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Sun, 1 Feb 2026 18:29:51 +0000
+Subject: [PATCH] cfg80211: allow concurrent AP operation on DFS channels with
+ connected STA
+
+When a station interface is connected to an AP on a DFS channel, the
+station is already performing radar detection as required by the
+regulatory domain. Allow starting an AP on the same DFS channel by
+treating CAC as immediately complete when a concurrent station covers
+all required DFS subchannels.
+
+This enables scenarios where a device acts as both a client and an
+access point on the same DFS channel without requiring a separate CAC
+period, since the connected station already provides the required radar
+monitoring.
+
+The implementation checks if all DFS subchannels in the requested
+channel definition are covered by a connected station's operating
+channel. If so, the channel state is set to available and CAC completion
+is signaled immediately. If any DFS subchannel is not covered by the
+station (e.g., AP requests wider bandwidth than the station connection),
+normal CAC is required.
+
+After CAC completes (immediately or normally), mac80211 automatically
+enables radar detection on the AP interface, ensuring continued
+compliance with DFS requirements even if the station disconnects.
+
+Signed-off-by: Felix Fietkau <nbd@nbd.name>
+---
+
+--- a/net/wireless/chan.c
++++ b/net/wireless/chan.c
+@@ -717,6 +717,44 @@ static bool cfg80211_dfs_permissive_chan
+ 	return false;
+ }
+ 
++static bool cfg80211_dfs_sta_present(struct wiphy *wiphy,
++				     struct ieee80211_channel *chan)
++{
++	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wiphy);
++	struct wireless_dev *wdev;
++
++	lockdep_assert_held(&rdev->wiphy.mtx);
++
++	if (!(chan->flags & IEEE80211_CHAN_RADAR))
++		return false;
++
++	list_for_each_entry(wdev, &rdev->wiphy.wdev_list, list) {
++		if (cfg80211_dfs_permissive_check_wdev(rdev, NL80211_IFTYPE_AP,
++						       wdev, chan))
++			return true;
++	}
++
++	return false;
++}
++
++void cfg80211_set_dfs_concurrent(struct wiphy *wiphy,
++				 const struct cfg80211_chan_def *chandef)
++{
++	struct ieee80211_channel *c;
++
++	for_each_subchan(chandef, freq, cf) {
++		c = ieee80211_get_channel_khz(wiphy, freq);
++		if (!c)
++			return;
++
++		if ((c->flags & IEEE80211_CHAN_RADAR) &&
++		    !cfg80211_dfs_sta_present(wiphy, c))
++			return;
++	}
++
++	cfg80211_set_dfs_state(wiphy, chandef, NL80211_DFS_AVAILABLE);
++}
++
+ static int cfg80211_get_chans_dfs_required(struct wiphy *wiphy,
+ 					   const struct cfg80211_chan_def *chandef,
+ 					   enum nl80211_iftype iftype)
+--- a/net/wireless/core.h
++++ b/net/wireless/core.h
+@@ -479,6 +479,8 @@ extern struct work_struct cfg80211_disco
+ void cfg80211_set_dfs_state(struct wiphy *wiphy,
+ 			    const struct cfg80211_chan_def *chandef,
+ 			    enum nl80211_dfs_state dfs_state);
++void cfg80211_set_dfs_concurrent(struct wiphy *wiphy,
++				 const struct cfg80211_chan_def *chandef);
+ 
+ void cfg80211_dfs_channels_update_work(struct work_struct *work);
+ void cfg80211_update_last_available(struct wiphy *wiphy,
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -6744,6 +6744,8 @@ static int nl80211_start_ap(struct sk_bu
+ 		goto out;
+ 	}
+ 
++	cfg80211_set_dfs_concurrent(&rdev->wiphy, &params->chandef);
++
+ 	beacon_check.iftype = wdev->iftype;
+ 	beacon_check.relax = true;
+ 	beacon_check.reg_power =

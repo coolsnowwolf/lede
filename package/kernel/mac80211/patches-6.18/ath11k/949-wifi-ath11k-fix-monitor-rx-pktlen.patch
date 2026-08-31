@@ -1,0 +1,89 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ruslan Isaev <legale.legale@gmail.com>
+Date: Sun, 1 Mar 2026 00:00:00 +0000
+Subject: [PATCH] wifi: ath11k: ipq807x; ipq60xx: fix monitor rx frame length (+8 tail)
+
+OpenWrt issue:
+https://github.com/openwrt/openwrt/issues/16183
+
+Problem summary:
+On qualcommax (ipq60xx/ipq807x) with ath11k, monitor-mode captures contain
+frames that are consistently longer than expected by 8 bytes. 
+
+The symptom is visible in pcap/radiotap captures, and Wireshark parsing
+becomes correct after manually cutting these 8 bytes from captured frames.
+
+
+This patch:
+- Remove merge-stage FCS/tail manipulations in ath11k_dp_rx_mon_merg_msdus().
+- add length fix in ath11k_dp_rx_mon_deliver(), trim 8 bytes right
+  before radiotap update and delivery to mac80211.
+
+This targets monitor capture length correctness only and keeps the fix scoped
+to the monitor RX delivery path.
+
+--- a/drivers/net/wireless/ath/ath11k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath11k/dp_rx.c
+@@ -4929,8 +4929,13 @@ ath11k_dp_rx_mon_merg_msdus(struct ath11
+ 		}
+ 
+ 		prev_buf->next = NULL;
++		/* REMOVED: skb_trim(prev_buf, prev_buf->len - HAL_RX_FCS_LEN);
++		 * Older code trimmed HAL_RX_FCS_LEN here from prev_buf.
++		 * That only affects the last MSDU in the chain.
++		 * Length correction is now done in
++		 * ath11k_dp_rx_mon_deliver() for every delivered monitor skb.
++		 */
+ 
+-		skb_trim(prev_buf, prev_buf->len - HAL_RX_FCS_LEN);
+ 	} else if (decap_format == DP_RX_DECAP_TYPE_NATIVE_WIFI) {
+ 		u8 qos_pkt = 0;
+ 
+@@ -4956,10 +4961,13 @@ ath11k_dp_rx_mon_merg_msdus(struct ath11
+ 			prev_buf = msdu;
+ 			msdu = msdu->next;
+ 		}
+-		dest = skb_put(prev_buf, HAL_RX_FCS_LEN);
+-		if (!dest)
+-			goto err_merge_fail;
+-
++		/* REMOVED: skb_put(prev_buf, HAL_RX_FCS_LEN)
++		 * Older code did skb_put(), effectively
++		 * extending the payload tail from merge stage for the last MSDU.
++		 * This is removed so merge path does not mutate capture length.
++		 * We keep a single length-fix point in monitor deliver path
++		 * (trim 8 bytes) right before mac80211 hand-off.
++		 */
+ 		ath11k_dbg(ab, ATH11K_DBG_DATA,
+ 			   "mpdu_buf %p mpdu_buf->len %u",
+ 			   prev_buf, prev_buf->len);
+@@ -5084,12 +5092,27 @@ static int ath11k_dp_rx_mon_deliver(stru
+ 
+ 	header = mon_skb;
+ 
+-	rxs->flag = 0;
++	/* Do not clear rxs->flag here to preserve FCS presence information
++	 * set during MSDU merge/trim.
++	 */
++	rxs->flag |= RX_FLAG_ONLY_MONITOR;
+ 
+ 	if (fcs_err)
+-		rxs->flag = RX_FLAG_FAILED_FCS_CRC;
++		rxs->flag |= RX_FLAG_FAILED_FCS_CRC;
+ 
+ 	do {
++		/* HW monitor path on ipq60xx/ipq807x may append FCS + 4-byte tail.
++		 * Force trim 8 bytes right before delivery to mac80211 so
++		 * userspace capture length reflects actual 802.11 frame size.
++		 */
++		if (mon_skb->len > (FCS_LEN * 2)) {
++			u32 old_len = mon_skb->len;
++
++			skb_trim(mon_skb, old_len - (FCS_LEN * 2));
++			ath11k_warn(ar->ab, "%s:%d DELIVER trim8 len %u -> %u\n",
++				    __func__, __LINE__, old_len, mon_skb->len);
++		}
++
+ 		skb_next = mon_skb->next;
+ 		if (!skb_next)
+ 			rxs->flag &= ~RX_FLAG_AMSDU_MORE;

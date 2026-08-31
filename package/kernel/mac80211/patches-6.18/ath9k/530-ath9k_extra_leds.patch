@@ -10,21 +10,22 @@
  #else
  static inline void ath_init_leds(struct ath_softc *sc)
  {
-@@ -980,6 +983,13 @@ void ath_ant_comb_scan(struct ath_softc
+@@ -980,6 +983,14 @@ void ath_ant_comb_scan(struct ath_softc
  
  #define ATH9K_NUM_CHANCTX  2 /* supports 2 operating channels */
  
 +struct ath_led {
 +	struct list_head list;
 +	struct ath_softc *sc;
-+	const struct gpio_led *gpio;
++	struct gpio_led gpio;
 +	struct led_classdev cdev;
++	char name[];
 +};
 +
  struct ath_softc {
  	struct ieee80211_hw *hw;
  	struct device *dev;
-@@ -1035,9 +1045,8 @@ struct ath_softc {
+@@ -1035,9 +1046,8 @@ struct ath_softc {
  	spinlock_t chan_lock;
  
  #ifdef CPTCFG_MAC80211_LEDS
@@ -38,7 +39,7 @@
  #ifdef CPTCFG_ATH9K_DEBUGFS
 --- a/drivers/net/wireless/ath/ath9k/gpio.c
 +++ b/drivers/net/wireless/ath/ath9k/gpio.c
-@@ -39,61 +39,111 @@ static void ath_fill_led_pin(struct ath_
+@@ -39,61 +39,112 @@ static void ath_fill_led_pin(struct ath_
  		else
  			ah->led_pin = ATH_LED_PIN_DEF;
  	}
@@ -49,16 +50,17 @@
 +{
 +	struct ath_led *led = container_of(led_cdev, struct ath_led, cdev);
 +	struct ath_softc *sc = led->sc;
++	const struct gpio_led *gpio = &led->gpio;
 +
 +	ath9k_ps_wakeup(sc);
-+	ath9k_hw_set_gpio(sc->sc_ah, led->gpio->gpio,
-+			  (brightness != LED_OFF) ^ led->gpio->active_low);
++	ath9k_hw_set_gpio(sc->sc_ah, gpio->gpio,
++			  (brightness != LED_OFF) ^ gpio->active_low);
 +	ath9k_ps_restore(sc);
 +}
 +
 +static int ath_add_led(struct ath_softc *sc, struct ath_led *led)
 +{
-+	const struct gpio_led *gpio = led->gpio;
++	const struct gpio_led *gpio = &led->gpio;
 +	int ret;
 +
 +	led->cdev.name = gpio->name;
@@ -94,30 +96,28 @@
 -	u32 val = (brightness == LED_OFF);
 +	struct ath_led *led;
 +	struct gpio_led *gpio;
-+	char *_name;
 +	int ret;
  
 -	if (sc->sc_ah->config.led_active_high)
 -		val = !val;
-+	led = kzalloc(sizeof(*led) + sizeof(*gpio) + strlen(name) + 1,
-+		      GFP_KERNEL);
++	led = kzalloc(struct_size(led, name, strlen(name) + 1), GFP_KERNEL);
 +	if (!led)
 +		return -ENOMEM;
 +
-+	led->gpio = gpio = (struct gpio_led *) (led + 1);
-+	_name = (char *) (led->gpio + 1);
++	strcpy(led->name, name);
 +
-+	strcpy(_name, name);
-+	gpio->name = _name;
++	gpio = &led->gpio;
++	gpio->name = led->name;
 +	gpio->gpio = gpio_num;
 +	gpio->active_low = active_low;
 +	gpio->default_trigger = trigger;
 +
 +	ret = ath_add_led(sc, led);
-+	if (unlikely(ret < 0))
-+		kfree(led);
++	if (likely(ret >= 0))
++		return ret;
  
 -	ath9k_hw_set_gpio(sc->sc_ah, sc->sc_ah->led_pin, val);
++	kfree(led);
 +	return ret;
  }
  
@@ -126,6 +126,7 @@
 -	if (!sc->led_registered)
 -		return;
 +	struct ath_led *led;
++	struct gpio_led *gpio;
  
 -	ath_led_brightness(&sc->led_cdev, LED_OFF);
 -	led_classdev_unregister(&sc->led_cdev);
@@ -136,7 +137,8 @@
 +		list_del(&led->list);
 +		ath_led_brightness(&led->cdev, LED_OFF);
 +		led_classdev_unregister(&led->cdev);
-+		ath9k_hw_gpio_free(sc->sc_ah, led->gpio->gpio);
++		gpio = &led->gpio;
++		ath9k_hw_gpio_free(sc->sc_ah, gpio->gpio);
 +		kfree(led);
 +	}
  }

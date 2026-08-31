@@ -1,6 +1,7 @@
 PKG_DRIVERS += \
 	rt2x00-lib rt2x00-pci rt2x00-usb rt2x00-mmio \
-	rt2800-lib rt2800-mmio rt2800-pci rt2800-soc rt2800-usb
+	rt2800-lib rt2800-mmio rt2800-pci rt2800-soc rt2800-usb \
+	rt61-pci rt73-usb
 
 PKG_CONFIG_DEPENDS += \
 	CONFIG_PACKAGE_RT2X00_LIB_DEBUGFS \
@@ -126,4 +127,20 @@ $(call KernelPackage/rt2x00/Default)
   TITLE+= (RT2870 USB)
   FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt2800usb.ko
   AUTOLOAD:=$(call AutoProbe,rt2800usb)
+endef
+
+define KernelPackage/rt61-pci
+$(call KernelPackage/rt2x00/Default)
+  DEPENDS+= @PCI_SUPPORT +kmod-rt2x00-pci +kmod-eeprom-93cx6 +kmod-lib-crc-itu-t +rt61-pci-firmware
+  TITLE+= (RT2x61 PCI)
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt61pci.ko
+  AUTOLOAD:=$(call AutoProbe,rt61pci)
+endef
+
+define KernelPackage/rt73-usb
+  $(call KernelPackage/rt2x00/Default)
+  DEPENDS+= @USB_SUPPORT +kmod-rt2x00-usb +kmod-lib-crc-itu-t +rt73-usb-firmware
+  TITLE+= (RT73 USB)
+  FILES:=$(PKG_BUILD_DIR)/drivers/net/wireless/ralink/rt2x00/rt73usb.ko
+  AUTOLOAD:=$(call AutoProbe,rt73usb)
 endef

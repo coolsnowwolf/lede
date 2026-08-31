@@ -3,7 +3,27 @@ Date: Thu, 14 Sep 2023 13:17:16 +0200
 Subject: [PATCH] cfg80211: allow grace period for DFS available after beacon
  shutdown
 
-Fixes reconfiguring an AP on a DFS channel in non-ETSI regdomain
+In non-ETSI regulatory domains, DFS channel availability from completed CAC
+expires after REG_PRE_CAC_EXPIRY_GRACE_MS (2 seconds) when no longer in use.
+This creates a problem when reconfiguring an AP on a DFS channel: stopping
+the AP to apply new settings causes the channel to immediately expire to
+USABLE state, requiring a full CAC again.
+
+The root cause is that the grace period timeout was calculated from
+dfs_state_entered, which records when CAC completed. For an AP that has
+been running for hours, this timestamp is far in the past, causing
+immediate expiration.
+
+Fix this by introducing a new field dfs_state_last_available that tracks
+when a DFS channel was last actively used. This timestamp is updated:
+- When DFS state transitions to AVAILABLE (CAC completion)
+- When an AP stops beaconing on the channel
+- When a channel switch moves away from the channel
+- When DFS state is copied between wiphys
+
+The grace period for AVAILABLE->USABLE transitions now uses this new
+timestamp, giving a 2-second window to reconfigure the AP without losing
+DFS availability.
 
 Fixes: b35a51c7dd25 ("cfg80211: Make pre-CAC results valid only for ETSI domain")
 Signed-off-by: Felix Fietkau <nbd@nbd.name>
@@ -61,55 +81,30 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	}
  }
  
-@@ -990,6 +992,53 @@ bool cfg80211_any_wiphy_oper_chan(struct
+@@ -990,6 +992,28 @@ bool cfg80211_any_wiphy_oper_chan(struct
  	return false;
  }
  
-+static void
-+__cfg80211_update_last_available(struct wiphy *wiphy,
-+					 u32 center_freq,
-+					 u32 bandwidth)
++void cfg80211_update_last_available(struct wiphy *wiphy,
++				    const struct cfg80211_chan_def *chandef)
 +{
 +	struct ieee80211_channel *c;
-+	u32 freq, start_freq, end_freq;
++	int width;
 +
-+	if (bandwidth <= MHZ_TO_KHZ(20))
-+		start_freq = end_freq = center_freq;
-+	else {
-+		start_freq = center_freq - bandwidth / 2 + MHZ_TO_KHZ(10);
-+		end_freq = center_freq + bandwidth / 2 - MHZ_TO_KHZ(10);
-+	}
++	if (WARN_ON(!cfg80211_chandef_valid(chandef)))
++		return;
 +
-+	/*
-+	 * Check entire range of channels for the bandwidth.
-+	 * If any channel in between is disabled or has not
-+	 * had gone through CAC return false
-+	 */
-+	for (freq = start_freq; freq <= end_freq; freq += MHZ_TO_KHZ(20)) {
++	width = cfg80211_chandef_get_width(chandef);
++	if (width < 0)
++		return;
++
++	for_each_subchan(chandef, freq, cf) {
 +		c = ieee80211_get_channel_khz(wiphy, freq);
 +		if (!c)
 +			return;
 +
 +		c->dfs_state_last_available = jiffies;
 +	}
-+}
-+
-+void cfg80211_update_last_available(struct wiphy *wiphy,
-+				    const struct cfg80211_chan_def *chandef)
-+{
-+	int width;
-+
-+	width = cfg80211_chandef_get_width(chandef);
-+	if (width < 0)
-+		return;
-+
-+	__cfg80211_update_last_available(wiphy, MHZ_TO_KHZ(chandef->center_freq1),
-+						 width);
-+	if (chandef->width != NL80211_CHAN_WIDTH_80P80)
-+	    return;
-+
-+	__cfg80211_update_last_available(wiphy, MHZ_TO_KHZ(chandef->center_freq2),
-+						 width);
 +}
 +
  static bool cfg80211_chandef_dfs_available(struct wiphy *wiphy,
@@ -151,3 +146,25 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  			if (time_after_eq(jiffies, timeout)) {
  				c->dfs_state = NL80211_DFS_USABLE;
  				c->dfs_state_entered = jiffies;
+--- a/net/wireless/nl80211.c
++++ b/net/wireless/nl80211.c
+@@ -20970,6 +20970,9 @@ void cfg80211_ch_switch_notify(struct ne
+ 		break;
+ 	case NL80211_IFTYPE_AP:
+ 	case NL80211_IFTYPE_P2P_GO:
++		if (wdev->links[link_id].ap.chandef.chan)
++			cfg80211_update_last_available(wdev->wiphy,
++						       &wdev->links[link_id].ap.chandef);
+ 		wdev->links[link_id].ap.chandef = *chandef;
+ 		break;
+ 	case NL80211_IFTYPE_ADHOC:
+--- a/net/wireless/reg.c
++++ b/net/wireless/reg.c
+@@ -2954,6 +2954,7 @@ static void reg_copy_dfs_chan_state(stru
+ 	    dst_chan->dfs_state == NL80211_DFS_USABLE) {
+ 		dst_chan->dfs_state = src_chan->dfs_state;
+ 		dst_chan->dfs_state_entered = src_chan->dfs_state_entered;
++		dst_chan->dfs_state_last_available = src_chan->dfs_state_last_available;
+ 	}
+ }
+ 

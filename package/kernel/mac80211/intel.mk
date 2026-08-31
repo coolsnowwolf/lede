@@ -1,18 +1,19 @@
 PKG_DRIVERS += iwlwifi
 
-config-$(call config_package,iwlwifi) += IWLWIFI IWLDVM IWLMVM
+config-$(call config_package,iwlwifi) += IWLWIFI IWLDVM IWLMVM IWLMLD
 config-$(CONFIG_PACKAGE_IWLWIFI_DEBUG)+= IWLWIFI_DEBUG
 config-$(CONFIG_PACKAGE_IWLWIFI_DEBUGFS)+= IWLWIFI_DEBUGFS
 
 define KernelPackage/iwlwifi
   $(call KernelPackage/mac80211/Default)
-  DEPENDS:= +kmod-mac80211 +kmod-ptp @PCI_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT
+  DEPENDS:= +kmod-mac80211 +kmod-ptp @PCI_SUPPORT +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT +@DRIVER_11BE_SUPPORT
   TITLE:=Intel AGN Wireless support
   FILES:= \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/iwlwifi.ko \
 	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/dvm/iwldvm.ko \
-	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/mvm/iwlmvm.ko
-  AUTOLOAD:=$(call AutoProbe,iwlwifi iwldvm iwlmvm)
+	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/mvm/iwlmvm.ko \
+	$(PKG_BUILD_DIR)/drivers/net/wireless/intel/iwlwifi/mld/iwlmld.ko
+  AUTOLOAD:=$(call AutoProbe,iwlwifi iwldvm iwlmvm iwlmld)
   MENU:=1
 endef
 
@@ -74,4 +75,3 @@ define KernelPackage/iwlwifi/config
 
   endif
 endef
-

@@ -1,0 +1,108 @@
+From 3e14d832e30b10478d2b0945ff2651f6784385a7 Mon Sep 17 00:00:00 2001
+From: Rosen Penev <rosenp@gmail.com>
+Date: Sat, 16 May 2026 16:43:10 -0700
+Subject: [PATCH] wifi: ath9k: Clear DMA descriptors without memset
+
+Clear ath9k DMA descriptors with explicit status word stores instead of
+memset(). The descriptor rings are coherent DMA memory, which may be
+mapped uncached on 32-bit powerpc. The optimized memset() path can use
+dcbz there and trigger an alignment warning.
+
+Use WRITE_ONCE() for the descriptor status words so the compiler keeps
+the clears as ordinary stores instead of folding them back into bulk
+memset(). This covers AR9003 TX status descriptors as well as the RX
+status area cleared when setting up RX descriptors.
+
+Assisted-by: Codex:GPT-5.5
+Signed-off-by: Rosen Penev <rosenp@gmail.com>
+---
+ drivers/net/wireless/ath/ath9k/ar9002_mac.c | 15 +++++++++++++-
+ drivers/net/wireless/ath/ath9k/ar9003_mac.c | 23 +++++++++++++++++----
+ 2 files changed, 33 insertions(+), 5 deletions(-)
+
+--- a/drivers/net/wireless/ath/ath9k/ar9002_mac.c
++++ b/drivers/net/wireless/ath/ath9k/ar9002_mac.c
+@@ -403,6 +403,19 @@ static int ar9002_hw_get_duration(struct
+ 	}
+ }
+ 
++static void ath9k_hw_clear_rxdesc_status(struct ar5416_desc *ads)
++{
++	WRITE_ONCE(ads->u.rx.status0, 0);
++	WRITE_ONCE(ads->u.rx.status1, 0);
++	WRITE_ONCE(ads->u.rx.status2, 0);
++	WRITE_ONCE(ads->u.rx.status3, 0);
++	WRITE_ONCE(ads->u.rx.status4, 0);
++	WRITE_ONCE(ads->u.rx.status5, 0);
++	WRITE_ONCE(ads->u.rx.status6, 0);
++	WRITE_ONCE(ads->u.rx.status7, 0);
++	WRITE_ONCE(ads->u.rx.status8, 0);
++}
++
+ void ath9k_hw_setuprxdesc(struct ath_hw *ah, struct ath_desc *ds,
+ 			  u32 size, u32 flags)
+ {
+@@ -412,7 +425,7 @@ void ath9k_hw_setuprxdesc(struct ath_hw
+ 	if (flags & ATH9K_RXDESC_INTREQ)
+ 		ads->ds_ctl1 |= AR_RxIntrReq;
+ 
+-	memset(&ads->u.rx, 0, sizeof(ads->u.rx));
++	ath9k_hw_clear_rxdesc_status(ads);
+ }
+ EXPORT_SYMBOL(ath9k_hw_setuprxdesc);
+ 
+--- a/drivers/net/wireless/ath/ath9k/ar9003_mac.c
++++ b/drivers/net/wireless/ath/ath9k/ar9003_mac.c
+@@ -352,6 +352,19 @@ static bool ar9003_hw_get_isr(struct ath
+ 	return true;
+ }
+ 
++static void ath9k_hw_clear_txstatus(struct ar9003_txs *ads)
++{
++	WRITE_ONCE(ads->ds_info, 0);
++	WRITE_ONCE(ads->status1, 0);
++	WRITE_ONCE(ads->status2, 0);
++	WRITE_ONCE(ads->status3, 0);
++	WRITE_ONCE(ads->status4, 0);
++	WRITE_ONCE(ads->status5, 0);
++	WRITE_ONCE(ads->status6, 0);
++	WRITE_ONCE(ads->status7, 0);
++	WRITE_ONCE(ads->status8, 0);
++}
++
+ static int ar9003_hw_proc_txdesc(struct ath_hw *ah, void *ds,
+ 				 struct ath_tx_status *ts)
+ {
+@@ -370,7 +383,7 @@ static int ar9003_hw_proc_txdesc(struct
+ 	    (MS(ads->ds_info, AR_TxRxDesc) != 1)) {
+ 		ath_dbg(ath9k_hw_common(ah), XMIT,
+ 			"Tx Descriptor error %x\n", ads->ds_info);
+-		memset(ads, 0, sizeof(*ads));
++		ath9k_hw_clear_txstatus(ads);
+ 		return -EIO;
+ 	}
+ 
+@@ -427,7 +440,7 @@ static int ar9003_hw_proc_txdesc(struct
+ 	ts->ts_rssi_ext1 = MS(status, AR_TxRSSIAnt11);
+ 	ts->ts_rssi_ext2 = MS(status, AR_TxRSSIAnt12);
+ 
+-	memset(ads, 0, sizeof(*ads));
++	ath9k_hw_clear_txstatus(ads);
+ 
+ 	return 0;
+ }
+@@ -591,10 +604,12 @@ EXPORT_SYMBOL(ath9k_hw_process_rxdesc_ed
+ 
+ void ath9k_hw_reset_txstatus_ring(struct ath_hw *ah)
+ {
++	int i;
++
+ 	ah->ts_tail = 0;
+ 
+-	memset((void *) ah->ts_ring, 0,
+-		ah->ts_size * sizeof(struct ar9003_txs));
++	for (i = 0; i < ah->ts_size; i++)
++		ath9k_hw_clear_txstatus(&ah->ts_ring[i]);
+ 
+ 	ath_dbg(ath9k_hw_common(ah), XMIT,
+ 		"TS Start 0x%x End 0x%x Virt %p, Size %d\n",

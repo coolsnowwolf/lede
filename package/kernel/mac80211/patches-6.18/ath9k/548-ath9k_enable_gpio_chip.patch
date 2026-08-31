@@ -19,7 +19,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  
  #include "common.h"
  #include "debug.h"
-@@ -1047,6 +1049,10 @@ struct ath_softc {
+@@ -1048,6 +1050,10 @@ struct ath_softc {
  #ifdef CPTCFG_MAC80211_LEDS
  	const char *led_default_trigger;
  	struct list_head leds;
@@ -32,7 +32,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  #ifdef CPTCFG_ATH9K_DEBUGFS
 --- a/drivers/net/wireless/ath/ath9k/gpio.c
 +++ b/drivers/net/wireless/ath/ath9k/gpio.c
-@@ -16,12 +16,122 @@
+@@ -16,12 +16,131 @@
  
  #include "ath9k.h"
  
@@ -85,20 +85,27 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +}
 +
 +/* gpio_chip handler : set GPIO pin to value */
++#if LINUX_VERSION_IS_LESS(6,16,0)
++static void ath9k_gpio_pin_set(struct gpio_chip *chip, unsigned offset,
++			       int value)
++#else
 +static int ath9k_gpio_pin_set(struct gpio_chip *chip, unsigned offset,
 +			       int value)
++#endif
 +{
 +	struct ath_softc *sc = gpiochip_get_data(chip);
 +
 +	ath9k_hw_set_gpio(sc->sc_ah, offset, value);
 +
++#if LINUX_VERSION_IS_GEQ(6,16,0)
 +	return 0;
++#endif
 +}
 +
 +/* register GPIO chip */
 +static void ath9k_register_gpio_chip(struct ath_softc *sc)
 +{
-+	struct gpio_chip *gc = sc->gpiochip;
++	struct gpio_chip *gc;
 +	struct ath_hw *ah = sc->sc_ah;
 +
 +	gc = kzalloc(sizeof(struct gpio_chip), GFP_KERNEL);
@@ -121,6 +128,8 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
 +		kfree(gc);
 +		return;
 +	}
++
++	sc->gpiochip = gc;
 +}
 +
 +/* remove GPIO chip */
@@ -157,7 +166,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  static void ath_fill_led_pin(struct ath_softc *sc)
  {
  	struct ath_hw *ah = sc->sc_ah;
-@@ -79,6 +189,12 @@ static int ath_add_led(struct ath_softc
+@@ -80,6 +199,12 @@ static int ath_add_led(struct ath_softc
  	else
  		ath9k_hw_set_gpio(sc->sc_ah, gpio->gpio, gpio->active_low);
  
@@ -170,7 +179,7 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  	return 0;
  }
  
-@@ -117,16 +233,23 @@ void ath_deinit_leds(struct ath_softc *s
+@@ -117,6 +242,11 @@ void ath_deinit_leds(struct ath_softc *s
  
  	while (!list_empty(&sc->leds)) {
  		led = list_first_entry(&sc->leds, struct ath_led, list);
@@ -182,27 +191,20 @@ Signed-off-by: Felix Fietkau <nbd@nbd.name>
  		list_del(&led->list);
  		ath_led_brightness(&led->cdev, LED_OFF);
  		led_classdev_unregister(&led->cdev);
- 		ath9k_hw_gpio_free(sc->sc_ah, led->gpio->gpio);
+@@ -124,6 +254,7 @@ void ath_deinit_leds(struct ath_softc *s
+ 		ath9k_hw_gpio_free(sc->sc_ah, gpio->gpio);
  		kfree(led);
  	}
 +	ath9k_unregister_gpio_chip(sc);
  }
  
  void ath_init_leds(struct ath_softc *sc)
- {
-+	struct device_node *np = sc->dev->of_node;
- 	char led_name[32];
- 	const char *trigger;
- 
-@@ -135,6 +258,15 @@ void ath_init_leds(struct ath_softc *sc)
+@@ -136,6 +267,12 @@ void ath_init_leds(struct ath_softc *sc)
  	if (AR_SREV_9100(sc->sc_ah))
  		return;
  
-+	if (!np)
-+		ath9k_register_gpio_chip(sc);
-+
 +	/* setup gpio controller only if requested and skip the led_pin setup */
-+	if (of_property_read_bool(np, "gpio-controller")) {
++	if (device_property_present(sc->dev, "gpio-controller")) {
 +		ath9k_register_gpio_chip(sc);
 +		return;
 +	}
