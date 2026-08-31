@@ -8,12 +8,12 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=iw
-PKG_VERSION:=6.9
-PKG_RELEASE:=3
+PKG_VERSION:=6.17
+PKG_RELEASE:=1
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/software/network/iw
-PKG_HASH:=3f2db22ad41c675242b98ae3942dbf3112548c60a42ff739210f2de4e98e4894
+PKG_HASH:=7d182e498289ab39b257da6780d562e415377107f50358ee5b55b8cfe40b1e33
 
 PKG_MAINTAINER:=Felix Fietkau <nbd@nbd.name>
 PKG_LICENSE:=GPL-2.0
@@ -23,17 +23,22 @@ PKG_BUILD_FLAGS:=gc-sections lto
 
 include $(INCLUDE_DIR)/package.mk
 
-define Package/iw
+define Package/iw/Default
   SECTION:=net
   CATEGORY:=Network
   TITLE:=cfg80211 interface configuration utility
-  URL:=http://wireless.kernel.org/en/users/Documentation/iw
+  URL:=https://wireless.kernel.org/en/latest/en/users/documentation/iw.html
   DEPENDS:= +libnl-tiny
+endef
+
+define Package/iw
+$(call Package/iw/Default)
   VARIANT:=tiny
+  DEFAULT_VARIANT:=1
 endef
 
 define Package/iw-full
-  $(Package/iw)
+$(call Package/iw/Default)
   TITLE += (full version)
   VARIANT:=full
   PROVIDES:=iw
