@@ -1,0 +1,151 @@
+From 314b696c26589f53cd9c1d1ca35edcfaddd362fb Mon Sep 17 00:00:00 2001
+From: Kenneth Kasilag <kenneth@kasilag.me>
+Date: Sun, 21 Jun 2026 23:26:43 +0000
+Subject: [PATCH] pwm: ipq: fix period calculation
+
+Comparing the proposed upstream pwm-ipq driver to the downstream vendor
+driver, `ipq_pwm_apply()` fixed pwm_div at its maximum and derived only
+pre_div from the requested period. Since the period spans
+`(pre_div + 1) * (pwm_div + 1)` input clocks, pinning pwm_div near its
+maximum forces pre_div towards zero for short periods: once pre_div
+rounds to 0 the shortest representable period is
+`(pwm_div + 1) / clk_rate`, and any shorter request is rejected with
+-ERANGE or silently stretched. The high duration then truncates to 0,
+so the output collapses to ~0% duty.
+
+Since 4-wire fans commonly expect a ~25kHz PWM, it was effectively
+unusable, since every duty cycle programs a ~zero high time.
+
+Search for the (pre_div, pwm_div) pair whose period best approximates
+the request instead of fixing pwm_div. Starting pre_div at the smallest
+value that keeps pwm_div within its field and stopping once pre_div
+exceeds pwm_div bounds the loop and keeps pwm_div as large as possible
+for fine duty resolution.
+
+While reworking the high-duration computation, round it to nearest
+rather than truncating, so mid-range duty cycles are not biased low, and
+clamp it to pwm_div + 1. Rounding, or a 100% duty request, could
+otherwise push hi_dur past the period length and overflow the 16-bit
+HI_DURATION field.
+
+Backported to qualcommax from OpenWrt commit 8db23dc91a015bf843f1e3fbd0891574594e86f9
+("qualcommbe: fix pwm period calculation").
+
+Signed-off-by: Kenneth Kasilag <kenneth@kasilag.me>
+---
+ drivers/pwm/pwm-ipq.c | 89 +++++++++++++++++++++++++++++--------------
+ 1 file changed, 64 insertions(+), 25 deletions(-)
+
+--- a/drivers/pwm/pwm-ipq.c
++++ b/drivers/pwm/pwm-ipq.c
+@@ -89,10 +89,10 @@ static int ipq_pwm_apply(struct pwm_chip
+ 			 const struct pwm_state *state)
+ {
+ 	struct ipq_pwm_chip *ipq_chip = ipq_pwm_from_chip(chip);
+-	unsigned int pre_div, pwm_div;
+-	u64 period_ns, duty_ns;
++	unsigned int pre_div, pwm_div, best_pre_div, best_pwm_div;
++	u64 period_ns, duty_ns, period_rate, min_diff;
+ 	unsigned long val = 0;
+-	unsigned long hi_dur;
++	u64 hi_dur;
+ 
+ 	if (!state->enabled) {
+ 		/* clear IPQ_PWM_REG1_ENABLE */
+@@ -112,35 +112,74 @@ static int ipq_pwm_apply(struct pwm_chip
+ 	period_ns = min(state->period, IPQ_PWM_MAX_PERIOD_NS);
+ 	duty_ns = min(state->duty_cycle, period_ns);
+ 
+-	/*
+-	 * Pick the maximal value for PWM_DIV that still allows a
+-	 * 100% relative duty cycle. This allows a fine grained
+-	 * selection of duty cycles.
+-	 */
+-	pwm_div = IPQ_PWM_MAX_DIV - 1;
++	period_rate = period_ns * ipq_chip->clk_rate;
++
++	best_pre_div = IPQ_PWM_MAX_DIV;
++	best_pwm_div = IPQ_PWM_MAX_DIV;
++	min_diff = period_rate;
+ 
+ 	/*
+-	 * although mul_u64_u64_div_u64 returns a u64, in practice it
+-	 * won't overflow due to above constraints. Take the max period
+-	 * of 10^9 (NSEC_PER_SEC) and the pwm_div + 1 (IPQ_PWM_MAX_DIV)
+-	 *  10^9 * 10^8
+-	 * ------------- => which fits well into a 32-bit unsigned int.
+-	 * 10^9 * 65,535
++	 * Smaller pre_div than this cannot represent the period (pwm_div would
++	 * have to exceed its field), so start the search there.
+ 	 */
+-	pre_div = mul_u64_u64_div_u64(period_ns, ipq_chip->clk_rate,
+-				      (u64)NSEC_PER_SEC * (pwm_div + 1));
++	pre_div = div64_u64(period_rate,
++			    (u64)NSEC_PER_SEC * (IPQ_PWM_MAX_DIV + 1));
+ 
+-	if (!pre_div)
+-		return -ERANGE;
++	for (; pre_div <= IPQ_PWM_MAX_DIV; pre_div++) {
++		u64 remainder;
++
++		pwm_div = div64_u64_rem(period_rate,
++					(u64)NSEC_PER_SEC * (pre_div + 1),
++					&remainder);
++		/* pwm_div is unsigned; the swap check below catches underflow */
++		pwm_div--;
++
++		/*
++		 * Swapping pre_div and pwm_div yields the same period but a
++		 * larger pwm_div gives finer duty resolution, so once pre_div
++		 * exceeds pwm_div every further candidate is strictly worse.
++		 */
++		if (pre_div > pwm_div)
++			break;
++
++		/* need room for 100% duty, where hi_dur == pwm_div + 1 */
++		if (pwm_div > IPQ_PWM_MAX_DIV - 1)
++			continue;
++
++		if (remainder < min_diff) {
++			best_pre_div = pre_div;
++			best_pwm_div = pwm_div;
++			min_diff = remainder;
++
++			if (min_diff == 0)
++				break;
++		}
++	}
+ 
+-	pre_div -= 1;
++	pre_div = best_pre_div;
++	pwm_div = best_pwm_div;
+ 
+-	if (pre_div > IPQ_PWM_MAX_DIV)
+-		pre_div = IPQ_PWM_MAX_DIV;
++	/*
++	 * If the search found no usable candidate, best_pwm_div is left at
++	 * IPQ_PWM_MAX_DIV; cap it so pwm_div + 1 still fits the 16-bit field
++	 * and 100% duty remains expressible.
++	 */
++	if (pwm_div > IPQ_PWM_MAX_DIV - 1)
++		pwm_div = IPQ_PWM_MAX_DIV - 1;
+ 
+-	/* pwm duty = HI_DUR * (PRE_DIV + 1) / clk_rate */
+-	hi_dur = mul_u64_u64_div_u64(duty_ns, ipq_chip->clk_rate,
+-				     (u64)NSEC_PER_SEC * (pre_div + 1));
++	/*
++	 * high duration = duty_ratio * (pwm_div + 1)
++	 *              = duty_ns * clk_rate / ((pre_div + 1) * NSEC_PER_SEC)
++	 *
++	 * Round to nearest to avoid biasing every duty cycle low, then clamp
++	 * to (pwm_div + 1): rounding or a 100% request can otherwise push
++	 * hi_dur past the period, overflowing the 16-bit HI_DURATION field
++	 * and asking the hardware to stay high beyond one period.
++	 */
++	hi_dur = DIV64_U64_ROUND_CLOSEST(duty_ns * ipq_chip->clk_rate,
++					 (u64)(pre_div + 1) * NSEC_PER_SEC);
++	if (hi_dur > (u64)pwm_div + 1)
++		hi_dur = (u64)pwm_div + 1;
+ 
+ 	val = FIELD_PREP(IPQ_PWM_REG0_HI_DURATION, hi_dur) |
+ 		FIELD_PREP(IPQ_PWM_REG0_PWM_DIV, pwm_div);
