@@ -1,0 +1,93 @@
+#!/bin/sh
+# Copyright (C) 2006 OpenWrt.org
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+usage() {
+	cat <<EOF
+Usage: $0 [config|up|down|reconf|reload|status|isup]
+enables (default), disables or configures devices not yet configured.
+EOF
+	exit 1
+}
+
+ubus_wifi_cmd() {
+	local cmd="$1"
+	local dev="$2"
+
+	json_init
+	[ -n "$dev" ] && json_add_string device "$dev"
+	ubus call network.wireless "$cmd" "$(json_dump)"
+}
+
+wifi_isup() {
+	local dev="$1"
+
+	json_load "$(ubus_wifi_cmd "status" "$dev")"
+	json_get_keys devices
+
+	for device in $devices; do
+		json_select "$device"
+			json_get_var up up
+			[ $up -eq 0 ] && return 1
+		json_select ..
+	done
+
+	return 0
+}
+
+wifi_updown() {
+	cmd=down
+	[ enable = "$1" ] && {
+		ubus_wifi_cmd "$cmd" "$2"
+		ubus call network reload
+		cmd=up
+	}
+	[ reconf = "$1" ] && {
+		ubus call network reload
+		cmd=reconf
+	}
+	ubus_wifi_cmd "$cmd" "$2"
+}
+
+wifi_reload() {
+	ubus call network reload
+}
+
+wifi_detect_notice() {
+	>&2 echo "WARNING: Wifi detect is deprecated. Use wifi config instead"
+	>&2 echo "For more information, see commit 5f8f8a366136a07df661e31decce2458357c167a"
+	exit 1
+}
+
+wifi_config() {
+	ucode /usr/share/hostap/wifi-detect.uc
+	[ ! -f /etc/config/wireless ] && touch /etc/config/wireless
+	ucode /lib/wifi/mac80211.uc | uci -q batch
+
+	for driver in $DRIVERS; do (
+		if eval "type detect_$driver" 2>/dev/null >/dev/null; then
+			eval "detect_$driver" || echo "$driver: Detect failed" >&2
+		else
+			echo "$driver: Hardware detection not supported" >&2
+		fi
+	); done
+}
+
+DEVICES=
+DRIVERS=
+include /lib/wifi
+
+case "$1" in
+	down) wifi_updown "disable" "$2";;
+	detect) wifi_detect_notice ;;
+	config) wifi_config ;;
+	status) ubus_wifi_cmd "status" "$2";;
+	isup) wifi_isup "$2"; exit $?;;
+	reload) wifi_reload "$2";;
+	--help|help) usage;;
+	reconf) wifi_updown "reconf" "$2";;
+	''|up) wifi_updown "enable" "$2";;
+	*) usage; exit 1;;
+esac
