@@ -8,21 +8,27 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=kexec-tools
-PKG_VERSION:=2.0.21
-PKG_RELEASE:=2
+PKG_VERSION:=2.0.32
+PKG_RELEASE:=3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/kernel/kexec
-PKG_HASH:=e113142dee891638ad96e0f72cf9277b244477619470b30c41999d312e8e8702
+PKG_HASH:=8f81422a5fd2362cf6cb001b511e535565ed0f32c2f4451fb5eb68fed6710a5d
 
-PKG_CONFIG_DEPENDS := CONFIG_KEXEC_ZLIB CONFIG_KEXEC_LZMA
+PKG_LICENSE:=GPL-2.0-only
+PKG_LICENSE_FILES:=COPYING
+PKG_CPE_ID:=cpe:/a:kernel:kexec-tools
+
+PKG_CONFIG_DEPENDS := CONFIG_KEXEC_ZLIB CONFIG_KEXEC_LZMA CONFIG_KEXEC_ZSTD
+
+PKG_BUILD_FLAGS:=gc-sections
 
 include $(INCLUDE_DIR)/package.mk
 
 define Package/kexec-tools/Default
   SECTION:=utils
   CATEGORY:=Utilities
-  URL:=http://kernel.org/pub/linux/kernel/people/horms/kexec-tools/
+  URL:=https://github.com/horms/kexec-tools
 endef
 
 define Package/kexec-tools
@@ -41,12 +47,23 @@ define Package/kexec
   $(call Package/kexec-tools/Default)
   TITLE:=Kernel boots kernel
   DEPENDS:=\
-	@(armeb||arm||i386||x86_64||powerpc64||mipsel||mips) \
-	+KEXEC_ZLIB:zlib +KEXEC_LZMA:liblzma @KERNEL_KEXEC
+	@(armeb||arm||aarch64||i386||x86_64||powerpc64||mipsel||mips) \
+	+KEXEC_ZLIB:zlib +KEXEC_LZMA:liblzma +KEXEC_ZSTD:libzstd @KERNEL_KEXEC
 endef
 
 define Package/kexec/description
  The kexec utility allows to load and boot another kernel.
+endef
+
+define Package/kdump
+  $(call Package/kexec-tools/Default)
+  TITLE:=Kernel crash analysis
+  DEPENDS:=+kexec @(i386||x86_64||arm||aarch64) @KERNEL_CRASH_DUMP
+endef
+
+define Package/kdump/description
+ The kdump package allows to automatically boot into a
+ special kernel for analyzing kernel crashes using kdump.
 endef
 
 define Package/kexec/config
@@ -69,10 +86,8 @@ CONFIGURE_ARGS = \
 		--sysconfdir=/etc \
 		$(if $(CONFIG_KEXEC_ZLIB),--with,--without)-zlib \
 		$(if $(CONFIG_KEXEC_LZMA),--with,--without)-lzma \
+		$(if $(CONFIG_KEXEC_ZSTD),--with,--without)-zstd \
 		TARGET_LD="$(TARGET_CROSS)ld"
-
-TARGET_CFLAGS += -ffunction-sections -fdata-sections
-TARGET_LDFLAGS += -Wl,--gc-sections
 
 CONFIGURE_VARS += \
 	BUILD_CC="$(HOSTCC)" \
@@ -95,5 +110,28 @@ define Package/kexec/install
 	$(LN) ../usr/sbin/kexec $(1)/sbin/kexec
 endef
 
+define Package/kdump/install
+	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/sbin/vmcore-dmesg $(1)/usr/sbin
+	$(INSTALL_BIN) ./files/kdump.init $(1)/etc/init.d/kdump
+	$(INSTALL_BIN) ./files/kdump.defaults $(1)/etc/uci-defaults/kdump
+	$(INSTALL_CONF) ./files/kdump.config $(1)/etc/config/kdump
+endef
+
+define Package/kdump/prerm
+#!/bin/sh
+
+case $$(uname -m) in
+	i?86|x86_64)
+		if grep -q " crashkernel=" /boot/grub/grub.cfg; then
+			mount /boot -o remount,rw
+			sed -i 's/ crashkernel=[^ ]*//' /boot/grub/grub.cfg
+			mount /boot -o remount,ro
+		fi
+		;;
+esac
+endef
+
 $(eval $(call BuildPackage,kexec-tools))
 $(eval $(call BuildPackage,kexec))
+$(eval $(call BuildPackage,kdump))
