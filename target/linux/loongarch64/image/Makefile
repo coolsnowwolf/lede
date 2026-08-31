@@ -75,9 +75,9 @@ define Device/generic
   KERNEL := kernel-bin
   KERNEL_NAME := vmlinuz.efi
   IMAGE/rootfs.img := append-rootfs | pad-to $(ROOTFS_PARTSIZE)
-  IMAGE/rootfs.img.gz := append-rootfs | pad-to $(ROOTFS_PARTSIZE) | gzip
+  IMAGE/rootfs.img.gz := append-rootfs | pad-to $(ROOTFS_PARTSIZE) | libdeflate-gzip
   IMAGE/combined-efi.img := grub-config efi | combined | append-metadata
-  IMAGE/combined-efi.img.gz := grub-config efi | combined | gzip | append-metadata
+  IMAGE/combined-efi.img.gz := grub-config efi | combined | libdeflate-gzip | append-metadata
   ifeq ($(CONFIG_TARGET_IMAGES_GZIP),y)
     IMAGES-y := rootfs.img.gz
     IMAGES-$$(CONFIG_GRUB_EFI_IMAGES) += combined-efi.img.gz

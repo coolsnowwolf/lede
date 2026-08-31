@@ -11,7 +11,7 @@ FEATURES:=squashfs audio display ext4 pcie boot-part rootfs-part rtc usb targz
 SUBTARGETS:=generic
 
 KERNEL_PATCHVER:=6.12
-KERNEL_TESTING_PATCHVER:=6.6
+KERNEL_TESTING_PATCHVER:=6.18
 
 KERNELNAME:=vmlinuz.efi dtbs
 
