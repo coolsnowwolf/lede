@@ -3,8 +3,8 @@
 # Copyright 2020 NXP
 #
 
-RAMFS_COPY_BIN="/usr/sbin/fw_printenv /usr/sbin/fw_setenv /usr/sbin/ubinfo /bin/echo"
-RAMFS_COPY_DATA="/etc/fw_env.config /var/lock/fw_printenv.lock"
+RAMFS_COPY_BIN=""
+RAMFS_COPY_DATA=""
 
 REQUIRE_IMAGE_METADATA=1
 
@@ -32,23 +32,26 @@ platform_do_upgrade_sdboot() {
 	tar xf $tar_file ${board_dir}/root -O  | dd of=/dev/mmcblk0p2 bs=512k > /dev/null 2>&1
 
 }
-platform_do_upgrade_traverse_nandubi() {
-	bootsys=$(fw_printenv bootsys | awk -F= '{{print $2}}')
-	newbootsys=2
-	if [ "$bootsys" -eq "2" ]; then
-		newbootsys=1
+
+platform_do_upgrade_traverse_slotubi() {
+	part="$(awk -F 'ubi.mtd=' '{printf $2}' /proc/cmdline | sed -e 's/ .*$//')"
+	echo "Active boot slot: ${part}"
+	new_active_sys="b"
+
+	if [ ! -z "${part}" ]; then
+		if [ "${part}" = "ubia" ]; then
+			CI_UBIPART="ubib"
+		else
+			CI_UBIPART="ubia"
+			new_active_sys="a"
+		fi
 	fi
-
-	# If nand_do_upgrade succeeds, we don't have an opportunity to add any actions of
-	# our own, so do it here and set back on failure
-	echo "Setting bootsys to #${newbootsys}"
-	fw_setenv bootsys $newbootsys
-	CI_UBIPART="nandubi"
-	CI_KERNPART="kernel${newbootsys}"
-	CI_ROOTPART="rootfs${newbootsys}"
-	nand_do_upgrade "$1" || (echo "Upgrade failed, setting bootsys ${bootsys}" && fw_setenv bootsys $bootsys)
-
+	echo "Updating UBI part ${CI_UBIPART}"
+	fw_setenv "openwrt_active_sys" "${new_active_sys}"
+	nand_do_upgrade "$1"
+	return $?
 }
+
 platform_copy_config_sdboot() {
 	local diskdev partdev parttype=ext4
 
@@ -71,6 +74,7 @@ platform_copy_config() {
 	fsl,ls1012a-frwy-sdboot | \
 	fsl,ls1021a-iot-sdboot | \
 	fsl,ls1021a-twr-sdboot | \
+	fsl,ls1028a-rdb-sdboot | \
 	fsl,ls1043a-rdb-sdboot | \
 	fsl,ls1046a-frwy-sdboot | \
 	fsl,ls1046a-rdb-sdboot | \
@@ -84,9 +88,8 @@ platform_check_image() {
 	local board=$(board_name)
 
 	case "$board" in
-	traverse,ls1043v | \
-	traverse,ls1043s)
-		nand_do_platform_check "traverse-ls1043" $1
+	traverse,ten64)
+		nand_do_platform_check "ten64-mtd" $1
 		return $?
 		;;
 	fsl,ls1012a-frdm | \
@@ -95,6 +98,8 @@ platform_check_image() {
 	fsl,ls1021a-iot-sdboot | \
 	fsl,ls1021a-twr | \
 	fsl,ls1021a-twr-sdboot | \
+	fsl,ls1028a-rdb | \
+	fsl,ls1028a-rdb-sdboot | \
 	fsl,ls1043a-rdb | \
 	fsl,ls1043a-rdb-sdboot | \
 	fsl,ls1046a-frwy | \
@@ -123,13 +128,13 @@ platform_do_upgrade() {
 	touch /var/lock/fw_printenv.lock
 
 	case "$board" in
-	traverse,ls1043v | \
-	traverse,ls1043s)
-		platform_do_upgrade_traverse_nandubi "$1"
+	traverse,ten64)
+		platform_do_upgrade_traverse_slotubi "${1}"
 		;;
 	fsl,ls1012a-frdm | \
 	fsl,ls1012a-rdb | \
 	fsl,ls1021a-twr | \
+	fsl,ls1028a-rdb | \
 	fsl,ls1043a-rdb | \
 	fsl,ls1046a-frwy | \
 	fsl,ls1046a-rdb | \
@@ -142,6 +147,7 @@ platform_do_upgrade() {
 	fsl,ls1012a-frwy-sdboot | \
 	fsl,ls1021a-iot-sdboot | \
 	fsl,ls1021a-twr-sdboot | \
+	fsl,ls1028a-rdb-sdboot | \
 	fsl,ls1043a-rdb-sdboot | \
 	fsl,ls1046a-frwy-sdboot | \
 	fsl,ls1046a-rdb-sdboot | \
