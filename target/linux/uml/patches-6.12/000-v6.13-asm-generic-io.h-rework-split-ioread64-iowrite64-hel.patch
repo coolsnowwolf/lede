@@ -1,0 +1,290 @@
+From dc90c890363d3e4b0ec73cd21b5be592692723fd Mon Sep 17 00:00:00 2001
+From: Arnd Bergmann <arnd@arndb.de>
+Date: Mon, 3 Feb 2025 15:07:30 +0100
+Subject: [PATCH] asm-generic/io.h: rework split ioread64/iowrite64 helpers
+
+There are two incompatible sets of definitions of these eight functions:
+On 64-bit architectures setting CONFIG_HAS_IOPORT, they turn into
+either pair of 32-bit PIO (inl/outl) accesses or a single 64-bit MMIO
+(readq/writeq). On other 64-bit architectures, they are always split
+into 32-bit accesses.
+
+Depending on which header gets included in a driver, there are
+additionally definitions for ioread64()/iowrite64() that are
+expected to produce a 64-bit register MMIO access on all 64-bit
+architectures.
+
+To separate the conflicting definitions, make the version in
+include/linux/io-64-nonatomic-*.h visible on all architectures
+but pick the one from lib/iomap.c on architectures that set
+CONFIG_GENERIC_IOMAP in place of the default fallback.
+
+Acked-by: Andy Shevchenko <andriy.shevchenko@linux.intel.com>
+Signed-off-by: Arnd Bergmann <arnd@arndb.de>
+---
+ include/asm-generic/iomap.h           | 36 ++++++------------------
+ include/linux/io-64-nonatomic-hi-lo.h | 16 +++++++++++
+ include/linux/io-64-nonatomic-lo-hi.h | 16 +++++++++++
+ lib/iomap.c                           | 40 +++++++++++++--------------
+ 4 files changed, 60 insertions(+), 48 deletions(-)
+
+--- a/include/asm-generic/iomap.h
++++ b/include/asm-generic/iomap.h
+@@ -31,42 +31,22 @@ extern unsigned int ioread16(const void
+ extern unsigned int ioread16be(const void __iomem *);
+ extern unsigned int ioread32(const void __iomem *);
+ extern unsigned int ioread32be(const void __iomem *);
+-#ifdef CONFIG_64BIT
+-extern u64 ioread64(const void __iomem *);
+-extern u64 ioread64be(const void __iomem *);
+-#endif
+ 
+-#ifdef readq
+-#define ioread64_lo_hi ioread64_lo_hi
+-#define ioread64_hi_lo ioread64_hi_lo
+-#define ioread64be_lo_hi ioread64be_lo_hi
+-#define ioread64be_hi_lo ioread64be_hi_lo
+-extern u64 ioread64_lo_hi(const void __iomem *addr);
+-extern u64 ioread64_hi_lo(const void __iomem *addr);
+-extern u64 ioread64be_lo_hi(const void __iomem *addr);
+-extern u64 ioread64be_hi_lo(const void __iomem *addr);
+-#endif
++extern u64 __ioread64_lo_hi(const void __iomem *addr);
++extern u64 __ioread64_hi_lo(const void __iomem *addr);
++extern u64 __ioread64be_lo_hi(const void __iomem *addr);
++extern u64 __ioread64be_hi_lo(const void __iomem *addr);
+ 
+ extern void iowrite8(u8, void __iomem *);
+ extern void iowrite16(u16, void __iomem *);
+ extern void iowrite16be(u16, void __iomem *);
+ extern void iowrite32(u32, void __iomem *);
+ extern void iowrite32be(u32, void __iomem *);
+-#ifdef CONFIG_64BIT
+-extern void iowrite64(u64, void __iomem *);
+-extern void iowrite64be(u64, void __iomem *);
+-#endif
+ 
+-#ifdef writeq
+-#define iowrite64_lo_hi iowrite64_lo_hi
+-#define iowrite64_hi_lo iowrite64_hi_lo
+-#define iowrite64be_lo_hi iowrite64be_lo_hi
+-#define iowrite64be_hi_lo iowrite64be_hi_lo
+-extern void iowrite64_lo_hi(u64 val, void __iomem *addr);
+-extern void iowrite64_hi_lo(u64 val, void __iomem *addr);
+-extern void iowrite64be_lo_hi(u64 val, void __iomem *addr);
+-extern void iowrite64be_hi_lo(u64 val, void __iomem *addr);
+-#endif
++extern void __iowrite64_lo_hi(u64 val, void __iomem *addr);
++extern void __iowrite64_hi_lo(u64 val, void __iomem *addr);
++extern void __iowrite64be_lo_hi(u64 val, void __iomem *addr);
++extern void __iowrite64be_hi_lo(u64 val, void __iomem *addr);
+ 
+ /*
+  * "string" versions of the above. Note that they
+--- a/include/linux/io-64-nonatomic-hi-lo.h
++++ b/include/linux/io-64-nonatomic-hi-lo.h
+@@ -101,22 +101,38 @@ static inline void iowrite64be_hi_lo(u64
+ 
+ #ifndef ioread64
+ #define ioread64_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define ioread64 __ioread64_hi_lo
++#else
+ #define ioread64 ioread64_hi_lo
+ #endif
++#endif
+ 
+ #ifndef iowrite64
+ #define iowrite64_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define iowrite64 __iowrite64_hi_lo
++#else
+ #define iowrite64 iowrite64_hi_lo
+ #endif
++#endif
+ 
+ #ifndef ioread64be
+ #define ioread64be_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define ioread64be __ioread64be_hi_lo
++#else
+ #define ioread64be ioread64be_hi_lo
+ #endif
++#endif
+ 
+ #ifndef iowrite64be
+ #define iowrite64be_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define iowrite64be __iowrite64be_hi_lo
++#else
+ #define iowrite64be iowrite64be_hi_lo
+ #endif
++#endif
+ 
+ #endif	/* _LINUX_IO_64_NONATOMIC_HI_LO_H_ */
+--- a/include/linux/io-64-nonatomic-lo-hi.h
++++ b/include/linux/io-64-nonatomic-lo-hi.h
+@@ -101,22 +101,38 @@ static inline void iowrite64be_lo_hi(u64
+ 
+ #ifndef ioread64
+ #define ioread64_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define ioread64 __ioread64_lo_hi
++#else
+ #define ioread64 ioread64_lo_hi
+ #endif
++#endif
+ 
+ #ifndef iowrite64
+ #define iowrite64_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define iowrite64 __iowrite64_lo_hi
++#else
+ #define iowrite64 iowrite64_lo_hi
+ #endif
++#endif
+ 
+ #ifndef ioread64be
+ #define ioread64be_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define ioread64be __ioread64be_lo_hi
++#else
+ #define ioread64be ioread64be_lo_hi
+ #endif
++#endif
+ 
+ #ifndef iowrite64be
+ #define iowrite64be_is_nonatomic
++#if defined(CONFIG_GENERIC_IOMAP) && defined(CONFIG_64BIT)
++#define iowrite64be __iowrite64be_lo_hi
++#else
+ #define iowrite64be iowrite64be_lo_hi
+ #endif
++#endif
+ 
+ #endif	/* _LINUX_IO_64_NONATOMIC_LO_HI_H_ */
+--- a/lib/iomap.c
++++ b/lib/iomap.c
+@@ -111,7 +111,7 @@ EXPORT_SYMBOL(ioread16be);
+ EXPORT_SYMBOL(ioread32);
+ EXPORT_SYMBOL(ioread32be);
+ 
+-#ifdef readq
++#ifdef CONFIG_64BIT
+ static u64 pio_read64_lo_hi(unsigned long port)
+ {
+ 	u64 lo, hi;
+@@ -153,21 +153,21 @@ static u64 pio_read64be_hi_lo(unsigned l
+ }
+ 
+ __no_kmsan_checks
+-u64 ioread64_lo_hi(const void __iomem *addr)
++u64 __ioread64_lo_hi(const void __iomem *addr)
+ {
+ 	IO_COND(addr, return pio_read64_lo_hi(port), return readq(addr));
+ 	return 0xffffffffffffffffULL;
+ }
+ 
+ __no_kmsan_checks
+-u64 ioread64_hi_lo(const void __iomem *addr)
++u64 __ioread64_hi_lo(const void __iomem *addr)
+ {
+ 	IO_COND(addr, return pio_read64_hi_lo(port), return readq(addr));
+ 	return 0xffffffffffffffffULL;
+ }
+ 
+ __no_kmsan_checks
+-u64 ioread64be_lo_hi(const void __iomem *addr)
++u64 __ioread64be_lo_hi(const void __iomem *addr)
+ {
+ 	IO_COND(addr, return pio_read64be_lo_hi(port),
+ 		return mmio_read64be(addr));
+@@ -175,19 +175,19 @@ u64 ioread64be_lo_hi(const void __iomem
+ }
+ 
+ __no_kmsan_checks
+-u64 ioread64be_hi_lo(const void __iomem *addr)
++u64 __ioread64be_hi_lo(const void __iomem *addr)
+ {
+ 	IO_COND(addr, return pio_read64be_hi_lo(port),
+ 		return mmio_read64be(addr));
+ 	return 0xffffffffffffffffULL;
+ }
+ 
+-EXPORT_SYMBOL(ioread64_lo_hi);
+-EXPORT_SYMBOL(ioread64_hi_lo);
+-EXPORT_SYMBOL(ioread64be_lo_hi);
+-EXPORT_SYMBOL(ioread64be_hi_lo);
++EXPORT_SYMBOL(__ioread64_lo_hi);
++EXPORT_SYMBOL(__ioread64_hi_lo);
++EXPORT_SYMBOL(__ioread64be_lo_hi);
++EXPORT_SYMBOL(__ioread64be_hi_lo);
+ 
+-#endif /* readq */
++#endif /* CONFIG_64BIT */
+ 
+ #ifndef pio_write16be
+ #define pio_write16be(val,port) outw(swab16(val),port)
+@@ -236,7 +236,7 @@ EXPORT_SYMBOL(iowrite16be);
+ EXPORT_SYMBOL(iowrite32);
+ EXPORT_SYMBOL(iowrite32be);
+ 
+-#ifdef writeq
++#ifdef CONFIG_64BIT
+ static void pio_write64_lo_hi(u64 val, unsigned long port)
+ {
+ 	outl(val, port);
+@@ -261,7 +261,7 @@ static void pio_write64be_hi_lo(u64 val,
+ 	pio_write32be(val, port + sizeof(u32));
+ }
+ 
+-void iowrite64_lo_hi(u64 val, void __iomem *addr)
++void __iowrite64_lo_hi(u64 val, void __iomem *addr)
+ {
+ 	/* Make sure uninitialized memory isn't copied to devices. */
+ 	kmsan_check_memory(&val, sizeof(val));
+@@ -269,7 +269,7 @@ void iowrite64_lo_hi(u64 val, void __iom
+ 		writeq(val, addr));
+ }
+ 
+-void iowrite64_hi_lo(u64 val, void __iomem *addr)
++void __iowrite64_hi_lo(u64 val, void __iomem *addr)
+ {
+ 	/* Make sure uninitialized memory isn't copied to devices. */
+ 	kmsan_check_memory(&val, sizeof(val));
+@@ -277,7 +277,7 @@ void iowrite64_hi_lo(u64 val, void __iom
+ 		writeq(val, addr));
+ }
+ 
+-void iowrite64be_lo_hi(u64 val, void __iomem *addr)
++void __iowrite64be_lo_hi(u64 val, void __iomem *addr)
+ {
+ 	/* Make sure uninitialized memory isn't copied to devices. */
+ 	kmsan_check_memory(&val, sizeof(val));
+@@ -285,7 +285,7 @@ void iowrite64be_lo_hi(u64 val, void __i
+ 		mmio_write64be(val, addr));
+ }
+ 
+-void iowrite64be_hi_lo(u64 val, void __iomem *addr)
++void __iowrite64be_hi_lo(u64 val, void __iomem *addr)
+ {
+ 	/* Make sure uninitialized memory isn't copied to devices. */
+ 	kmsan_check_memory(&val, sizeof(val));
+@@ -293,12 +293,12 @@ void iowrite64be_hi_lo(u64 val, void __i
+ 		mmio_write64be(val, addr));
+ }
+ 
+-EXPORT_SYMBOL(iowrite64_lo_hi);
+-EXPORT_SYMBOL(iowrite64_hi_lo);
+-EXPORT_SYMBOL(iowrite64be_lo_hi);
+-EXPORT_SYMBOL(iowrite64be_hi_lo);
++EXPORT_SYMBOL(__iowrite64_lo_hi);
++EXPORT_SYMBOL(__iowrite64_hi_lo);
++EXPORT_SYMBOL(__iowrite64be_lo_hi);
++EXPORT_SYMBOL(__iowrite64be_hi_lo);
+ 
+-#endif /* readq */
++#endif /* CONFIG_64BIT */
+ 
+ /*
+  * These are the "repeat MMIO read/write" functions.
