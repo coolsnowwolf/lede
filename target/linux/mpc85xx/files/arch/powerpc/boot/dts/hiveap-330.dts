@@ -9,103 +9,217 @@
  * option) any later version.
  */
 
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/gpio/gpio.h>
+
 /include/ "fsl/p1020si-pre.dtsi"
 / {
 	model = "Aerohive HiveAP-330";
 	compatible = "aerohive,hiveap-330";
 
 	aliases {
-		led-boot = &tricolor_green;
-		led-failsafe = &tricolor_red;
-		led-running = &tricolor_green;
-		led-upgrade = &tricolor_red;
+		led-boot = &led_power_green;
+		led-failsafe = &led_fault_red;
+		led-running = &led_power_green;
+		led-upgrade = &led_fault_red;
 		label-mac-device = &enet0;
+		spi0 = &spi0;
 	};
 
 	chosen {
-		bootargs-override = "console=ttyS0,9600";
+		/*
+		 * not yet implemented.
+		 * stdout-path = &serial0 ":9600n8";
+		 * <https://www.spinics.net/lists/devicetree-compiler/msg02487.html>
+		 *
+		 * this should work... but it doesn't because CONFIG_CMDLINE in our
+		 * OpenWrt's target config sets "console=ttyS0,115200"
+		 * stdout-path = "/soc@ffe00000/serial@4500:9600n8";
+		 */
+
+		bootargs = "console=ttyS0,9600n8";
+	};
+
+	cpus {
+		PowerPC,P1020@0 {
+			i-cache-sets = <0x80>;
+			i-cache-size = <0x8000>;
+			i-cache-block-size = <0x20>;
+			d-cache-sets = <0x80>;
+			d-cache-size = <0x8000>;
+			d-cache-block-size = <0x20>;
+			clock-frequency = <533333328>; /* 533.33 MHz */
+			bus-frequency = <266666664>;  /* 266.66 MHz */
+			timebase-frequency = <33333333>; /* 33.33 MHz */
+		};
+
+		PowerPC,P1020@1 {
+			i-cache-sets = <0x80>;
+			i-cache-size = <0x8000>;
+			i-cache-block-size = <0x20>;
+			d-cache-sets = <0x80>;
+			d-cache-size = <0x8000>;
+			d-cache-block-size = <0x20>;
+			cpu-release-addr = <0x00 0xffff240>;
+			enable-method = "spin-table";
+			status = "disabled";
+			clock-frequency = <533333328>;
+			bus-frequency = <266666664>;
+			timebase-frequency = <33333333>;
+		};
 	};
 
 	memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		reg = <0x00 0x00 0x00 0x10000000>;
 		device_type = "memory";
 	};
 
+	/*
+	 * Usually, u-boot provided /memreserve/ properties by adding them during boot.
+	 * these have been converted to reserved-memory entries.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * /memreserve/   0x0000000000ffa000 0x0000000000004000;
+		 * The kernel complains when booting:
+		 *
+		 * | OF: fdt: Reserved memory: failed to reserve memory for node
+		 *		'firmware@ffa000': base 0x00ffa000, size 0 MiB
+		 *
+		 * But this likely uboot's bootargs + modified DTB. And if so, we don't care.
+		 * This is because we rely on our own dtb that's in the simpleImage.
+		 *
+		 * Note: This is backed up by u-boot. just before the kernel executes
+		 *	 it prints this final line:
+		 *	 |  Loading Device Tree to 00ff9000, end 00fff1c4 ... OK
+		 *
+		 * firmware@ffa000 {
+		 *	reg = <0x0 0xffa000 0x0 0x4000>;
+		 *	no-map;
+		 * };
+		 */
+
+		// /memreserve/   0x000000000fe2f000 0x0000000000000021;
+		firmware@fe2f000 {
+			reg = <0x0 0xfe2f000 0x0 0x21>;
+			no-map;
+		};
+
+		/*
+		 * /memreserve/   0x000000000ffff000 0x0000000000001000;
+		 * that's the spin-table - see second CPU core binding.
+		 */
+		firmware@ffff000 {
+			reg = <0x0 0xffff000 0x0 0x1000>;
+			no-map;
+		};
+	};
+
 	board_lbc: lbc: localbus@ffe05000 {
+		bus-frequency = <16666666>; /* 16.66 MHz */
 		reg = <0 0xffe05000 0 0x1000>;
 		ranges = <0x0 0x0 0x0 0xec000000 0x4000000>;
 
-		nor@0,0 {
-			#address-cells = <1>;
-			#size-cells = <1>;
+		nor@0 {
 			compatible = "cfi-flash";
 			reg = <0x0 0x0 0x4000000>;
 			bank-width = <2>;
 			device-width = <1>;
 
-			partition@0 {
-				reg = <0x0 0x40000>;
-				label = "dtb";
-			};
+			partitions {
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
 
-			partition@40000 {
-				reg = <0x40000 0x40000>;
-				label = "initrd";
-			};
+				firmware@0 {
+					reg = <0x0 0x3f00000>;
+					label = "firmware";
+					/*
+					 * This unknown/invalid compatible prevents
+					 * openwrt's mtdsplit_fit to go off a tangent if it
+					 * finds a magic value inside the uncompressed kernel
+					 * at a blocksized aligned place.
+					 */
+					compatible = "areohive,hiveap-330-image";
+				};
 
-			partition@80000 {
-				reg = <0x80000 0x27c0000>;
-				label = "rootfs";
-			};
+				partition@0 {
+					reg = <0x0 0x40000>;
+					label = "dtb";
+				};
 
-			partition@2840000 {
-				reg = <0x2840000 0x800000>;
-				label = "kernel";
-			};
+				partition@40000 {
+					compatible = "openwrt,uimage", "denx,uimage";
+					reg = <0x40000 0x3ec0000>;
+					label = "kernel";
+				};
 
-			partition@3040000 {
-				reg = <0x3040000 0xec0000>;
-				label = "stock-jffs2";
-				read-only;
-			};
+				partition@3f00000 {
+					reg = <0x3f00000 0x20000>;
+					label = "hw-info";
+					read-only;
 
-			hwinfo: partition@3f00000 {
-				reg = <0x3f00000 0x20000>;
-				label = "hw-info";
-				read-only;
-			};
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
 
-			partition@3f20000 {
-				reg = <0x3f20000 0x20000>;
-				label = "boot-info";
-				read-only;
-			};
+						macaddr_hwinfo_0: macaddr@0 {
+							compatible = "mac-base";
+							reg = <0x0 0x6>;
+							#nvmem-cell-cells = <1>;
+						};
+					};
+				};
 
-			partition@3f40000 {
-				reg = <0x3f40000 0x20000>;
-				label = "boot-info-backup";
-				read-only;
-			};
+				partition@3f20000 {
+					reg = <0x3f20000 0x20000>;
+					label = "boot-info";
+					read-only;
+				};
 
-			partition@3f60000 {
-				reg = <0x3f60000 0x20000>;
-				label = "u-boot-env";
-			};
+				partition@3f40000 {
+					reg = <0x3f40000 0x20000>;
+					label = "boot-info-backup";
+					read-only;
+				};
 
-			partition@3f80000 {
-				reg = <0x3f80000 0x80000>;
-				label = "u-boot";
-				read-only;
-			};
+				partition@3f60000 {
+					reg = <0x3f60000 0x20000>;
+					label = "u-boot-env";
+				};
 
-			firmware@0 {
-				reg = <0x0 0x3040000>;
-				label = "firmware";
+				partition@3f80000 {
+					reg = <0x3f80000 0x80000>;
+					label = "u-boot";
+					read-only;
+				};
 			};
 		};
 	};
 
 	board_soc: soc: soc@ffe00000 {
 		ranges = <0x0 0x0 0xffe00000 0x100000>;
+		bus-frequency = <266666664>;
+
+		spi0: spi@7000 {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			temperature-sensor@1 {
+				compatible = "ti,tmp125";
+				reg = <1>;
+				spi-max-frequency = <5000000>;
+			};
+		};
 
 		i2c@3100 {
 			tpm@29 {
@@ -117,38 +231,90 @@
 				compatible = "national,lp5521";
 				reg = <0x32>;
 				clock-mode = /bits/ 8 <2>;
-				tricolor_red: chan0 {
-					chan-name = "hiveap-330:red:tricolor0";
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+#if 1
+				led_fault_red: led@0 {
+					reg = <0>;
+					chan-name = "fault:red";
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
+					color = <LED_COLOR_ID_RED>;
+					function = LED_FUNCTION_FAULT;
 				};
-				tricolor_green:chan1 {
-					chan-name = "hiveap-330:green:tricolor0";
+				led_power_green: led@1 {
+					reg = <1>;
+					chan-name = "power:green";
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
+					color = <LED_COLOR_ID_GREEN>;
+					function = LED_FUNCTION_POWER;
 				};
-				chan2 {
-					chan-name = "hiveap-330:blue:tricolor0";
+				led@2{
+					reg = <2>;
+					chan-name = "blue";
 					led-cur = /bits/ 8 <0x2f>;
 					max-cur = /bits/ 8 <0x5f>;
+					color = <LED_COLOR_ID_BLUE>;
 				};
+#else
+				/*
+				 * openwrt isn't ready to handle multi-intensity leds yet
+				 * # echo 255 255 255 > /sys/class/leds/tricolor/multi_intensity
+				 * # echo 255 > /sys/class/leds/tricolor/brightness
+				 */
+
+				rgbled-0 {
+					function = LED_FUNCTION_POWER;
+					color = <LED_COLOR_ID_RGB>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					led@0 {
+						reg = <0>;
+						chan-name = "tricolor";
+						led-cur = /bits/ 8 <0x2f>;
+						max-cur = /bits/ 8 <0x5f>;
+						color = <LED_COLOR_ID_RED>;
+					};
+					led@1 {
+						reg = <1>;
+						chan-name = "tricolor";
+						led-cur = /bits/ 8 <0x2f>;
+						max-cur = /bits/ 8 <0x5f>;
+						color = <LED_COLOR_ID_GREEN>;
+					};
+					led@2{
+						reg = <2>;
+						chan-name = "tricolor";
+						led-cur = /bits/ 8 <0x2f>;
+						max-cur = /bits/ 8 <0x5f>;
+						color = <LED_COLOR_ID_BLUE>;
+					};
+				};
+#endif
 			};
 
-			/* Most likely SoC boot config */
 			eeprom@51 {
-				compatible = "eeprom";
+				/*
+				 * 1Kbit I2C/SMBus EEPROM with SHA-1 Engine
+				 * Aerohive calls it "dallas".
+				 */
+				compatible = "adi,ds28cn01";
 				reg = <0x51>;
+				read-only;
 			};
 		};
 
 		mdio@24000 {
 			phy0: ethernet-phy@0 {
-				interrupts = <3 1 0 0>;
+				/* interrupts = <3 1 0 0>; */
 				reg = <0x1>;
 			};
 
 			phy1: ethernet-phy@1 {
-				interrupts = <2 1 0 0>;
+				/* interrupts = <2 1 0 0>; */
 				reg = <0x2>;
 			};
 		};
@@ -162,10 +328,13 @@
 		};
 
 		enet0: ethernet@b0000 {
-			status = "okay";
+			rx-stash-idx = <0x00>;
+			rx-stash-len = <0x60>;
+			bd-stash;
 			phy-handle = <&phy0>;
 			phy-connection-type = "rgmii-id";
-			mtd-mac-address = <&hwinfo 0>;
+			nvmem-cells = <&macaddr_hwinfo_0 0>;
+			nvmem-cell-names = "mac-address";
 		};
 
 		enet1: ethernet@b1000 {
@@ -173,11 +342,13 @@
 		};
 
 		enet2: ethernet@b2000 {
-			status = "okay";
+			rx-stash-idx = <0x00>;
+			rx-stash-len = <0x60>;
+			bd-stash;
 			phy-handle = <&phy1>;
 			phy-connection-type = "rgmii-id";
-			mtd-mac-address = <&hwinfo 0>;
-			mtd-mac-address-increment = <1>;
+			nvmem-cells = <&macaddr_hwinfo_0 1>;
+			nvmem-cell-names = "mac-address";
 		};
 
 		gpio0: gpio-controller@fc00 {
@@ -195,31 +366,22 @@
 
 	pci0: pcie@ffe09000 {
 		reg = <0x0 0xffe09000 0x0 0x1000>;
-		ranges = <0x2000000 0x0 0xa0000000 0x0 0xa0000000 0x0 0x20000000
-			0x1000000 0x0 0x00000000 0x0 0xffc30000 0x0 0x10000>;
+		ranges = <0x2000000 0x0 0xa0000000 0x0 0xa0000000 0x0 0x20000000>,
+			 <0x1000000 0x0 0x00000000 0x0 0xffc30000 0x0 0x10000>;
 		pcie@0 {
-			ranges = <0x2000000 0x0 0xa0000000
-				  0x2000000 0x0 0xa0000000
-				  0x0 0x20000000
-
-				  0x1000000 0x0 0x0
-				  0x1000000 0x0 0x0
-				  0x0 0x100000>;
+			ranges = <0x2000000 0x0 0xa0000000 0x2000000 0x0 0xa0000000 0x0 0x20000000>,
+				 <0x1000000 0x0 0x00000000 0x1000000 0x0 0x00000000 0x0 0x00100000>;
 		};
 	};
 
 	pci1: pcie@ffe0a000 {
 		reg = <0x0 0xffe0a000 0x0 0x1000>;
-		ranges = <0x2000000 0x0 0xc0000000 0x0 0xc0000000 0x0 0x20000000
-		      0x1000000 0x0 0x00000000 0x0 0xffc20000 0x0 0x10000>;
-		pcie@0 {
-			ranges = <0x2000000 0x0 0xc0000000
-			      0x2000000 0x0 0xc0000000
-				  0x0 0x20000000
+		ranges = <0x2000000 0x0 0xc0000000 0x0 0xc0000000 0x0 0x20000000>,
+			 <0x1000000 0x0 0x00000000 0x0 0xffc20000 0x0 0x10000>;
 
-				  0x1000000 0x0 0x0
-				  0x1000000 0x0 0x0
-				  0x0 0x100000>;
+		pcie@0 {
+			ranges = <0x2000000 0x0 0xc0000000 0x2000000 0x0 0xc0000000 0x0 0x20000000>,
+				 <0x1000000 0x0 0x00000000 0x1000000 0x0 0x00000000 0x0 0x00100000>;
 		};
 	};
 
@@ -228,9 +390,30 @@
 
 		reset {
 			label = "Reset button";
-			gpios = <&gpio0 8 1>; /* active low */
-			linux,code = <0x198>; /* KEY_RESTART */
+			gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_RESTART>;
 		};
 	};
 };
+
 /include/ "fsl/p1020si-post.dtsi"
+&serial0 {
+	clock-frequency = <266666664>;
+};
+
+&serial1 {
+	clock-frequency = <266666664>;
+};
+
+/*
+ * For the OpenWrt 22.03 release, since Linux 5.10.138 now uses
+ * aliases to determine PCI domain numbers, drop aliases so as not to
+ * change the sysfs path of our wireless netdevs.
+ */
+
+/ {
+	aliases {
+		/delete-property/ pci0;
+		/delete-property/ pci1;
+	};
+};
