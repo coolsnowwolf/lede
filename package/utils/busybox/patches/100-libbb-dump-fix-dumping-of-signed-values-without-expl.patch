@@ -1,0 +1,68 @@
+From: Sven Wegener <sven.wegener@stealer.net>
+Subject: [PATCH] libbb/dump: fix dumping of signed values without explicit
+ size specifier
+
+Message-ID: <05d87e73-d0e0-d9ef-561a-8a9180888627@stealer.net>
+
+Commit e2287f99fe6f21fd6435ad04340170ad4ba5f6b3 added support for the 64
+bit signed format %lld, accidentally changing the default size of the %d
+format to eight bytes and producing the following:
+
+root at openwrt:~# for i in $(seq 0 7); do hexdump -s $i -n 1 -e '"%d\n"' /dev/mtdblock0; done
+0
+0
+0
+0
+0
+0
+0
+0
+root at openwrt:~# for i in $(seq 0 7); do hexdump -s $i -n 1 -e '/4 "%d\n"' /dev/mtdblock0; done
+255
+0
+0
+16
+0
+0
+0
+0
+
+With -n 1 the input is zero-padded. On big-endian, when the input is copied
+into the 64 bit variable, the input byte ends up in the highest byte. As the %d
+format only interprets the lower 32 bits, the input byte is lost during
+printing.
+
+Depending on how the architecture passes 64 bit parameters, the same
+happens on little-endian as well. x86 (little-endian) works correctly,
+but MIPS experiences the same behavior on big-endian and little-endian.
+
+Fixes: e2287f99fe6f21fd6435ad04340170ad4ba5f6b3
+See: https://github.com/openwrt/openwrt/issues/18808
+Signed-off-by: Sven Wegener <sven.wegener@stealer.net>
+---
+ libbb/dump.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+--- a/libbb/dump.c
++++ b/libbb/dump.c
+@@ -192,16 +192,17 @@ static NOINLINE void rewrite(priv_dumper
+ 				if (*p1 == 'l') { /* %lld etc */
+ 					++p2;
+ 					++p1;
+-				}
++					byte_count_str = "\010\004\002\001";
++				} else {
+  DO_INT_CONV:
++					byte_count_str = "\004\002\001";
++				}
+ 				e = strchr(int_convs, *p1); /* "diouxX"? */
+ 				if (!e)
+ 					goto DO_BAD_CONV_CHAR;
+ 				pr->flags = F_INT;
+-				byte_count_str = "\010\004\002\001";
+ 				if (e > int_convs + 1) { /* not d or i? */
+ 					pr->flags = F_UINT;
+-					byte_count_str++;
+ 				}
+ 				goto DO_BYTE_COUNT;
+ 			} else

@@ -1,0 +1,48 @@
+From: John Crispin <john@phrozen.org>
+Date: Wed, 15 Apr 2026 16:15:38 +0200
+Subject: [PATCH] udhcpc: treat SIGHUP as release + rediscover
+
+Add a SIGHUP handler to udhcpc that releases the current lease (if any)
+and immediately transitions the state machine to INIT_SELECTING so the
+next main-loop iteration sends a fresh DHCPDISCOVER. This lets a single
+signal express 'release this lease and get a new one' without exiting
+the client, so upstream watchdogs (e.g. a DNS-health monitor) can
+request a clean re-lease without tearing down the interface.
+
+Signed-off-by: John Crispin <john@phrozen.org>
+---
+--- a/networking/udhcp/dhcpc.c
++++ b/networking/udhcp/dhcpc.c
+@@ -1606,6 +1606,22 @@ int udhcpc_main(int argc UNUSED_PARAM, c
+ 			/* ^^^ switches to LISTEN_NONE */
+ 			timeout = INT_MAX;
+ 			continue;
++		case SIGHUP:
++			bb_info_msg("received SIGHUP, restarting DHCP session");
++			/* release the current lease if we have one */
++			if (client_data.state != INIT_SELECTING
++			 && client_data.state != RELEASED)
++				perform_release(server_id, requested_ip);
++			/* drop any cached offer, kick the state machine into
++			 * INIT_SELECTING so the next iteration sends a fresh
++			 * DHCPDISCOVER */
++			change_listen_mode(LISTEN_NONE);
++			server_id = 0;
++			requested_ip = 0;
++			packet_num = 0;
++			client_data.state = INIT_SELECTING;
++			timeout = 0;
++			continue;
+ 		case SIGTERM:
+ 			bb_info_msg("received %s", "SIGTERM");
+ 			goto ret0;
+--- a/networking/udhcp/signalpipe.c
++++ b/networking/udhcp/signalpipe.c
+@@ -58,6 +58,7 @@ void FAST_FUNC udhcp_sp_setup(void)
+ 	bb_signals(0
+ 		+ (1 << SIGUSR1)
+ 		+ (1 << SIGUSR2)
++		+ (1 << SIGHUP)
+ 		+ (1 << SIGTERM)
+ 		, signal_handler);
+ }
