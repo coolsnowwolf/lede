@@ -1,0 +1,196 @@
+From 356774301b12dbdfe4682e12c57bddb8058014a2 Mon Sep 17 00:00:00 2001
+From: William Qiu <william.qiu@starfivetech.com>
+Date: Sat, 12 Oct 2024 17:56:00 +0800
+Subject: [PATCH 12/55] ipms: CAN: Solve CAN packet leakage problem
+
+Improve RX interrupt trigger mechanism, reduce buffer trigger condition,
+and increase polling value to solve the problem of CAN packet leakage.
+
+Signed-off-by: William Qiu <william.qiu@starfivetech.com>
+---
+ drivers/net/can/ipms_canfd.c | 108 +++++++++++++++++++----------------
+ 1 file changed, 59 insertions(+), 49 deletions(-)
+
+--- a/drivers/net/can/ipms_canfd.c
++++ b/drivers/net/can/ipms_canfd.c
+@@ -5,28 +5,30 @@
+  * Copyright (c) 2022 StarFive Technology Co., Ltd.
+  */
+ 
++#include <linux/can/dev.h>
++#include <linux/can/error.h>
+ #include <linux/clk.h>
+-#include <linux/reset.h>
+ #include <linux/errno.h>
+ #include <linux/init.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
++#include <linux/jiffies.h>
+ #include <linux/kernel.h>
++#include <linux/mfd/syscon.h>
+ #include <linux/module.h>
+ #include <linux/netdevice.h>
+ #include <linux/of.h>
++#include <linux/of_device.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
+ #include <linux/skbuff.h>
+ #include <linux/string.h>
+ #include <linux/types.h>
+-#include <linux/can/dev.h>
+-#include <linux/can/error.h>
+-#include <linux/pm_runtime.h>
+-#include <linux/of_device.h>
+-#include <linux/mfd/syscon.h>
+-#include <linux/regmap.h>
+ 
+ #define DRIVER_NAME "ipms_canfd"
++#define MAX_IRQ 16
+ 
+ /* CAN registers set */
+ enum canfd_device_reg {
+@@ -124,7 +126,7 @@ enum canfd_reg_bitchange {
+ 	CAN_FD_SET_BEIF_MASK        =   0x01,
+ 	CAN_FD_OFF_EPIE_MASK        =   0xdf,
+ 	CAN_FD_OFF_BEIE_MASK        =   0xfd,
+-	CAN_FD_SET_AFWL_MASK        =   0x40,
++	CAN_FD_SET_AFWL_MASK        =   0x20,
+ 	CAN_FD_SET_EWL_MASK         =   0x0b,
+ 	CAN_FD_SET_KOER_MASK        =   0xe0,
+ 	CAN_FD_SET_BIT_ERROR_MASK   =   0x20,
+@@ -366,12 +368,8 @@ static int can_rx(struct net_device *nde
+ 	struct can_frame *cf;
+ 	struct sk_buff *skb;
+ 	u32 can_id;
+-	u8  dlc, control, rx_status;
+-
+-	rx_status = can_ioread8(priv->reg_base + CANFD_RCTRL_OFFSET);
++	u8 dlc, control;
+ 
+-	if (!(rx_status & CAN_FD_RSTAT_NOT_EMPTY_MASK))
+-		return 0;
+ 	control = can_ioread8(priv->reg_base + CANFD_RBUF_CTL_OFFSET);
+ 	can_id = priv->read_reg(priv, CANFD_RUBF_ID_OFFSET);
+ 	dlc = can_ioread8(priv->reg_base + CANFD_RBUF_CTL_OFFSET) & CAN_FD_SET_DLC_MASK;
+@@ -403,7 +401,7 @@ static int can_rx(struct net_device *nde
+ 	canfd_reigister_set_bit(priv, CANFD_RCTRL_OFFSET, CAN_FD_SET_RREL_MASK);
+ 	stats->rx_bytes += can_fd_dlc2len(cf->can_dlc);
+ 	stats->rx_packets++;
+-	netif_receive_skb(skb);
++	netif_rx(skb);
+ 
+ 	return 1;
+ }
+@@ -419,9 +417,9 @@ static int canfd_rx(struct net_device *n
+ 	int i;
+ 
+ 	rx_status = can_ioread8(priv->reg_base + CANFD_RCTRL_OFFSET);
+-
+ 	if (!(rx_status & CAN_FD_RSTAT_NOT_EMPTY_MASK))
+ 		return 0;
++
+ 	control = can_ioread8(priv->reg_base + CANFD_RBUF_CTL_OFFSET);
+ 	can_id = priv->read_reg(priv, CANFD_RUBF_ID_OFFSET);
+ 	dlc = can_ioread8(priv->reg_base + CANFD_RBUF_CTL_OFFSET) & CAN_FD_SET_DLC_MASK;
+@@ -557,6 +555,8 @@ static netdev_tx_t canfd_driver_start_xm
+ 	if (can_dropped_invalid_skb(ndev, skb))
+ 		return NETDEV_TX_OK;
+ 
++	netif_stop_queue(ndev);
++
+ 	switch (priv->tx_mode) {
+ 	case XMIT_FULL:
+ 		return NETDEV_TX_BUSY;
+@@ -837,46 +837,56 @@ static irqreturn_t canfd_interrupt(int i
+ {
+ 	struct net_device *ndev = (struct net_device *)dev_id;
+ 	struct ipms_canfd_priv *priv = netdev_priv(ndev);
+-	u8 isr, eir;
++	u8 isr, eir, rx_status;
+ 	u8 isr_handled = 0, eir_handled = 0;
++	int num = 0;
+ 
+-	/* read the value of interrupt status register */
+-	isr = can_ioread8(priv->reg_base + CANFD_RTIF_OFFSET);
+-
+-	/* read the value of error interrupt register */
+-	eir = can_ioread8(priv->reg_base + CANFD_ERRINT_OFFSET);
++	while (((isr = can_ioread8(priv->reg_base + CANFD_RTIF_OFFSET)) ||
++		(eir = can_ioread8(priv->reg_base + CANFD_ERRINT_OFFSET))) &&
++		num < MAX_IRQ) {
++		num++;
++
++		/* Check for Tx interrupt and Processing it */
++		if (isr & (CAN_FD_SET_TPIF_MASK | CAN_FD_SET_TSIF_MASK)) {
++			canfd_tx_interrupt(ndev, isr);
++			isr_handled |= (CAN_FD_SET_TPIF_MASK | CAN_FD_SET_TSIF_MASK);
++			break;
++		}
+ 
+-	/* Check for Tx interrupt and Processing it */
+-	if (isr & (CAN_FD_SET_TPIF_MASK | CAN_FD_SET_TSIF_MASK)) {
+-		canfd_tx_interrupt(ndev, isr);
+-		isr_handled |= (CAN_FD_SET_TPIF_MASK | CAN_FD_SET_TSIF_MASK);
+-	}
+-	if (isr & (CAN_FD_SET_RAFIF_MASK | CAN_FD_SET_RFIF_MASK)) {
+-		canfd_rxfull_interrupt(ndev, isr);
+-		isr_handled |= (CAN_FD_SET_RAFIF_MASK | CAN_FD_SET_RFIF_MASK);
+-	}
+-	/* Check Rx interrupt and Processing the receive interrupt routine */
+-	if (isr & CAN_FD_SET_RIF_MASK) {
+-		canfd_reigister_off_bit(priv, CANFD_RTIE_OFFSET, CAN_FD_OFF_RIE_MASK);
+-		canfd_reigister_set_bit(priv, CANFD_RTIF_OFFSET, CAN_FD_SET_RIF_MASK);
+-
+-		napi_schedule(&priv->napi);
+-		isr_handled |= CAN_FD_SET_RIF_MASK;
+-	}
+-	if ((isr & CAN_FD_SET_EIF_MASK) | (eir & (CAN_FD_SET_EPIF_MASK | CAN_FD_SET_BEIF_MASK))) {
+-		/* reset EPIF and BEIF. Reset EIF */
+-		canfd_reigister_set_bit(priv, CANFD_ERRINT_OFFSET,
+-					eir & (CAN_FD_SET_EPIF_MASK | CAN_FD_SET_BEIF_MASK));
+-		canfd_reigister_set_bit(priv, CANFD_RTIF_OFFSET,
+-					isr & CAN_FD_SET_EIF_MASK);
++		if (unlikely(isr & (CAN_FD_SET_RAFIF_MASK | CAN_FD_SET_RFIF_MASK))) {
++			canfd_rxfull_interrupt(ndev, isr);
++			isr_handled |= (CAN_FD_SET_RAFIF_MASK | CAN_FD_SET_RFIF_MASK);
++		}
+ 
+-		canfd_error_interrupt(ndev, isr, eir);
++		/* Check Rx interrupt and Processing the receive interrupt routine */
++		if (isr & CAN_FD_SET_RIF_MASK) {
++			rx_status = can_ioread8(priv->reg_base + CANFD_RCTRL_OFFSET);
++			while (rx_status & CAN_FD_RSTAT_NOT_EMPTY_MASK) {
++				can_rx(ndev);
++				rx_status = can_ioread8(priv->reg_base + CANFD_RCTRL_OFFSET);
++			}
++			isr_handled |= CAN_FD_SET_RIF_MASK;
++		}
+ 
+-		isr_handled |= CAN_FD_SET_EIF_MASK;
+-		eir_handled |= (CAN_FD_SET_EPIF_MASK | CAN_FD_SET_BEIF_MASK);
++		if (unlikely((isr & CAN_FD_SET_EIF_MASK) |
++		    (eir & (CAN_FD_SET_EPIF_MASK | CAN_FD_SET_BEIF_MASK)))) {
++			/* reset EPIF and BEIF. Reset EIF */
++			canfd_reigister_set_bit(priv, CANFD_ERRINT_OFFSET,
++						eir & (CAN_FD_SET_EPIF_MASK |
++						       CAN_FD_SET_BEIF_MASK));
++			canfd_reigister_set_bit(priv, CANFD_RTIF_OFFSET,
++						isr & CAN_FD_SET_EIF_MASK);
++			canfd_error_interrupt(ndev, isr, eir);
++			isr_handled |= CAN_FD_SET_EIF_MASK;
++			eir_handled |= (CAN_FD_SET_EPIF_MASK | CAN_FD_SET_BEIF_MASK);
++		}
++		canfd_reigister_set_bit(priv, CANFD_RTIF_OFFSET, isr);
+ 	}
+-	if ((isr_handled == 0) && (eir_handled == 0)) {
+-		netdev_err(ndev, "Unhandled interrupt!\n");
++
++	if (num == 0) {
++		isr = can_ioread8(priv->reg_base + CANFD_RTIF_OFFSET);
++		eir  = can_ioread8(priv->reg_base + CANFD_ERRINT_OFFSET);
++		netdev_err(ndev, "Unhandled interrupt!isr:%x,eir:%x\n", isr, eir);
+ 		return IRQ_NONE;
+ 	}
+ 

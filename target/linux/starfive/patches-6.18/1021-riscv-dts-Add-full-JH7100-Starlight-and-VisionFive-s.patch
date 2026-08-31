@@ -1,0 +1,848 @@
+From a861bf8cf26216da57b4886ecf48222e01e4fba9 Mon Sep 17 00:00:00 2001
+From: Emil Renner Berthing <kernel@esmil.dk>
+Date: Sun, 31 Oct 2021 17:15:58 +0100
+Subject: [PATCH 1021/1021] riscv: dts: Add full JH7100, Starlight and
+ VisionFive support
+
+Based on the device tree in https://github.com/starfive-tech/u-boot/
+with contributions from:
+yanhong.wang <yanhong.wang@starfivetech.com>
+Huan.Feng <huan.feng@starfivetech.com>
+ke.zhu <ke.zhu@starfivetech.com>
+yiming.li <yiming.li@starfivetech.com>
+jack.zhu <jack.zhu@starfivetech.com>
+Samin Guo <samin.guo@starfivetech.com>
+Chenjieqin <Jessica.Chen@starfivetech.com>
+bo.li <bo.li@starfivetech.com>
+
+Rearranged, cleanups, fixes, pins and resets added by Emil.
+Cleanups, fixes, clocks added by Geert.
+Cleanups and GPIO fixes from Drew.
+Thermal zone added by Stephen.
+PWM pins added by Jianlong.
+cpu-map added by Jonas.
+
+Signed-off-by: Geert Uytterhoeven <geert@linux-m68k.org>
+Signed-off-by: Stephen L Arnold <nerdboy@gentoo.org>
+Signed-off-by: Drew Fustini <drew@beagleboard.org>
+Signed-off-by: Jianlong Huang <jianlong.huang@starfivetech.com>
+Signed-off-by: Jonas Hahnfeld <hahnjo@hahnjo.de>
+Signed-off-by: Emil Renner Berthing <kernel@esmil.dk>
+---
+ arch/riscv/boot/dts/starfive/Makefile         |   2 +
+ .../starfive/jh7100-beaglev-starlight-a1.dts  |  24 ++
+ .../dts/starfive/jh7100-beaglev-starlight.dts |   6 +
+ .../boot/dts/starfive/jh7100-common.dtsi      | 177 ++++++++
+ .../jh7100-starfive-visionfive-v1.dts         |  13 +
+ arch/riscv/boot/dts/starfive/jh7100.dtsi      | 389 ++++++++++++++++++
+ 6 files changed, 611 insertions(+)
+ create mode 100644 arch/riscv/boot/dts/starfive/jh7100-beaglev-starlight-a1.dts
+
+--- a/arch/riscv/boot/dts/starfive/Makefile
++++ b/arch/riscv/boot/dts/starfive/Makefile
+@@ -1,10 +1,12 @@
+ # SPDX-License-Identifier: GPL-2.0
+ # Enables support for device-tree overlays
++DTC_FLAGS_jh7100-beaglev-starlight-a1 := -@
+ DTC_FLAGS_jh7100-beaglev-starlight := -@
+ DTC_FLAGS_jh7100-starfive-visionfive-v1 := -@
+ DTC_FLAGS_jh7110-starfive-visionfive-2-v1.2a := -@
+ DTC_FLAGS_jh7110-starfive-visionfive-2-v1.3b := -@
+ 
++dtb-$(CONFIG_ARCH_STARFIVE) += jh7100-beaglev-starlight-a1.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7100-beaglev-starlight.dtb
+ dtb-$(CONFIG_ARCH_STARFIVE) += jh7100-starfive-visionfive-v1.dtb
+ 
+--- /dev/null
++++ b/arch/riscv/boot/dts/starfive/jh7100-beaglev-starlight-a1.dts
+@@ -0,0 +1,24 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++/*
++ * Copyright (C) 2021 Emil Renner Berthing <kernel@esmil.dk>
++ */
++
++/dts-v1/;
++#include "jh7100-common.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++
++/ {
++	model = "BeagleV Starlight Beta A1";
++	compatible = "beagle,beaglev-starlight-jh7100-a1", "starfive,jh7100";
++
++	gpio-restart {
++		compatible = "gpio-restart";
++		gpios = <&gpio 63 GPIO_ACTIVE_HIGH>;
++		priority = <224>;
++	};
++};
++
++&gpio {
++	/* don't reset gpio mux for serial console and reset gpio */
++	starfive,keep-gpiomux = <13 14 63>;
++};
+--- a/arch/riscv/boot/dts/starfive/jh7100-beaglev-starlight.dts
++++ b/arch/riscv/boot/dts/starfive/jh7100-beaglev-starlight.dts
+@@ -6,6 +6,7 @@
+ 
+ /dts-v1/;
+ #include "jh7100-common.dtsi"
++#include <dt-bindings/gpio/gpio.h>
+ 
+ / {
+ 	model = "BeagleV Starlight Beta";
+@@ -16,6 +17,11 @@
+ 	phy-handle = <&phy>;
+ };
+ 
++&gpio {
++	/* don't reset gpio mux for serial console on uart3 */
++	starfive,keep-gpiomux = <13 14>;
++};
++
+ &mdio {
+ 	phy: ethernet-phy@7 {
+ 		reg = <7>;
+--- a/arch/riscv/boot/dts/starfive/jh7100-common.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7100-common.dtsi
+@@ -15,6 +15,7 @@
+ 		mmc0 = &sdio0;
+ 		mmc1 = &sdio1;
+ 		serial0 = &uart3;
++		serial1 = &uart0;
+ 	};
+ 
+ 	chosen {
+@@ -47,11 +48,41 @@
+ 		#size-cells = <2>;
+ 		ranges;
+ 
++		linux,cma {
++			compatible = "shared-dma-pool";
++			alloc-ranges = <0x0 0xa0000000 0x0 0x28000000>;
++			size = <0x0 0x28000000>;
++			alignment = <0x0 0x1000>;
++			reusable;
++			linux,cma-default;
++		};
++
++		jpu_reserved: framebuffer@c9000000 {
++			reg = <0x0 0xc9000000 0x0 0x4000000>;
++		};
++
++		nvdla_reserved: framebuffer@d0000000 {
++			reg = <0x0 0xd0000000 0x0 0x28000000>;
++			no-map;
++		};
++
++		vin_reserved: framebuffer@f9000000 {
++			compatible = "shared-dma-pool";
++			reg = <0x0 0xf9000000 0x0 0x1000000>;
++			no-map;
++		};
++
+ 		dma-reserved@fa000000 {
+ 			reg = <0x0 0xfa000000 0x0 0x1000000>;
+ 			no-map;
+ 		};
+ 
++		sffb_reserved: framebuffer@fb000000 {
++			compatible = "shared-dma-pool";
++			reg = <0x0 0xfb000000 0x0 0x2000000>;
++			no-map;
++		};
++
+ 		linux,dma@107a000000 {
+ 			compatible = "shared-dma-pool";
+ 			reg = <0x10 0x7a000000 0x0 0x1000000>;
+@@ -72,6 +103,44 @@
+ 	};
+ };
+ 
++&display {
++	memory-region = <&sffb_reserved>;
++	status = "okay";
++};
++
++&crtc {
++	ddr-format = <4>; //<WIN_FMT_RGB565>;
++	status = "okay";
++
++	port: port@0 {
++		reg = <0>;
++
++		crtc_0_out: endpoint {
++			remote-endpoint = <&hdmi_input0>;
++		};
++	};
++};
++
++&encoder {
++	encoder-type = <2>; // 2-TMDS, 3-LVDS, 6-DSI, 8-DPI
++	status = "okay";
++
++	ports {
++		port@0 {
++			hdmi_out: endpoint {
++				remote-endpoint = <&tda998x_0_input>;
++			};
++		};
++
++		port@1 {
++			hdmi_input0: endpoint {
++				remote-endpoint = <&crtc_0_out>;
++			};
++		};
++
++	};
++};
++
+ &gmac {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&gmac_pins>;
+@@ -199,6 +268,20 @@
+ 		};
+ 	};
+ 
++	pwmdac_pins: pwmdac-0 {
++		pwmdac-pins {
++			pinmux = <GPIOMUX(23, GPO_PWMDAC_LEFT_OUT,
++				  GPO_ENABLE, GPI_NONE)>,
++				 <GPIOMUX(24, GPO_PWMDAC_RIGHT_OUT,
++				  GPO_ENABLE, GPI_NONE)>;
++			bias-disable;
++			drive-strength = <35>;
++			input-disable;
++			input-schmitt-disable;
++			slew-rate = <0>;
++		};
++	};
++
+ 	pwm_pins: pwm-0 {
+ 		pwm-pins {
+ 			pinmux = <GPIOMUX(7,
+@@ -289,6 +372,39 @@
+ 		};
+ 	};
+ 
++	spi2_pins: spi2-0 {
++		mosi-pins {
++			pinmux = <GPIOMUX(18, GPO_SPI2_PAD_TXD,
++				  GPO_ENABLE, GPI_NONE)>;
++			bias-disable;
++			input-disable;
++			input-schmitt-disable;
++		};
++		miso-pins {
++			pinmux = <GPIOMUX(16, GPO_LOW, GPO_DISABLE,
++				  GPI_SPI2_PAD_RXD)>;
++			bias-pull-up;
++			input-enable;
++			input-schmitt-enable;
++		};
++		sck-pins {
++			pinmux = <GPIOMUX(12, GPO_SPI2_PAD_SCK_OUT,
++				  GPO_ENABLE, GPI_NONE)>;
++			bias-disable;
++			input-disable;
++			input-schmitt-disable;
++		};
++		ss-pins {
++			pinmux = <GPIOMUX(15, GPO_SPI2_PAD_SS_0_N,
++				  GPO_ENABLE, GPI_NONE)>,
++				 <GPIOMUX(11, GPO_SPI2_PAD_SS_1_N,
++				  GPO_ENABLE, GPI_NONE)>;
++			bias-disable;
++			input-disable;
++			input-schmitt-disable;
++		};
++	};
++
+ 	uart0_pins: uart0-0 {
+ 		rx-pins {
+ 			pinmux = <GPIOMUX(40, GPO_LOW, GPO_DISABLE,
+@@ -364,6 +480,17 @@
+ 		regulators {
+ 		};
+ 	};
++
++	tda998x@70 {
++		compatible = "nxp,tda998x";
++		reg = <0x70>;
++
++		port {
++			tda998x_0_input: endpoint {
++				remote-endpoint = <&hdmi_out>;
++			};
++		};
++	};
+ };
+ 
+ &i2c1 {
+@@ -400,6 +527,44 @@
+ 	status = "okay";
+ };
+ 
++&pwmdac {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pwmdac_pins>;
++	status = "okay";
++};
++
++&qspi {
++	nor_flash: nor-flash@0 {
++		compatible = "spi-flash";
++		reg = <0>;
++		spi-max-frequency = <31250000>;
++		page-size = <256>;
++		block-size = <16>;
++		cdns,read-delay = <4>;
++		cdns,tshsl-ns = <1>;
++		cdns,tsd2d-ns = <1>;
++		cdns,tchsh-ns = <1>;
++		cdns,tslch-ns = <1>;
++		spi-tx-bus-width = <1>;
++		spi-rx-bus-width = <1>;
++	};
++
++	nand_flash: nand-flash@1 {
++		compatible = "spi-flash-nand";
++		reg = <1>;
++		spi-max-frequency = <31250000>;
++		page-size = <2048>;
++		block-size = <17>;
++		cdns,read-delay = <4>;
++		cdns,tshsl-ns = <1>;
++		cdns,tsd2d-ns = <1>;
++		cdns,tchsh-ns = <1>;
++		cdns,tslch-ns = <1>;
++		spi-tx-bus-width = <1>;
++		spi-rx-bus-width = <1>;
++	};
++};
++
+ &sdio0 {
+ 	broken-cd;
+ 	bus-width = <4>;
+@@ -428,6 +593,18 @@
+ 	};
+ };
+ 
++&spi2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi2_pins>;
++	status = "okay";
++
++	spi_dev0: spi@0 {
++		compatible = "rohm,dh2228fv";
++		spi-max-frequency = <10000000>;
++		reg = <0>;
++	};
++};
++
+ &uart0 {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&uart0_pins>;
+--- a/arch/riscv/boot/dts/starfive/jh7100-starfive-visionfive-v1.dts
++++ b/arch/riscv/boot/dts/starfive/jh7100-starfive-visionfive-v1.dts
+@@ -22,6 +22,19 @@
+ 	phy-handle = <&phy>;
+ };
+ 
++&gpio {
++	/* don't reset gpio mux for serial console and reset gpio */
++	starfive,keep-gpiomux = <13 14 63>;
++};
++
++&i2c0 {
++	eeprom@50 {
++		compatible = "atmel,24c04";
++		reg = <0x50>;
++		pagesize = <16>;
++	};
++};
++
+ /*
+  * The board uses a Motorcomm YT8521 PHY supporting RGMII-ID, but requires
+  * manual adjustment of the RX internal delay to work properly.  The default
+--- a/arch/riscv/boot/dts/starfive/jh7100.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7100.dtsi
+@@ -6,7 +6,9 @@
+ 
+ /dts-v1/;
+ #include <dt-bindings/clock/starfive-jh7100.h>
++#include <dt-bindings/clock/starfive-jh7100-audio.h>
+ #include <dt-bindings/reset/starfive-jh7100.h>
++#include <dt-bindings/reset/starfive-jh7100-audio.h>
+ 
+ / {
+ 	compatible = "starfive,jh7100";
+@@ -37,6 +39,7 @@
+ 			riscv,isa-base = "rv64i";
+ 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicntr", "zicsr",
+ 					       "zifencei", "zihpm";
++			starfive,itim = <&itim0>;
+ 			tlb-split;
+ 
+ 			cpu0_intc: interrupt-controller {
+@@ -66,6 +69,7 @@
+ 			riscv,isa-base = "rv64i";
+ 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c", "zicntr", "zicsr",
+ 					       "zifencei", "zihpm";
++			starfive,itim = <&itim1>;
+ 			tlb-split;
+ 
+ 			cpu1_intc: interrupt-controller {
+@@ -153,6 +157,24 @@
+ 		dma-noncoherent;
+ 		ranges;
+ 
++		dtim: dtim@1000000 {
++			compatible = "starfive,dtim0";
++			reg = <0x0 0x1000000 0x0 0x2000>;
++			reg-names = "mem";
++		};
++
++		itim0: itim@1808000 {
++			compatible = "starfive,itim0";
++			reg = <0x0 0x1808000 0x0 0x8000>;
++			reg-names = "mem";
++		};
++
++		itim1: itim@1820000 {
++			compatible = "starfive,itim0";
++			reg = <0x0 0x1820000 0x0 0x8000>;
++			reg-names = "mem";
++		};
++
+ 		clint: clint@2000000 {
+ 			compatible = "starfive,jh7100-clint", "sifive,clint0";
+ 			reg = <0x0 0x2000000 0x0 0x10000>;
+@@ -239,6 +261,124 @@
+ 			};
+ 		};
+ 
++		dma2p: dma-controller@100b0000 {
++			compatible = "starfive,jh7100-axi-dma";
++			reg = <0x0 0x100b0000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SGDMA2P_AXI>,
++				 <&clkgen JH7100_CLK_SGDMA2P_AHB>;
++			clock-names = "core-clk", "cfgr-clk";
++			resets = <&rstgen JH7100_RSTN_SGDMA2P_AXI>,
++				 <&rstgen JH7100_RSTN_SGDMA2P_AHB>;
++			reset-names = "axi", "ahb";
++			interrupts = <2>;
++			#dma-cells = <1>;
++			dma-channels = <4>;
++			snps,dma-masters = <1>;
++			snps,data-width = <4>;
++			snps,block-size = <4096 4096 4096 4096>;
++			snps,priority = <0 1 2 3>;
++			snps,axi-max-burst-len = <128>;
++			dma-coherent;
++		};
++
++		crypto: crypto@100d0000 {
++			compatible = "starfive,vic-sec";
++			reg = <0x0 0x100d0000 0x0 0x20000>,
++			      <0x0 0x11800234 0x0 0xc>;
++			reg-names = "secmem", "secclk";
++			clocks = <&clkgen JH7100_CLK_SEC_AHB>;
++			interrupts = <31>;
++		};
++
++		i2sadc0: i2sadc0@10400000 {
++			compatible = "snps,designware-i2sadc0";
++			reg = <0x0 0x10400000 0x0 0x1000>;
++			clocks = <&clkgen JH7100_CLK_APB1_BUS>;
++			clock-names = "i2sclk";
++			interrupt-parent = <&plic>;
++			#sound-dai-cells = <0>;
++			dmas = <&dma2p 28>;
++			dma-names = "rx";
++		};
++
++		i2svad: i2svad@10420000 {
++			compatible = "starfive,sf-i2svad";
++			reg = <0x0 0x10420000 0x0 0x1000> ;
++			clocks = <&audclk JH7100_AUDCLK_I2SVAD_APB>;
++			clock-names = "i2svad_apb";
++			resets = <&audrst JH7100_AUDRSTN_I2SVAD_APB>,
++				 <&audrst JH7100_AUDRSTN_I2SVAD_SRST>;
++			reset-names = "apb_i2svad", "i2svad_srst";
++			interrupts = <60>, <61>;
++			interrupt-names = "spintr", "slintr";
++			#sound-dai-cells = <0>;
++		};
++
++		pwmdac: pwmdac@10440000 {
++			compatible = "starfive,pwmdac";
++			reg = <0x0 0x10440000 0x0 0x1000>;
++			clocks = <&clkgen JH7100_CLK_AUDIO_ROOT>,
++				 <&clkgen JH7100_CLK_AUDIO_SRC>,
++				 <&clkgen JH7100_CLK_AUDIO_12288>,
++				 <&audclk JH7100_AUDCLK_DMA1P_AHB>,
++				 <&audclk JH7100_AUDCLK_PWMDAC_APB>,
++				 <&audclk JH7100_AUDCLK_DAC_MCLK>;
++			clock-names = "audio_root",
++				      "audio_src",
++				      "audio_12288",
++				      "dma1p_ahb",
++				      "pwmdac_apb",
++				      "dac_mclk";
++			resets = <&audrst JH7100_AUDRSTN_APB_BUS>,
++				 <&audrst JH7100_AUDRSTN_DMA1P_AHB>,
++				 <&audrst JH7100_AUDRSTN_PWMDAC_APB>;
++			reset-names = "apb_bus", "dma1p_ahb", "apb_pwmdac";
++			dmas = <&dma2p 23>;
++			dma-names = "tx";
++			#sound-dai-cells = <0>;
++		};
++
++		i2sdac0: i2sdac0@10450000 {
++			compatible = "snps,designware-i2sdac0";
++			reg = <0x0 0x10450000 0x0 0x1000>;
++			clocks = <&audclk JH7100_AUDCLK_DAC_MCLK>,
++				 <&audclk JH7100_AUDCLK_I2SDAC_BCLK>,
++				 <&audclk JH7100_AUDCLK_I2SDAC_LRCLK>,
++				 <&audclk JH7100_AUDCLK_I2SDAC_APB>;
++			clock-names = "dac_mclk", "i2sdac0_bclk", "i2sdac0_lrclk", "i2sdac_apb";
++			resets = <&audrst JH7100_AUDRSTN_I2SDAC_APB>,
++				 <&audrst JH7100_AUDRSTN_I2SDAC_SRST>;
++			reset-names = "apb_i2sdac", "i2sdac_srst";
++			#sound-dai-cells = <0>;
++			dmas = <&dma2p 30>;
++			dma-names = "tx";
++		};
++
++		i2sdac1: i2sdac1@10460000 {
++			compatible = "snps,designware-i2sdac1";
++			reg = <0x0 0x10460000 0x0 0x1000>;
++			clocks = <&audclk JH7100_AUDCLK_DAC_MCLK>,
++				 <&audclk JH7100_AUDCLK_I2S1_BCLK>,
++				 <&audclk JH7100_AUDCLK_I2S1_LRCLK>,
++				 <&audclk JH7100_AUDCLK_I2S1_APB>;
++			clock-names = "dac_mclk", "i2sdac1_bclk", "i2sdac1_lrclk", "i2s1_apb";
++			resets = <&audrst JH7100_AUDRSTN_I2S1_APB>,
++				 <&audrst JH7100_AUDRSTN_I2S1_SRST>;
++			#sound-dai-cells = <0>;
++			dmas = <&dma2p 31>;
++			dma-names = "tx";
++		};
++
++		i2sdac16k: i2sdac16k@10470000 {
++			compatible = "snps,designware-i2sdac16k";
++			reg = <0x0 0x10470000 0x0 0x1000>;
++			clocks = <&clkgen JH7100_CLK_APB1_BUS>;
++			clock-names = "i2sclk";
++			#sound-dai-cells = <0>;
++			dmas = <&dma2p 29>;
++			dma-names = "tx";
++		};
++
+ 		audclk: clock-controller@10480000 {
+ 			compatible = "starfive,jh7100-audclk";
+ 			reg = <0x0 0x10480000 0x0 0x10000>;
+@@ -255,6 +395,50 @@
+ 			#reset-cells = <1>;
+ 		};
+ 
++		spdif_transmitter: spdif-transmitter {
++			compatible = "linux,spdif-dit";
++			#sound-dai-cells = <0>;
++		};
++
++		spdif_receiver: spdif-receiver {
++			compatible = "linux,spdif-dir";
++			#sound-dai-cells = <0>;
++		};
++
++		pwmdac_codec: pwmdac-transmitter {
++			compatible = "linux,pwmdac-dit";
++			#sound-dai-cells = <0>;
++		};
++
++		dmic_codec: dmic {
++			compatible = "dmic-codec";
++			#sound-dai-cells = <0>;
++		};
++
++		sound: snd-card {
++			compatible = "simple-audio-card";
++			simple-audio-card,name = "Starfive-Multi-Sound-Card";
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			/* pwmdac */
++			simple-audio-card,dai-link@0 {
++				reg = <0>;
++				status = "okay";
++				format = "left_j";
++				bitclock-master = <&sndcpu0>;
++				frame-master = <&sndcpu0>;
++
++				sndcpu0: cpu {
++					sound-dai = <&pwmdac>;
++				};
++
++				codec {
++					sound-dai = <&pwmdac_codec>;
++				};
++			};
++		};
++
+ 		sysaudio: syscon@104a0000 {
+ 			compatible = "starfive,jh7100-sysaudio", "syscon";
+ 			reg = <0x0 0x104a0000 0x0 0x10000>;
+@@ -287,6 +471,25 @@
+ 			};
+ 		};
+ 
++		dma1p: dma-controller@10500000 {
++			compatible = "starfive,jh7100-axi-dma";
++			reg = <0x0 0x10500000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SGDMA1P_AXI>,
++				 <&clkgen JH7100_CLK_SGDMA1P_BUS>;
++			clock-names = "core-clk", "cfgr-clk";
++			resets = <&rstgen JH7100_RSTN_DMA1P_AXI>,
++				 <&rstgen JH7100_RSTN_SGDMA1P_AXI>;
++			reset-names = "axi", "ahb";
++			interrupts = <1>;
++			#dma-cells = <1>;
++			dma-channels = <16>;
++			snps,dma-masters = <1>;
++			snps,data-width = <3>;
++			snps,block-size = <4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096 4096>;
++			snps,priority = <0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15>;
++			snps,axi-max-burst-len = <64>;
++		};
++
+ 		clkgen: clock-controller@11800000 {
+ 			compatible = "starfive,jh7100-clkgen";
+ 			reg = <0x0 0x11800000 0x0 0x10000>;
+@@ -295,6 +498,13 @@
+ 			#clock-cells = <1>;
+ 		};
+ 
++		otp: otp@11810000 {
++			compatible = "starfive,fu740-otp";
++			reg = <0x0 0x11810000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_OTP_APB>;
++			fuse-count = <0x200>;
++		};
++
+ 		rstgen: reset-controller@11840000 {
+ 			compatible = "starfive,jh7100-reset";
+ 			reg = <0x0 0x11840000 0x0 0x10000>;
+@@ -306,6 +516,21 @@
+ 			reg = <0x0 0x11850000 0x0 0x10000>;
+ 		};
+ 
++		qspi: spi@11860000 {
++			compatible = "cdns,qspi-nor";
++			reg = <0x0 0x11860000 0x0 0x10000>,
++			      <0x0 0x20000000 0x0 0x20000000>;
++			clocks = <&clkgen JH7100_CLK_QSPI_AHB>;
++			interrupts = <3>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			cdns,fifo-depth = <256>;
++			cdns,fifo-width = <4>;
++			cdns,trigger-address = <0x0>;
++			spi-max-frequency = <250000000>;
++			status = "disabled";
++		};
++
+ 		uart0: serial@11870000 {
+ 			compatible = "starfive,jh7100-hsuart", "snps,dw-apb-uart";
+ 			reg = <0x0 0x11870000 0x0 0x10000>;
+@@ -332,6 +557,34 @@
+ 			status = "disabled";
+ 		};
+ 
++		spi0: spi@11890000 {
++			compatible = "snps,dw-apb-ssi";
++			reg = <0x0 0x11890000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SPI0_CORE>,
++				 <&clkgen JH7100_CLK_SPI0_APB>;
++			clock-names = "ssi_clk", "pclk";
++			resets = <&rstgen JH7100_RSTN_SPI0_APB>;
++			reset-names = "spi";
++			interrupts = <94>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		spi1: spi@118a0000 {
++			compatible = "snps,dw-apb-ssi";
++			reg = <0x0 0x118a0000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SPI1_CORE>,
++				 <&clkgen JH7100_CLK_SPI1_APB>;
++			clock-names = "ssi_clk", "pclk";
++			resets = <&rstgen JH7100_RSTN_SPI1_APB>;
++			reset-names = "spi";
++			interrupts = <95>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		i2c0: i2c@118b0000 {
+ 			compatible = "snps,designware-i2c";
+ 			reg = <0x0 0x118b0000 0x0 0x10000>;
+@@ -358,6 +611,41 @@
+ 			status = "disabled";
+ 		};
+ 
++		trng: trng@118d0000 {
++			compatible = "starfive,vic-rng";
++			reg = <0x0 0x118d0000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_TRNG_APB>;
++			interrupts = <98>;
++		};
++
++		vpu_enc: vpu_enc@118e0000 {
++			compatible = "cm,cm521-vpu";
++			reg = <0x0 0x118e0000 0x0 0x4000>;
++			reg-names = "control";
++			clocks = <&clkgen JH7100_CLK_VP6_CORE>;
++			clock-names = "vcodec";
++			interrupts = <26>;
++		};
++
++		vpu_dec: vpu_dec@118f0000 {
++			compatible = "c&m,cm511-vpu";
++			reg = <0 0x118f0000 0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_VP6_CORE>;
++			clock-names = "vcodec";
++			interrupts = <23>;
++			//memory-region = <&vpu_reserved>;
++		};
++
++		jpu: coadj12@11900000 {
++			compatible = "cm,codaj12-jpu-1";
++			reg = <0x0 0x11900000 0x0 0x300>;
++			reg-names = "control";
++			clocks = <&clkgen JH7100_CLK_JPEG_APB>;
++			clock-names = "jpege";
++			interrupts = <24>;
++			memory-region = <&jpu_reserved>;
++		};
++
+ 		gpio: pinctrl@11910000 {
+ 			compatible = "starfive,jh7100-pinctrl";
+ 			reg = <0x0 0x11910000 0x0 0x10000>,
+@@ -372,6 +660,86 @@
+ 			#interrupt-cells = <2>;
+ 		};
+ 
++		nvdla@11940000 {
++			compatible = "nvidia,nvdla_os_initial";
++			interrupts = <22>;
++			memory-region = <&nvdla_reserved>;
++			reg = <0x0 0x11940000 0x0 0x40000>;
++			status = "okay";
++		};
++
++		display: display-subsystem {
++			compatible = "starfive,display-subsystem";
++			dma-coherent;
++			status = "disabled";
++		};
++
++		encoder: display-encoder {
++			compatible = "starfive,display-encoder";
++			status = "disabled";
++		};
++
++		crtc: crtc@12000000 {
++			compatible = "starfive,jh7100-crtc";
++			reg = <0x0 0x12000000 0x0 0x10000>,
++			      <0x0 0x12040000 0x0 0x10000>,
++			      <0x0 0x12080000 0x0 0x10000>,
++			      <0x0 0x120c0000 0x0 0x10000>,
++			      <0x0 0x12240000 0x0 0x10000>,
++			      <0x0 0x12250000 0x0 0x10000>,
++			      <0x0 0x12260000 0x0 0x10000>;
++			reg-names = "lcdc", "vpp0", "vpp1", "vpp2", "clk", "rst", "sys";
++			clocks = <&clkgen JH7100_CLK_DISP_AXI>, <&clkgen JH7100_CLK_VOUT_SRC>;
++			clock-names = "disp_axi", "vout_src";
++			resets = <&rstgen JH7100_RSTN_DISP_AXI>, <&rstgen JH7100_RSTN_VOUT_SRC>;
++			reset-names = "disp_axi", "vout_src";
++			interrupts = <101>, <103>;
++			interrupt-names = "lcdc_irq", "vpp1_irq";
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++
++			pp1 {
++				pp-id = <1>;
++				fifo-out;
++				//sys-bus-out;
++				src-format = <11>; //<COLOR_RGB565>;
++				src-width = <1920>;
++				src-height = <1080>;
++				dst-format = <7>; //<COLOR_RGB888_ARGB>;
++				dst-width = <1920>;
++				dst-height = <1080>;
++			};
++		};
++
++		spi2: spi@12410000 {
++			compatible = "snps,dw-apb-ssi";
++			reg = <0x0 0x12410000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SPI2_CORE>,
++				 <&clkgen JH7100_CLK_SPI2_APB>;
++			clock-names = "ssi_clk", "pclk";
++			resets = <&rstgen JH7100_RSTN_SPI2_APB>;
++			reset-names = "spi";
++			interrupts = <70>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		spi3: spi@12420000 {
++			compatible = "snps,dw-apb-ssi";
++			reg = <0x0 0x12420000 0x0 0x10000>;
++			clocks = <&clkgen JH7100_CLK_SPI3_CORE>,
++				 <&clkgen JH7100_CLK_SPI3_APB>;
++			clock-names = "ssi_clk", "pclk";
++			resets = <&rstgen JH7100_RSTN_SPI3_APB>;
++			reset-names = "spi";
++			interrupts = <71>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		uart2: serial@12430000 {
+ 			compatible = "starfive,jh7100-uart", "snps,dw-apb-uart";
+ 			reg = <0x0 0x12430000 0x0 0x10000>;
+@@ -454,5 +822,26 @@
+ 			reset-names = "sense", "bus";
+ 			#thermal-sensor-cells = <0>;
+ 		};
++
++		xrp@f0000000 {
++			compatible = "cdns,xrp";
++			reg = <0x0  0xf0000000 0x0 0x01ffffff>,
++			      <0x10 0x72000000 0x0 0x00001000>,
++			      <0x10 0x72001000 0x0 0x00fff000>,
++			      <0x0  0x124b0000 0x0 0x00010000>;
++			clocks = <&clkgen JH7100_CLK_VP6_CORE>;
++			interrupts = <27>, <28>;
++			firmware-name = "vp6_elf";
++			dsp-irq = <19 20>;
++			dsp-irq-src = <0x20 0x21>;
++			intc-irq-mode = <1>;
++			intc-irq = <0 1>;
++			#address-cells = <1>;
++			#size-cells = <1>;
++			ranges = <0x40000000 0x0  0x40000000 0x01000000>,
++				 <0xb0000000 0x10 0x70000000 0x3000000>;
++			dsp@0 {
++			};
++		};
+ 	};
+ };
