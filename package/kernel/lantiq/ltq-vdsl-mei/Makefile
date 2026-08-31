@@ -9,7 +9,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=ltq-vdsl-vr9-mei
 PKG_VERSION:=1.5.17.6
-PKG_RELEASE:=4
+PKG_RELEASE:=7
 
 PKG_BASE_NAME:=drv_mei_cpe
 PKG_SOURCE:=$(PKG_BASE_NAME)-$(PKG_VERSION).tar.gz
@@ -29,7 +29,7 @@ define KernelPackage/ltq-vdsl-vr9-mei
   TITLE:=mei driver for vdsl
   SECTION:=sys
   SUBMENU:=Network Devices
-  DEPENDS:=@TARGET_lantiq_xrx200 +kmod-ltq-ifxos
+  DEPENDS:=@(TARGET_lantiq_xrx200||TARGET_lantiq_xrx200_legacy) +kmod-ltq-ifxos +kmod-ltq-vectoring
   FILES:=$(PKG_BUILD_DIR)/src/drv_mei_cpe.ko
   AUTOLOAD:=$(call AutoLoad,50,drv_mei_cpe)
 endef
@@ -39,15 +39,14 @@ define KernelPackage/ltq-vdsl-vr9-mei/description
 endef
 
 
-define Package/ltq-vdsl-mei-test
+define Package/ltq-vdsl-vr9-mei-test
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Lantiq mei driver test tool
-  URL:=http://www.lantiq.com/
-  DEPENDS:=@TARGET_lantiq_xrx200
+  DEPENDS:=@(TARGET_lantiq_xrx200||TARGET_lantiq_xrx200_legacy)
 endef
 
-define Package/ltq-vdsl-mei-test/description
+define Package/ltq-vdsl-vr9-mei-test/description
 	Userland tool to directly control the mei driver, this is only needed
 	for test and development purposes.
 endef
@@ -56,10 +55,10 @@ MAKE_FLAGS += \
 	$(KERNEL_MAKE_FLAGS) \
 	SHELL="$(BASH)"
 
-# ltq-vdsl-app uses a header provided by the MEI driver which has some
+# ltq-vdsl-vr9-app uses a header provided by the MEI driver which has some
 # conditionals.
 # Define the conditionals here to have the same view on both sides. If you
-# change them, you need to change them for the ltq-vdsl-app as well
+# change them, you need to change them for the ltq-vdsl-vr9-app as well
 MEI_DRV_CFLAGS = \
 	-DMEI_DRV_ATM_PTM_INTERFACE_ENABLE=1 \
 	-DMEI_SUPPORT_DEBUG_STREAMS=1 \
@@ -91,9 +90,9 @@ endef
 
 $(eval $(call KernelPackage,ltq-vdsl-vr9-mei))
 
-define Package/ltq-vdsl-mei-test/install
+define Package/ltq-vdsl-vr9-mei-test/install
 	$(INSTALL_DIR) $(1)/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/src/mei_cpe_drv_test $(1)/bin
 endef
 
-$(eval $(call BuildPackage,ltq-vdsl-mei-test))
+$(eval $(call BuildPackage,ltq-vdsl-vr9-mei-test))

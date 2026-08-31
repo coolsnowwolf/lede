@@ -1,0 +1,148 @@
+From 6f933347d0b4ed02d9534f5fa07f7b99f13eeaa1 Mon Sep 17 00:00:00 2001
+From: John Crispin <blogic@openwrt.org>
+Date: Thu, 7 Aug 2014 18:12:28 +0200
+Subject: [PATCH 01/36] MIPS: lantiq: add pcie driver
+
+Signed-off-by: John Crispin <blogic@openwrt.org>
+---
+ arch/mips/lantiq/Kconfig           |   10 +
+ arch/mips/lantiq/xway/sysctrl.c    |    2 +
+ arch/mips/pci/Makefile             |    2 +
+ arch/mips/pci/fixup-lantiq.c       |    5 +-
+ arch/mips/pci/pci-legacy.c         |   25 +
+ drivers/pci/pcie/Kconfig           |    2 +-
+ include/linux/pci.h                |    2 +
+ include/linux/pci_ids.h            |    6 +
+ 8 files changed, 52 insertions(+), 3 deletions(-)
+
+--- a/arch/mips/lantiq/Kconfig
++++ b/arch/mips/lantiq/Kconfig
+@@ -20,6 +20,7 @@ config SOC_XWAY
+ 	bool "XWAY"
+ 	select SOC_TYPE_XWAY
+ 	select HAVE_PCI
++	select ARCH_SUPPORTS_MSI
+ 	select MFD_SYSCON
+ 	select MFD_CORE
+ 
+@@ -52,4 +53,13 @@ config PCI_LANTIQ
+ 	bool "PCI Support"
+ 	depends on SOC_XWAY && PCI
+ 
++config PCIE_LANTIQ
++	bool "PCIE Support"
++	depends on SOC_XWAY && PCI
++
++config PCIE_LANTIQ_MSI
++	bool
++	depends on PCIE_LANTIQ && PCI_MSI
++	default y
++
+ endif
+--- a/arch/mips/pci/Makefile
++++ b/arch/mips/pci/Makefile
+@@ -41,6 +41,8 @@ obj-$(CONFIG_PCI_LANTIQ)	+= pci-lantiq.o
+ obj-$(CONFIG_SOC_MT7620)	+= pci-mt7620.o
+ obj-$(CONFIG_SOC_RT288X)	+= pci-rt2880.o
+ obj-$(CONFIG_SOC_RT3883)	+= pci-rt3883.o
++obj-$(CONFIG_PCIE_LANTIQ)	+= ifxmips_pcie.o fixup-lantiq-pcie.o
++obj-$(CONFIG_PCIE_LANTIQ_MSI)	+= pcie-lantiq-msi.o
+ obj-$(CONFIG_SOC_TX4927)	+= pci-tx4927.o
+ obj-$(CONFIG_SOC_TX4938)	+= pci-tx4938.o
+ obj-$(CONFIG_TOSHIBA_RBTX4927)	+= fixup-rbtx4927.o
+--- a/arch/mips/pci/fixup-lantiq.c
++++ b/arch/mips/pci/fixup-lantiq.c
+@@ -6,13 +6,24 @@
+ 
+ #include <linux/of_pci.h>
+ #include <linux/pci.h>
++#include <linux/pci.h>
++#include "ifxmips_pci_common.h"
+ 
+ int pcibios_plat_dev_init(struct pci_dev *dev)
+ {
++#ifdef CONFIG_PCIE_LANTIQ
++	if (pci_find_capability(dev, PCI_CAP_ID_EXP))
++		ifx_pcie_bios_plat_dev_init(dev);
++#endif
+ 	return 0;
+ }
+ 
+ int pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+ {
++#ifdef CONFIG_PCIE_LANTIQ
++	if (pci_find_capability((struct pci_dev *)dev, PCI_CAP_ID_EXP))
++		return ifx_pcie_bios_map_irq(dev, slot, pin);
++#endif
++
+ 	return of_irq_parse_and_map_pci(dev, slot, pin);
+ }
+--- a/arch/mips/pci/pci-legacy.c
++++ b/arch/mips/pci/pci-legacy.c
+@@ -278,3 +278,30 @@ char *__init pcibios_setup(char *str)
+ 		return pcibios_plat_setup(str);
+ 	return str;
+ }
++
++int pcibios_host_nr(void)
++{
++    int count = 0;
++    struct pci_controller *hose;
++    list_for_each_entry(hose, &controllers, list) {
++        count++;
++    }
++    return count;
++}
++EXPORT_SYMBOL(pcibios_host_nr);
++
++int pcibios_1st_host_bus_nr(void)
++{
++    int bus_nr = 0;
++    struct pci_controller *hose;
++
++    hose = list_first_entry_or_null(&controllers, struct pci_controller, list);
++
++    if (hose != NULL) {
++        if (hose->bus != NULL) {
++            bus_nr = hose->bus->number + 1;
++        }
++    }
++    return bus_nr;
++}
++EXPORT_SYMBOL(pcibios_1st_host_bus_nr);
+--- a/drivers/pci/pcie/Kconfig
++++ b/drivers/pci/pcie/Kconfig
+@@ -64,6 +64,7 @@ config PCIEAER_CXL
+ config PCIE_ECRC
+ 	bool "PCI Express ECRC settings control"
+ 	depends on PCIEAER
++	default n
+ 	help
+ 	  Used to override firmware/bios settings for PCI Express ECRC
+ 	  (transaction layer end-to-end CRC checking).
+--- a/include/linux/pci.h
++++ b/include/linux/pci.h
+@@ -1655,6 +1655,8 @@ void pci_walk_bus(struct pci_bus *top, i
+ 		  void *userdata);
+ int pci_cfg_space_size(struct pci_dev *dev);
+ unsigned char pci_bus_max_busnr(struct pci_bus *bus);
++int pcibios_host_nr(void);
++int pcibios_1st_host_bus_nr(void);
+ resource_size_t pcibios_window_alignment(struct pci_bus *bus,
+ 					 unsigned long type);
+ 
+--- a/include/linux/pci_ids.h
++++ b/include/linux/pci_ids.h
+@@ -1114,6 +1114,12 @@
+ #define PCI_DEVICE_ID_SGI_IOC3		0x0003
+ #define PCI_DEVICE_ID_SGI_LITHIUM	0x1002
+ 
++#define PCI_VENDOR_ID_INFINEON		0x15D1
++#define PCI_DEVICE_ID_INFINEON_DANUBE	0x000F
++#define PCI_DEVICE_ID_INFINEON_PCIE	0x0011
++#define PCI_VENDOR_ID_LANTIQ		0x1BEF
++#define PCI_DEVICE_ID_LANTIQ_PCIE	0x0011
++
+ #define PCI_VENDOR_ID_WINBOND		0x10ad
+ #define PCI_DEVICE_ID_WINBOND_82C105	0x0105
+ #define PCI_DEVICE_ID_WINBOND_83C553	0x0565

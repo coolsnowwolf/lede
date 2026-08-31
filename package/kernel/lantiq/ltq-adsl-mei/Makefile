@@ -19,7 +19,6 @@ define KernelPackage/ltq-adsl-mei-template
   CATEGORY:=Kernel modules
   SUBMENU:=Network Devices
   TITLE:=mei driver for $(1)
-  URL:=http://www.lantiq.com/
   VARIANT:=$(1)
   DEPENDS:=@$(2)
   FILES:=$(PKG_BUILD_DIR)/drv_mei_cpe.ko

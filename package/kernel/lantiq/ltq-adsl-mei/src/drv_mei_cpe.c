@@ -28,7 +28,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/version.h>
+#include <linux/mod_devicetable.h>
 #include <generated/utsrelease.h>
 #include <linux/types.h>
 #include <linux/fs.h>
@@ -60,8 +60,6 @@
 #define IFXMIPS_FUSE_BASE_ADDR            IFX_FUSE_BASE_ADDR
 #define IFXMIPS_ICU_IM0_IER               IFX_ICU_IM0_IER
 #define IFXMIPS_ICU_IM2_IER               IFX_ICU_IM2_IER
-#define LTQ_MEI_INT                   IFX_MEI_INT
-#define LTQ_MEI_DYING_GASP_INT        IFX_MEI_DYING_GASP_INT
 #define LTQ_MEI_BASE_ADDR  		  IFX_MEI_SPACE_ACCESS
 #define IFXMIPS_PMU_PWDCR		  IFX_PMU_PWDCR
 #define IFXMIPS_MPS_CHIPID                IFX_MPS_CHIPID
@@ -84,28 +82,6 @@
 #define LTQ_MEI_BASE_ADDR       0x1E116000
 #define LTQ_PMU_BASE_ADDR       0x1F102000
 
-
-#ifdef CONFIG_DANUBE
-# define LTQ_MEI_INT             (INT_NUM_IM1_IRL0 + 23)
-# define LTQ_MEI_DYING_GASP_INT  (INT_NUM_IM1_IRL0 + 21)
-# define LTQ_USB_OC_INT          (INT_NUM_IM4_IRL0 + 23)
-#endif
-
-#ifdef CONFIG_AMAZON_SE
-# define LTQ_MEI_INT             (INT_NUM_IM2_IRL0 + 9)
-# define LTQ_MEI_DYING_GASP_INT  (INT_NUM_IM2_IRL0 + 11)
-# define LTQ_USB_OC_INT          (INT_NUM_IM2_IRL0 + 20)
-#endif
-
-#ifdef CONFIG_AR9
-# define LTQ_MEI_INT             (INT_NUM_IM1_IRL0 + 23)
-# define LTQ_MEI_DYING_GASP_INT  (INT_NUM_IM1_IRL0 + 21)
-# define LTQ_USB_OC_INT          (INT_NUM_IM1_IRL0 + 28)
-#endif
-
-#ifndef LTQ_MEI_INT
-#error "Unknown Lantiq ARCH!"
-#endif
 
 #define LTQ_RCU_RST_REQ_DFE		(1 << 7)
 #define LTQ_RCU_RST_REQ_AFE		(1 << 11)
@@ -208,7 +184,7 @@ static void *g_xdata_addr = NULL;
 static u32 *mei_arc_swap_buff = NULL;	//  holding swap pages
 
 extern void ltq_mask_and_ack_irq(struct irq_data *d);
-static void inline MEI_MASK_AND_ACK_IRQ(int x)
+static inline void MEI_MASK_AND_ACK_IRQ(int x)
 {
 	struct irq_data d;
 	d.hwirq = x;
@@ -1201,7 +1177,7 @@ DSL_BSP_AdslLedSet (DSL_DEV_Device_t * dev, DSL_DEV_LedId_t led_number, DSL_DEV_
 * \param       CMVMSG          The pointer to message buffer.
 * \ingroup     Internal
 */
-void
+static void
 makeCMV (u8 opcode, u8 group, u16 address, u16 index, int size, u16 * data, u16 *CMVMSG)
 {
         memset (CMVMSG, 0, MSG_LENGTH * 2);
@@ -1309,8 +1285,7 @@ IFX_MEI_RunAdslModem (DSL_DEV_Device_t *pDev)
 //	DSL_DEV_WinHost_Message_t m;
 
 	if (mei_arc_swap_buff == NULL) {
-		mei_arc_swap_buff =
-			(u32 *) kmalloc (MAXSWAPSIZE * 4, GFP_KERNEL);
+		mei_arc_swap_buff = kmalloc (MAXSWAPSIZE * 4, GFP_KERNEL);
 		if (mei_arc_swap_buff == NULL) {
 			IFX_MEI_EMSG (">>> malloc fail for codeswap buff!!! <<<\n");
 			return DSL_DEV_MEI_ERR_FAILURE;
@@ -1349,14 +1324,14 @@ IFX_MEI_RunAdslModem (DSL_DEV_Device_t *pDev)
 	im2_register = (*LTQ_ICU_IM2_IER) & (1 << 20);
 
 	/* Turn off irq */
-	disable_irq (LTQ_USB_OC_INT);
+	disable_irq (pDev->nIrq[IFX_USB_OC]);
 	disable_irq (pDev->nIrq[IFX_DYING_GASP]);
 
 	IFX_MEI_RunArc (pDev);
 
 	MEI_WAIT_EVENT_TIMEOUT (DSL_DEV_PRIVATE(pDev)->wait_queue_modemready, 1000);
 
-	MEI_MASK_AND_ACK_IRQ (LTQ_USB_OC_INT);
+	MEI_MASK_AND_ACK_IRQ (pDev->nIrq[IFX_USB_OC]);
 	MEI_MASK_AND_ACK_IRQ (pDev->nIrq[IFX_DYING_GASP]);
 
 	/* Re-enable irq */
@@ -1512,14 +1487,14 @@ IFX_MEI_DFEMemoryAlloc (DSL_DEV_Device_t * pDev, long size)
                         allocate_size = size;
                 else
                         allocate_size = SDRAM_SEGMENT_SIZE;
-        
+
 		org_mem_ptr = kmalloc (allocate_size, GFP_KERNEL);
 		if (org_mem_ptr == NULL) {
                         IFX_MEI_EMSG ("%d: kmalloc %d bytes memory fail!\n", idx, allocate_size);
 			err = -ENOMEM;
 			goto allocate_error;
 		}
-		
+
 		if (((unsigned long)org_mem_ptr) & (1023)) {
 			/* Pointer not 1k aligned, so free it and allocate a larger chunk
 			 * for further alignment.
@@ -1619,7 +1594,9 @@ DSL_BSP_FWDownload (DSL_DEV_Device_t * pDev, const char *buf,
 			IFX_MEI_EMSG ("Firmware size is too small!\n");
 			return retval;
 		}
-		copy_from_user ((char *) &img_hdr_tmp, buf, sizeof (img_hdr_tmp));
+		if (copy_from_user ((char *) &img_hdr_tmp, buf, sizeof (img_hdr_tmp)))
+			return -EFAULT;
+
 		// header of image_size and crc are not included.
 		DSL_DEV_PRIVATE(pDev)->image_size = le32_to_cpu (img_hdr_tmp.size) + 8;
 
@@ -1658,7 +1635,7 @@ DSL_BSP_FWDownload (DSL_DEV_Device_t * pDev, const char *buf,
 			retval = -ENOMEM;
 			goto error;
 		}
-		
+
 		if (((unsigned long)org_mem_ptr) & (1023)) {
 			/* Pointer not 1k aligned, so free it and allocate a larger chunk
 			 * for further alignment.
@@ -1675,7 +1652,7 @@ DSL_BSP_FWDownload (DSL_DEV_Device_t * pDev, const char *buf,
 		} else {
 			adsl_mem_info[XDATA_REGISTER].address = org_mem_ptr;
 		}
-		
+
 		adsl_mem_info[XDATA_REGISTER].org_address = org_mem_ptr;
 		adsl_mem_info[XDATA_REGISTER].size = SDRAM_SEGMENT_SIZE;
 
@@ -1697,7 +1674,9 @@ DSL_BSP_FWDownload (DSL_DEV_Device_t * pDev, const char *buf,
 			nCopy = SDRAM_SEGMENT_SIZE - offset;
 		else
 			nCopy = size - nRead;
-		copy_from_user (mem_ptr, buf + nRead, nCopy);
+		if (copy_from_user (mem_ptr, buf + nRead, nCopy))
+			return -EFAULT;
+
 		for (offset = 0; offset < (nCopy / 4); offset++) {
 			((unsigned long *) mem_ptr)[offset] = le32_to_cpu (((unsigned long *) mem_ptr)[offset]);
 		}
@@ -1789,7 +1768,7 @@ int DSL_BSP_EventCBUnregister(DSL_BSP_EventCallBack_t *p)
     IFX_MEI_EMSG("Dying Gasp! Shutting Down... (Work around for Amazon-S Venus emulator)\n");
 #else
 	IFX_MEI_EMSG("Dying Gasp! Shutting Down...\n");
-//	kill_proc (1, SIGINT, 1);   
+//	kill_proc (1, SIGINT, 1);
 #endif
         return IRQ_HANDLED;
 }
@@ -1806,6 +1785,7 @@ extern void ifx_usb_enable_afe_oc(void);
  */
 static irqreturn_t IFX_MEI_IrqHandle (int int1, void *void0)
 {
+	u32 stat;
 	u32 scratch;
 	DSL_DEV_Device_t *pDev = (DSL_DEV_Device_t *) void0;
 #if defined(CONFIG_LTQ_MEI_FW_LOOPBACK) && defined(DFE_PING_TEST)
@@ -1839,6 +1819,12 @@ static irqreturn_t IFX_MEI_IrqHandle (int int1, void *void0)
                 if (dsl_bsp_event_callback[event].function)
                         (*dsl_bsp_event_callback[event].function)(pDev, event, dsl_bsp_event_callback[event].pData);
         } else { // normal message
+                IFX_MEI_LongWordReadOffset (pDev, (u32) ME_ARC2ME_STAT, &stat);
+                if (!(stat & ARC_TO_MEI_MSGAV)) {
+                        // status register indicates there is no message
+                        return IRQ_NONE;
+                }
+
                 IFX_MEI_MailboxRead (pDev, DSL_DEV_PRIVATE(pDev)->CMV_RxMsg, MSG_LENGTH);
                 if (DSL_DEV_PRIVATE(pDev)-> cmv_waiting == 1) {
                         DSL_DEV_PRIVATE(pDev)-> arcmsgav = 1;
@@ -2299,8 +2285,6 @@ IFX_MEI_InitDevice (int num)
 		sizeof (smmu_mem_info_t) * MAX_BAR_REGISTERS);
 
 	if (num == 0) {
-		pDev->nIrq[IFX_DFEIR]      = LTQ_MEI_INT;
-		pDev->nIrq[IFX_DYING_GASP] = LTQ_MEI_DYING_GASP_INT;
 		pDev->base_address = KSEG1 + LTQ_MEI_BASE_ADDR;
 
                 /* Power up MEI */
@@ -2465,7 +2449,7 @@ IFX_MEI_IoctlCopyTo (int from_kernel, char *dest, char *from, int size)
 	return ret;
 }
 
-int
+static int
 IFX_MEI_Ioctls (DSL_DEV_Device_t * pDev, int from_kernel, unsigned int command, unsigned long lon)
 {
 	int i = 0;
@@ -2754,10 +2738,31 @@ static int ltq_mei_probe(struct platform_device *pdev)
 {
 	int i = 0;
 	static struct class *dsl_class;
+	DSL_DEV_Device_t *pDev;
 
 	pr_info("IFX MEI Version %ld.%02ld.%02ld\n", bsp_mei_version.major, bsp_mei_version.minor, bsp_mei_version.revision);
 
 	for (i = 0; i < BSP_MAX_DEVICES; i++) {
+		pDev = &dsl_devices[i];
+
+		pDev->nIrq[IFX_DFEIR] = platform_get_irq(pdev, 0);
+		if (pDev->nIrq[IFX_DFEIR] < 0) {
+			IFX_MEI_EMSG("Failed to get DFEIR irq!\n");
+			return pDev->nIrq[IFX_DFEIR];
+		}
+
+		pDev->nIrq[IFX_DYING_GASP] = platform_get_irq(pdev, 1);
+		if (pDev->nIrq[IFX_DYING_GASP] < 0) {
+			IFX_MEI_EMSG("Failed to get DYING_GASP irq!\n");
+			return pDev->nIrq[IFX_DYING_GASP];
+		}
+
+		pDev->nIrq[IFX_USB_OC] = platform_get_irq(pdev, 2);
+		if (pDev->nIrq[IFX_USB_OC] < 0) {
+			IFX_MEI_EMSG("Failed to get USB_OC irq!\n");
+			return pDev->nIrq[IFX_USB_OC];
+		}
+
 		if (IFX_MEI_InitDevice (i) != 0) {
 			IFX_MEI_EMSG("Init device fail!\n");
 			return -EIO;
@@ -2771,12 +2776,12 @@ static int ltq_mei_probe(struct platform_device *pdev)
 	IFX_MEI_DMSG("Start loopback test...\n");
 	DFE_Loopback_Test ();
 #endif
-	dsl_class = class_create(THIS_MODULE, "ifx_mei");
+	dsl_class = class_create("ifx_mei");
 	device_create(dsl_class, NULL, MKDEV(MEI_MAJOR, 0), NULL, "ifx_mei");
 	return 0;
 }
 
-static int ltq_mei_remove(struct platform_device *pdev)
+static void ltq_mei_remove(struct platform_device *pdev)
 {
 	int i = 0;
 	int num;
@@ -2790,7 +2795,6 @@ static int ltq_mei_remove(struct platform_device *pdev)
 			IFX_MEI_ExitDevice (i);
 		}
 	}
-	return 0;
 }
 
 static const struct of_device_id ltq_mei_match[] = {
@@ -2799,11 +2803,10 @@ static const struct of_device_id ltq_mei_match[] = {
 };
 
 static struct platform_driver ltq_mei_driver = {
-	.probe = ltq_mei_probe,
+	.probe  = ltq_mei_probe,
 	.remove = ltq_mei_remove,
 	.driver = {
 		.name = "lantiq,mei-xway",
-		.owner = THIS_MODULE,
 		.of_match_table = ltq_mei_match,
 	},
 };

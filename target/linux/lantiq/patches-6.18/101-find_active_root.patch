@@ -1,0 +1,107 @@
+From 2c82524000cca691c89c9fda251b55ef04eabcb6 Mon Sep 17 00:00:00 2001
+From: Mathias Kresin <openwrt@kresin.me>
+Date: Mon, 2 May 2016 18:50:00 +0000
+Subject: [PATCH] find active root
+
+Signed-off-by: Mathias Kresin <openwrt@kresin.me>
+---
+ drivers/mtd/parsers/ofpart_core.c | 53 +++++++++++++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+--- a/drivers/mtd/parsers/ofpart_core.c
++++ b/drivers/mtd/parsers/ofpart_core.c
+@@ -38,6 +38,38 @@ static bool node_has_compatible(struct d
+ 	return of_get_property(pp, "compatible", NULL);
+ }
+ 
++static uint8_t * brnboot_get_selected_root_part(struct mtd_info *master,
++						loff_t offset)
++{
++	static uint8_t root_id;
++	int err, len;
++
++	err = mtd_read(master, offset, 0x01, &len, &root_id);
++
++	if (mtd_is_bitflip(err) || !err)
++		return &root_id;
++
++	return NULL;
++}
++
++static void brnboot_set_active_root_part(struct mtd_partition *pparts,
++					 struct device_node **part_nodes,
++					 int nr_parts,
++					 uint8_t *root_id)
++{
++	int i;
++
++	for (i = 0; i < nr_parts; i++) {
++		int part_root_id;
++
++		if (!of_property_read_u32(part_nodes[i], "brnboot,root-id", &part_root_id)
++		    && part_root_id == *root_id) {
++			pparts[i].name = "firmware";
++			break;
++		}
++	}
++}
++
+ static int parse_fixed_partitions(struct mtd_info *master,
+ 				  const struct mtd_partition **pparts,
+ 				  struct mtd_part_parser_data *data)
+@@ -51,6 +83,8 @@ static int parse_fixed_partitions(struct
+ 	struct device_node *pp;
+ 	int nr_parts, i, ret = 0;
+ 	bool dedicated = true;
++	uint8_t *proot_id = NULL;
++	struct device_node **part_nodes;
+ 
+ 	/* Pull of_node from the master device node */
+ 	mtd_node = mtd_get_of_node(master);
+@@ -105,6 +139,14 @@ static int parse_fixed_partitions(struct
+ 		return -ENOMEM;
+ 	}
+ 
++	part_nodes = kcalloc(nr_parts, sizeof(*part_nodes), GFP_KERNEL);
++	if (!part_nodes) {
++		if (dedicated)
++			of_node_put(ofpart_node);
++		kfree(parts);
++		return -ENOMEM;
++	}
++
+ 	i = 0;
+ 	for_each_child_of_node(ofpart_node,  pp) {
+ 		const __be32 *reg;
+@@ -173,6 +215,11 @@ static int parse_fixed_partitions(struct
+ 		if (of_property_read_bool(pp, "slc-mode"))
+ 			parts[i].add_flags |= MTD_SLC_ON_MLC_EMULATION;
+ 
++		if (!proot_id && of_device_is_compatible(pp, "brnboot,root-selector"))
++			proot_id = brnboot_get_selected_root_part(master, parts[i].offset);
++
++		part_nodes[i] = pp;
++
+ 		i++;
+ 	}
+ 
+@@ -185,6 +232,11 @@ static int parse_fixed_partitions(struct
+ 	if (dedicated)
+ 		of_node_put(ofpart_node);
+ 
++	if (proot_id)
++		brnboot_set_active_root_part(parts, part_nodes, nr_parts, proot_id);
++
++	kfree(part_nodes);
++
+ 	*pparts = parts;
+ 	return nr_parts;
+ 
+@@ -197,6 +249,7 @@ ofpart_none:
+ 	if (dedicated)
+ 		of_node_put(ofpart_node);
+ 	kfree(parts);
++	kfree(part_nodes);
+ 	return ret;
+ }
+ 

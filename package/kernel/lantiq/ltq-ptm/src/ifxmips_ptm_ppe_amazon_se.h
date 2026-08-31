@@ -176,11 +176,6 @@
 
 #define EMA_ALIGNMENT                           4
 
-/*
- *  Mailbox IGU1 Interrupt
- */
-#define PPE_MAILBOX_IGU1_INT                    INT_NUM_IM2_IRL13
-
 
 
 #endif  //  IFXMIPS_PTM_PPE_AMAZON_SE_H

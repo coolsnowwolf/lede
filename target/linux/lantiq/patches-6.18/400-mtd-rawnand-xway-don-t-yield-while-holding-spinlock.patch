@@ -1,0 +1,38 @@
+From 416f25a948d11ef15733f2e31658d31b5cc7bef6 Mon Sep 17 00:00:00 2001
+From: Thomas Nixon <tom@tomn.co.uk>
+Date: Sun, 26 Mar 2023 11:08:49 +0100
+Subject: [PATCH] mtd: rawnand: xway: don't yield while holding spinlock
+
+The nand driver normally while waiting for the device to become ready;
+this is normally fine, but xway_nand holds the ebu_lock spinlock, and
+this can cause lockups if other threads which use ebu_lock are
+interleaved. Fix this by waiting instead of polling.
+
+This mainly showed up as crashes in ath9k_pci_owl_loader (see
+https://github.com/openwrt/openwrt/issues/9829 ), but turning on
+spinlock debugging shows this happening in other places too.
+
+This doesn't seem to measurably impact boot time.
+
+Signed-off-by: Thomas Nixon <tom@tomn.co.uk>
+---
+ drivers/mtd/nand/raw/xway_nand.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+--- a/drivers/mtd/nand/raw/xway_nand.c
++++ b/drivers/mtd/nand/raw/xway_nand.c
+@@ -175,7 +175,13 @@ static void xway_cmd_ctrl(struct nand_ch
+ 
+ static int xway_dev_ready(struct nand_chip *chip)
+ {
+-	return ltq_ebu_r32(EBU_NAND_WAIT) & NAND_WAIT_RD;
++	/*
++	 * wait until ready, as otherwise the driver will yield in nand_wait or
++	 * nand_wait_ready, which is a bad idea when we're holding ebu_lock
++	 */
++	while ((ltq_ebu_r32(EBU_NAND_WAIT) & NAND_WAIT_RD) == 0)
++		cpu_relax();
++	return 1;
+ }
+ 
+ static unsigned char xway_read_byte(struct nand_chip *chip)

@@ -32,7 +32,7 @@
 #define ATM_FW_VER_MINOR        16
 
 
-static unsigned int ar9_fw_bin[] = {
+static const unsigned int ar9_fw_bin[] = {
  0x800004b8, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8000ffe0, 0x00000000, 0x00000000, 0x00000000,
  0xc1000002, 0xd90c00f8, 0xc2000002, 0xda0800f9, 0x80004980, 0xc2000000, 0xda0800f9, 0x80003fe8,
@@ -432,7 +432,7 @@ static unsigned int ar9_fw_bin[] = {
  0xcd4000f8, 0x00000000,
 };
 
-static unsigned int ar9_fw_data[] = {
+static const unsigned int ar9_fw_data[] = {
 };
 
 

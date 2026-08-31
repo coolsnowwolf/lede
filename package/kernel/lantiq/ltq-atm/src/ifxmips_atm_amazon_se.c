@@ -34,7 +34,6 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
@@ -220,12 +219,12 @@ static inline void clear_share_buffer(void)
  *    int       --- 0:    Success
  *                  else:           Error Code
  */
-static inline int pp32_download_code(u32 *code_src, unsigned int code_dword_len, u32 *data_src, unsigned int data_dword_len)
+static inline int pp32_download_code(const u32 *code_src, unsigned int code_dword_len, const u32 *data_src, unsigned int data_dword_len)
 {
     volatile u32 *dest;
 
-    if ( code_src == 0 || ((unsigned long)code_src & 0x03) != 0
-        || data_src == 0 || ((unsigned long)data_src & 0x03) != 0 )
+    if (!code_src || ((unsigned long)code_src & 0x03) != 0
+        || !data_src || ((unsigned long)data_src & 0x03) != 0 )
         return -1;
 
     if ( code_dword_len <= CDM_CODE_MEMORYn_DWLEN(0) )
@@ -254,7 +253,7 @@ static inline int pp32_download_code(u32 *code_src, unsigned int code_dword_len,
  * ####################################
  */
 
-extern void ase_fw_ver(unsigned int *major, unsigned int *minor)
+static void ase_fw_ver(unsigned int *major, unsigned int *minor)
 {
     ASSERT(major != NULL, "pointer is NULL");
     ASSERT(minor != NULL, "pointer is NULL");
@@ -263,7 +262,7 @@ extern void ase_fw_ver(unsigned int *major, unsigned int *minor)
     *minor = FW_VER_ID->minor;
 }
 
-void ase_init(struct platform_device *pdev)
+static int ase_init(struct platform_device *pdev)
 {
     init_pmu();
 
@@ -276,9 +275,11 @@ void ase_init(struct platform_device *pdev)
     init_atm_tc();
 
     clear_share_buffer();
+
+    return 0;
 }
 
-void ase_shutdown(void)
+static void ase_shutdown(void)
 {
     uninit_pmu();
 }
@@ -292,7 +293,7 @@ void ase_shutdown(void)
  *    int  --- 0: Success
  *             else:        Error Code
  */
-int ase_start(int pp32)
+static int ase_start(int pp32)
 {
     int ret;
 
@@ -318,7 +319,7 @@ int ase_start(int pp32)
  *  Output:
  *    none
  */
-void ase_stop(int pp32)
+static void ase_stop(int pp32)
 {
     /*  halt PP32   */
     IFX_REG_W32(DBG_CTRL_STOP, PP32_DBG_CTRL);

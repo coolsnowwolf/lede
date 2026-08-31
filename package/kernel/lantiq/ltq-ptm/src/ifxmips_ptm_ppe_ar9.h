@@ -203,11 +203,5 @@
 #define SW_P2_CTL                       SW_REG(0x00C)
 
 
-/*
- *  Mailbox IGU1 Interrupt
- */
-#define PPE_MAILBOX_IGU1_INT            INT_NUM_IM2_IRL24
-
-
 
 #endif  //  IFXMIPS_PTM_PPE_AR9_H

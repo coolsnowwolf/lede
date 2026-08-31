@@ -10,8 +10,9 @@ define Device/arcadyan_arv4510pw
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
 	kmod-ltq-tapi kmod-ltq-vmmc \
-	kmod-rt2800-pci kmod-ath5k wpad-basic-wolfssl
+	kmod-rt2800-pci kmod-ath5k wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV4510PW
+  DEFAULT := n
 endef
 TARGET_DEVICES += arcadyan_arv4510pw
 
@@ -43,7 +44,7 @@ define Device/arcadyan_arv7506pw11
   DEVICE_PACKAGES := kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
-	kmod-rt2800-pci wpad-basic-wolfssl
+	kmod-rt2800-pci wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV7506PW11
 endef
 TARGET_DEVICES += arcadyan_arv7506pw11
@@ -60,7 +61,7 @@ define Device/arcadyan_arv7510pw22
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
 	kmod-ltq-tapi kmod-ltq-vmmc \
-	kmod-rt2800-pci wpad-basic-wolfssl \
+	kmod-rt2800-pci wpad-basic-mbedtls \
 	kmod-usb-uhci kmod-usb2 kmod-usb2-pci
   SUPPORTED_DEVICES += ARV7510PW22
 endef
@@ -77,7 +78,7 @@ define Device/arcadyan_arv7518pw
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
-	kmod-ath9k kmod-owl-loader wpad-basic-wolfssl
+	kmod-ath9k kmod-owl-loader wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV7518PW
 endef
 TARGET_DEVICES += arcadyan_arv7518pw
@@ -93,7 +94,7 @@ define Device/arcadyan_arv7519pw
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
-	kmod-rt2800-pci wpad-basic-wolfssl
+	kmod-rt2800-pci wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV7519PW
 endef
 TARGET_DEVICES += arcadyan_arv7519pw
@@ -106,7 +107,7 @@ define Device/arcadyan_arv7525pw
   DEVICE_ALT0_VARIANT := Typ A
   IMAGE_SIZE := 3776k
   SOC := danube
-  DEVICE_PACKAGES := kmod-rt2800-pci wpad-basic-wolfssl \
+  DEVICE_PACKAGES := kmod-rt2800-pci wpad-basic-mbedtls \
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa -swconfig
@@ -127,7 +128,7 @@ define Device/arcadyan_arv752dpw
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
 	kmod-ltq-tapi kmod-ltq-vmmc \
-	kmod-rt2800-pci wpad-basic-wolfssl
+	kmod-rt2800-pci wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV752DPW
 endef
 TARGET_DEVICES += arcadyan_arv752dpw
@@ -144,7 +145,7 @@ define Device/arcadyan_arv752dpw22
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
 	kmod-ltq-tapi kmod-ltq-vmmc \
-	kmod-rt2800-pci wpad-basic-wolfssl
+	kmod-rt2800-pci wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV752DPW22
 endef
 TARGET_DEVICES += arcadyan_arv752dpw22
@@ -160,7 +161,7 @@ define Device/arcadyan_arv8539pw22
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoa \
-	kmod-ath9k kmod-owl-loader wpad-basic-wolfssl
+	kmod-ath9k kmod-owl-loader wpad-basic-mbedtls
   SUPPORTED_DEVICES += ARV8539PW22
 endef
 TARGET_DEVICES += arcadyan_arv8539pw22
@@ -176,14 +177,14 @@ define Device/audiocodes_mp-252
 	kmod-usb-ledtrig-usbport kmod-usb-dwc2 \
 	kmod-rt2800-pci \
 	ltq-adsl-app ppp-mod-pppoa \
-	wpad-basic-wolfssl
+	wpad-basic-mbedtls
   SUPPORTED_DEVICES += ACMP252
 endef
 TARGET_DEVICES += audiocodes_mp-252
 
 define Device/bt_homehub-v2b
   $(Device/NAND)
-  DEVICE_VENDOR := British Telecom
+  DEVICE_VENDOR := British Telecom (BT)
   DEVICE_MODEL := Home Hub 2
   DEVICE_VARIANT := Type B
   BOARD_NAME := BTHOMEHUBV2B
@@ -192,9 +193,8 @@ define Device/bt_homehub-v2b
   DEVICE_PACKAGES := kmod-usb-dwc2 \
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-a kmod-ltq-atm-danube \
-	kmod-ltq-deu-danube \
-	ltq-adsl-app ppp-mod-pppoa \
-	kmod-ath9k kmod-owl-loader wpad-basic-wolfssl
+	kmod-ltq-deu-danube ltq-adsl-app ppp-mod-pppoa \
+	kmod-ath9k kmod-owl-loader wpad-basic-mbedtls
   SUPPORTED_DEVICES += BTHOMEHUBV2B
   DEFAULT := n
 endef
@@ -218,7 +218,8 @@ define Device/siemens_gigaset-sx76x
 	kmod-ltq-adsl-danube-mei kmod-ltq-adsl-danube \
 	kmod-ltq-adsl-danube-fw-b kmod-ltq-atm-danube \
 	ltq-adsl-app ppp-mod-pppoe \
-	kmod-ath5k wpad-basic-wolfssl
+	kmod-ath5k wpad-basic-mbedtls
   SUPPORTED_DEVICES += GIGASX76X
+  DEFAULT := n
 endef
 TARGET_DEVICES += siemens_gigaset-sx76x
