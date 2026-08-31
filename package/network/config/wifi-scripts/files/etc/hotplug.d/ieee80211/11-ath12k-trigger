@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# Restart ath12k radios that take long time to initialize on boot
+
+[ "${ACTION}" = "add" ] || exit 0
+[ $(grep -c DRIVER=ath12k_pci /sys/$DEVPATH/device/uevent) -gt 0 ] || exit 0
+
+. /usr/share/libubox/jshn.sh
+
+restart_radio() {
+	radio=$1
+	arg="{\"radio\": \"$radio\"}"
+	ubus call network reload
+	ubus call network.wireless down "$arg"
+	ubus call network.wireless up "$arg"
+}
+
+json_init
+json_load "$(ubus -S call network.wireless status)"
+json_get_keys radios
+for radio in $radios; do
+	json_select $radio
+	json_get_vars up
+	json_get_vars retry_setup_failed
+
+	json_select config
+	json_get_vars path
+	json_select ..
+
+	if [ $up = 0 -a $retry_setup_failed = 1 ] &&
+	   [ $(iwinfo nl80211 phyname "path=$path") = "$DEVICENAME" ]; then
+		restart_radio $radio
+	fi
+
+	json_select ..
+done
