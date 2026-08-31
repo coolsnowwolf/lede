@@ -1,4 +1,20 @@
-Package/ath11k-firmware-qca2066 = $(call Package/firmware-default,QCA2066 ath11k firmware)
+Package/ath11k-firmware-ipq5018 = $(call Package/firmware-default,IPQ5018 ath11k firmware,,LICENCE.atheros_firmware)
+define Package/ath11k-firmware-ipq5018/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/IPQ5018/hw1.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/IPQ5018/hw1.0/* $(1)/lib/firmware/ath11k/IPQ5018/hw1.0/
+endef
+$(eval $(call BuildPackage,ath11k-firmware-ipq5018))
+
+Package/ath11k-firmware-ipq8074 = $(call Package/firmware-default,IPQ8074 ath11k firmware,,LICENCE.atheros_firmware)
+define Package/ath11k-firmware-ipq8074/install
+	$(INSTALL_DIR) $(1)/lib/firmware/IPQ8074
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/IPQ8074/hw2.0/* $(1)/lib/firmware/IPQ8074/
+endef
+$(eval $(call BuildPackage,ath11k-firmware-ipq8074))
+
+Package/ath11k-firmware-qca2066 = $(call Package/firmware-default,QCA2066 ath11k firmware,,LICENCE.atheros_firmware)
 define Package/ath11k-firmware-qca2066/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA2066/hw2.1
 	$(INSTALL_DATA) \
@@ -6,7 +22,7 @@ define Package/ath11k-firmware-qca2066/install
 endef
 $(eval $(call BuildPackage,ath11k-firmware-qca2066))
 
-Package/ath11k-firmware-qca6390 = $(call Package/firmware-default,QCA6390 ath11k firmware)
+Package/ath11k-firmware-qca6390 = $(call Package/firmware-default,QCA6390 ath11k firmware,,LICENCE.atheros_firmware)
 define Package/ath11k-firmware-qca6390/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCA6390/hw2.0
 	$(INSTALL_DATA) \
@@ -14,21 +30,33 @@ define Package/ath11k-firmware-qca6390/install
 endef
 $(eval $(call BuildPackage,ath11k-firmware-qca6390))
 
-Package/ath11k-firmware-wcn6750 = $(call Package/firmware-default,WCN6750 ath11k firmware)
+Package/ath11k-firmware-qcn9074 = $(call Package/firmware-default,QCN9074 ath11k firmware,,LICENCE.atheros_firmware)
+define Package/ath11k-firmware-qcn9074/install
+	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/QCN9074/hw1.0
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/QCN9074/hw1.0/* $(1)/lib/firmware/ath11k/QCN9074/hw1.0/
+endef
+$(eval $(call BuildPackage,ath11k-firmware-qcn9074))
+
+Package/ath11k-firmware-wcn6750 = $(call Package/firmware-default,WCN6750 ath11k firmware,,LICENCE.atheros_firmware)
 define Package/ath11k-firmware-wcn6750/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/WCN6750/hw1.0
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath11k/WCN6750/hw1.0/board-2.bin $(1)/lib/firmware/ath11k/WCN6750/hw1.0/
 	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/WCN6750/hw1.0/Notice.txt $(1)/lib/firmware/ath11k/WCN6750/hw1.0/
+	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath11k/WCN6750/hw1.0/sc7280/wpss.mbn $(1)/lib/firmware/ath11k/WCN6750/hw1.0/
 endef
 $(eval $(call BuildPackage,ath11k-firmware-wcn6750))
 
-Package/ath11k-firmware-wcn6855 = $(call Package/firmware-default,WCN6855 ath11k firmware)
+Package/ath11k-firmware-wcn6855 = $(call Package/firmware-default,WCN6855 ath11k firmware,,LICENCE.atheros_firmware)
 define Package/ath11k-firmware-wcn6855/install
 	$(INSTALL_DIR) $(1)/lib/firmware/ath11k/WCN6855/hw2.0
 	$(INSTALL_DATA) \
 		$(PKG_BUILD_DIR)/ath11k/WCN6855/hw2.0/*.bin $(1)/lib/firmware/ath11k/WCN6855/hw2.0/
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/ath11k/WCN6855/hw2.0/*.txt $(1)/lib/firmware/ath11k/WCN6855/hw2.0/
 	$(LN) ./hw2.0 $(1)/lib/firmware/ath11k/WCN6855/hw2.1
 endef
 $(eval $(call BuildPackage,ath11k-firmware-wcn6855))
