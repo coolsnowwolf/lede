@@ -1,0 +1,74 @@
+From d48312ba459476b217bf3d11dd2c91e5c8121a06 Mon Sep 17 00:00:00 2001
+From: Semih Baskan <strst.gs@gmail.com>
+Date: Mon, 27 Jul 2026 08:30:00 +0300
+Subject: [PATCH] PCI: iproc: Use the EROM outbound window on BCMA
+
+The PCIe outbound window base on Northstar depends on the PCIe Gen2 core
+revision. Revision 0x01 uses 0x08000000, 0x40000000 and 0x48000000 for
+controllers 0 to 2, while revision 0x07 (NS-B0) uses 0x08000000,
+0x20000000 and 0x28000000. Broadcom's own driver branches on the core
+revision for exactly this reason.
+
+bcm-ns.dtsi is shared by every Northstar SoC, so it cannot carry a value
+that is correct on both. Commit 767012397976 ("ARM: dts: BCM5301X:
+Describe PCIe controllers fully") gave the controllers a ranges property.
+That commit is in neither 6.12 nor 6.18, so kernels without it are
+unaffected.
+
+With that property present, two things go wrong with this driver:
+
+devm_pci_alloc_host_bridge() parses those ranges and requests them, then
+this driver adds its own window and requests the whole list a second
+time, so every controller fails to probe with -EBUSY.
+
+When the DT window is used, it is only correct on core revision 0x07. On
+revision 0x01 it points at an address the hardware does not decode, and
+the first MMIO access to a BAR takes an imprecise external abort.
+
+The enumeration ROM reports the correct base for the revision actually
+present, and bcma already provides it as addr_s[0]. Drop any memory
+window that came from the device tree and use that instead, requesting
+only the window this driver owns. This makes the driver correct whether
+or not the DT describes a window.
+
+Tested on an ASUS RT-N18U (BCM47081) and a Linksys EA9200 (BCM4709),
+both core revision 0x01.
+
+Fixes: 767012397976 ("ARM: dts: BCM5301X: Describe PCIe controllers fully")
+Signed-off-by: Semih Baskan <strst.gs@gmail.com>
+---
+ drivers/pci/controller/pcie-iproc-bcma.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+--- a/drivers/pci/controller/pcie-iproc-bcma.c
++++ b/drivers/pci/controller/pcie-iproc-bcma.c
+@@ -36,6 +36,7 @@ static int iproc_bcma_pcie_probe(struct
+ 	struct device *dev = &bdev->dev;
+ 	struct iproc_pcie *pcie;
+ 	struct pci_host_bridge *bridge;
++	struct resource_entry *win, *tmp;
+ 	int ret;
+ 
+ 	bridge = devm_pci_alloc_host_bridge(dev, sizeof(*pcie));
+@@ -55,12 +56,20 @@ static int iproc_bcma_pcie_probe(struct
+ 
+ 	pcie->base_addr = bdev->addr;
+ 
++	resource_list_for_each_entry_safe(win, tmp, &bridge->windows) {
++		if (resource_type(win->res) != IORESOURCE_MEM)
++			continue;
++
++		devm_release_resource(dev, win->res);
++		resource_list_destroy_entry(win);
++	}
++
+ 	pcie->mem.start = bdev->addr_s[0];
+ 	pcie->mem.end = bdev->addr_s[0] + SZ_128M - 1;
+ 	pcie->mem.name = "PCIe MEM space";
+ 	pcie->mem.flags = IORESOURCE_MEM;
+ 	pci_add_resource(&bridge->windows, &pcie->mem);
+-	ret = devm_request_pci_bus_resources(dev, &bridge->windows);
++	ret = devm_request_resource(dev, &iomem_resource, &pcie->mem);
+ 	if (ret)
+ 		return ret;
+ 
