@@ -9,8 +9,10 @@ BOARD:=stm32
 BOARDNAME:=STMicroelectronics STM32
 FEATURES:=boot-part emmc ext4 gpio rtc usb
 SUBTARGETS:=stm32mp1
+CPU_TYPE:=
 
 KERNEL_PATCHVER:=6.12
+KERNEL_TESTING_PATCHVER:=6.18
 
 include $(INCLUDE_DIR)/target.mk
 
