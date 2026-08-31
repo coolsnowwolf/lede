@@ -58,7 +58,7 @@ define Package/fdt-utils
   CATEGORY:=Utilities
   TITLE:=Flat Device Tree Utilities
   URL:=https://git.kernel.org/pub/scm/utils/dtc/dtc.git
-  DEPENDS:=+libfdt
+  DEPENDS:=+bash +dtc +libfdt
 endef
 
 define Package/fdt-utils/install
@@ -68,6 +68,7 @@ define Package/fdt-utils/install
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/fdtget $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/fdtput $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/fdtoverlay $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/bin/dtdiff $(1)/usr/bin
 endef
 
 
