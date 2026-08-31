@@ -1,14 +1,19 @@
---- a/extensions/libipt_MASQUERADE.c
-+++ b/extensions/libipt_MASQUERADE.c
-@@ -11,6 +11,7 @@
- enum {
- 	O_TO_PORTS = 0,
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] iptables: add BCM fullcone NAT mode
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/extensions/libxt_NAT.c
++++ b/extensions/libxt_NAT.c
+@@ -39,6 +39,7 @@
+ 	O_TO_SRC,
+ 	O_TO_PORTS,
  	O_RANDOM,
 +	O_MODE,
  	O_RANDOM_FULLY,
+ 	O_PERSISTENT,
  };
- 
-@@ -23,13 +24,16 @@ static void MASQUERADE_help(void)
+@@ -61,7 +62,9 @@
  " --random\n"
  "				Randomize source port.\n"
  " --random-fully\n"
@@ -18,7 +23,8 @@
 +"				NAT mode.\n");
  }
  
- static const struct xt_option_entry MASQUERADE_opts[] = {
+ static void DNAT_help(void)
+@@ -104,6 +107,7 @@
  	{.name = "to-ports", .id = O_TO_PORTS, .type = XTTYPE_STRING},
  	{.name = "random", .id = O_RANDOM, .type = XTTYPE_NONE},
  	{.name = "random-fully", .id = O_RANDOM_FULLY, .type = XTTYPE_NONE},
@@ -26,48 +32,69 @@
  	XTOPT_TABLEEND,
  };
  
-@@ -90,6 +94,8 @@ static void MASQUERADE_parse(struct xt_o
- 	else
- 		portok = 0;
- 
-+	mr->range[0].min_ip = 0;
-+
- 	xtables_option_parse(cb);
- 	switch (cb->entry->id) {
- 	case O_TO_PORTS:
-@@ -104,6 +110,15 @@ static void MASQUERADE_parse(struct xt_o
+@@ -280,6 +284,18 @@
  	case O_RANDOM_FULLY:
- 		mr->range[0].flags |=  NF_NAT_RANGE_PROTO_RANDOM_FULLY;
+ 		range->flags |= NF_NAT_RANGE_PROTO_RANDOM_FULLY;
  		break;
 +	case O_MODE:
++		if (family != AF_INET)
++			xtables_error(PARAMETER_PROBLEM,
++				       "NAT mode is only supported for IPv4");
 +		if (strcasecmp(cb->arg, "fullcone") == 0)
-+			mr->range[0].min_ip = 1;
++			range->min_addr.ip = 1;
 +		else if (strcasecmp(cb->arg, "symmetric") == 0)
-+			mr->range[0].min_ip = 0;
++			range->min_addr.ip = 0;
 +		else
 +			xtables_error(PARAMETER_PROBLEM,
-+				   "Unknown mode %s", cb->arg);
++				       "Unknown mode %s", cb->arg);
 +		break;
  	}
  }
  
-@@ -126,6 +141,9 @@ MASQUERADE_print(const void *ip, const s
+@@ -306,6 +322,9 @@
+ 	case O_RANDOM_FULLY:
+ 		mr->range->flags |= range.flags;
+ 		break;
++	case O_MODE:
++		mr->range->min_ip = range.min_addr.ip;
++		break;
+ 	}
+ }
  
- 	if (r->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)
- 		printf(" random-fully");
+@@ -489,8 +508,34 @@
+ PSX_GEN(SNAT6, RANGE2_INIT_FROM_RANGE, \
+ 	AF_INET6, "to:", "--to-source ", false, "snat")
+ 
+-PSX_GEN(MASQUERADE, RANGE2_INIT_FROM_IPV4_MRC, \
+-	AF_INET, "masq ports: ", "--to-ports ", true, "masquerade")
++static void MASQUERADE_print(const void *ip,
++			     const struct xt_entry_target *target, int numeric)
++{
++	struct nf_nat_range2 range = RANGE2_INIT_FROM_IPV4_MRC(target->data);
 +
-+	if (r->min_ip == 1)
++	__NAT_print(&range, AF_INET, "masq ports: ", "", true);
++	if (range.min_addr.ip == 1)
 +		printf(" mode: fullcone");
- }
- 
- static void
-@@ -145,6 +163,9 @@ MASQUERADE_save(const void *ip, const st
- 
- 	if (r->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)
- 		printf(" --random-fully");
++}
 +
-+	if (r->min_ip == 1)
++static void MASQUERADE_save(const void *ip,
++			    const struct xt_entry_target *target)
++{
++	struct nf_nat_range2 range = RANGE2_INIT_FROM_IPV4_MRC(target->data);
++
++	__NAT_print(&range, AF_INET, "--to-ports ", "--", true);
++	if (range.min_addr.ip == 1)
 +		printf(" --mode fullcone");
- }
++}
++
++static int MASQUERADE_xlate(struct xt_xlate *xl,
++			    const struct xt_xlate_tg_params *params)
++{
++	struct nf_nat_range2 range =
++		RANGE2_INIT_FROM_IPV4_MRC(params->target->data);
++
++	return __NAT_xlate(xl, &range, AF_INET, "masquerade");
++}
  
- static int MASQUERADE_xlate(struct xt_xlate *xl,
+ PSX_GEN(MASQUERADE6, RANGE2_INIT_FROM_RANGE, \
+ 	AF_INET6, "masq ports: ", "--to-ports ", true, "masquerade")
