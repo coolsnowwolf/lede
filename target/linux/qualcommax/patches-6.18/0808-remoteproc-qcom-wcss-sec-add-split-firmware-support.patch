@@ -1,0 +1,102 @@
+From: George Moussalem <george.moussalem@outlook.com>
+Date: Tue, 21 Oct 2025 15:26:31 +0400
+Subject: [PATCH] remoteproc: qcom: wcss-sec: add split firmware support
+
+The driver currently expects only one firmware file to be loaded as part
+of bringing up WCSS. For IPQ5018 and QCN6122, multiple firmware files are
+required, both the q6 and m3 firmware files. As such, add support for
+loading up to 3 firmware files.
+
+Signed-off-by: George Moussalem <george.moussalem@outlook.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_wcss_sec.c
++++ b/drivers/remoteproc/qcom_q6v5_wcss_sec.c
+@@ -25,6 +25,8 @@
+ 
+ #define Q6_WAIT_TIMEOUT			(5 * HZ)
+ 
++#define MAX_FIRMWARE			3
++
+ struct wcss_sec {
+ 	struct device *dev;
+ 	struct qcom_rproc_glink glink_subdev;
+@@ -35,6 +37,7 @@ struct wcss_sec {
+ 	void *mem_region;
+ 	size_t mem_size;
+ 	const struct wcss_data *desc;
++	const char **firmware;
+ 
+ 	struct mbox_client mbox_client;
+ 	struct mbox_chan *mbox_chan;
+@@ -137,7 +140,8 @@ static int wcss_sec_load(struct rproc *r
+ {
+ 	struct wcss_sec *wcss = rproc->priv;
+ 	struct device *dev = wcss->dev;
+-	int ret;
++	const struct firmware *fw_hdl;
++	int i, ret;
+ 
+ 	if (wcss->desc->use_tmelcom) {
+ 		wcss->metadata = qcom_mdt_read_metadata(fw, &wcss->metadata_len,
+@@ -161,6 +165,28 @@ static int wcss_sec_load(struct rproc *r
+ 				    wcss->mem_phys, wcss->mem_size, &wcss->mem_reloc);
+ 		if (ret)
+ 			return ret;
++
++		for (i = 1; i < MAX_FIRMWARE; i++) {
++			if (!wcss->firmware[i])
++				continue;
++
++			ret = request_firmware(&fw_hdl, wcss->firmware[i], dev);
++
++			if (ret)
++				continue;
++
++			ret = qcom_mdt_load_no_init(dev, fw_hdl, wcss->firmware[i],
++						    wcss->mem_region, wcss->mem_phys,
++						    wcss->mem_size, &wcss->mem_reloc);
++
++			release_firmware(fw_hdl);
++
++			if (ret) {
++				dev_err(dev, "error %d loading firmware %s\n",
++					ret, wcss->firmware[i]);
++				return ret;
++			}
++		}
+ 	}
+ 
+ 	qcom_pil_info_store("wcss", wcss->mem_phys, wcss->mem_size);
+@@ -291,17 +317,20 @@ static int wcss_sec_probe(struct platfor
+ 	struct wcss_sec *wcss;
+ 	struct clk *sleep_clk;
+ 	struct clk *int_clk;
+-	const char *fw_name = NULL;
++	const char **firmware = NULL;
+ 	const struct wcss_data *desc = of_device_get_match_data(&pdev->dev);
+ 	int ret;
+ 
+-	ret = of_property_read_string(pdev->dev.of_node, "firmware-name",
+-				      &fw_name);
++	firmware = devm_kcalloc(&pdev->dev, MAX_FIRMWARE,
++				sizeof(*firmware), GFP_KERNEL);
++
++	ret = of_property_read_string_array(pdev->dev.of_node, "firmware-name",
++					    firmware, MAX_FIRMWARE);
+ 	if (ret < 0)
+ 		return ret;
+ 
+ 	rproc = devm_rproc_alloc(&pdev->dev, desc->ss_name, &wcss_sec_ops,
+-				 fw_name, sizeof(*wcss));
++				 firmware[0], sizeof(*wcss));
+ 	if (!rproc) {
+ 		dev_err(&pdev->dev, "failed to allocate rproc\n");
+ 		return -ENOMEM;
+@@ -310,6 +339,7 @@ static int wcss_sec_probe(struct platfor
+ 	wcss = rproc->priv;
+ 	wcss->dev = &pdev->dev;
+ 	wcss->desc = desc;
++	wcss->firmware = firmware;
+ 
+ 	ret = wcss_sec_alloc_memory_region(wcss);
+ 	if (ret)

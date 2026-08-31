@@ -1,0 +1,99 @@
+From 49ae1f081626f1a8c91b283d06868a178a0a2e5a Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 17 Mar 2026 17:41:45 +0100
+Subject: [PATCH] clk: add clk_hw_recalc_rate() to trigger HW clk rate
+ recalculation
+
+There is currently a latent problem with HW clk that only expose a
+.recalc_rate OP and doesn't have a .set_rate() and also have the
+CLK_GET_RATE_NOCACHE flag set. In such case the rate in clk core is
+parsed only (and set) only at init and when the full clk_set_rate()
+is called. In every other case .recalc_rate() is never called.
+
+It's also possible that an HW clk of this type, initially report 0 as rate
+as the register are still not configured and the HW clk effectively doesn't
+return any rate.
+
+This gets especially problematic when a clock provider use such clk as a
+parent and require the rate for parent selection for the final rate
+calculation.
+
+In such case, since the HW clk rate is never updated after init, it's still
+0 and cause problems with any other HW clk that use .determine_rate() or
+.round_rate() and search for the closest rate using clk_hw_get_rate() on
+the parents.
+
+This doesn't happen if the full clk_get_rate() is used instead as it will
+check if CLK_GET_RATE_NOCACHE is set and recalculate the rate accordingly.
+
+Updating the clk_hw_get_rate() to align to what clk_get_rate() does is not
+possible as it should be lockless and might cause problems in any user of
+clk_hw_get_rate().
+
+A more safe approach is the introduction of a direct function that triggers
+the HW clk rate recalculation, clk_hw_recalc_rate().
+
+Any driver that implement an HW clk that entirely depends on some register
+to configure the rate (that are externally configured) and have only
+.recalc_rate() and set CLK_GET_RATE_NOCACHE (aka the case where the HW clk
+rate actually change and depends on the external register configuration)
+will have to call clk_hw_recalc_rate() on the HW clk after changing the
+register configuration to sync the CCF with the new rate for the HW clk.
+
+Example:
+
+ - All register zero -> HW clk rate = 0
+ - PCS configure USXGMII mode -> HW clk rate = 0
+ - PCS call clk_hw_recalc_rate() -> HW clk rate = 312MHz
+ - Port goes UP
+ - PCS/MAC scale the PHY port clock correctly by having
+   the correct reference clock as parent (instead of 0)
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/clk/clk.c            | 23 +++++++++++++++++++++++
+ include/linux/clk-provider.h |  1 +
+ 2 files changed, 24 insertions(+)
+
+--- a/drivers/clk/clk.c
++++ b/drivers/clk/clk.c
+@@ -1978,6 +1978,29 @@ static unsigned long clk_core_get_rate_r
+ }
+ 
+ /**
++ * clk_hw_recalc_rate - trigger rate recalculation for clk_hw
++ * @hw: clk_hw associated with the clk to recalculate for
++ *
++ * Use clk_hw_recalc_rate() for the hw clk where the rate
++ * entirely depend on register configuration and doesn't have
++ * a .set_rate() OP. In such case, after modifying the register
++ * that would change the rate for the hw clk, call
++ * clk_hw_recalc_rate() to sync the CCF with the new clk rate.
++ */
++void clk_hw_recalc_rate(const struct clk_hw *hw)
++{
++	struct clk_core *core = hw->core;
++
++	if (!core || !(core->flags & CLK_GET_RATE_NOCACHE))
++		return;
++
++	clk_prepare_lock();
++	__clk_recalc_rates(core, false, 0);
++	clk_prepare_unlock();
++}
++EXPORT_SYMBOL_GPL(clk_hw_recalc_rate);
++
++/**
+  * clk_get_rate - return the rate of clk
+  * @clk: the clk whose rate is being returned
+  *
+--- a/include/linux/clk-provider.h
++++ b/include/linux/clk-provider.h
+@@ -1407,6 +1407,7 @@ int clk_hw_get_parent_index(struct clk_h
+ int clk_hw_set_parent(struct clk_hw *hw, struct clk_hw *new_parent);
+ unsigned int __clk_get_enable_count(struct clk *clk);
+ unsigned long clk_hw_get_rate(const struct clk_hw *hw);
++void clk_hw_recalc_rate(const struct clk_hw *hw);
+ unsigned long clk_hw_get_flags(const struct clk_hw *hw);
+ #define clk_hw_can_set_rate_parent(hw) \
+ 	(clk_hw_get_flags((hw)) & CLK_SET_RATE_PARENT)
