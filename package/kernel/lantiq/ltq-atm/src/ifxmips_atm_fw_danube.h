@@ -35,7 +35,7 @@
 //  add multiple queue per PVC feature
 
 
-static unsigned int danube_fw_bin[] = {
+static const unsigned int danube_fw_bin[] = {
     0x800004A0, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8000FFC8, 0x00000000, 0x00000000, 0x00000000,
     0xC1000002, 0xD90C0000, 0xC2000002, 0xDA080001, 0x80004968, 0xC2000000, 0xDA080001, 0x80003FD0,
@@ -435,7 +435,7 @@ static unsigned int danube_fw_bin[] = {
     0xCD400000, 0x00000000,
 };
 
-static unsigned int danube_fw_data[] = {
+static const unsigned int danube_fw_data[] = {
 };
 
 

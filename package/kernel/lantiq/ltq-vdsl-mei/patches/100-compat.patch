@@ -10,7 +10,7 @@
  
 --- a/src/drv_mei_cpe_linux.h
 +++ b/src/drv_mei_cpe_linux.h
-@@ -60,12 +60,6 @@
+@@ -58,12 +58,6 @@
  #include <linux/poll.h>
  #include <linux/types.h>
  
@@ -43,19 +43,27 @@
  #ifdef MODULE
  #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,0))
  MODULE_PARM(major_number, "b");
-@@ -1479,7 +1483,11 @@ struct proc_entry {
+@@ -1256,7 +1260,9 @@ static long MEI_Ioctl( struct file *filp
+ MEI_IOCTL_RETURN:
+ 
+    local_args.drv_ioctl.retCode = ret;
+-   copy_to_user( ((IOCTL_MEI_arg_t *)nArgument), &local_args, retSize);
++   if ( ret == IFX_SUCCESS &&
++        copy_to_user( ((IOCTL_MEI_arg_t *)nArgument), &local_args, retSize) )
++      ret = -e_MEI_ERR_RETURN_ARG;
+ 
+    return (ret < 0) ? -1 : 0;
+ }
+@@ -1479,7 +1485,7 @@ struct proc_entry {
     char name[32];
     proc_rd_callback_t rd;
     proc_wr_callback_t wr;
-+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0))
-    struct file_operations ops;
-+#else
+-   struct file_operations ops;
 +   struct proc_ops ops;
-+#endif
     int entity;
  };
  
-@@ -1869,6 +1877,7 @@ static int mei_proc_single_open(struct i
+@@ -1869,6 +1875,7 @@ static int mei_proc_single_open(struct i
  static void mei_proc_entry_create(struct proc_dir_entry *parent_node,
                                    struct proc_entry *proc_entry)
  {
@@ -63,7 +71,7 @@
     memset(&proc_entry->ops, 0, sizeof(struct file_operations));
     proc_entry->ops.owner = THIS_MODULE;
  
-@@ -1879,6 +1888,17 @@ static void mei_proc_entry_create(struct
+@@ -1879,6 +1886,17 @@ static void mei_proc_entry_create(struct
     proc_entry->ops.llseek = seq_lseek;
     if (proc_entry->wr)
        proc_entry->ops.write = proc_entry->wr;
@@ -81,7 +89,7 @@
  
     proc_create_data(proc_entry->name,
                       (S_IFREG | S_IRUGO),
-@@ -2174,9 +2194,11 @@ static int MEI_module_init (void)
+@@ -2174,9 +2192,11 @@ static int MEI_module_init (void)
        return (result);
     }
  
@@ -93,7 +101,7 @@
  
     return 0;
  }
-@@ -2304,6 +2326,10 @@ static void MEI_module_exit (void)
+@@ -2304,6 +2324,10 @@ static void MEI_module_exit (void)
  
  #else
     unregister_chrdev ( major_number , DRV_MEI_NAME );
@@ -104,7 +112,7 @@
  #endif
  
  #if CONFIG_PROC_FS
-@@ -2388,9 +2414,11 @@ static void MEI_module_exit (void)
+@@ -2388,9 +2412,11 @@ static void MEI_module_exit (void)
              ("MEI_DRV: Chipset Basic Exit failed" MEI_DRV_CRLF));
     }
  
@@ -116,18 +124,18 @@
  
  #if (MEI_SUPPORT_DEBUG_LOGGER == 1)
     if (nl_debug_sock)
-@@ -2514,6 +2542,10 @@ static int MEI_InitModuleRegCharDev(cons
+@@ -2514,6 +2540,10 @@ static int MEI_InitModuleRegCharDev(cons
              ("Using major number %d" MEI_DRV_CRLF, major_number));
     }
  
-+   mei_class = class_create(THIS_MODULE, devName);
++   mei_class = class_create(devName);
 +   mei_devt = MKDEV(major_number, 0);
 +   device_create(mei_class, NULL, mei_devt, NULL, "%s/%i", devName, 0);
 +
     return 0;
  #endif      /* CONFIG_DEVFS_FS */
  }
-@@ -2563,21 +2595,32 @@ static int MEI_InitModuleBasics(void)
+@@ -2563,21 +2593,32 @@ static int MEI_InitModuleBasics(void)
  }
  
  #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,10,0))
@@ -160,7 +168,7 @@
  
     return 0;
  }
-@@ -2905,11 +2948,15 @@ IFX_int32_t MEI_IoctlInitDevice(
+@@ -2905,11 +2946,15 @@ IFX_int32_t MEI_IoctlInitDevice(
              pMeiDev->eModePoll = e_MEI_DEV_ACCESS_MODE_IRQ;
              pMeiDev->intMask   = ME_ARC2ME_INTERRUPT_UNMASK_ALL;
  
@@ -176,6 +184,46 @@
  
              pTmpXCntrl = MEI_VrxXDevToIrqListAdd(
                                            MEI_DRV_LINENUM_GET(pMeiDev),
+@@ -3249,9 +3294,11 @@ static int MEI_IoctlMeiDbgAccessWr_Wrap(
+    ret =  MEI_IoctlMeiDbgAccessWr( pMeiDynCntrl, pLocalArgument);
+ 
+    /* return arguments - count */
+-   copy_to_user( (void *)&pUserArgument->count,
+-                 (void *)&pLocalArgument->count,
+-                 sizeof(pUserArgument->count) ) ;
++   if ( ret == IFX_SUCCESS &&
++        copy_to_user( (void *)&pUserArgument->count,
++                      (void *)&pLocalArgument->count,
++                      sizeof(pUserArgument->count) ) )
++      ret = -e_MEI_ERR_RETURN_ARG;
+ 
+    return ret;
+ }
+@@ -3278,16 +3325,18 @@ static int MEI_IoctlMeiDbgAccessRd_Wrap(
+    if ( pLocalArgument->count )
+    {
+       /* return the buffer */
+-      copy_to_user( pUserBuf,
+-                    pLocalArgument->pData_32,
+-                    pLocalArgument->count * sizeof(IFX_uint32_t) ) ;
++      if ( copy_to_user( pUserBuf,
++                         pLocalArgument->pData_32,
++                         pLocalArgument->count * sizeof(IFX_uint32_t) ) )
++         ret = -e_MEI_ERR_RETURN_ARG;
+ 
+    }
+ 
+    /* return count argument */
+-   copy_to_user( (void *)&pUserArgument->count,
+-                 (void *)&pLocalArgument->count,
+-                 sizeof(pUserArgument->count) ) ;
++   if ( copy_to_user( (void *)&pUserArgument->count,
++                      (void *)&pLocalArgument->count,
++                      sizeof(pUserArgument->count) ) )
++      ret = -e_MEI_ERR_RETURN_ARG;
+ 
+    return ret;
+ }
 --- a/src/drv_mei_cpe_api_atm_ptm_intern.c
 +++ b/src/drv_mei_cpe_api_atm_ptm_intern.c
 @@ -147,6 +147,7 @@ IFX_int32_t MEI_InternalXtmSwhowtimeExit
@@ -262,17 +310,22 @@
  
  #if (MEI_EXPORT_INTERNAL_API == 1) && (MEI_DRV_ATM_PTM_INTERFACE_ENABLE == 1)
  
-@@ -59,8 +58,21 @@ extern IFX_int32_t MEI_InternalTcReset(
+@@ -58,9 +57,26 @@ extern IFX_int32_t MEI_InternalTcRequest
+ extern IFX_int32_t MEI_InternalTcReset(
                                MEI_DYN_CNTRL_T        *pMeiDynCntrl,
                                MEI_TC_Reset_t         *pArgTcReset);
- 
++struct port_cell_info;
++extern int ifx_mei_atm_showtime_check(int *is_showtime,
++                              struct port_cell_info *port_cell,
++                              void **xdata_addr);
++
 +#if 1
 +#include <lantiq_atm.h>
 +typedef enum {
 +	LTQ_MEI_SHOWTIME_ENTER,
 +	LTQ_MEI_SHOWTIME_EXIT
 +} e_ltq_mei_cb_type;
-+
+ 
 +typedef void (*ltq_mei_atm_showtime_enter_t)(IFX_uint8_t, struct port_cell_info *, void *);
 +typedef void (*ltq_mei_atm_showtime_exit_t)(IFX_uint8_t);
 +
@@ -376,17 +429,6 @@
  }
  
  IFX_int32_t MEI_PLL_ConfigInit(MEI_DEV_T *pMeiDev)
---- a/src/drv_mei_cpe_dsm.c
-+++ b/src/drv_mei_cpe_dsm.c
-@@ -144,7 +144,7 @@ IFX_void_t MEI_VRX_DSM_DataInit(MEI_DEV_
-    memset((IFX_uint8_t *)&pMeiDev->firmwareFeatures, 0x00, sizeof(IOCTL_MEI_firmwareFeatures_t));
-    pMeiDev->meiFwDlCount = 0;
- 
--   pMeiDev->meiERBbuf.pCallBackFunc = mei_dsm_cb_func_hook;
-+   pMeiDev->meiERBbuf.pCallBackFunc = NULL;
- 
-    PRN_DBG_USR_NL( MEI_DRV, MEI_DRV_PRN_LEVEL_NORMAL,
-             ("MEI_DRV: PP callback function addr = 0x%08X" MEI_DRV_CRLF,
 --- a/src/drv_mei_cpe_download_vrx.c
 +++ b/src/drv_mei_cpe_download_vrx.c
 @@ -3281,12 +3281,14 @@ IFX_int32_t MEI_DEV_IoctlFirmwareDownloa

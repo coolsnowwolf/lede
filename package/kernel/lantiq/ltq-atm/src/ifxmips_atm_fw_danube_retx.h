@@ -33,7 +33,7 @@
 #define ATM_FW_VER_MINOR        15
 
 
-static unsigned int firmware_binary_code[] = {
+static const unsigned int firmware_binary_code[] = {
     0x800004A0, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8000FFC8, 0x00000000, 0x00000000, 0x00000000,
     0xC1000002, 0xD90C0000, 0xC2000002, 0xDA080001, 0xC0001B50, 0x8C100000, 0x00000000, 0x00000000,
@@ -605,7 +605,7 @@ static unsigned int firmware_binary_code[] = {
     0xCDC00000, 0xC1C00000, 0xC0004734, 0x9CC00000, 0xCDC00000, 0xC0004732, 0xCD800000,
 };
 
-static unsigned int firmware_binary_data[] = {
+static const unsigned int firmware_binary_data[] = {
 };
 
 

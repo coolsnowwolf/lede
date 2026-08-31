@@ -30,7 +30,7 @@
 #define PTM_FW_VER_MINOR        17
 
 
-static unsigned int firmware_binary_code[] = {
+static const unsigned int firmware_binary_code[] = {
     0x800004b8, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
     0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8000ffe0, 0x00000000, 0x00000000, 0x00000000,
     0xc1000002, 0xd90c00f8, 0xc2000002, 0xda0800f9, 0x80005270, 0xc2000000, 0xda0800f9, 0x80005210,
@@ -466,7 +466,7 @@ static unsigned int firmware_binary_code[] = {
     0x4194a000, 0x5d940040, 0x88000012, 0xc59400f8, 0x9d000000, 0xcd4000f8, 0x00000000, 0x00000000,
 };
 
-static unsigned int firmware_binary_data[] = {
+static const unsigned int firmware_binary_data[] = {
 };
 
 

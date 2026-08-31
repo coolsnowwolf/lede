@@ -119,11 +119,6 @@
 
 #define EMA_ALIGNMENT                   4
 
-/*
- *  Mailbox IGU1 Interrupt
- */
-#define PPE_MAILBOX_IGU1_INT            INT_NUM_IM2_IRL24
-
 
 
 #endif  //  IFXMIPS_ATM_PPE_DANUBE_H

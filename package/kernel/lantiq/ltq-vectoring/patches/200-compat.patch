@@ -1,0 +1,126 @@
+--- a/src/vectoring/ifxmips_vectoring.c
++++ b/src/vectoring/ifxmips_vectoring.c
+@@ -35,6 +35,8 @@
+ #include <linux/module.h>
+ #include <linux/etherdevice.h>
+ #include <linux/proc_fs.h>
++#include <linux/pkt_sched.h>
++#include <linux/workqueue.h>
+ 
+ /*
+  *  Chip Specific Head File
+@@ -88,6 +90,7 @@ static void dump_skb(struct sk_buff *skb
+ 
+ static void ltq_vectoring_priority(uint32_t priority);
+ 
++static void xmit_work_handler(struct work_struct *);
+ 
+ /*
+  * ####################################
+@@ -118,9 +121,13 @@ struct erb_head {
+ 
+ static struct notifier_block g_netdev_event_handler_nb = {0};
+ static struct net_device *g_ptm_net_dev = NULL;
+-static uint32_t vector_prio = 0;
++static uint32_t vector_prio = TC_PRIO_CONTROL;
+ static int g_dbg_enable = 0;
+ 
++static struct workqueue_struct *vectoring_wq;
++
++DECLARE_WORK(xmit_work, xmit_work_handler);
++struct sk_buff_head xmit_queue;
+ 
+ 
+ /*
+@@ -129,9 +136,16 @@ static int g_dbg_enable = 0;
+  * ####################################
+  */
+ 
++static void xmit_work_handler(__attribute__((unused)) struct work_struct *work) {
++	struct sk_buff *skb;
++
++	while ((skb = skb_dequeue(&xmit_queue)) != NULL) {
++		dev_queue_xmit(skb);
++	}
++}
++
+ static int mei_dsm_cb_func(unsigned int *p_error_vector)
+ {
+-    int rc, ret;
+     struct sk_buff *skb_list = NULL;
+     struct sk_buff *skb;
+     struct erb_head *erb;
+@@ -179,7 +193,6 @@ static int mei_dsm_cb_func(unsigned int
+         }
+     }
+ 
+-    rc = 0;
+     sent_size = 0;
+     segment_code = 0;
+     while ( (skb = skb_list) != NULL ) {
+@@ -197,24 +210,23 @@ static int mei_dsm_cb_func(unsigned int
+             segment_code |= 0xC0;
+         ((struct erb_head *)skb->data)->segment_code = segment_code;
+ 
+-        skb->cb[13] = 0x5A; /* magic number indicating forcing QId */
+-        skb->cb[15] = 0x00; /* highest priority queue */
+-		skb->priority = vector_prio;
++        skb_reset_mac_header(skb);
++        skb_set_network_header(skb, offsetof(struct erb_head, llc_header));
++        skb->protocol = htons(ETH_P_802_2);
++        skb->priority = vector_prio;
+         skb->dev = g_ptm_net_dev;
+ 
+         dump_skb(skb, ~0, "vectoring TX", 0, 0, 1, 0);
+ 
+-        ret = g_ptm_net_dev->netdev_ops->ndo_start_xmit(skb, g_ptm_net_dev);
+-        if ( rc == 0 )
+-            rc = ret;
++        skb_queue_tail(&xmit_queue, skb);
++        queue_work(vectoring_wq, &xmit_work);
+ 
+         segment_code++;
+     }
+ 
+     *p_error_vector = 0;    /* notify DSL firmware that ERB is sent */
+ 
+-    ASSERT(rc == 0, "dev_queue_xmit fail - %d", rc);
+-    return rc;
++    return 0;
+ }
+ static void ltq_vectoring_priority(uint32_t priority)
+ {
+@@ -242,7 +254,7 @@ static int netdev_event_handler(struct n
+         return NOTIFY_DONE;
+ 
+     netif = netdev_notifier_info_to_dev(netdev);
+-    if ( strcmp(netif->name, "ptm0") != 0 )
++    if ( strcmp(netif->name, "dsl0") != 0 )
+         return NOTIFY_DONE;
+ 
+     g_ptm_net_dev = event == NETDEV_REGISTER ? netif : NULL;
+@@ -438,8 +450,12 @@ static int __init vectoring_init(void)
+ 				0,
+ 				&g_proc_file_vectoring_dbg_seq_fops);
+ 
++    vectoring_wq = alloc_workqueue("vectoring", 0, 0);
++
++    skb_queue_head_init(&xmit_queue);
++
+     register_netdev_event_handler();
+-    g_ptm_net_dev = dev_get_by_name(&init_net, "ptm0");
++    g_ptm_net_dev = dev_get_by_name(&init_net, "dsl0");
+     if ( g_ptm_net_dev != NULL )
+         dev_put(g_ptm_net_dev);
+ 
+@@ -459,6 +475,10 @@ static void __exit vectoring_exit(void)
+ 
+     unregister_netdev_event_handler();
+ 
++    flush_workqueue(vectoring_wq);
++
++    destroy_workqueue(vectoring_wq);
++
+     remove_proc_entry("driver/vectoring", NULL);
+ }
+ 

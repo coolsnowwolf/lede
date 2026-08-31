@@ -34,7 +34,6 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
@@ -106,12 +105,12 @@ static inline void reset_ppe(struct platform_device *pdev)
  *    int       --- 0:    Success
  *                  else:           Error Code
  */
-static inline int danube_pp32_download_code(u32 *code_src, unsigned int code_dword_len, u32 *data_src, unsigned int data_dword_len)
+static inline int danube_pp32_download_code(const u32 *code_src, unsigned int code_dword_len, const u32 *data_src, unsigned int data_dword_len)
 {
 	volatile u32 *dest;
 
-	if ( code_src == 0 || ((unsigned long)code_src & 0x03) != 0
-			|| data_src == 0 || ((unsigned long)data_src & 0x03) != 0 )
+	if (!code_src || ((unsigned long)code_src & 0x03) != 0
+			|| !data_src || ((unsigned long)data_src & 0x03) != 0 )
 		return -1;
 
 	if ( code_dword_len <= CDM_CODE_MEMORYn_DWLEN(0) )
@@ -141,7 +140,7 @@ static void danube_fw_ver(unsigned int *major, unsigned int *minor)
 	*minor = FW_VER_ID->minor;
 }
 
-static void danube_init(struct platform_device *pdev)
+static int danube_init(struct platform_device *pdev)
 {
             volatile u32 *p = SB_RAM0_ADDR(0);
     unsigned int i;
@@ -190,13 +189,15 @@ static void danube_init(struct platform_device *pdev)
 
     for ( i = 0; i < SB_RAM0_DWLEN + SB_RAM1_DWLEN + SB_RAM2_DWLEN + SB_RAM3_DWLEN; i++ )
         IFX_REG_W32(0, p++);
+
+    return 0;
 }
 
 static void danube_shutdown(void)
 {
 }
 
-int danube_start(int pp32)
+static int danube_start(int pp32)
 {
 	int ret;
 
@@ -216,7 +217,7 @@ int danube_start(int pp32)
 	return 0;
 }
 
-void danube_stop(int pp32)
+static void danube_stop(int pp32)
 {
 	IFX_REG_W32(DBG_CTRL_STOP_SET(1), PP32_DBG_CTRL);
 }

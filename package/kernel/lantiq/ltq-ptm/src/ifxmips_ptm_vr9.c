@@ -34,7 +34,6 @@
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/version.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/proc_fs.h>
@@ -54,7 +53,7 @@
 
 static inline void init_pmu(void);
 static inline void uninit_pmu(void);
-static inline void reset_ppe(struct platform_device *pdev);
+static inline int reset_ppe(struct platform_device *pdev);
 static inline void init_pdma(void);
 static inline void init_mailbox(void);
 static inline void init_atm_tc(void);
@@ -82,7 +81,7 @@ static inline void uninit_pmu(void)
 {
 }
 
-static inline void reset_ppe(struct platform_device *pdev)
+static inline int reset_ppe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct reset_control *dsp;
@@ -90,25 +89,16 @@ static inline void reset_ppe(struct platform_device *pdev)
 	struct reset_control *tc;
 
 	dsp = devm_reset_control_get(dev, "dsp");
-	if (IS_ERR(dsp)) {
-		if (PTR_ERR(dsp) != -EPROBE_DEFER)
-			dev_err(dev, "Failed to lookup dsp reset\n");
-// 		return PTR_ERR(dsp);
-	}
+	if (IS_ERR(dsp))
+		return dev_err_probe(dev, PTR_ERR(dsp), "Failed to lookup dsp reset");
 
 	dfe = devm_reset_control_get(dev, "dfe");
-	if (IS_ERR(dfe)) {
-		if (PTR_ERR(dfe) != -EPROBE_DEFER)
-			dev_err(dev, "Failed to lookup dfe reset\n");
-// 		return PTR_ERR(dfe);
-	}
+	if (IS_ERR(dfe))
+		return dev_err_probe(dev, PTR_ERR(dfe), "Failed to lookup dfe reset");
 
 	tc = devm_reset_control_get(dev, "tc");
-	if (IS_ERR(tc)) {
-		if (PTR_ERR(tc) != -EPROBE_DEFER)
-			dev_err(dev, "Failed to lookup tc reset\n");
-// 		return PTR_ERR(tc);
-	}
+	if (IS_ERR(tc))
+		return dev_err_probe(dev, PTR_ERR(tc), "Failed to lookup tc reset");
 
 	reset_control_assert(dsp);
 	udelay(1000);
@@ -120,6 +110,8 @@ static inline void reset_ppe(struct platform_device *pdev)
 	udelay(1000);
 	*PP32_SRST |= 0x000303CF;
 	udelay(1000);
+
+	return 0;
 }
 
 static inline void init_pdma(void)
@@ -209,13 +201,13 @@ static inline void clear_share_buffer(void)
  *    int       --- 0:    Success
  *                  else:           Error Code
  */
-static inline int pp32_download_code(int pp32, u32 *code_src, unsigned int code_dword_len, u32 *data_src, unsigned int data_dword_len)
+static inline int pp32_download_code(int pp32, const u32 *code_src, unsigned int code_dword_len, const u32 *data_src, unsigned int data_dword_len)
 {
     unsigned int clr, set;
     volatile u32 *dest;
 
-    if ( code_src == 0 || ((unsigned long)code_src & 0x03) != 0
-        || data_src == 0 || ((unsigned long)data_src & 0x03) != 0 )
+    if (!code_src || ((unsigned long)code_src & 0x03) != 0
+        || !data_src || ((unsigned long)data_src & 0x03) != 0 )
         return -1;
 
     clr = pp32 ? 0xF0 : 0x0F;
@@ -263,11 +255,15 @@ void ifx_ptm_get_fw_ver(unsigned int *major, unsigned int *mid, unsigned int *mi
     }
 }
 
-void ifx_ptm_init_chip(struct platform_device *pdev)
+int ifx_ptm_init_chip(struct platform_device *pdev)
 {
+    int r;
+
     init_pmu();
 
-    reset_ppe(pdev);
+    r = reset_ppe(pdev);
+    if (r)
+        return r;
 
     init_pdma();
 
@@ -276,6 +272,8 @@ void ifx_ptm_init_chip(struct platform_device *pdev)
     init_atm_tc();
 
     clear_share_buffer();
+
+    return 0;
 }
 
 void ifx_ptm_uninit_chip(void)

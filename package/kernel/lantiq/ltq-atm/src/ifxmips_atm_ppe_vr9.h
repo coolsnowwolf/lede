@@ -182,11 +182,6 @@
 #define PDMA_ALIGNMENT                  4
 #define EMA_ALIGNMENT                   PDMA_ALIGNMENT
 
-/*
- *  Mailbox IGU1 Interrupt
- */
-#define PPE_MAILBOX_IGU1_INT            INT_NUM_IM2_IRL24
-
 
 
 #endif  //  IFXMIPS_ATM_PPE_VR9_H

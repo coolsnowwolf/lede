@@ -28,7 +28,7 @@
 ** 01/08/2014    Lantiq PPE FW Team        VR9 E1 PPE Firmware Binary
 *******************************************************************************/
 
-static unsigned int firmware_binary_code[] = {
+static const unsigned int firmware_binary_code[] = {
  0x80000980, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
  0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x8000ffe0, 0x00000000, 0x00000000, 0x00000000,
  0x94000001, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
@@ -471,7 +471,7 @@ static unsigned int firmware_binary_code[] = {
  0x84009b42, 0x6f9d0010, 0x739da000, 0x6f9e0010, 0x735da000, 0x6f9f0010, 0x735da000, 0xc1c0001e,
  0x775da000, 0xc000e440, 0xcf4000f8, 0x80009ae8, 0x00000000, 0x00000000, 0x00000000,};
 
-static unsigned int firmware_binary_data[] = {
+static const unsigned int firmware_binary_data[] = {
 };
 
 
