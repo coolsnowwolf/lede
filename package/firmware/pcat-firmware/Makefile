@@ -10,6 +10,8 @@ define Package/pcat-firmware
   CATEGORY:=Firmware
   TITLE:=Photonicat WiFi Firmware
   DEPENDS:=@TARGET_rockchip_armv8
+  PROVIDES:=ath10k-board-qca9377-sdio ath10k-firmware-qca9377-sdio
+  CONFLICTS:=ath10k-board-qca9377-sdio ath10k-firmware-qca9377-sdio
 endef
 
 define Build/Compile
