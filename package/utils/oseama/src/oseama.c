@@ -102,8 +102,8 @@ static int oseama_info_entities(FILE *seama) {
 			continue;
 		}
 
-		if (metasize >= sizeof(buf)) {
-			fprintf(stderr, "Too small buffer (%zu B) to read all meta info (%zd B)\n", sizeof(buf), metasize);
+		if (!metasize || metasize >= sizeof(buf)) {
+			fprintf(stderr, "Invalid meta size (%zd B)\n", metasize);
 			err =  -EINVAL;
 			goto err_out;
 		}
@@ -177,8 +177,8 @@ static int oseama_info(int argc, char **argv) {
 		goto err_close;
 	}
 
-	if (metasize >= sizeof(buf)) {
-		fprintf(stderr, "Too small buffer (%zu B) to read all meta info (%d B)\n", sizeof(buf), metasize);
+	if (!metasize || metasize >= sizeof(buf)) {
+		fprintf(stderr, "Invalid meta size (%d B)\n", metasize);
 		err =  -EINVAL;
 		goto err_close;
 	}
