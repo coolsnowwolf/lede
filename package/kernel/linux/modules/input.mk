@@ -54,6 +54,24 @@ endef
 $(eval $(call KernelPackage,hid-alps))
 
 
+define KernelPackage/input-adc-keys
+  SUBMENU:=$(INPUT_MODULES_MENU)
+  TITLE:=ADC Ladder Buttons support
+  DEPENDS:=+kmod-input-core +kmod-iio-core
+  KCONFIG:= \
+	CONFIG_KEYBOARD_ADC \
+	CONFIG_INPUT_KEYBOARD=y
+  FILES:=$(LINUX_DIR)/drivers/input/keyboard/adc-keys.ko
+  AUTOLOAD:=$(call AutoProbe,adc-keys,1)
+endef
+
+define KernelPackage/input-adc-keys/description
+ Buttons/keys input driver for resistor ladder connected on ADC
+endef
+
+$(eval $(call KernelPackage,input-adc-keys))
+
+
 define KernelPackage/input-core
   SUBMENU:=$(INPUT_MODULES_MENU)
   TITLE:=Input device core
