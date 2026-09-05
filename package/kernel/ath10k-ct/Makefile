@@ -8,14 +8,15 @@ PKG_LICENSE_FILES:=
 
 PKG_SOURCE_URL:=https://github.com/greearb/ath10k-ct.git
 PKG_SOURCE_PROTO:=git
-PKG_SOURCE_DATE:=2026-07-31
-PKG_SOURCE_VERSION:=fcbdb70debc261f9df6734bbb76d81cdc88e0e26
-PKG_MIRROR_HASH:=3bfcb2c8bc08902b95de16593b9d757e8c48f8891bd8ecd0934af14789294f37
+PKG_SOURCE_DATE:=2022-05-13
+PKG_SOURCE_VERSION:=f808496fcc6b1f68942914117aebf8b3f8d52bb3
+PKG_MIRROR_HASH:=39527b3408696594eda5579521a9fb798417be4dda73fa08e8b3a8c7b0d3f3d9
 
-# Build the 7.2 ath10k-ct driver version.
+# Build the 5.15 ath10k-ct driver version by default.  The 7.2 source
+# requires mac80211 APIs only available with the Linux 6.18 backports.
 # Probably this should match as closely as
 # possible to whatever mac80211 backports version is being used.
-CT_KVER="-7.2"
+CT_KVER="-5.15"
 
 PKG_MAINTAINER:=Ben Greear <greearb@candelatech.com>
 PKG_BUILD_PARALLEL:=1
@@ -24,6 +25,14 @@ PKG_EXTMOD_SUBDIRS:=ath10k$(CT_KVER)
 STAMP_CONFIGURED_DEPENDS := $(STAGING_DIR)/usr/include/mac80211-backport/backport/autoconf.h
 
 include $(INCLUDE_DIR)/kernel.mk
+
+ifeq ($(KERNEL_PATCHVER),6.18)
+PKG_SOURCE_DATE:=2026-07-31
+PKG_SOURCE_VERSION:=fcbdb70debc261f9df6734bbb76d81cdc88e0e26
+PKG_MIRROR_HASH:=3bfcb2c8bc08902b95de16593b9d757e8c48f8891bd8ecd0934af14789294f37
+CT_KVER:=-7.2
+endif
+
 include $(INCLUDE_DIR)/package.mk
 
 define KernelPackage/ath10k-ct
