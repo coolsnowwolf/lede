@@ -214,6 +214,16 @@ define Device/friendlyarm_nanopi-r28s
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r28s
 
+define Device/friendlyarm_nanopi-zero2
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi Zero2
+  SOC := rk3528
+  UBOOT_DEVICE_NAME := nanopi-zero2-rk3528
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-button-hotplug kmod-input-adc-keys
+endef
+TARGET_DEVICES += friendlyarm_nanopi-zero2
+
 define Device/friendlyarm_nanopi-r2c
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R2C
