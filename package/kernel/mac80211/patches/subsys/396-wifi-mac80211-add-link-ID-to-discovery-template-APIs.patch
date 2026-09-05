@@ -1,0 +1,202 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] wifi: mac80211: add link ID to discovery template APIs
+
+Latest mt76 passes a link ID when requesting FILS discovery and unsolicited
+broadcast probe response templates. Backport the per-link API and update the
+in-tree callers while keeping backports 6.18.39.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -7749,19 +7749,22 @@
+  * ieee80211_get_fils_discovery_tmpl - Get FILS discovery template.
+  * @hw: pointer obtained from ieee80211_alloc_hw().
+  * @vif: &struct ieee80211_vif pointer from the add_interface callback.
++ * @link_id: valid link_id during MLO or 0 for non-MLO.
+  *
+  * The driver is responsible for freeing the returned skb.
+  *
+  * Return: FILS discovery template. %NULL on error.
+  */
+ struct sk_buff *ieee80211_get_fils_discovery_tmpl(struct ieee80211_hw *hw,
+-						  struct ieee80211_vif *vif);
++						  struct ieee80211_vif *vif,
++						  unsigned int link_id);
+ 
+ /**
+  * ieee80211_get_unsol_bcast_probe_resp_tmpl - Get unsolicited broadcast
+  *	probe response template.
+  * @hw: pointer obtained from ieee80211_alloc_hw().
+  * @vif: &struct ieee80211_vif pointer from the add_interface callback.
++ * @link_id: valid link_id during MLO or 0 for non-MLO.
+  *
+  * The driver is responsible for freeing the returned skb.
+  *
+@@ -7769,7 +7772,8 @@
+  */
+ struct sk_buff *
+ ieee80211_get_unsol_bcast_probe_resp_tmpl(struct ieee80211_hw *hw,
+-					  struct ieee80211_vif *vif);
++					  struct ieee80211_vif *vif,
++					  unsigned int link_id);
+ 
+ /**
+  * ieee80211_obss_color_collision_notify - notify userland about a BSS color
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -5860,20 +5860,26 @@
+ EXPORT_SYMBOL(ieee80211_proberesp_get);
+ 
+ struct sk_buff *ieee80211_get_fils_discovery_tmpl(struct ieee80211_hw *hw,
+-						  struct ieee80211_vif *vif)
++						  struct ieee80211_vif *vif,
++						  unsigned int link_id)
+ {
+ 	struct sk_buff *skb = NULL;
+ 	struct fils_discovery_data *tmpl = NULL;
+ 	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
++	struct ieee80211_link_data *link;
+ 
+ 	if (sdata->vif.type != NL80211_IFTYPE_AP)
+ 		return NULL;
++	if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++		return NULL;
+ 
+ 	rcu_read_lock();
+-	tmpl = rcu_dereference(sdata->deflink.u.ap.fils_discovery);
++	link = rcu_dereference(sdata->link[link_id]);
++	if (!link)
++		goto out;
++	tmpl = rcu_dereference(link->u.ap.fils_discovery);
+ 	if (!tmpl) {
+-		rcu_read_unlock();
+-		return NULL;
++		goto out;
+ 	}
+ 
+ 	skb = dev_alloc_skb(sdata->local->hw.extra_tx_headroom + tmpl->len);
+@@ -5882,6 +5888,7 @@
+ 		skb_put_data(skb, tmpl->data, tmpl->len);
+ 	}
+ 
++out:
+ 	rcu_read_unlock();
+ 	return skb;
+ }
+@@ -5889,20 +5896,26 @@
+ 
+ struct sk_buff *
+ ieee80211_get_unsol_bcast_probe_resp_tmpl(struct ieee80211_hw *hw,
+-					  struct ieee80211_vif *vif)
++					  struct ieee80211_vif *vif,
++					  unsigned int link_id)
+ {
+ 	struct sk_buff *skb = NULL;
+ 	struct unsol_bcast_probe_resp_data *tmpl = NULL;
+ 	struct ieee80211_sub_if_data *sdata = vif_to_sdata(vif);
++	struct ieee80211_link_data *link;
+ 
+ 	if (sdata->vif.type != NL80211_IFTYPE_AP)
+ 		return NULL;
++	if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++		return NULL;
+ 
+ 	rcu_read_lock();
+-	tmpl = rcu_dereference(sdata->deflink.u.ap.unsol_bcast_probe_resp);
++	link = rcu_dereference(sdata->link[link_id]);
++	if (!link)
++		goto out;
++	tmpl = rcu_dereference(link->u.ap.unsol_bcast_probe_resp);
+ 	if (!tmpl) {
+-		rcu_read_unlock();
+-		return NULL;
++		goto out;
+ 	}
+ 
+ 	skb = dev_alloc_skb(sdata->local->hw.extra_tx_headroom + tmpl->len);
+@@ -5911,6 +5924,7 @@
+ 		skb_put_data(skb, tmpl->data, tmpl->len);
+ 	}
+ 
++out:
+ 	rcu_read_unlock();
+ 	return skb;
+ }
+--- a/drivers/net/wireless/mediatek/mt76/mt7915/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7915/mcu.c
+@@ -1977,11 +1977,11 @@
+ 
+ 	if (changed & BSS_CHANGED_FILS_DISCOVERY) {
+ 		interval = vif->bss_conf.fils_discovery.max_interval;
+-		skb = ieee80211_get_fils_discovery_tmpl(hw, vif);
++		skb = ieee80211_get_fils_discovery_tmpl(hw, vif, 0);
+ 	} else if (changed & BSS_CHANGED_UNSOL_BCAST_PROBE_RESP &&
+ 		   vif->bss_conf.unsol_bcast_probe_resp_interval) {
+ 		interval = vif->bss_conf.unsol_bcast_probe_resp_interval;
+-		skb = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif);
++		skb = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif, 0);
+ 	}
+ 
+ 	if (!skb) {
+--- a/drivers/net/wireless/mediatek/mt76/mt7996/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7996/mcu.c
+@@ -2868,11 +2868,13 @@
+ 	if (changed & BSS_CHANGED_FILS_DISCOVERY &&
+ 	    link_conf->fils_discovery.max_interval) {
+ 		interval = link_conf->fils_discovery.max_interval;
+-		skb = ieee80211_get_fils_discovery_tmpl(hw, vif);
++		skb = ieee80211_get_fils_discovery_tmpl(hw, vif,
++						link_conf->link_id);
+ 	} else if (changed & BSS_CHANGED_UNSOL_BCAST_PROBE_RESP &&
+ 		   link_conf->unsol_bcast_probe_resp_interval) {
+ 		interval = link_conf->unsol_bcast_probe_resp_interval;
+-		skb = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif);
++		skb = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif,
++							link_conf->link_id);
+ 	}
+ 
+ 	if (!skb) {
+--- a/drivers/net/wireless/ath/ath11k/mac.c
++++ b/drivers/net/wireless/ath/ath11k/mac.c
+@@ -3303,7 +3303,7 @@
+ 	if (info->fils_discovery.max_interval) {
+ 		interval = info->fils_discovery.max_interval;
+ 
+-		tmpl = ieee80211_get_fils_discovery_tmpl(ar->hw, arvif->vif);
++		tmpl = ieee80211_get_fils_discovery_tmpl(ar->hw, arvif->vif, 0);
+ 		if (tmpl)
+ 			ret = ath11k_wmi_fils_discovery_tmpl(ar, arvif->vdev_id,
+ 							     tmpl);
+@@ -3312,7 +3312,7 @@
+ 		interval = info->unsol_bcast_probe_resp_interval;
+ 
+ 		tmpl = ieee80211_get_unsol_bcast_probe_resp_tmpl(ar->hw,
+-								 arvif->vif);
++								 arvif->vif, 0);
+ 		if (tmpl)
+ 			ret = ath11k_wmi_probe_resp_tmpl(ar, arvif->vdev_id,
+ 							 tmpl);
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4033,7 +4033,8 @@
+ 	if (info->fils_discovery.max_interval) {
+ 		interval = info->fils_discovery.max_interval;
+ 
+-		tmpl = ieee80211_get_fils_discovery_tmpl(hw, vif);
++		tmpl = ieee80211_get_fils_discovery_tmpl(hw, vif,
++							 info->link_id);
+ 		if (tmpl)
+ 			ret = ath12k_wmi_fils_discovery_tmpl(ar, arvif->vdev_id,
+ 							     tmpl);
+@@ -4041,7 +4042,8 @@
+ 		unsol_bcast_probe_resp_enabled = 1;
+ 		interval = info->unsol_bcast_probe_resp_interval;
+ 
+-		tmpl = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif);
++		tmpl = ieee80211_get_unsol_bcast_probe_resp_tmpl(hw, vif,
++								 info->link_id);
+ 		if (tmpl)
+ 			ret = ath12k_wmi_probe_resp_tmpl(ar, arvif->vdev_id,
+ 							 tmpl);
+
