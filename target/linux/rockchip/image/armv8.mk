@@ -464,6 +464,16 @@ define Device/radxa_e20c
 endef
 TARGET_DEVICES += radxa_e20c
 
+define Device/radxa_cm3-io
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := CM3 IO
+  SOC := rk3566
+  DEVICE_DTS := rk3566-radxa-cm3-io
+  UBOOT_DEVICE_NAME := radxa-cm3-io-rk3566
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += radxa_cm3-io
+
 define Device/radxa_e24c
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := E24C
@@ -569,6 +579,25 @@ define Device/radxa_rock-pi-4a
 endef
 TARGET_DEVICES += radxa_rock-pi-4a
 
+define Device/radxa_rock-pi-e
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK Pi E
+  SOC := rk3328
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-button-hotplug kmod-input-adc-keys
+endef
+TARGET_DEVICES += radxa_rock-pi-e
+
+define Device/radxa_rock-pi-e-v3
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK Pi E v3.0
+  SOC := rk3328
+  DEVICE_DTS := rk3328-rock-pi-e
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-button-hotplug kmod-input-adc-keys kmod-rtw88-8723du kmod-rtw88-8821cu kmod-usb-net-cdc-ncm kmod-usb-net-rndis wpad-basic-mbedtls
+endef
+TARGET_DEVICES += radxa_rock-pi-e-v3
+
 define Device/radxa_rock-4d
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK 4D
@@ -587,6 +616,15 @@ define Device/radxa_rock-4se
   UBOOT_DEVICE_NAME := rock-4se-rk3399
 endef
 TARGET_DEVICES += radxa_rock-4se
+
+define Device/radxa_rock-5-itx
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5 ITX/ITX+
+  SOC := rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-ata-ahci kmod-button-hotplug kmod-hwmon-pwmfan kmod-input-adc-keys kmod-nvme kmod-r8169 kmod-rtw89-8852be wpad-basic-mbedtls
+endef
+TARGET_DEVICES += radxa_rock-5-itx
 
 define Device/radxa_rock-5a
   DEVICE_VENDOR := Radxa
@@ -608,6 +646,17 @@ define Device/radxa_rock-5b
 endef
 TARGET_DEVICES += radxa_rock-5b
 
+define Device/radxa_rock-5b-plus
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5B+
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := generic-rk3588
+  DEVICE_DTS := rk3588-rock-5b-plus
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-hwmon-pwmfan kmod-nvme kmod-r8169 kmod-rtw89-8852be wpad-basic-mbedtls
+endef
+TARGET_DEVICES += radxa_rock-5b-plus
+
 define Device/radxa_rock-5c
   DEVICE_VENDOR := Radxa
   DEVICE_MODEL := ROCK 5C/5C Lite
@@ -616,6 +665,17 @@ define Device/radxa_rock-5c
   DEVICE_PACKAGES := kmod-aic8800-usb wpad-openssl
 endef
 TARGET_DEVICES += radxa_rock-5c
+
+define Device/radxa_rock-5t
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK 5T
+  SOC := rk3588
+  UBOOT_DEVICE_NAME := generic-rk3588
+  DEVICE_DTS := rk3588-rock-5t
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := iwlwifi-firmware-ax210 kmod-hwmon-pwmfan kmod-iwlwifi kmod-nvme kmod-r8169 wpad-basic-mbedtls
+endef
+TARGET_DEVICES += radxa_rock-5t
 
 define Device/radxa_zero-3e
   DEVICE_VENDOR := Radxa
