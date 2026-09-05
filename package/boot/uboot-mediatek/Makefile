@@ -477,6 +477,19 @@ define U-Boot/mt7987_rfb-sd
   DEPENDS:=+trusted-firmware-a-mt7987-sdmmc-comb
 endef
 
+define U-Boot/mt7988_tplink_tl-7dr7299-v1
+  NAME:=TP-Link TL-7DR7299 v1
+  BUILD_SUBTARGET:=filogic
+  BUILD_DEVICES:=tplink_tl-7dr7299-v1
+  UBOOT_CONFIG:=mt7988_tplink_tl-7dr7299-v1
+  UBOOT_IMAGE:=u-boot.fip
+  BL2_BOOTDEV:=tplink-tl-7dr7299
+  BL2_SOC:=mt7988
+  BL2_DDRTYPE:=comb
+  DEPENDS:=+trusted-firmware-a-mt7988-tplink-tl-7dr7299-comb
+  FIP_COMPRESS:=1
+endef
+
 define U-Boot/mt7988_rfb-spim-nand
   NAME:=MT7988 Reference Board
   BUILD_SUBTARGET:=filogic
@@ -573,6 +586,7 @@ UBOOT_TARGETS := \
 	mt7987_rfb-emmc \
 	mt7987_rfb-sd \
 	mt7987_rfb-spim-nand \
+	mt7988_tplink_tl-7dr7299-v1 \
 	mt7988_bananapi_bpi-r4-emmc \
 	mt7988_bananapi_bpi-r4-sdmmc \
 	mt7988_bananapi_bpi-r4-snand \
