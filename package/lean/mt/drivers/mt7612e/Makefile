@@ -25,6 +25,7 @@ define KernelPackage/mt76x2e
   CATEGORY:=Kernel modules
   TITLE:=MTK MT76x2e wifi AP driver
   DEPENDS:=@TARGET_ramips
+  CONFLICTS:=kmod-mt76x2
   FILES:=$(PKG_BUILD_DIR)/mt76x2_ap/mt76x2_ap.ko
   SUBMENU:=Wireless Drivers
   MENU:=1
