@@ -2,6 +2,23 @@
 #
 # Copyright (C) 2020 Tobias Maedel
 
+define Device/rk3308
+  SOC := rk3308
+  KERNEL_LOADADDR := 0x03000000
+endef
+
+define Device/radxa_rock-pi-s
+  $(Device/rk3308)
+  DEVICE_VENDOR := Radxa
+  DEVICE_MODEL := ROCK Pi S
+  SUPPORTED_DEVICES := radxa,rockpis
+  UBOOT_DEVICE_NAME := rock-pi-s-rk3308
+  BOOT_SCRIPT := rock-pi-s
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-rtw88-8723ds kmod-usb-net-cdc-ncm kmod-usb-net-rndis wpad-basic-wolfssl
+endef
+TARGET_DEVICES += radxa_rock-pi-s
+
 define Device/advantech_rsb4810
   DEVICE_VENDOR := Advantech
   DEVICE_MODEL := RSB4810
