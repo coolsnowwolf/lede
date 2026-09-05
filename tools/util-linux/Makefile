@@ -7,11 +7,11 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=util-linux
-PKG_VERSION:=2.41.1
+PKG_VERSION:=2.41.3
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.xz
 PKG_SOURCE_URL:=@KERNEL/linux/utils/$(PKG_NAME)/v2.41
-PKG_HASH:=be9ad9a276f4305ab7dd2f5225c8be1ff54352f565ff4dede9628c1aaa7dec57
+PKG_HASH:=3330d873f0fceb5560b89a7dc14e4f3288bbd880e96903ed9b50ec2b5799e58b
 PKG_CPE_ID:=cpe:/a:kernel:util-linux
 
 PKG_FIXUP:=autoreconf
@@ -25,16 +25,16 @@ HOST_CONFIGURE_ARGS += \
 	--disable-shared \
 	--disable-nls \
 	--disable-all-programs \
+	--enable-fdisks \
 	--enable-hexdump \
+	--enable-libblkid \
+	--enable-libfdisk \
+	--enable-libsmartcols \
 	--enable-libuuid \
 	--without-util \
 	--without-selinux \
 	--without-audit \
 	--without-udev \
-	--without-ncursesw \
-	--without-ncurses \
-	--without-slang \
-	--without-tinfo \
 	--without-readline \
 	--without-utempter \
 	--without-cap-ng \
