@@ -158,6 +158,9 @@ $(eval $(call SetupHostCommand,unzip,Please install 'unzip', \
 $(eval $(call SetupHostCommand,bzip2,Please install 'bzip2', \
 	bzip2 --version </dev/null))
 
+$(eval $(call SetupHostCommand,xz,Please install 'xz', \
+	xz --version </dev/null))
+
 $(eval $(call SetupHostCommand,wget,Please install GNU 'wget', \
 	wget --version | grep GNU))
 
