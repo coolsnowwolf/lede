@@ -1,0 +1,2833 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] wifi: mt76: support backports 6.18
+
+The latest mt76 NAN implementation requires the full NAN data and scheduling
+stack from newer mac80211. Keep backports 6.18.39 and disable only MT7925 NAN
+until that wireless stack is updated. Use the backports 6.18 action union and
+interface combination layout. All unrelated mt76 fixes remain enabled.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+ mt76_connac_mac.c |    2 +-
+ mt76_connac_mcu.c |   14 -
+ mt76_connac_mcu.h |    4 -
+ mt7925/Makefile   |    2 +-
+ mt7925/init.c     |   31 --
+ mt7925/main.c     |  212 +--------
+ mt7925/mcu.c      |  101 +----
+ mt7925/mt7925.h   |    1 -
+ mt7925/nan.c      | 1259 -----------------------------------------------------
+ mt7925/nan.h      |  512 ----------------------
+ mt7925/pci.c      |    1 -
+ mt7925/regd.c     |   30 --
+ mt7925/regd.h     |    3 -
+ mt7925/usb.c      |   15 +-
+ mt792x.h          |   51 ---
+ mt792x_core.c     |  122 +-----
+ 16 files changed, 36 insertions(+), 2324 deletions(-)
+diff --git a/mt76_connac_mac.c b/mt76_connac_mac.c
+index 8a8d608d..ee5cf21c 100644
+--- a/mt76_connac_mac.c
++++ b/mt76_connac_mac.c
+@@ -425,7 +425,7 @@ mt76_connac2_mac_write_txwi_80211(struct mt76_dev *dev, __le32 *txwi,
+ 	    skb->len >= IEEE80211_MIN_ACTION_SIZE(addba_req.capab) &&
+ 	    mgmt->u.action.category == WLAN_CATEGORY_BACK &&
+ 	    mgmt->u.action.action_code == WLAN_ACTION_ADDBA_REQ) {
+-		u16 capab = le16_to_cpu(mgmt->u.action.addba_req.capab);
++		u16 capab = le16_to_cpu(mgmt->u.action.u.addba_req.capab);
+ 
+ 		txwi[5] |= cpu_to_le32(MT_TXD5_ADD_BA);
+ 		tid = (capab >> 2) & IEEE80211_QOS_CTL_TID_MASK;
+diff --git a/mt76_connac_mcu.c b/mt76_connac_mcu.c
+index 2f925d22..20c5a7f8 100644
+--- a/mt76_connac_mcu.c
++++ b/mt76_connac_mcu.c
+@@ -465,10 +465,6 @@ void mt76_connac_mcu_sta_basic_tlv(struct mt76_dev *dev, struct sk_buff *skb,
+ 		basic->conn_type = cpu_to_le32(CONNECTION_IBSS_ADHOC);
+ 		basic->aid = cpu_to_le16(link_sta->sta->aid);
+ 		break;
+-	case NL80211_IFTYPE_NAN:
+-	case NL80211_IFTYPE_NAN_DATA:
+-		basic->conn_type = cpu_to_le32(CONNECTION_NAN);
+-		break;
+ 	default:
+ 		WARN_ON(1);
+ 		break;
+@@ -1264,11 +1260,6 @@ int mt76_connac_mcu_uni_add_dev(struct mt76_phy *phy,
+ 	case NL80211_IFTYPE_ADHOC:
+ 		basic_req.basic.conn_type = cpu_to_le32(CONNECTION_IBSS_ADHOC);
+ 		break;
+-	case NL80211_IFTYPE_NAN:
+-	case NL80211_IFTYPE_NAN_DATA:
+-		basic_req.basic.conn_type = cpu_to_le32(CONNECTION_NAN);
+-		basic_req.basic.conn_state = !enable;
+-		break;
+ 	default:
+ 		WARN_ON(1);
+ 		break;
+@@ -1679,11 +1670,6 @@ int mt76_connac_mcu_uni_add_bss(struct mt76_phy *phy,
+ 	case NL80211_IFTYPE_ADHOC:
+ 		basic_req.basic.conn_type = cpu_to_le32(CONNECTION_IBSS_ADHOC);
+ 		break;
+-	case NL80211_IFTYPE_NAN:
+-	case NL80211_IFTYPE_NAN_DATA:
+-		basic_req.basic.conn_type = cpu_to_le32(CONNECTION_NAN);
+-		basic_req.basic.active = enable;
+-		break;
+ 	default:
+ 		WARN_ON(1);
+ 		break;
+diff --git a/mt76_connac_mcu.h b/mt76_connac_mcu.h
+index f0e56dd7..98a22409 100644
+--- a/mt76_connac_mcu.h
++++ b/mt76_connac_mcu.h
+@@ -902,7 +902,6 @@ enum {
+ #define NETWORK_P2P			BIT(17)
+ #define NETWORK_IBSS			BIT(18)
+ #define NETWORK_WDS			BIT(21)
+-#define NETWORK_NAN			BIT(22)
+ 
+ #define SCAN_FUNC_RANDOM_MAC		BIT(0)
+ #define SCAN_FUNC_RNR_SCAN		BIT(3)
+@@ -915,7 +914,6 @@ enum {
+ #define CONNECTION_IBSS_ADHOC		(STA_TYPE_ADHOC | NETWORK_IBSS)
+ #define CONNECTION_WDS			(STA_TYPE_WDS | NETWORK_WDS)
+ #define CONNECTION_INFRA_BC		(STA_TYPE_BC | NETWORK_INFRA)
+-#define CONNECTION_NAN			(NETWORK_NAN)
+ 
+ #define CONN_STATE_DISCONNECT		0
+ #define CONN_STATE_CONNECT		1
+@@ -1103,7 +1101,6 @@ enum {
+ 	MCU_UNI_EVENT_THERMAL = 0x35,
+ 	MCU_UNI_EVENT_RSSI_MONITOR = 0x41,
+ 	MCU_UNI_EVENT_NIC_CAPAB = 0x43,
+-	MCU_UNI_EVENT_NAN = 0x56,
+ 	MCU_UNI_EVENT_WED_RRO = 0x57,
+ 	MCU_UNI_EVENT_PER_STA_INFO = 0x6d,
+ 	MCU_UNI_EVENT_ALL_STA_INFO = 0x6e,
+@@ -1352,7 +1349,6 @@ enum {
+ 	MCU_UNI_CMD_FIXED_RATE_TABLE = 0x40,
+ 	MCU_UNI_CMD_RSSI_MONITOR = 0x41,
+ 	MCU_UNI_CMD_TESTMODE_CTRL = 0x46,
+-	MCU_UNI_CMD_NAN	= 0x56,
+ 	MCU_UNI_CMD_RRO = 0x57,
+ 	MCU_UNI_CMD_OFFCH_SCAN_CTRL = 0x58,
+ 	MCU_UNI_CMD_PER_STA_INFO = 0x6d,
+diff --git a/mt7925/Makefile b/mt7925/Makefile
+index f9dcc0bb..8f1078ce 100644
+--- a/mt7925/Makefile
++++ b/mt7925/Makefile
+@@ -4,7 +4,7 @@ obj-$(CONFIG_MT7925_COMMON) += mt7925-common.o
+ obj-$(CONFIG_MT7925E) += mt7925e.o
+ obj-$(CONFIG_MT7925U) += mt7925u.o
+ 
+-mt7925-common-y := mac.o mcu.o regd.o main.o init.o debugfs.o nan.o
++mt7925-common-y := mac.o mcu.o regd.o main.o init.o debugfs.o
+ mt7925-common-$(CONFIG_NL80211_TESTMODE) += testmode.o
+ mt7925e-y := pci.o pci_mac.o pci_mcu.o
+ mt7925u-y := usb.o
+diff --git a/mt7925/init.c b/mt7925/init.c
+index 68962501..1cb0959b 100644
+--- a/mt7925/init.c
++++ b/mt7925/init.c
+@@ -160,33 +160,6 @@ static int mt7925_init_hardware(struct mt792x_dev *dev)
+ 	return 0;
+ }
+ 
+-static int mt7925_init_nan_cap(struct mt76_dev *mdev)
+-{
+-	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+-	const struct ieee80211_sta_he_cap *he_cap;
+-	struct ieee80211_supported_band *sband;
+-	struct wiphy *wiphy = mdev->hw->wiphy;
+-
+-	if (!(dev->fw_features & MT792x_FW_CAP_NAN))
+-		return 0;
+-
+-	sband = wiphy->bands[NL80211_BAND_2GHZ];
+-	if (sband)
+-		wiphy->nan_capa.phy.ht = sband->ht_cap;
+-
+-	sband = wiphy->bands[NL80211_BAND_5GHZ];
+-	if (sband)
+-		wiphy->nan_capa.phy.vht = sband->vht_cap;
+-
+-	sband = wiphy->bands[NL80211_BAND_2GHZ];
+-	he_cap = sband ? ieee80211_get_he_iftype_cap(sband, NL80211_IFTYPE_NAN)
+-		       : NULL;
+-	if (he_cap)
+-		wiphy->nan_capa.phy.he = *he_cap;
+-
+-	return 0;
+-}
+-
+ static void mt7925_init_work(struct work_struct *work)
+ {
+ 	struct mt792x_dev *dev = container_of(work, struct mt792x_dev,
+@@ -207,8 +180,6 @@ static void mt7925_init_work(struct work_struct *work)
+ 		return;
+ 	}
+ 
+-	dev->mt76.init_wiphy = mt7925_init_nan_cap;
+-
+ 	ret = mt76_register_device(&dev->mt76, true, mt76_rates,
+ 				   ARRAY_SIZE(mt76_rates));
+ 	if (ret) {
+@@ -270,8 +241,6 @@ int mt7925_register_device(struct mt792x_dev *dev)
+ 
+ 	INIT_WORK(&dev->reset_work, mt7925_mac_reset_work);
+ 	INIT_WORK(&dev->init_work, mt7925_init_work);
+-	INIT_WORK(&dev->nan_deferred_work, mt7925_nan_deferred_work);
+-	spin_lock_init(&dev->nan_deferred_lock);
+ 
+ 	INIT_WORK(&dev->phy.roc_work, mt7925_roc_work);
+ 	timer_setup(&dev->phy.roc_timer, mt792x_roc_timer, 0);
+diff --git a/mt7925/main.c b/mt7925/main.c
+index dac31f8b..3e7be625 100644
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -11,7 +11,6 @@
+ #include "regd.h"
+ #include "mcu.h"
+ #include "mac.h"
+-#include "nan.h"
+ 
+ static void
+ mt7925_init_he_caps(struct mt792x_phy *phy, enum nl80211_band band,
+@@ -415,8 +414,7 @@ static int mt7925_mac_link_bss_add(struct mt792x_dev *dev,
+ 			      0 : mconf->mt76.idx % MT76_CONNAC_MAX_WMM_SETS;
+ 	mconf->mt76.link_idx = hweight16(mvif->valid_links);
+ 
+-	if (mvif->phy->mt76->chandef.chan &&
+-	    mvif->phy->mt76->chandef.chan->band != NL80211_BAND_2GHZ)
++	if (mvif->phy->mt76->chandef.chan->band != NL80211_BAND_2GHZ)
+ 		mconf->mt76.basic_rates_idx = MT792x_BASIC_RATES_TBL + 4;
+ 	else
+ 		mconf->mt76.basic_rates_idx = MT792x_BASIC_RATES_TBL;
+@@ -478,32 +476,12 @@ mt7925_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+ 	INIT_WORK(&mvif->csa_work, mt7925_csa_work);
+ 	timer_setup(&mvif->csa_timer, mt792x_csa_timer, 0);
+ 
+-	if (vif->type == NL80211_IFTYPE_NAN)
+-		dev->nan_vif = vif;
+ out:
+ 	mt792x_mutex_release(dev);
+ 
+ 	return ret;
+ }
+ 
+-static void
+-mt7925_remove_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+-{
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+-	struct mt792x_bss_conf *mconf;
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	if (dev->nan_vif == vif)
+-		dev->nan_vif = NULL;
+-
+-	mconf = mt792x_link_conf_to_mconf(&vif->bss_conf);
+-	mt792x_mac_link_bss_remove(dev, mconf, &mvif->sta.deflink);
+-
+-	mt792x_mutex_release(dev);
+-}
+-
+ static void mt7925_roc_iter(void *priv, u8 *mac,
+ 			    struct ieee80211_vif *vif)
+ {
+@@ -963,21 +941,6 @@ static int mt7925_mac_link_sta_add(struct mt76_dev *mdev,
+ 
+ 	link_conf = mt792x_vif_to_bss_conf(vif, link_id);
+ 
+-	/* NAN_DATA (NDI) peers skip association - fill link_sta caps
+-	 * from sband and push BSS_INFO with correct phymode + RLM.
+-	 */
+-	if (vif->type == NL80211_IFTYPE_NAN_DATA) {
+-		struct ieee80211_chanctx_conf *nan_ctx;
+-
+-		nan_ctx = mt7925_nan_seed_link_sta(dev, link_sta);
+-		mconf->mt76.ctx = nan_ctx;
+-
+-		ret = mt7925_mcu_add_bss_info(&dev->phy, nan_ctx,
+-					      link_conf, link_sta, true);
+-		if (ret)
+-			goto out_pm;
+-	}
+-
+ 	/* should update bss info before STA add */
+ 	if (vif->type == NL80211_IFTYPE_STATION && !link_sta->sta->tdls) {
+ 		struct mt792x_link_sta *mlink_bc;
+@@ -1255,37 +1218,20 @@ static void mt7925_mac_link_sta_assoc(struct mt76_dev *mdev,
+ int mt7925_mac_sta_event(struct mt76_dev *mdev, struct ieee80211_vif *vif,
+ 			 struct ieee80211_sta *sta, enum mt76_sta_event ev)
+ {
+-	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	struct ieee80211_link_sta *link_sta = &sta->deflink;
+ 
+-	switch (ev) {
+-	case MT76_STA_EVENT_ASSOC:
+-		if (ieee80211_vif_is_mld(vif)) {
+-			struct mt792x_sta *msta =
+-				(struct mt792x_sta *)sta->drv_priv;
+-
+-			link_sta = mt792x_sta_to_link_sta(vif, sta,
+-							  msta->deflink_id);
+-			mt7925_mac_set_links(mdev, vif);
+-		}
+-
+-		mt7925_mac_link_sta_assoc(mdev, vif, link_sta);
+-		break;
+-	case MT76_STA_EVENT_AUTHORIZE:
+-		if (vif->type == NL80211_IFTYPE_NAN_DATA) {
+-			int ret;
++	if (ev != MT76_STA_EVENT_ASSOC)
++		return 0;
+ 
+-			mt792x_mutex_acquire(dev);
+-			ret = mt792x_nan_map_sta_rec(mdev, vif, sta);
+-			mt792x_mutex_release(dev);
++	if (ieee80211_vif_is_mld(vif)) {
++		struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 
+-			return ret;
+-		}
+-		break;
+-	default:
+-		break;
++		link_sta = mt792x_sta_to_link_sta(vif, sta, msta->deflink_id);
++		mt7925_mac_set_links(mdev, vif);
+ 	}
+ 
++	mt7925_mac_link_sta_assoc(mdev, vif, link_sta);
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_sta_event);
+@@ -1412,36 +1358,6 @@ void mt7925_mac_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 
+-	/* Release NAN peer record before tearing down the STA. */
+-	if (vif->type == NL80211_IFTYPE_NAN ||
+-	    vif->type == NL80211_IFTYPE_NAN_DATA) {
+-		int ret = mt792x_nan_set_peer_rec(mdev, sta);
+-
+-		if (ret)
+-			dev_err(mdev->dev,
+-				"NAN: failed to deactivate peer record: %d\n",
+-				ret);
+-	}
+-
+-	/* Release NDP context ID for NAN_DATA sta. */
+-	if (vif->type == NL80211_IFTYPE_NAN_DATA) {
+-		struct ieee80211_sta *nmi_sta;
+-
+-		rcu_read_lock();
+-		nmi_sta = rcu_dereference(sta->nmi);
+-		if (nmi_sta) {
+-			struct mt792x_sta *nmi_msta =
+-				(struct mt792x_sta *)nmi_sta->drv_priv;
+-
+-			if (msta->nan_sched.ndp_ctx_assigned) {
+-				clear_bit(msta->nan_sched.ndp_ctx_id,
+-					  &nmi_msta->nan_sched.ndp_ctx_bitmap);
+-				msta->nan_sched.ndp_ctx_assigned = false;
+-			}
+-		}
+-		rcu_read_unlock();
+-	}
+-
+ 	if (ieee80211_vif_is_mld(vif)) {
+ 		mt7925_mac_sta_remove_links(dev, vif, sta, msta->valid_links);
+ 		mt7925_mcu_del_dev(mdev, vif);
+@@ -2154,11 +2070,6 @@ static void mt7925_vif_cfg_changed(struct ieee80211_hw *hw,
+ 	}
+ 
+ 	mt792x_mutex_release(dev);
+-
+-	if (vif->type == NL80211_IFTYPE_NAN &&
+-	    changed & BSS_CHANGED_NAN_LOCAL_SCHED) {
+-		mt7925_nan_local_sched_changed(dev, vif);
+-	}
+ }
+ 
+ static void mt7925_link_info_changed(struct ieee80211_hw *hw,
+@@ -2593,105 +2504,6 @@ static void mt7925_channel_switch_rx_beacon(struct ieee80211_hw *hw,
+ 	}
+ }
+ 
+-static int mt7925_start_nan(struct ieee80211_hw *hw,
+-			    struct ieee80211_vif *vif,
+-			    struct cfg80211_nan_conf *conf)
+-{
+-	struct ieee80211_bss_conf *link_conf = &vif->bss_conf;
+-	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+-	struct ieee80211_channel *chan;
+-	int err = 0;
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	chan = conf->band_cfgs[NL80211_BAND_2GHZ].chan;
+-	if (!chan) {
+-		err = -EINVAL;
+-		goto out;
+-	}
+-
+-	cfg80211_chandef_create(&link_conf->chanreq.oper, chan,
+-				NL80211_CHAN_NO_HT);
+-
+-	err = mt7925_mcu_add_bss_info(&dev->phy, NULL,
+-				      link_conf, NULL, true);
+-	if (err < 0)
+-		goto out;
+-
+-	err = mt7925_nan_enable(vif, dev, conf);
+-	if (err) {
+-		mt7925_mcu_add_bss_info(&dev->phy, NULL, link_conf, NULL, false);
+-		goto out;
+-	}
+-
+-	err = mt7925_nan_update_phy_setting(dev);
+-
+-out:
+-	mt792x_mutex_release(dev);
+-
+-	return err;
+-}
+-
+-static int mt7925_stop_nan(struct ieee80211_hw *hw,
+-			   struct ieee80211_vif *vif)
+-{
+-	struct ieee80211_bss_conf *link_conf = &vif->bss_conf;
+-	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+-	int err, ret;
+-
+-	/* Drop a deferred event queued just before stop so a stale cluster_id
+-	 * cannot leak into a restart; the work re-checks liveness anyway.
+-	 */
+-	spin_lock_bh(&dev->nan_deferred_lock);
+-	dev->nan_deferred_pending = 0;
+-	spin_unlock_bh(&dev->nan_deferred_lock);
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	err = mt7925_nan_disable(vif, dev);
+-
+-	ret = mt7925_mcu_add_bss_info(&dev->phy, NULL, link_conf,
+-				      NULL, false);
+-	if (!err)
+-		err = ret;
+-
+-	mt792x_mutex_release(dev);
+-
+-	return err;
+-}
+-
+-static int mt7925_nan_change_conf(struct ieee80211_hw *hw,
+-				  struct ieee80211_vif *vif,
+-				  struct cfg80211_nan_conf *conf,
+-				  u32 changes)
+-{
+-	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+-	int err = 0;
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	err = mt7925_nan_change_configure(vif, dev, conf);
+-
+-	mt792x_mutex_release(dev);
+-
+-	return err;
+-}
+-
+-static int mt7925_nan_peer_sched_changed(struct ieee80211_hw *hw,
+-					 struct ieee80211_sta *sta)
+-{
+-	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+-	int err = 0;
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	err = mt792x_nan_set_peer_schedule(dev, sta);
+-
+-	mt792x_mutex_release(dev);
+-
+-	return err;
+-}
+-
+ static void mt7925_sta_pre_rcu_remove(struct ieee80211_hw *hw,
+ 				      struct ieee80211_vif *vif,
+ 				      struct ieee80211_sta *sta)
+@@ -2740,7 +2552,7 @@ const struct ieee80211_ops mt7925_ops = {
+ 	.start = mt7925_start,
+ 	.stop = mt7925_stop,
+ 	.add_interface = mt7925_add_interface,
+-	.remove_interface = mt7925_remove_interface,
++	.remove_interface = mt792x_remove_interface,
+ 	.config = mt7925_config,
+ 	.conf_tx = mt7925_conf_tx,
+ 	.configure_filter = mt7925_configure_filter,
+@@ -2804,10 +2616,6 @@ const struct ieee80211_ops mt7925_ops = {
+ 	.channel_switch = mt7925_channel_switch,
+ 	.abort_channel_switch = mt7925_abort_channel_switch,
+ 	.channel_switch_rx_beacon = mt7925_channel_switch_rx_beacon,
+-	.start_nan = mt7925_start_nan,
+-	.stop_nan = mt7925_stop_nan,
+-	.nan_change_conf = mt7925_nan_change_conf,
+-	.nan_peer_sched_changed = mt7925_nan_peer_sched_changed,
+ };
+ EXPORT_SYMBOL_GPL(mt7925_ops);
+ 
+diff --git a/mt7925/mcu.c b/mt7925/mcu.c
+index 5b9c9d8d..854682c7 100644
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -7,18 +7,11 @@
+ #include "regd.h"
+ #include "mcu.h"
+ #include "mac.h"
+-#include "nan.h"
+ 
+ #define MT_STA_BFER			BIT(0)
+ #define MT_STA_BFEE			BIT(1)
+ #define MT7925_WOW_PATTERN_NEW_FW_DATE	"20260414153105"
+ 
+-static bool mt7925_vif_is_nan(struct ieee80211_vif *vif)
+-{
+-	return vif->type == NL80211_IFTYPE_NAN ||
+-	       vif->type == NL80211_IFTYPE_NAN_DATA;
+-}
+-
+ int mt7925_mcu_parse_response(struct mt76_dev *mdev, int cmd,
+ 			      struct sk_buff *skb, int seq)
+ {
+@@ -56,8 +49,7 @@ int mt7925_mcu_parse_response(struct mt76_dev *mdev, int cmd,
+ 		   cmd == MCU_UNI_CMD(BSS_INFO_UPDATE) ||
+ 		   cmd == MCU_UNI_CMD(STA_REC_UPDATE) ||
+ 		   cmd == MCU_UNI_CMD(OFFLOAD) ||
+-		   cmd == MCU_UNI_CMD(SUSPEND) ||
+-		   cmd == MCU_UNI_CMD(NAN)) {
++		   cmd == MCU_UNI_CMD(SUSPEND)) {
+ 		struct mt7925_mcu_uni_event *event;
+ 
+ 		skb_pull(skb, sizeof(*rxd));
+@@ -704,9 +696,6 @@ mt7925_mcu_uni_rx_unsolicited_event(struct mt792x_dev *dev,
+ 		dev->fw_assert = true;
+ 		mt76_connac_mcu_coredump_event(&dev->mt76, skb, &dev->coredump);
+ 		return;
+-	case MCU_UNI_EVENT_NAN:
+-		mt7925_nan_mcu_event(dev, skb);
+-		break;
+ 	default:
+ 		break;
+ 	}
+@@ -1912,18 +1901,9 @@ mt7925_mcu_sta_phy_tlv(struct sk_buff *skb,
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_PHY, sizeof(*phy));
+ 	phy = (struct sta_rec_phy *)tlv;
+-
+-	if (mt7925_vif_is_nan(vif)) {
+-		phy->phy_type = PHY_TYPE_BIT_OFDM | PHY_TYPE_BIT_ERP;
+-		phy->phy_type |= mt76_connac_get_phy_mode_v2(mvif->phy->mt76, vif,
+-							     NL80211_BAND_5GHZ,
+-							     link_sta);
+-	} else {
+-		phy->phy_type = mt76_connac_get_phy_mode_v2(mvif->phy->mt76, vif,
+-							    chandef->chan->band,
+-							    link_sta);
+-	}
+-
++	phy->phy_type = mt76_connac_get_phy_mode_v2(mvif->phy->mt76, vif,
++						    chandef->chan->band,
++						    link_sta);
+ 	phy->basic_rate = cpu_to_le16((u16)link_conf->basic_rates);
+ 	if (link_sta->ht_cap.ht_supported) {
+ 		af = link_sta->ht_cap.ampdu_factor;
+@@ -1996,19 +1976,11 @@ mt7925_mcu_sta_rate_ctrl_tlv(struct sk_buff *skb,
+ 	mconf = mt792x_vif_to_link(mvif, link_sta->link_id);
+ 	chandef = mconf->mt76.ctx ? &mconf->mt76.ctx->def :
+ 				    &link_conf->chanreq.oper;
++	band = chandef->chan->band;
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_RA, sizeof(*ra_info));
+ 	ra_info = (struct sta_rec_ra_info *)tlv;
+ 
+-	if (mt7925_vif_is_nan(vif))
+-		/* NAN is OFDM-only per spec; borrow the 5 GHz band lookup to
+-		 * avoid PHY_TYPE_BIT_HR_DSSS/CCK bits being added to phy_type.
+-		 * NAN interfaces have no chanctx, so chandef->chan is always NULL.
+-		 */
+-		band = NL80211_BAND_5GHZ;
+-	else
+-		band = chandef->chan->band;
+-
+ 	supp_rates = link_sta->supp_rates[band];
+ 	if (band == NL80211_BAND_2GHZ)
+ 		supp_rates = FIELD_PREP(RA_LEGACY_OFDM, supp_rates >> 4) |
+@@ -2669,29 +2641,6 @@ mt7925_get_phy_mode_ext(struct mt76_phy *phy, struct ieee80211_vif *vif,
+ 	return mode;
+ }
+ 
+-static void
+-mt7925_mcu_bss_basic_tlv_nan(struct mt76_phy *phy,
+-			     struct ieee80211_vif *vif,
+-			     struct ieee80211_link_sta *link_sta,
+-			     struct mt76_connac_bss_basic_tlv *basic_req)
+-{
+-	u8 mode_2g, mode_5g;
+-
+-	mode_2g = mt7925_get_phy_mode_ext(phy, vif, NL80211_BAND_2GHZ,
+-					  link_sta);
+-	mode_5g = mt7925_get_phy_mode_ext(phy, vif, NL80211_BAND_5GHZ,
+-					  link_sta);
+-	basic_req->phymode_ext = mode_2g | mode_5g;
+-
+-	basic_req->nonht_basic_phy = cpu_to_le16(PHY_TYPE_ERP_INDEX);
+-
+-	mode_2g = mt76_connac_get_phy_mode(phy, vif, NL80211_BAND_2GHZ,
+-					   link_sta);
+-	mode_5g = mt76_connac_get_phy_mode(phy, vif, NL80211_BAND_5GHZ,
+-					   link_sta);
+-	basic_req->phymode = (mode_2g | mode_5g) & ~PHY_MODE_B;
+-}
+-
+ static void
+ mt7925_mcu_bss_basic_tlv(struct sk_buff *skb,
+ 			 struct ieee80211_bss_conf *link_conf,
+@@ -2706,7 +2655,7 @@ mt7925_mcu_bss_basic_tlv(struct sk_buff *skb,
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	struct cfg80211_chan_def *chandef = ctx ? &ctx->def :
+ 						  &link_conf->chanreq.oper;
+-	enum nl80211_band band = NL80211_BAND_2GHZ;
++	enum nl80211_band band = chandef->chan->band;
+ 	struct mt76_connac_bss_basic_tlv *basic_req;
+ 	struct tlv *tlv;
+ 	int conn_type;
+@@ -2719,25 +2668,16 @@ mt7925_mcu_bss_basic_tlv(struct sk_buff *skb,
+ 						      mconf->mt76.omac_idx;
+ 	basic_req->hw_bss_idx = idx;
+ 
+-	if (mt7925_vif_is_nan(vif)) {
+-		mt7925_mcu_bss_basic_tlv_nan(phy, vif, link_sta, basic_req);
+-	} else {
+-		band = chandef->chan->band;
+-		basic_req->phymode_ext = mt7925_get_phy_mode_ext(phy, vif, band,
+-								 link_sta);
+-
+-		if (band == NL80211_BAND_2GHZ)
+-			basic_req->nonht_basic_phy =
+-				cpu_to_le16(PHY_TYPE_ERP_INDEX);
+-		else
+-			basic_req->nonht_basic_phy =
+-				cpu_to_le16(PHY_TYPE_OFDM_INDEX);
++	basic_req->phymode_ext = mt7925_get_phy_mode_ext(phy, vif, band,
++							 link_sta);
+ 
+-		memcpy(basic_req->bssid, link_conf->bssid, ETH_ALEN);
+-		basic_req->phymode = mt76_connac_get_phy_mode(phy, vif, band,
+-							      link_sta);
+-	}
++	if (band == NL80211_BAND_2GHZ)
++		basic_req->nonht_basic_phy = cpu_to_le16(PHY_TYPE_ERP_INDEX);
++	else
++		basic_req->nonht_basic_phy = cpu_to_le16(PHY_TYPE_OFDM_INDEX);
+ 
++	memcpy(basic_req->bssid, link_conf->bssid, ETH_ALEN);
++	basic_req->phymode = mt76_connac_get_phy_mode(phy, vif, band, link_sta);
+ 	basic_req->bcn_interval = cpu_to_le16(link_conf->beacon_int);
+ 	basic_req->dtim_period = link_conf->dtim_period;
+ 	basic_req->bmc_tx_wlan_idx = cpu_to_le16(bmc_tx_wlan_idx);
+@@ -2770,11 +2710,6 @@ mt7925_mcu_bss_basic_tlv(struct sk_buff *skb,
+ 		basic_req->conn_type = cpu_to_le32(CONNECTION_IBSS_ADHOC);
+ 		basic_req->active = true;
+ 		break;
+-	case NL80211_IFTYPE_NAN:
+-	case NL80211_IFTYPE_NAN_DATA:
+-		basic_req->conn_type = cpu_to_le32(CONNECTION_NAN);
+-		basic_req->active = enable;
+-		break;
+ 	default:
+ 		WARN_ON(1);
+ 		break;
+@@ -2833,11 +2768,10 @@ mt7925_mcu_bss_bmc_tlv(struct sk_buff *skb, struct mt792x_phy *phy,
+ 		       struct ieee80211_chanctx_conf *ctx,
+ 		       struct ieee80211_bss_conf *link_conf)
+ {
+-	struct ieee80211_vif *vif = link_conf->vif;
+ 	struct cfg80211_chan_def *chandef = ctx ? &ctx->def :
+ 						  &link_conf->chanreq.oper;
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+-	enum nl80211_band band = NL80211_BAND_2GHZ;
++	enum nl80211_band band = chandef->chan->band;
+ 	struct mt76_vif_link *mvif = &mconf->mt76;
+ 	struct bss_rate_tlv *bmc;
+ 	struct tlv *tlv;
+@@ -2848,11 +2782,6 @@ mt7925_mcu_bss_bmc_tlv(struct sk_buff *skb, struct mt792x_phy *phy,
+ 
+ 	bmc = (struct bss_rate_tlv *)tlv;
+ 
+-	if (mt7925_vif_is_nan(vif))
+-		band = NL80211_BAND_5GHZ;
+-	else
+-		band = chandef->chan->band;
+-
+ 	if (band == NL80211_BAND_2GHZ)
+ 		bmc->basic_rate = cpu_to_le16(HR_DSSS_ERP_BASIC_RATE);
+ 	else
+diff --git a/mt7925/mt7925.h b/mt7925/mt7925.h
+index cc427086..c77b2750 100644
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -366,7 +366,6 @@ void mt7925_mcu_set_suspend_iter(void *priv, u8 *mac,
+ void mt7925_connac_mcu_set_suspend_iter(void *priv, u8 *mac,
+ 					struct ieee80211_vif *vif);
+ void mt7925_set_ipv6_ns_work(struct work_struct *work);
+-void mt7925_nan_deferred_work(struct work_struct *work);
+ 
+ int mt7925_mcu_set_sniffer(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+ 			   bool enable);
+diff --git a/mt7925/nan.c b/mt7925/nan.c
+deleted file mode 100644
+index 1adef4d5..00000000
+--- a/mt7925/nan.c
++++ /dev/null
+@@ -1,1259 +0,0 @@
+-// SPDX-License-Identifier: BSD-3-Clause-Clear
+-/* Copyright (C) 2025-2026 MediaTek Inc. */
+-
+-#include <asm/byteorder.h>
+-#include <linux/bitfield.h>
+-#include <linux/errno.h>
+-#include <linux/kernel.h>
+-#include <linux/stddef.h>
+-#include <linux/string.h>
+-#include <linux/types.h>
+-#include <linux/ieee80211.h>
+-#include <net/cfg80211.h>
+-#include <net/mac80211.h>
+-
+-#include "mt7925.h"
+-#include "mcu.h"
+-#include "nan.h"
+-#include "regd.h"
+-
+-static void mt7925_nan_set_5g_channel(struct mt792x_dev *dev,
+-				      struct mt7925_nan_enable_req_tlv *req,
+-				      struct cfg80211_nan_conf *conf)
+-{
+-	struct ieee80211_channel *chan;
+-	u32 ch5g = 0;
+-
+-	chan = conf->band_cfgs[NL80211_BAND_5GHZ].chan;
+-
+-	if (!chan)
+-		return;
+-
+-	if (!mt7925_regd_is_valid_channel(dev, NL80211_BAND_5GHZ, chan))
+-		return;
+-
+-	req->config_5g_channel = 1;
+-
+-	if (chan->hw_value == NAN_5G_LOW_DISC_CHANNEL)
+-		ch5g |= BIT(0);
+-	else if (chan->hw_value == NAN_5G_HIGH_DISC_CHANNEL)
+-		ch5g |= BIT(1);
+-
+-	req->channel_5g_val = cpu_to_le32(ch5g);
+-}
+-
+-static void mt7925_nan_set_scan_params(struct mt7925_nan_enable_req_tlv *req,
+-				       struct cfg80211_nan_conf *conf)
+-{
+-	req->scan_params_val.scan_period[0] =
+-		cpu_to_le16(conf->scan_period < 255 ? conf->scan_period : 255);
+-	req->scan_params_val.dwell_time[0] =
+-		conf->scan_dwell_time < 255 ? conf->scan_dwell_time : 255;
+-}
+-
+-static u16
+-mt7925_nan_avail_attr_ctrl(const struct ieee80211_nan_sched_cfg *sched)
+-{
+-	if (sched->avail_blob_len < NAN_AVAIL_ATTR_CTRL_OFFSET + 2)
+-		return 0;
+-
+-	return sched->avail_blob[NAN_AVAIL_ATTR_CTRL_OFFSET] |
+-	       sched->avail_blob[NAN_AVAIL_ATTR_CTRL_OFFSET + 1] << 8;
+-}
+-
+-static void
+-mt7925_nan_update_conf(struct mt792x_vif *mvif,
+-		       const struct cfg80211_nan_conf *conf)
+-{
+-	mvif->nan.conf.master_pref = conf->master_pref;
+-	mvif->nan.conf.bands = conf->bands;
+-	mvif->nan.conf.discovery_beacon_interval =
+-		conf->discovery_beacon_interval;
+-	mvif->nan.conf.enable_dw_notification =
+-		conf->enable_dw_notification;
+-
+-	memcpy(mvif->nan.conf.cluster_id, conf->cluster_id, ETH_ALEN);
+-}
+-
+-static int
+-mt7925_nan_mp_tlv(struct sk_buff *skb, u8 master_pref)
+-{
+-	struct mt7925_nan_master_preference_tlv *mp_tlv = NULL;
+-	struct tlv *tlv = NULL;
+-
+-	if (!skb)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_SET_MASTER_PREFERENCE,
+-				      sizeof(struct mt7925_nan_master_preference_tlv));
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	mp_tlv = (struct mt7925_nan_master_preference_tlv *)tlv;
+-
+-	if (master_pref > NAN_MAX_MASTER_PREFERENCE)
+-		return 0;
+-
+-	mp_tlv->master_preference = master_pref;
+-
+-	return 0;
+-}
+-
+-static int
+-mt7925_nan_dw_tlv(struct sk_buff *skb, struct cfg80211_nan_conf *conf)
+-{
+-	struct mt7925_nan_dw_interval_tlv *dw_tlv = NULL;
+-	struct tlv *tlv = NULL;
+-	u16 interval;
+-
+-	if (!skb || !conf)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_SET_DW_INTERVAL,
+-				      sizeof(struct mt7925_nan_dw_interval_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	dw_tlv = (struct mt7925_nan_dw_interval_tlv *)tlv;
+-
+-	/* Set DW interval for 2.4GHz and 5GHz bands if available */
+-	if (conf->band_cfgs[NL80211_BAND_2GHZ].awake_dw_interval > 0) {
+-		dw_tlv->dw_interval = conf->band_cfgs[NL80211_BAND_2GHZ].awake_dw_interval;
+-	} else if (conf->band_cfgs[NL80211_BAND_5GHZ].awake_dw_interval > 0) {
+-		dw_tlv->dw_interval = conf->band_cfgs[NL80211_BAND_5GHZ].awake_dw_interval;
+-	} else {
+-		/* Fallback to a default value or log a warning */
+-		dw_tlv->dw_interval = NAN_DEFAULT_DW_INTERVAL;
+-	}
+-
+-	/* Validate and set NAN Discovery Beacon Interval */
+-	interval = conf->discovery_beacon_interval > 0 ?
+-		   conf->discovery_beacon_interval :
+-		   NAN_DEFAULT_DISC_BCN_INTERVAL;
+-
+-	dw_tlv->disc_bcn_interval = cpu_to_le16(interval);
+-
+-	return 0;
+-}
+-
+-static int
+-mt7925_nan_cluster_id_tlv(struct sk_buff *skb, const u8 *cluster_id)
+-{
+-	struct mt7925_nan_cluster_id_tlv *cluster_tlv = NULL;
+-	struct tlv *tlv = NULL;
+-
+-	if (!skb || !cluster_id)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_SET_CLUSTER_ID,
+-				      sizeof(struct mt7925_nan_cluster_id_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	cluster_tlv = (struct mt7925_nan_cluster_id_tlv *)tlv;
+-
+-	memcpy(cluster_tlv->cluster_id, cluster_id, ETH_ALEN);
+-
+-	return 0;
+-}
+-
+-static int
+-mt7925_nan_sync_rssi_tlv(struct sk_buff *skb, struct cfg80211_nan_conf *conf)
+-{
+-	struct mt7925_nan_sync_rssi_tlv *rssi_tlv = NULL;
+-	struct tlv *tlv = NULL;
+-
+-	if (!skb || !conf)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_SET_SYNC_RSSI,
+-				      sizeof(struct mt7925_nan_sync_rssi_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	rssi_tlv = (struct mt7925_nan_sync_rssi_tlv *)tlv;
+-
+-	if (conf->band_cfgs[NL80211_BAND_2GHZ].chan) {
+-		rssi_tlv->rssi_close_2g =
+-			conf->band_cfgs[NL80211_BAND_2GHZ].rssi_close;
+-		rssi_tlv->rssi_middle_2g =
+-			conf->band_cfgs[NL80211_BAND_2GHZ].rssi_middle;
+-	}
+-
+-	if (conf->band_cfgs[NL80211_BAND_5GHZ].chan) {
+-		rssi_tlv->rssi_close_5g =
+-			conf->band_cfgs[NL80211_BAND_5GHZ].rssi_close;
+-		rssi_tlv->rssi_middle_5g =
+-			conf->band_cfgs[NL80211_BAND_5GHZ].rssi_middle;
+-	}
+-
+-	return 0;
+-}
+-
+-/* FW rate set bit definitions (matches FW wlan_def_cmm.h) */
+-#define NAN_RATE_SET_BIT_1M	BIT(0)
+-#define NAN_RATE_SET_BIT_2M	BIT(1)
+-#define NAN_RATE_SET_BIT_5_5M	BIT(2)
+-#define NAN_RATE_SET_BIT_11M	BIT(3)
+-#define NAN_RATE_SET_BIT_6M	BIT(6)
+-#define NAN_RATE_SET_BIT_9M	BIT(7)
+-#define NAN_RATE_SET_BIT_12M	BIT(8)
+-#define NAN_RATE_SET_BIT_18M	BIT(9)
+-#define NAN_RATE_SET_BIT_24M	BIT(10)
+-#define NAN_RATE_SET_BIT_36M	BIT(11)
+-#define NAN_RATE_SET_BIT_48M	BIT(12)
+-#define NAN_RATE_SET_BIT_54M	BIT(13)
+-
+-#define NAN_RATE_SET_ALL_A	(NAN_RATE_SET_BIT_6M | NAN_RATE_SET_BIT_9M | \
+-				 NAN_RATE_SET_BIT_12M | NAN_RATE_SET_BIT_18M | \
+-				 NAN_RATE_SET_BIT_24M | NAN_RATE_SET_BIT_36M | \
+-				 NAN_RATE_SET_BIT_48M | NAN_RATE_SET_BIT_54M)
+-
+-/* 5G basic: 6M+12M+24M (OFDM) */
+-#define NAN_BASIC_RATE_SET_5G	(NAN_RATE_SET_BIT_6M | NAN_RATE_SET_BIT_12M | \
+-				 NAN_RATE_SET_BIT_24M)
+-
+-/* GF_MODE_DISALLOWED = 2, RIFS_MODE_DISALLOWED = 1 */
+-#define NAN_GF_MODE_DISALLOWED		2
+-#define NAN_RIFS_MODE_DISALLOWED	1
+-
+-int mt7925_nan_update_phy_setting(struct mt792x_dev *dev)
+-{
+-	struct mt76_phy *mphy = &dev->mphy;
+-	struct ieee80211_supported_band *sband_5g;
+-	struct mt7925_nan_phy_setting *phy;
+-	struct {
+-		u8 rsv[4];
+-		struct mt7925_nan_update_phy_setting_tlv tlv;
+-	} req = {};
+-
+-	sband_5g = mphy->hw->wiphy->bands[NL80211_BAND_5GHZ];
+-
+-	req.tlv.tag = cpu_to_le16(NAN_UNI_CMD_UPDATE_PHY_SETTING);
+-	req.tlv.len = cpu_to_le16(sizeof(req.tlv));
+-
+-	/* 2G: ERP + HT (no CCK/HR_DSSS - NAN uses OFDM only) */
+-	phy = &req.tlv.phy_2g;
+-	phy->phy_type_set = PHY_TYPE_BIT_ERP | PHY_TYPE_BIT_HT;
+-	phy->non_ht_basic_phy_type = PHY_TYPE_ERP_INDEX;
+-	phy->use_short_preamble = 1;
+-	phy->use_short_slot_time = 1;
+-	phy->operational_rate_set = cpu_to_le16(NAN_RATE_SET_ALL_A);
+-	phy->bss_basic_rate_set = cpu_to_le16(NAN_BASIC_RATE_SET_5G);
+-	phy->gf_operation_mode = cpu_to_le32(NAN_GF_MODE_DISALLOWED);
+-	phy->rifs_operation_mode = cpu_to_le32(NAN_RIFS_MODE_DISALLOWED);
+-
+-	/* 5G: OFDM + HT + VHT (NAN_MODE_11A) */
+-	phy = &req.tlv.phy_5g;
+-	phy->phy_type_set = PHY_TYPE_BIT_OFDM | PHY_TYPE_BIT_HT |
+-			    PHY_TYPE_BIT_VHT;
+-	phy->non_ht_basic_phy_type = PHY_TYPE_OFDM_INDEX;
+-	phy->use_short_preamble = 1;
+-	phy->use_short_slot_time = 1;
+-	phy->operational_rate_set = cpu_to_le16(NAN_RATE_SET_ALL_A);
+-	phy->bss_basic_rate_set = cpu_to_le16(NAN_BASIC_RATE_SET_5G);
+-	phy->gf_operation_mode = cpu_to_le32(NAN_GF_MODE_DISALLOWED);
+-	phy->rifs_operation_mode = cpu_to_le32(NAN_RIFS_MODE_DISALLOWED);
+-
+-	/* VHT basic MCS set from sband capability */
+-	if (sband_5g && sband_5g->vht_cap.vht_supported)
+-		phy->vht_basic_mcs_set =
+-			sband_5g->vht_cap.vht_mcs.rx_mcs_map;
+-
+-	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(NAN),
+-				 &req, sizeof(req), true);
+-}
+-
+-struct ieee80211_chanctx_conf *
+-mt7925_nan_seed_link_sta(struct mt792x_dev *dev,
+-			 struct ieee80211_link_sta *link_sta)
+-{
+-	struct ieee80211_supported_band *sband_2g, *sband_5g;
+-	struct ieee80211_chanctx_conf *nan_ctx = NULL;
+-	struct ieee80211_vif *nan_vif = dev->nan_vif;
+-
+-	/* Fill HT cap from 2G sband */
+-	sband_2g = dev->mphy.hw->wiphy->bands[NL80211_BAND_2GHZ];
+-	sband_5g = dev->mphy.hw->wiphy->bands[NL80211_BAND_5GHZ];
+-	if (sband_2g)
+-		link_sta->ht_cap = sband_2g->ht_cap;
+-
+-	link_sta->sta->wme = true;
+-	link_sta->rx_nss = hweight8(dev->mphy.antenna_mask);
+-
+-	/* Get chanctx from NAN schedule.
+-	 * Prefer 5G committed slot for wider BW (VHT), fallback
+-	 * to first valid slot if no 5G data slot is scheduled.
+-	 */
+-	if (nan_vif) {
+-		struct ieee80211_nan_channel **slots =
+-			nan_vif->cfg.nan_sched.schedule;
+-		int i;
+-
+-		for (i = 0; i < CFG80211_NAN_SCHED_NUM_TIME_SLOTS; i++) {
+-			struct ieee80211_chanctx_conf *ctx;
+-
+-			if (!slots[i] || IS_ERR(slots[i]) ||
+-			    !slots[i]->chanctx_conf)
+-				continue;
+-
+-			ctx = slots[i]->chanctx_conf;
+-			if (!nan_ctx)
+-				nan_ctx = ctx;
+-			if (ctx->def.chan->band == NL80211_BAND_5GHZ) {
+-				nan_ctx = ctx;
+-				break;
+-			}
+-		}
+-	}
+-
+-	/* Capability describes what the device can do and must not be
+-	 * filtered by the current schedule - firmware gates the VHT rate
+-	 * mode per the data schedule and re-derives it on schedule
+-	 * change, which only works if the caps are present up front.
+-	 */
+-	if (sband_5g)
+-		link_sta->vht_cap = sband_5g->vht_cap;
+-
+-	/* Bandwidth here is the capability ceiling, not the operating
+-	 * width - the per-slot operating bandwidth follows the current
+-	 * slot channel via the firmware RLM sync, so deriving it from
+-	 * the schedule at STA-add time would cap a later 5 GHz schedule
+-	 * at the bring-up width.
+-	 */
+-	link_sta->bandwidth = IEEE80211_STA_RX_BW_80;
+-
+-	return nan_ctx;
+-}
+-
+-int mt7925_nan_enable(struct ieee80211_vif *vif,
+-		      struct mt792x_dev *dev,
+-		      struct cfg80211_nan_conf *conf)
+-{
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	struct mt76_dev *mdev = &dev->mt76;
+-	struct mt7925_nan_common_hdr *hdr;
+-	struct mt7925_nan_enable_req_tlv *req;
+-	struct sk_buff *skb;
+-
+-	if (!vif || !dev || !conf)
+-		return -EINVAL;
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL, MT7925_NAN_ENABLE_MAX_SIZE);
+-	if (!skb)
+-		return -ENOMEM;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	/* Set cluster id before joining cluster */
+-	if (mt7925_nan_cluster_id_tlv(skb, conf->cluster_id)) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-
+-	/* NAN enable request tlv */
+-	req = (struct mt7925_nan_enable_req_tlv *)
+-		mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_ENABLE_REQUEST,
+-					sizeof(*req));
+-	if (!req) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-
+-	req->master_pref = conf->master_pref;
+-
+-	mt7925_nan_set_5g_channel(dev, req, conf);
+-	mt7925_nan_set_scan_params(req, conf);
+-
+-	if (mt7925_nan_dw_tlv(skb, conf) ||
+-	    mt7925_nan_sync_rssi_tlv(skb, conf)) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-
+-	mt7925_nan_update_conf(mvif, conf);
+-
+-	return mt76_mcu_skb_send_msg(mdev, skb, MCU_UNI_CMD(NAN), true);
+-}
+-
+-int mt7925_nan_disable(struct ieee80211_vif *vif, struct mt792x_dev *dev)
+-{
+-	struct mt76_dev *mdev = &dev->mt76;
+-	struct {
+-		u8 rsv[4];
+-		struct tlv nan_dis_tlv;
+-	} nan_cmd = {
+-		.rsv = { 0 },
+-		.nan_dis_tlv = {
+-			.tag = cpu_to_le16(NAN_UNI_CMD_DISABLE_REQUEST),
+-			.len = cpu_to_le16(sizeof(struct tlv)),
+-		},
+-	};
+-
+-	if (!dev)
+-		return -EINVAL;
+-
+-	return mt76_mcu_send_msg(mdev, MCU_UNI_CMD(NAN), &nan_cmd, sizeof(nan_cmd), true);
+-}
+-
+-int mt7925_nan_change_configure(struct ieee80211_vif *vif,
+-				struct mt792x_dev *dev,
+-				struct cfg80211_nan_conf *conf)
+-{
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	struct mt7925_nan_common_hdr *hdr = NULL;
+-	struct mt76_dev *mdev = &dev->mt76;
+-	struct sk_buff *skb = NULL;
+-
+-	if (!vif || !dev || !conf)
+-		return -EINVAL;
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL, MT7925_NAN_CONF_MAX_SIZE);
+-	if (!skb)
+-		return -ENOMEM;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	if (mt7925_nan_mp_tlv(skb, conf->master_pref) ||
+-	    mt7925_nan_dw_tlv(skb, conf) ||
+-	    mt7925_nan_cluster_id_tlv(skb, conf->cluster_id) ||
+-	    mt7925_nan_sync_rssi_tlv(skb, conf)) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-
+-	mt7925_nan_update_conf(mvif, conf);
+-
+-	return mt76_mcu_skb_send_msg(mdev, skb,
+-				     MCU_UNI_CMD(NAN), true);
+-}
+-
+-static void
+-mt7925_nan_handle_dw_ind(struct mt792x_dev *dev, struct tlv *tlv)
+-{
+-	struct ieee80211_channel *chan;
+-	struct nan_rpt_dw_evt *evt;
+-	struct wireless_dev *wdev;
+-	u16 len, channel, dw_num;
+-	struct mt792x_vif *mvif;
+-	enum nl80211_band band;
+-	int freq;
+-
+-	if (!dev || !tlv)
+-		return;
+-
+-	len = le16_to_cpu(tlv->len);
+-	if (len < sizeof(*tlv) + sizeof(*evt)) {
+-		dev_warn(dev->mt76.dev,
+-			 "nan: short dw event tlv len=%u\n", len);
+-		return;
+-	}
+-
+-	if (!dev->nan_vif || !ieee80211_vif_nan_started(dev->nan_vif))
+-		return;
+-
+-	wdev = ieee80211_vif_to_wdev(dev->nan_vif);
+-	if (!wdev)
+-		return;
+-
+-	mvif = (struct mt792x_vif *)dev->nan_vif->drv_priv;
+-	if (!mvif->nan.conf.enable_dw_notification)
+-		return;
+-
+-	evt = (struct nan_rpt_dw_evt *)tlv->data;
+-	channel = le16_to_cpu(evt->channel);
+-	dw_num = le16_to_cpu(evt->dw_num);
+-
+-	band = channel > 13 ? NL80211_BAND_5GHZ : NL80211_BAND_2GHZ;
+-	freq = ieee80211_channel_to_frequency(channel, band);
+-	chan = ieee80211_get_channel(dev->mt76.hw->wiphy, freq);
+-	if (!chan) {
+-		dev_dbg(dev->mt76.dev,
+-			"nan: no channel for dw end event ch=%u dw=%u\n",
+-			channel, dw_num);
+-		return;
+-	}
+-
+-	cfg80211_next_nan_dw_notif(wdev, chan, GFP_KERNEL);
+-}
+-
+-static void
+-mt7925_nan_mcu_handle_de_event(struct mt792x_dev *dev, struct tlv *tlv)
+-{
+-	u8 cluster_id[ETH_ALEN] __aligned(2) = {0x50, 0x6f, 0x9a, 0x01, 0x00, 0x00};
+-	struct mt7925_nan_de_event *de_evt = NULL;
+-	u16 len;
+-
+-	if (!dev || !tlv) {
+-		if (dev)
+-			dev_warn(dev->mt76.dev, "nan: failed to parse TLV\n");
+-		return;
+-	}
+-
+-	len = le16_to_cpu(tlv->len);
+-	if (len < sizeof(*tlv) + sizeof(*de_evt)) {
+-		dev_warn(dev->mt76.dev,
+-			 "nan: short de_event tlv len=%u\n", len);
+-		return;
+-	}
+-
+-	de_evt = (struct mt7925_nan_de_event *)tlv->data;
+-	if (!de_evt) {
+-		dev_warn(dev->mt76.dev, "nan: missing DE event payload\n");
+-		return;
+-	}
+-
+-	if (de_evt->event_type == NAN_EVENT_ID_DISC_MAC_ADDR)
+-		return;
+-
+-	memcpy(cluster_id, de_evt->cluster_id, ETH_ALEN);
+-
+-	dev_dbg(dev->mt76.dev, "nan: evt=%u cluster=%pM\n",
+-		de_evt->event_type, de_evt->cluster_id);
+-
+-	if (de_evt->event_type != NAN_EVENT_ID_JOINED_CLUSTER &&
+-	    de_evt->event_type != NAN_EVENT_ID_STARTED_CLUSTER)
+-		return;
+-
+-	/* STARTED_CLUSTER fires during NAN_START, before nan.started is set and
+-	 * before the supplicant subscribes - defer past NAN_START via the work
+-	 * so ieee80211_nan_cluster_joined() actually reaches userspace.
+-	 */
+-	if (de_evt->event_type == NAN_EVENT_ID_STARTED_CLUSTER) {
+-		dev_dbg(dev->mt76.dev,
+-			"nan: deferring STARTED_CLUSTER cluster=%pM\n",
+-			cluster_id);
+-		spin_lock_bh(&dev->nan_deferred_lock);
+-		memcpy(dev->nan_started_cluster_id, cluster_id, ETH_ALEN);
+-		set_bit(MT7925_NAN_DEFERRED_STARTED_CLUSTER,
+-			&dev->nan_deferred_pending);
+-		spin_unlock_bh(&dev->nan_deferred_lock);
+-		ieee80211_queue_work(dev->mt76.hw, &dev->nan_deferred_work);
+-		return;
+-	}
+-
+-	if (!dev->nan_vif || !ieee80211_vif_nan_started(dev->nan_vif)) {
+-		dev_warn(dev->mt76.dev, "nan: joined-cluster event but NAN not started\n");
+-		return;
+-	}
+-
+-	dev_dbg(dev->mt76.dev, "nan: anchor_master_rank=%*phN\n",
+-		NAN_ANCHOR_MASTER_RANK_NUM, de_evt->anchor_master_rank);
+-
+-	dev_dbg(dev->mt76.dev, "nan: own_nmi=%pM master_nmi=%pM\n",
+-		de_evt->own_nmi, de_evt->master_nmi);
+-
+-	/* joined an existing cluster, not a self-anchored new one */
+-	ieee80211_nan_cluster_joined(dev->nan_vif, cluster_id, false, GFP_KERNEL);
+-}
+-
+-/* Runs the deferred NAN MCU events in process context; takes wiphy_lock
+- * before nan_vif, which the NAN stop path frees under that mutex.
+- */
+-void
+-mt7925_nan_deferred_work(struct work_struct *work)
+-{
+-	struct mt792x_dev *dev = container_of(work, struct mt792x_dev,
+-					      nan_deferred_work);
+-	struct ieee80211_vif *vif;
+-	unsigned long pending;
+-	u8 cluster_id[ETH_ALEN];
+-
+-	spin_lock_bh(&dev->nan_deferred_lock);
+-	pending = dev->nan_deferred_pending;
+-	dev->nan_deferred_pending = 0;
+-	memcpy(cluster_id, dev->nan_started_cluster_id, ETH_ALEN);
+-	spin_unlock_bh(&dev->nan_deferred_lock);
+-
+-	if (!pending)
+-		return;
+-
+-	wiphy_lock(dev->mt76.hw->wiphy);
+-	vif = dev->nan_vif;
+-	if (!vif || !ieee80211_vif_nan_started(vif))
+-		goto out;
+-
+-	if (test_bit(MT7925_NAN_DEFERRED_STARTED_CLUSTER, &pending))
+-		ieee80211_nan_cluster_joined(vif, cluster_id, true, GFP_KERNEL);
+-
+-	if (test_bit(MT7925_NAN_DEFERRED_SCHED_UPDATE_DONE, &pending))
+-		ieee80211_nan_sched_update_done(vif);
+-out:
+-	wiphy_unlock(dev->mt76.hw->wiphy);
+-}
+-
+-static void
+-mt7925_nan_handle_ulw_update(struct mt792x_dev *dev, struct tlv *tlv)
+-{
+-	struct mt7925_nan_ulw_event *evt;
+-	struct mt7925_nan_ulw_attr attr;
+-	struct wireless_dev *wdev;
+-	u16 len;
+-
+-	if (!dev || !tlv)
+-		return;
+-
+-	if (!dev->nan_vif || !ieee80211_vif_nan_started(dev->nan_vif))
+-		return;
+-
+-	len = le16_to_cpu(tlv->len);
+-	if (len < sizeof(*tlv) + sizeof(*evt)) {
+-		dev_warn(dev->mt76.dev,
+-			 "nan: short ulw event tlv len=%u\n", len);
+-		return;
+-	}
+-
+-	evt = (struct mt7925_nan_ulw_event *)tlv->data;
+-	wdev = ieee80211_vif_to_wdev(dev->nan_vif);
+-	if (!wdev)
+-		return;
+-
+-	dev_dbg(dev->mt76.dev,
+-		"nan: ulw_update wdev=%p owner_nlportid=%u sched_id=%u seq=%u dur=%u\n",
+-		wdev, wdev->owner_nlportid,
+-		evt->sched_id, evt->seq_id, le32_to_cpu(evt->duration));
+-
+-	/* Reorder the FW fields into NAN spec Table 109 attribute layout */
+-	attr.attr_id = NAN_ULW_ATTR_ID;
+-	attr.length = cpu_to_le16(NAN_ULW_FIXED_PAYLOAD);
+-	attr.sched_id = evt->sched_id;
+-	attr.seq_id = evt->seq_id;
+-	attr.start_time = evt->start_time;
+-	attr.duration = evt->duration;
+-	attr.period = evt->period;
+-	attr.count_down = evt->count_down;
+-	attr.ulw_overwrite = evt->ulw_overwrite;
+-
+-	cfg80211_nan_ulw_update(wdev, (const u8 *)&attr, sizeof(attr),
+-				GFP_KERNEL);
+-}
+-
+-static void
+-mt7925_nan_handle_sched_update_done(struct mt792x_dev *dev, struct tlv *tlv)
+-{
+-	struct ieee80211_vif *vif;
+-
+-	if (!dev || !tlv)
+-		return;
+-
+-	vif = dev->nan_vif;
+-	if (!vif || !ieee80211_vif_nan_started(vif))
+-		return;
+-
+-	/* Runs in the BH-disabled MCU-event RX path; the mac80211 helper needs
+-	 * the wiphy mutex and may sleep, so hand it to the work instead.
+-	 */
+-	spin_lock_bh(&dev->nan_deferred_lock);
+-	set_bit(MT7925_NAN_DEFERRED_SCHED_UPDATE_DONE, &dev->nan_deferred_pending);
+-	spin_unlock_bh(&dev->nan_deferred_lock);
+-	ieee80211_queue_work(dev->mt76.hw, &dev->nan_deferred_work);
+-}
+-
+-void mt7925_nan_mcu_event(struct mt792x_dev *dev, struct sk_buff *skb)
+-{
+-	struct tlv *tlv;
+-	u32 tlv_len;
+-
+-	if (!dev || !skb)
+-		return;
+-
+-	if (skb->len < sizeof(struct mt7925_mcu_rxd) + 4)
+-		return;
+-
+-	skb_pull(skb, sizeof(struct mt7925_mcu_rxd) + 4);
+-	tlv = (struct tlv *)skb->data;
+-	tlv_len = skb->len;
+-
+-	while (tlv_len >= sizeof(*tlv)) {
+-		u16 len = le16_to_cpu(tlv->len);
+-
+-		if (len < sizeof(*tlv) || len > tlv_len)
+-			break;
+-
+-		switch (le16_to_cpu(tlv->tag)) {
+-		case NAN_UNI_EVENT_ID_DE_EVENT_IND:
+-			mt7925_nan_mcu_handle_de_event(dev, tlv);
+-			break;
+-		case NAN_UNI_EVENT_REPORT_DW_START:
+-			mt7925_nan_handle_dw_ind(dev, tlv);
+-			break;
+-		case NAN_UNI_EVENT_ID_ULW_UPDATE:
+-			mt7925_nan_handle_ulw_update(dev, tlv);
+-			break;
+-		case NAN_UNI_EVENT_ID_SCHED_UPDATE_DONE:
+-			mt7925_nan_handle_sched_update_done(dev, tlv);
+-			break;
+-		default:
+-			break;
+-		}
+-
+-		tlv_len -= len;
+-		tlv = (struct tlv *)((u8 *)tlv + len);
+-	}
+-}
+-
+-static int mt7925_nan_avail_ctrl_tlv(struct sk_buff *skb,
+-				     struct ieee80211_vif *vif)
+-{
+-	struct mt7925_nan_avail_ctrl_tlv *avail_ctrl_tlv;
+-	struct ieee80211_nan_sched_cfg *sched;
+-	struct tlv *tlv;
+-	u8 seq_id = 0;
+-	u16 ctrl = 0;
+-
+-	if (!skb || !vif)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_AVAILABILITY_CTRL,
+-				      sizeof(struct mt7925_nan_avail_ctrl_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	sched = &vif->cfg.nan_sched;
+-
+-	ctrl = mt7925_nan_avail_attr_ctrl(sched);
+-	if (sched->avail_blob_len >= NAN_AVAIL_ATTR_CTRL_OFFSET + 2)
+-		seq_id = sched->avail_blob[NAN_AVAIL_SEQ_ID_OFFSET];
+-
+-	avail_ctrl_tlv = (struct mt7925_nan_avail_ctrl_tlv *)tlv;
+-	avail_ctrl_tlv->avail_ctrl =
+-		cpu_to_le16(ctrl & NAN_AVAIL_CTRL_CHECK_FOR_CHANGED);
+-	avail_ctrl_tlv->seq_id = seq_id;
+-	avail_ctrl_tlv->is_deferred = sched->deferred ? 1 : 0;
+-
+-	return 0;
+-}
+-
+-static u32 mt7925_nan_slot_to_bitmap(struct ieee80211_vif *vif,
+-				     struct mt7925_nan_ch_timeline *ch_list)
+-{
+-	struct ieee80211_nan_channel **slots = vif->cfg.nan_sched.schedule;
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	u32 num_channels = 0;
+-	u32 i, j;
+-
+-	for (i = 0; i < ARRAY_SIZE(mvif->nan.local_sched); i++) {
+-		struct cfg80211_chan_def *slot_chan = &mvif->nan.local_sched[i];
+-		struct ieee80211_nan_channel *slot = slots[i];
+-		bool is_found = false;
+-
+-		if (slot && !IS_ERR(slot) && slot->chanctx_conf) {
+-			*slot_chan = slot->chanctx_conf->def;
+-		} else {
+-			memset(slot_chan, 0, sizeof(*slot_chan));
+-			continue;
+-		}
+-
+-		for (j = 0; j < num_channels; j++) {
+-			u32 raw = le32_to_cpu(ch_list[j].ch_info);
+-
+-			if (FIELD_GET(NAN_CH_CTRL_PRIMARY_CH, raw) ==
+-			    slot_chan->chan->hw_value) {
+-				u32 dw;
+-
+-				for (dw = 0; dw < NAN_TOTAL_DW; dw++) {
+-					u32 map = le32_to_cpu(ch_list[j].avail_map[dw]);
+-
+-					ch_list[j].avail_map[dw] =
+-						cpu_to_le32(map | BIT(i));
+-				}
+-				le32_add_cpu(&ch_list[j].num, 1);
+-				is_found = true;
+-				break;
+-			}
+-		}
+-
+-		if (!is_found && num_channels < NAN_TIMELINE_MGMT_CHNL_LIST_NUM) {
+-			u32 dw;
+-
+-			ch_list[num_channels].ch_info =
+-				cpu_to_le32(FIELD_PREP(NAN_CH_CTRL_CH_TYPE,
+-						       NAN_BAND_CHANNEL_ENTRY_LIST_TYPE_CHANNEL) |
+-					    FIELD_PREP(NAN_CH_CTRL_OP_CLASS,
+-						       slot->channel_entry[0]) |
+-					    FIELD_PREP(NAN_CH_CTRL_PRIMARY_CH,
+-						       slot_chan->chan->hw_value));
+-			for (dw = 0; dw < NAN_TOTAL_DW; dw++)
+-				ch_list[num_channels].avail_map[dw] =
+-					cpu_to_le32(BIT(i));
+-			le32_add_cpu(&ch_list[num_channels].num, 1);
+-			ch_list[num_channels].is_valid++;
+-			num_channels++;
+-		}
+-	}
+-
+-	return num_channels;
+-}
+-
+-static int mt7925_nan_avail_tlv(struct sk_buff *skb,
+-				struct ieee80211_vif *vif)
+-{
+-	struct mt7925_nan_avail_entry_tlv *avail_tlv;
+-	struct ieee80211_nan_sched_cfg *sched;
+-	struct tlv *tlv;
+-	u16 ctrl = 0;
+-
+-	if (!skb || !vif)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_AVAILABILITY,
+-				      sizeof(struct mt7925_nan_avail_entry_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	sched = &vif->cfg.nan_sched;
+-
+-	ctrl = mt7925_nan_avail_attr_ctrl(sched);
+-
+-	avail_tlv = (struct mt7925_nan_avail_entry_tlv *)tlv;
+-	avail_tlv->map_id = ctrl & NAN_AVAIL_CTRL_MAPID;
+-	avail_tlv->is_cond_avail = false;
+-	avail_tlv->timeline_idx = 0;
+-
+-	mt7925_nan_slot_to_bitmap(vif, avail_tlv->ch_list);
+-
+-	avail_tlv->is_multi_map = false;
+-
+-	return 0;
+-}
+-
+-void mt7925_nan_local_sched_changed(struct mt792x_dev *dev,
+-				    struct ieee80211_vif *vif)
+-{
+-	struct mt7925_nan_common_hdr *hdr;
+-	struct mt76_dev *mdev;
+-	struct sk_buff *skb;
+-
+-	if (!dev || !vif)
+-		return;
+-
+-	mdev = &dev->mt76;
+-
+-	mt792x_mutex_acquire(dev);
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL, MT7925_NAN_AVAIL_MAX_SIZE);
+-	if (!skb)
+-		goto out;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	if (mt7925_nan_avail_ctrl_tlv(skb, vif) ||
+-	    mt7925_nan_avail_tlv(skb, vif)) {
+-		dev_kfree_skb(skb);
+-		goto out;
+-	}
+-
+-	mt76_mcu_skb_send_msg(mdev, skb, MCU_UNI_CMD(NAN), false);
+-out:
+-	mt792x_mutex_release(dev);
+-}
+-
+-static int mt7925_nan_peer_rec_tlv(struct sk_buff *skb,
+-				   struct ieee80211_sta *sta,
+-				   struct mt792x_sta *msta,
+-				   u8 is_activate)
+-{
+-	struct mt7925_nan_sched_manage_peer_rec_tlv *peer_rec_tlv;
+-	struct tlv *tlv;
+-
+-	if (!skb || !sta || !msta)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_MANAGE_PEER_SCH_RECORD,
+-				      sizeof(struct mt7925_nan_sched_manage_peer_rec_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	peer_rec_tlv = (struct mt7925_nan_sched_manage_peer_rec_tlv *)tlv;
+-	peer_rec_tlv->sch_idx = cpu_to_le32(msta->nan_sched.sch_idx);
+-	peer_rec_tlv->is_activate = is_activate;
+-	memcpy(peer_rec_tlv->nmi_addr, sta->addr, ETH_ALEN);
+-
+-	return 0;
+-}
+-
+-static int mt7925_nan_peer_cap_tlv(struct sk_buff *skb,
+-				   struct ieee80211_sta *sta,
+-				   struct mt792x_sta *msta)
+-{
+-	struct mt7925_nan_sched_update_peer_cap_tlv *peer_cap_tlv;
+-	struct ieee80211_nan_peer_sched *sched;
+-	enum nl80211_band band;
+-	struct tlv *tlv;
+-	u16 primary_ch;
+-	u32 i;
+-
+-	if (!skb || !sta || !msta)
+-		return -EINVAL;
+-
+-	sched = sta->nan_sched;
+-	if (!sched)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_PEER_CAPABILITY,
+-				      sizeof(struct mt7925_nan_sched_update_peer_cap_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	peer_cap_tlv = (struct mt7925_nan_sched_update_peer_cap_tlv *)tlv;
+-	peer_cap_tlv->sch_idx = cpu_to_le32(msta->nan_sched.sch_idx);
+-	peer_cap_tlv->supported_bands = BIT(NAN_SUPPORTED_BAND_ID_2P4G);
+-	peer_cap_tlv->max_chnl_switch_time = cpu_to_le16(sched->max_chan_switch);
+-
+-	for (i = 0; i < sched->n_channels; i++) {
+-		if (!sched->channels[i].chanctx_conf)
+-			continue;
+-
+-		band = sched->channels[i].chanctx_conf->def.chan->band;
+-		primary_ch =
+-			sched->channels[i].chanctx_conf->def.chan->hw_value;
+-
+-		if (band == NL80211_BAND_2GHZ)
+-			peer_cap_tlv->peer_supported_bands |=
+-				BIT(NAN_SUPPORTED_BN_2G);
+-		else if (primary_ch >= UNII1_LOWER_BOUND &&
+-			 primary_ch <= UNII1_UPPER_BOUND)
+-			peer_cap_tlv->peer_supported_bands |=
+-				BIT(NAN_SUPPORTED_BN_5G_LOW);
+-		else if (primary_ch >= UNII3_LOWER_BOUND &&
+-			 primary_ch <= UNII3_UPPER_BOUND)
+-			peer_cap_tlv->peer_supported_bands |=
+-				BIT(NAN_SUPPORTED_BN_5G_HIGH);
+-	}
+-
+-	return 0;
+-}
+-
+-static void
+-mt7925_nan_fill_crb_committed(struct mt7925_nan_sched_update_crb_tlv *crb_tlv,
+-			      struct ieee80211_nan_peer_sched *sched)
+-{
+-	u32 m, slot;
+-
+-	if (!sched)
+-		return;
+-
+-	for (m = 0; m < CFG80211_NAN_MAX_PEER_MAPS &&
+-	     m < NAN_TIMELINE_MGMT_SIZE; m++) {
+-		struct ieee80211_nan_peer_map *map = &sched->maps[m];
+-		struct mt7925_nan_sched_timeline *tl =
+-			&crb_tlv->comm_faw_timeline[m];
+-
+-		if (map->map_id == CFG80211_NAN_INVALID_MAP_ID)
+-			continue;
+-
+-		tl->map_id = map->map_id;
+-
+-		/*
+-		 * Convert peer schedule slots to FW avail_map bitmap.
+-		 * Each bit represents one time slot where the peer has
+-		 * committed availability. Fill all DW intervals the same.
+-		 */
+-		for (slot = 0; slot < CFG80211_NAN_SCHED_NUM_TIME_SLOTS;
+-		     slot++) {
+-			struct ieee80211_nan_channel *ch = map->slots[slot];
+-			u32 dw;
+-
+-			if (!ch || !ch->chanctx_conf)
+-				continue;
+-
+-			for (dw = 0; dw < NAN_TOTAL_DW; dw++)
+-				tl->avail_map[dw] |= cpu_to_le32(BIT(slot));
+-		}
+-	}
+-}
+-
+-static int mt7925_nan_update_crb_tlv(struct sk_buff *skb,
+-				     struct ieee80211_sta *sta,
+-				     struct mt792x_sta *msta)
+-{
+-	struct mt7925_nan_sched_update_crb_tlv *crb_tlv;
+-	struct tlv *tlv;
+-
+-	if (!skb || !sta || !msta)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_CRB,
+-				      sizeof(struct mt7925_nan_sched_update_crb_tlv));
+-
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	crb_tlv = (struct mt7925_nan_sched_update_crb_tlv *)tlv;
+-	crb_tlv->sch_idx = cpu_to_le32(msta->nan_sched.sch_idx);
+-	crb_tlv->flags = NAN_CRB_USE_DATA_PATH;
+-	crb_tlv->is_use_ranging = false;
+-	crb_tlv->comm_ndc_ctrl.is_valid = false;
+-
+-	mt7925_nan_fill_crb_committed(crb_tlv, sta->nan_sched);
+-
+-	return 0;
+-}
+-
+-static int
+-mt7925_nan_peer_ulw_tlv(struct sk_buff *skb,
+-			struct ieee80211_sta *sta,
+-			struct mt792x_sta *msta)
+-{
+-	struct mt7925_nan_update_ulw_tlv *ulw_tlv = NULL;
+-	struct ieee80211_nan_peer_sched *sched = NULL;
+-	struct tlv *tlv = NULL;
+-
+-	if (!skb || !sta || !msta)
+-		return -EINVAL;
+-
+-	sched = sta->nan_sched;
+-	if (!sched || !sched->init_ulw || !sched->ulw_size)
+-		return 0; /* No ULW to send, not an error */
+-
+-	if (sched->ulw_size > NAN_ULW_MAX_SIZE)
+-		return -EINVAL;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_ULW,
+-				      sizeof(struct mt7925_nan_update_ulw_tlv));
+-	if (!tlv)
+-		return -ENOMEM;
+-
+-	ulw_tlv = (struct mt7925_nan_update_ulw_tlv *)tlv;
+-	ether_addr_copy(ulw_tlv->nmi_addr, sta->addr);
+-	memcpy(ulw_tlv->ulw_attr, sched->init_ulw, sched->ulw_size);
+-
+-	return 0;
+-}
+-
+-int mt792x_nan_set_peer_schedule(struct mt792x_dev *dev,
+-				 struct ieee80211_sta *sta)
+-{
+-	struct mt7925_nan_common_hdr *hdr;
+-	bool idx_allocated = false;
+-	struct mt792x_sta *msta;
+-	struct mt792x_nan *nan;
+-	struct mt76_dev *mdev;
+-	struct sk_buff *skb;
+-	int ret;
+-
+-	if (!dev || !sta)
+-		return -EINVAL;
+-
+-	mdev = &dev->mt76;
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL, MT7925_NAN_PEER_MAX_SIZE);
+-	if (!skb)
+-		return -ENOMEM;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	msta = (struct mt792x_sta *)sta->drv_priv;
+-	nan = &msta->vif->nan;
+-
+-	/* Allocate connection index on first call for this peer */
+-	if (!msta->nan_sched.idx_assigned) {
+-		int idx = find_first_zero_bit(&nan->conn_bitmap,
+-					      NAN_MAX_CONN_CFG);
+-		if (idx >= NAN_MAX_CONN_CFG) {
+-			dev_kfree_skb(skb);
+-			return -ENOSPC;
+-		}
+-
+-		set_bit(idx, &nan->conn_bitmap);
+-		msta->nan_sched.sch_idx = idx;
+-		msta->nan_sched.idx_assigned = true;
+-		idx_allocated = true;
+-
+-		if (mt7925_nan_peer_rec_tlv(skb, sta, msta, true) ||
+-		    mt7925_nan_peer_cap_tlv(skb, sta, msta)) {
+-			ret = -ENOMEM;
+-			goto free_skb;
+-		}
+-	}
+-
+-	if (mt7925_nan_update_crb_tlv(skb, sta, msta)) {
+-		ret = -ENOMEM;
+-		goto free_skb;
+-	}
+-
+-	ret = mt7925_nan_peer_ulw_tlv(skb, sta, msta);
+-	if (ret)
+-		goto free_skb;
+-
+-	ret = mt76_mcu_skb_send_msg(mdev, skb, MCU_UNI_CMD(NAN), true);
+-	if (ret && idx_allocated)
+-		goto clear_idx;
+-
+-	return ret;
+-
+-free_skb:
+-	dev_kfree_skb(skb);
+-	if (!idx_allocated)
+-		return ret;
+-
+-clear_idx:
+-	clear_bit(msta->nan_sched.sch_idx, &nan->conn_bitmap);
+-	msta->nan_sched.idx_assigned = false;
+-
+-	return ret;
+-}
+-
+-int mt792x_nan_set_peer_rec(struct mt76_dev *mdev,
+-			    struct ieee80211_sta *sta)
+-{
+-	struct mt7925_nan_sched_update_crb_tlv *crb_tlv;
+-	struct mt7925_nan_common_hdr *hdr;
+-	struct mt792x_sta *msta;
+-	struct mt792x_nan *nan;
+-	struct sk_buff *skb;
+-	struct tlv *tlv;
+-	int ret;
+-
+-	if (!mdev || !sta)
+-		return -EINVAL;
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL, MT7925_NAN_PEER_MAX_SIZE);
+-	if (!skb)
+-		return -ENOMEM;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	msta = (struct mt792x_sta *)sta->drv_priv;
+-	nan = &msta->vif->nan;
+-
+-	if (!msta->nan_sched.idx_assigned) {
+-		dev_kfree_skb(skb);
+-		return 0;
+-	}
+-
+-	/* Send a zero-avail_map CRB TLV before deactivating the peer record so
+-	 * firmware clears the committed schedule slots for this peer.  Without
+-	 * this, stale CRB entries linger and cause scheduling conflicts for
+-	 * subsequent NDP connections that reuse the same sch_idx.
+-	 */
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_UPDATE_CRB,
+-				      sizeof(struct mt7925_nan_sched_update_crb_tlv));
+-	if (!tlv) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-	crb_tlv = (struct mt7925_nan_sched_update_crb_tlv *)tlv;
+-	crb_tlv->sch_idx = cpu_to_le32(msta->nan_sched.sch_idx);
+-	crb_tlv->flags = NAN_CRB_USE_DATA_PATH;
+-	crb_tlv->is_use_ranging = false;
+-	crb_tlv->comm_ndc_ctrl.is_valid = false;
+-	/* avail_map is zero-initialised by mt76_connac_mcu_add_tlv */
+-
+-	/* Deactivate peer record and release connection index */
+-	if (mt7925_nan_peer_rec_tlv(skb, sta, msta, false)) {
+-		dev_kfree_skb(skb);
+-		return -ENOMEM;
+-	}
+-
+-	ret = mt76_mcu_skb_send_msg(mdev, skb, MCU_UNI_CMD(NAN), true);
+-	if (ret)
+-		return ret;
+-
+-	clear_bit(msta->nan_sched.sch_idx, &nan->conn_bitmap);
+-	msta->nan_sched.idx_assigned = false;
+-
+-	return 0;
+-}
+-
+-int mt792x_nan_map_sta_rec(struct mt76_dev *mdev,
+-			   struct ieee80211_vif *vif,
+-			   struct ieee80211_sta *sta)
+-{
+-	struct mt7925_nan_sched_map_sta_rec_tlv *map_tlv;
+-	struct mt7925_nan_common_hdr *hdr;
+-	struct ieee80211_sta *nmi_sta;
+-	struct mt792x_sta *nmi_msta;
+-	struct mt792x_sta *msta;
+-	u8 nmi_addr[ETH_ALEN];
+-	struct sk_buff *skb;
+-	int ndp_ctx_id = 0;
+-	int ret = -ENOMEM;
+-	struct tlv *tlv;
+-
+-	if (!mdev || !vif || !sta)
+-		return -EINVAL;
+-
+-	msta = (struct mt792x_sta *)sta->drv_priv;
+-
+-	rcu_read_lock();
+-	nmi_sta = rcu_dereference(sta->nmi);
+-	if (!nmi_sta) {
+-		rcu_read_unlock();
+-		dev_err(mdev->dev, "NAN: NMI sta not found for NDI sta %pM\n",
+-			sta->addr);
+-		return -EINVAL;
+-	}
+-
+-	memcpy(nmi_addr, nmi_sta->addr, ETH_ALEN);
+-	nmi_msta = (struct mt792x_sta *)nmi_sta->drv_priv;
+-
+-	ndp_ctx_id = find_first_zero_bit(&nmi_msta->nan_sched.ndp_ctx_bitmap,
+-					 NAN_MAX_NDP_CXT);
+-	if (ndp_ctx_id >= NAN_MAX_NDP_CXT) {
+-		rcu_read_unlock();
+-		return -ENOSPC;
+-	}
+-
+-	set_bit(ndp_ctx_id, &nmi_msta->nan_sched.ndp_ctx_bitmap);
+-	rcu_read_unlock();
+-
+-	msta->nan_sched.ndp_ctx_id = ndp_ctx_id;
+-	msta->nan_sched.ndp_ctx_assigned = true;
+-
+-	skb = mt76_mcu_msg_alloc(mdev, NULL,
+-				 sizeof(struct mt7925_nan_common_hdr) +
+-				 sizeof(struct mt7925_nan_sched_map_sta_rec_tlv));
+-	if (!skb)
+-		goto clear_ndp_ctx;
+-
+-	hdr = (struct mt7925_nan_common_hdr *)skb_put(skb, sizeof(*hdr));
+-	memset(hdr, 0, sizeof(*hdr));
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, NAN_UNI_CMD_MAP_STA_RECORD,
+-				      sizeof(struct mt7925_nan_sched_map_sta_rec_tlv));
+-	if (!tlv) {
+-		dev_kfree_skb(skb);
+-		ret = -ENOMEM;
+-		goto clear_ndp_ctx;
+-	}
+-
+-	map_tlv = (struct mt7925_nan_sched_map_sta_rec_tlv *)tlv;
+-	memcpy(map_tlv->nmi_addr, nmi_addr, ETH_ALEN);
+-	map_tlv->sta_rec_idx = msta->deflink.wcid.idx;
+-	map_tlv->ndp_ctx_id = ndp_ctx_id;
+-	map_tlv->role_idx = cpu_to_le32(NAN_BSS_INDEX_BAND0);
+-	memcpy(map_tlv->ndi_addr, vif->addr, ETH_ALEN);
+-
+-	ret = mt76_mcu_skb_send_msg(mdev, skb,
+-				    MCU_UNI_CMD(NAN), true);
+-	if (ret)
+-		goto clear_ndp_ctx;
+-
+-	return 0;
+-
+-clear_ndp_ctx:
+-	rcu_read_lock();
+-	nmi_sta = rcu_dereference(sta->nmi);
+-	if (nmi_sta) {
+-		nmi_msta = (struct mt792x_sta *)nmi_sta->drv_priv;
+-		clear_bit(msta->nan_sched.ndp_ctx_id,
+-			  &nmi_msta->nan_sched.ndp_ctx_bitmap);
+-	}
+-	rcu_read_unlock();
+-	msta->nan_sched.ndp_ctx_assigned = false;
+-
+-	return ret ?: -ENOMEM;
+-}
+diff --git a/mt7925/nan.h b/mt7925/nan.h
+deleted file mode 100644
+index 9a0cd1d0..00000000
+--- a/mt7925/nan.h
++++ /dev/null
+@@ -1,512 +0,0 @@
+-/* SPDX-License-Identifier: BSD-3-Clause-Clear */
+-/* Copyright (C) 2025-2026 MediaTek Inc. */
+-
+-#ifndef __MT7925_NAN_H
+-#define __MT7925_NAN_H
+-
+-#include <linux/if_ether.h>
+-#include <linux/types.h>
+-
+-#include "../mt76_connac_mcu.h"
+-
+-#define NAN_MAX_SOCIAL_CHANNELS		3
+-#define NAN_ANCHOR_MASTER_RANK_NUM	8
+-#define NAN_5G_LOW_DISC_CHANNEL		44
+-#define NAN_5G_HIGH_DISC_CHANNEL	149
+-#define NAN_MAX_MASTER_PREFERENCE	255
+-#define NAN_DEFAULT_DW_INTERVAL		1
+-#define NAN_DEFAULT_DISC_BCN_INTERVAL	100
+-#define NAN_TOTAL_DW			16
+-#define NAN_SUPPORTED_2G_FAW_CH_NUM	4
+-#define NAN_SUPPORTED_5G_FAW_CH_NUM	4
+-#define NAN_TIMELINE_MGMT_SIZE		2
+-#define NAN_TIMELINE_MGMT_CHNL_LIST_NUM				\
+-	((NAN_SUPPORTED_2G_FAW_CH_NUM +				\
+-	  NAN_SUPPORTED_5G_FAW_CH_NUM) / NAN_TIMELINE_MGMT_SIZE)
+-#define NAN_NUM_AVAIL_DB		2
+-#define NAN_NDC_ATTRIBUTE_ID_LENGTH	6
+-#define NAN_MAX_CONN_CFG		8
+-#define NAN_MAX_NDP_CXT			4
+-
+-#define MT7925_NAN_ENABLE_MAX_SIZE					\
+-	(sizeof(struct mt7925_nan_common_hdr) +				\
+-	 sizeof(struct mt7925_nan_enable_req_tlv) +			\
+-	 sizeof(struct mt7925_nan_dw_interval_tlv) +			\
+-	 sizeof(struct mt7925_nan_cluster_id_tlv) +			\
+-	 sizeof(struct mt7925_nan_sync_rssi_tlv))
+-
+-#define MT7925_NAN_CONF_MAX_SIZE					\
+-	(sizeof(struct mt7925_nan_common_hdr) +				\
+-	 sizeof(struct mt7925_nan_master_preference_tlv) +		\
+-	 sizeof(struct mt7925_nan_dw_interval_tlv) +			\
+-	 sizeof(struct mt7925_nan_cluster_id_tlv) +			\
+-	 sizeof(struct mt7925_nan_sync_rssi_tlv))
+-
+-#define MT7925_NAN_AVAIL_MAX_SIZE					\
+-	(sizeof(struct mt7925_nan_common_hdr) +				\
+-	 sizeof(struct mt7925_nan_avail_ctrl_tlv) +			\
+-	 sizeof(struct mt7925_nan_avail_entry_tlv))
+-
+-#define MT7925_NAN_PEER_MAX_SIZE					\
+-	(sizeof(struct mt7925_nan_common_hdr) +				\
+-	 sizeof(struct mt7925_nan_sched_manage_peer_rec_tlv) +		\
+-	 sizeof(struct mt7925_nan_sched_update_peer_cap_tlv) +		\
+-	 sizeof(struct mt7925_nan_sched_update_crb_tlv) +		\
+-	 sizeof(struct mt7925_nan_update_ulw_tlv))
+-
+-/* NAN Availability Attribute */
+-#define NAN_AVAIL_ATTR_ID_OFFSET	0
+-#define NAN_AVAIL_ATTR_LEN_OFFSET	1
+-#define NAN_AVAIL_SEQ_ID_OFFSET		3
+-#define NAN_AVAIL_ATTR_CTRL_OFFSET	4
+-
+-/* NAN Availability Attribute - Attribute Control Field */
+-#define NAN_AVAIL_CTRL_MAPID			GENMASK(3, 0)
+-#define NAN_AVAIL_CTRL_COMMIT_CHANGED		BIT(4)
+-#define NAN_AVAIL_CTRL_POTN_CHANGED		BIT(5)
+-#define NAN_AVAIL_CTRL_PUBLIC_AVAIL_CHANGED	BIT(6)
+-#define NAN_AVAIL_CTRL_NDC_CHANGED		BIT(7)
+-#define NAN_AVAIL_CTRL_CHECK_FOR_CHANGED	GENMASK(7, 4)
+-
+-#define UNII1_LOWER_BOUND	36
+-#define UNII1_UPPER_BOUND	50
+-#define UNII3_LOWER_BOUND	149
+-#define UNII3_UPPER_BOUND	165
+-
+-#define NAN_BSS_INDEX_BAND0 0
+-
+-enum nan_uni_cmd_tag {
+-	NAN_UNI_CMD_SET_MASTER_PREFERENCE	= 0,
+-	NAN_UNI_CMD_ENABLE_REQUEST		= 7,
+-	NAN_UNI_CMD_DISABLE_REQUEST		= 8,
+-	NAN_UNI_CMD_UPDATE_AVAILABILITY		= 9,
+-	NAN_UNI_CMD_UPDATE_CRB			= 10,
+-	NAN_UNI_CMD_MANAGE_PEER_SCH_RECORD	= 12,
+-	NAN_UNI_CMD_MAP_STA_RECORD		= 13,
+-	NAN_UNI_CMD_UPDATE_ULW			= 16,
+-	NAN_UNI_CMD_UPDATE_PHY_SETTING		= 18,
+-	NAN_UNI_CMD_UPDATE_AVAILABILITY_CTRL	= 20,
+-	NAN_UNI_CMD_UPDATE_PEER_CAPABILITY	= 21,
+-	NAN_UNI_CMD_CHANGE_NMI_ADDRESS		= 24,
+-	NAN_UNI_CMD_SET_DW_INTERVAL		= 26,
+-	NAN_UNI_CMD_SET_SYNC_RSSI		= 39,
+-	NAN_UNI_CMD_SET_CLUSTER_ID		= 40,
+-	NAN_UNI_CMD_KEY_MANAGEMENT		= 53,
+-};
+-
+-enum nan_uni_event_tag {
+-	NAN_UNI_EVENT_ID_DE_EVENT_IND		= 19,
+-	NAN_UNI_EVENT_ID_ULW_UPDATE		= 39,
+-	NAN_UNI_EVENT_ID_SCHED_UPDATE_DONE	= 43,
+-	NAN_UNI_EVENT_REPORT_DW_START		= 59,
+-	NAN_UNI_EVENT_REPORT_DW_END		= 60,
+-};
+-
+-enum nan_disc_event_type {
+-	NAN_EVENT_ID_DISC_MAC_ADDR		= 0,
+-	NAN_EVENT_ID_STARTED_CLUSTER		= 1,
+-	NAN_EVENT_ID_JOINED_CLUSTER		= 2,
+-};
+-
+-/* bit indices into mt792x_dev->nan_deferred_pending, set from the atomic
+- * MCU-event RX path and consumed by mt7925_nan_deferred_work()
+- */
+-enum mt7925_nan_deferred_event {
+-	MT7925_NAN_DEFERRED_STARTED_CLUSTER,
+-	MT7925_NAN_DEFERRED_SCHED_UPDATE_DONE,
+-};
+-
+-/* NAN 4.0 Table 79. Device Capability attribute format, Supported Bands */
+-enum nan_supported_bands {
+-	NAN_SUPPORTED_BAND_ID_2P4G = 2,
+-	NAN_SUPPORTED_BAND_ID_5G = 4,
+-	NAN_PROPRIETARY_BAND_ID_6G = 6,
+-	NAN_SUPPORTED_BAND_ID_6G = 7,
+-};
+-
+-enum nan_peer_supported_bands {
+-	NAN_SUPPORTED_BN_2G = 0,
+-	NAN_SUPPORTED_BN_5G_LOW,
+-	NAN_SUPPORTED_BN_5G_HIGH,
+-	NAN_SUPPORTED_BN_6G,
+-	NAN_SUPPORTED_BN_NUM
+-};
+-
+-#define NAN_CH_CTRL_CH_TYPE		BIT(0)
+-#define NAN_CH_CTRL_OP_CLASS		GENMASK(15, 8)
+-#define NAN_CH_CTRL_PRIMARY_CH		GENMASK(23, 16)
+-
+-#define NAN_CRB_USE_DATA_PATH		BIT(0)
+-#define NAN_CRB_AVAIL_6G_FORMAT		GENMASK(2, 1)
+-
+-#define NAN_BAND_CHANNEL_ENTRY_LIST_TYPE_CHANNEL	1
+-
+-struct mt7925_nan_social_ch_scan_params {
+-	u8 dwell_time[NAN_MAX_SOCIAL_CHANNELS];
+-	__le16 scan_period[NAN_MAX_SOCIAL_CHANNELS];
+-} __packed;
+-
+-/* Firmware-reported NAN device information */
+-struct nan_dev_info_evt {
+-	u8 is_enabled;
+-	u8 my_addr[ETH_ALEN];
+-	u8 en_fw_election;
+-	__le32 nan_dev_role;
+-	__le32 nan_dev_state;
+-	u8 mst_preference;
+-	u8 random_factor;
+-	u8 cnt_hop;
+-	u8 cluster_id[ETH_ALEN];
+-	u8 anchor_mst_addr[ETH_ALEN];
+-	u8 am_preference;
+-	u8 am_random_factor;
+-	u8 parent_mac[ETH_ALEN];
+-	u8 parent_am_preference;
+-	u8 parent_am_factor;
+-	__le32 ambtt;
+-	__le32 tsf[2];
+-	u8 pn_igtk[6];
+-	u8 pn_bigtk[6];
+-};
+-
+-/* Firmware NAN discovery window event */
+-struct nan_rpt_dw_evt {
+-	struct nan_dev_info_evt device_info;
+-	__le32 expected_tsf_h;
+-	__le32 expected_tsf_l;
+-	__le32 actual_tsf_h;
+-	__le32 actual_tsf_l;
+-	__le16 channel;
+-	__le16 dw_num;
+-};
+-
+-#define NAN_ULW_ATTR_ID		0x17
+-#define NAN_ULW_FIXED_PAYLOAD	16	/* Table 109 fixed fields */
+-
+-struct mt7925_nan_ulw_event {
+-	u8 sched_id;
+-	u8 seq_id;
+-	u8 count_down;
+-	u8 ulw_overwrite;
+-	__le32 start_time;
+-	__le32 duration;
+-	__le32 period;
+-} __packed;
+-
+-/* ULW attribute laid out in NAN spec Table 109 field order */
+-struct mt7925_nan_ulw_attr {
+-	u8 attr_id;
+-	__le16 length;
+-	u8 sched_id;
+-	u8 seq_id;
+-	__le32 start_time;
+-	__le32 duration;
+-	__le32 period;
+-	u8 count_down;
+-	u8 ulw_overwrite;
+-} __packed;
+-
+-struct mt7925_nan_conf_dw {
+-	u8 config_2dot4g_dw_band;
+-	__le32 dw_2dot4g_interval_val;
+-
+-	u8 config_5g_dw_band;
+-	__le32 dw_5g_interval_val;
+-} __packed;
+-
+-struct mt7925_nan_enable_req_tlv {
+-	__le16 tag;
+-	__le16 len;
+-
+-	u8 master_pref;
+-	__le16 cluster_low;
+-	__le16 cluster_high;
+-
+-	u8 config_support_5g;
+-	u8 support_5g_val;
+-
+-	u8 config_sid_beacon;
+-	u8 sid_beacon_val;
+-
+-	u8 config_2dot4g_rssi_close;
+-	u8 rssi_close_2dot4g_val;
+-	u8 config_2dot4g_rssi_middle;
+-	u8 rssi_middle_2dot4g_val;
+-
+-	u8 config_2dot4g_rssi_proximity;
+-	u8 rssi_proximity_2dot4g_val;
+-	u8 config_hop_count_limit;
+-	u8 hop_count_limit_val;
+-
+-	u8 config_2dot4g_support;
+-	u8 support_2dot4g_val;
+-
+-	u8 config_2dot4g_beacons;
+-	u8 beacon_2dot4g_val;
+-
+-	u8 config_2dot4g_sdf;
+-	u8 sdf_2dot4g_val;
+-
+-	u8 config_5g_beacons;
+-	u8 beacon_5g_val;
+-
+-	u8 config_5g_sdf;
+-	u8 sdf_5g_val;
+-
+-	u8 config_5g_rssi_close;
+-	u8 rssi_close_5g_val;
+-
+-	u8 config_5g_rssi_middle;
+-	u8 rssi_middle_5g_val;
+-
+-	u8 config_5g_rssi_close_proximity;
+-	u8 rssi_close_proximity_5g_val;
+-
+-	u8 config_rssi_window_size;
+-	u8 rssi_window_size_val;
+-
+-	u8 config_oui;
+-	__le32 oui_val;
+-
+-	u8 config_intf_addr;
+-	u8 intf_addr_val[ETH_ALEN];
+-
+-	u8 config_cluster_attribute_val;
+-
+-	u8 config_scan_params;
+-	struct mt7925_nan_social_ch_scan_params scan_params_val;
+-
+-	u8 config_random_factor_force;
+-	u8 random_factor_force_val;
+-
+-	u8 config_hop_count_force;
+-	u8 hop_count_force_val;
+-
+-	u8 config_24g_channel;
+-	__le32 channel_24g_val;
+-
+-	u8 config_5g_channel;
+-	__le32 channel_5g_val;
+-
+-	struct mt7925_nan_conf_dw config_dw;
+-
+-	u8 config_disc_mac_addr_randomization;
+-	__le32 disc_mac_addr_rand_interval_sec;
+-
+-	u8 discovery_indication_cfg;
+-
+-	u8 config_subscribe_sid_beacon;
+-	__le32 subscribe_sid_beacon_val;
+-
+-	u8 enable_log_slot_statistics;
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_common_hdr {
+-	u8 reserved[4];
+-};
+-
+-struct mt7925_nan_master_preference_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 master_preference;
+-	u8 reserved[3];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_dw_interval_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 dw_interval;
+-	u8 vendor_ioctl;
+-	__le16 disc_bcn_interval;
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_cluster_id_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 cluster_id[ETH_ALEN];
+-	u8 reserved[2];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_sync_rssi_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	s8 rssi_close_2g;
+-	s8 rssi_middle_2g;
+-	s8 rssi_close_5g;
+-	s8 rssi_middle_5g;
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_de_event {
+-	u8 event_type;
+-	u8 cluster_id[ETH_ALEN];
+-	u8 anchor_master_rank[NAN_ANCHOR_MASTER_RANK_NUM];
+-	u8 own_nmi[ETH_ALEN];
+-	u8 master_nmi[ETH_ALEN];
+-};
+-
+-struct mt7925_nan_nmi_addr_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 nmi_addr[ETH_ALEN];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_avail_ctrl_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	__le16 avail_ctrl;
+-	u8 seq_id;
+-	u8 is_deferred;
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_ch_timeline {
+-	u8 is_valid;
+-	u8 reserved[3];
+-
+-	__le32 ch_info;
+-
+-	__le32 num;
+-	__le32 avail_map[NAN_TOTAL_DW];
+-};
+-
+-struct mt7925_nan_avail_entry_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 map_id;
+-	u8 is_cond_avail;
+-	u8 timeline_idx;
+-	u8 is_multi_map;
+-
+-	struct mt7925_nan_ch_timeline ch_list[NAN_TIMELINE_MGMT_CHNL_LIST_NUM];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_sched_manage_peer_rec_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	__le32 sch_idx;
+-	u8 is_activate;
+-	u8 nmi_addr[ETH_ALEN];
+-	u8 reserved[1];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_sched_update_peer_cap_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	__le32 sch_idx;
+-	u8 supported_bands;
+-	__le16 max_chnl_switch_time;
+-	u8 peer_supported_bands;
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_sched_timeline {
+-	u8 map_id;
+-	u8 reserved[3];
+-	union {
+-		__le32 avail_map[NAN_TOTAL_DW];
+-		u8 avail_block[NAN_TOTAL_DW * 4];
+-	};
+-};
+-
+-struct mt7925_nan_sched_faw_ndc_timeline {
+-	__le32 avail_map[NAN_TOTAL_DW];
+-};
+-
+-struct mt7925_nan_sched_ndc_ctrl {
+-	u8 is_valid;
+-	u8 ndc_id[NAN_NDC_ATTRIBUTE_ID_LENGTH];
+-	u8 ndc_idx;
+-	struct mt7925_nan_sched_timeline timeline[NAN_NUM_AVAIL_DB];
+-};
+-
+-struct mt7925_nan_sched_update_crb_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	__le32 sch_idx;
+-	u8 flags;
+-	u8 is_use_ranging;
+-	u8 reserved[2];
+-	struct mt7925_nan_sched_timeline comm_ranging_timeline[NAN_TIMELINE_MGMT_SIZE];
+-	struct mt7925_nan_sched_timeline comm_faw_timeline[NAN_TIMELINE_MGMT_SIZE];
+-	struct mt7925_nan_sched_ndc_ctrl comm_ndc_ctrl;
+-	struct mt7925_nan_sched_faw_ndc_timeline faw_ndc_timeline[NAN_TIMELINE_MGMT_SIZE];
+-} __packed __aligned(4);
+-
+-#define NAN_ULW_MAX_SIZE	256
+-
+-struct mt7925_nan_update_ulw_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 nmi_addr[ETH_ALEN];
+-	u8 ulw_attr[NAN_ULW_MAX_SIZE];
+-} __packed __aligned(4);
+-
+-struct mt7925_nan_sched_map_sta_rec_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 nmi_addr[ETH_ALEN];
+-	u8 sta_rec_idx;
+-	u8 ndp_ctx_id;
+-
+-	__le32 role_idx;
+-	u8 ndi_addr[ETH_ALEN];
+-	u8 reserved[2];
+-} __packed __aligned(4);
+-
+-/* Matches FW NAN_PHY_SETTING_T (enum fields are 4 bytes on ARM) */
+-struct mt7925_nan_phy_setting {
+-	u8 phy_type_set;
+-	u8 non_ht_basic_phy_type;
+-	u8 use_short_preamble;
+-	u8 use_short_slot_time;
+-	__le16 operational_rate_set;
+-	__le16 bss_basic_rate_set;
+-	__le16 vht_basic_mcs_set;
+-	u8 erp_protect_mode;
+-	u8 ht_op_info1;
+-	__le16 ht_op_info2;
+-	__le16 ht_op_info3;
+-	__le32 ht_protect_mode;
+-	__le32 gf_operation_mode;
+-	__le32 rifs_operation_mode;
+-} __packed;
+-
+-/* Matches FW NAN_SCHED_CMD_UPDATE_PHY_PARAM_T */
+-struct mt7925_nan_update_phy_setting_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	struct mt7925_nan_phy_setting phy_2g;
+-	struct mt7925_nan_phy_setting phy_5g;
+-} __packed __aligned(4);
+-
+-int mt7925_nan_update_phy_setting(struct mt792x_dev *dev);
+-
+-struct ieee80211_chanctx_conf *
+-mt7925_nan_seed_link_sta(struct mt792x_dev *dev,
+-			 struct ieee80211_link_sta *link_sta);
+-
+-int mt7925_nan_enable(struct ieee80211_vif *vif,
+-		      struct mt792x_dev *dev,
+-		      struct cfg80211_nan_conf *conf);
+-
+-int mt7925_nan_disable(struct ieee80211_vif *vif,
+-		       struct mt792x_dev *dev);
+-
+-int mt7925_nan_change_configure(struct ieee80211_vif *vif,
+-				struct mt792x_dev *dev,
+-				struct cfg80211_nan_conf *conf);
+-
+-void mt7925_nan_mcu_event(struct mt792x_dev *dev, struct sk_buff *skb);
+-
+-void mt7925_nan_local_sched_changed(struct mt792x_dev *dev,
+-				    struct ieee80211_vif *vif);
+-
+-int mt792x_nan_set_peer_schedule(struct mt792x_dev *dev,
+-				 struct ieee80211_sta *sta);
+-
+-int mt792x_nan_set_peer_rec(struct mt76_dev *mdev,
+-			    struct ieee80211_sta *sta);
+-
+-int mt792x_nan_map_sta_rec(struct mt76_dev *mdev,
+-			   struct ieee80211_vif *vif,
+-			   struct ieee80211_sta *sta);
+-
+-#endif
+diff --git a/mt7925/pci.c b/mt7925/pci.c
+index 24585c99..02ef09dd 100644
+--- a/mt7925/pci.c
++++ b/mt7925/pci.c
+@@ -55,7 +55,6 @@ static void mt7925e_unregister_device(struct mt792x_dev *dev)
+ 	cancel_delayed_work_sync(&pm->ps_work);
+ 	cancel_delayed_work_sync(&dev->mlo_pm_work);
+ 	cancel_work_sync(&pm->wake_work);
+-	cancel_work_sync(&dev->nan_deferred_work);
+ 
+ 	mt7925_tx_token_put(dev);
+ 	__mt792x_mcu_drv_pmctrl(dev);
+diff --git a/mt7925/regd.c b/mt7925/regd.c
+index f4beb7f5..35b07061 100644
+--- a/mt7925/regd.c
++++ b/mt7925/regd.c
+@@ -395,36 +395,6 @@ mt7925_regd_is_valid_alpha2(const char *alpha2)
+ 	return false;
+ }
+ 
+-bool
+-mt7925_regd_is_valid_channel(struct mt792x_dev *dev,
+-			     enum nl80211_band band,
+-			     struct ieee80211_channel *chan)
+-{
+-	struct ieee80211_hw *hw = mt76_hw(dev);
+-	struct wiphy *wiphy = hw->wiphy;
+-	struct ieee80211_supported_band *sband;
+-	struct ieee80211_channel *ch;
+-	int i;
+-
+-	if (!chan)
+-		return false;
+-
+-	sband = wiphy->bands[band];
+-	if (!sband)
+-		return false;
+-
+-	for (i = 0; i < sband->n_channels; i++) {
+-		ch = &sband->channels[i];
+-
+-		if (ch->hw_value == chan->hw_value &&
+-		    ((ch->flags & IEEE80211_CHAN_DISABLED) == 0))
+-			return true;
+-	}
+-
+-	return false;
+-}
+-EXPORT_SYMBOL_GPL(mt7925_regd_is_valid_channel);
+-
+ int mt7925_regd_change(struct mt792x_phy *phy, char *alpha2)
+ {
+ 	struct wiphy *wiphy = phy->mt76->hw->wiphy;
+diff --git a/mt7925/regd.h b/mt7925/regd.h
+index 65ef2b14..37399255 100644
+--- a/mt7925/regd.h
++++ b/mt7925/regd.h
+@@ -67,9 +67,6 @@ void mt7925_regd_notifier(struct wiphy *wiphy, struct regulatory_request *req);
+ bool mt7925_regd_clc_supported(struct mt792x_dev *dev);
+ int mt7925_regd_update(struct mt792x_phy *phy, char *alpha2);
+ int mt7925_regd_change(struct mt792x_phy *phy, char *alpha2);
+-bool mt7925_regd_is_valid_channel(struct mt792x_dev *dev,
+-				  enum nl80211_band band,
+-				  struct ieee80211_channel *chan);
+ int mt7925_regd_init(struct mt792x_phy *phy);
+ 
+ #endif
+diff --git a/mt7925/usb.c b/mt7925/usb.c
+index afd62a6d..1757023e 100644
+--- a/mt7925/usb.c
++++ b/mt7925/usb.c
+@@ -348,19 +348,6 @@ failed:
+ }
+ #endif /* CONFIG_PM */
+ 
+-static void mt7925u_disconnect(struct usb_interface *usb_intf)
+-{
+-	struct mt792x_dev *dev = usb_get_intfdata(usb_intf);
+-
+-	/* mt792xu_disconnect() ends in mt76_free_device(), so the work has to
+-	 * go before it rather than after mt76_unregister_device() as on PCI.
+-	 */
+-	if (dev)
+-		cancel_work_sync(&dev->nan_deferred_work);
+-
+-	mt792xu_disconnect(usb_intf);
+-}
+-
+ MODULE_DEVICE_TABLE(usb, mt7925u_device_table);
+ MODULE_FIRMWARE(MT7925_FIRMWARE_WM);
+ MODULE_FIRMWARE(MT7925_ROM_PATCH);
+@@ -369,7 +356,7 @@ static struct usb_driver mt7925u_driver = {
+ 	.name		= KBUILD_MODNAME,
+ 	.id_table	= mt7925u_device_table,
+ 	.probe		= mt7925u_probe,
+-	.disconnect	= mt7925u_disconnect,
++	.disconnect	= mt792xu_disconnect,
+ #ifdef CONFIG_PM
+ 	.suspend	= mt7925u_suspend,
+ 	.resume		= mt7925u_resume,
+diff --git a/mt792x.h b/mt792x.h
+index 49c7b695..bc49be4b 100644
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -23,7 +23,6 @@
+ #define MT792x_CFEND_RATE_11B		0x03	/* 11B LP, 11M */
+ 
+ #define MT792x_FW_TAG_FEATURE	4
+-#define MT792x_FW_CAP_NAN	BIT(5)
+ #define MT792x_FW_CAP_CNM	BIT(7)
+ 
+ #define MT792x_CHIP_CAP_CLC_EVT_EN BIT(0)
+@@ -123,20 +122,6 @@ struct mt792x_link_sta {
+ 	struct ieee80211_link_sta *pri_link;
+ };
+ 
+-struct mt792x_sta_nan_sched {
+-	/* protects NAN peer schedule state */
+-	u16 committed_dw;
+-	u32 sch_idx;
+-	bool idx_assigned;
+-	unsigned long ndp_ctx_bitmap;
+-	bool ndp_ctx_assigned;
+-	u8 ndp_ctx_id;		/* assigned NDP context ID (for NDI sta) */
+-	struct {
+-		u8 map_id;
+-		struct cfg80211_chan_def chans[CFG80211_NAN_SCHED_NUM_TIME_SLOTS];
+-	} maps[CFG80211_NAN_MAX_PEER_MAPS];
+-};
+-
+ struct mt792x_sta {
+ 	struct mt792x_link_sta deflink; /* must be first */
+ 	struct mt792x_link_sta __rcu *link[IEEE80211_MLD_MAX_NUM_LINKS];
+@@ -145,9 +130,6 @@ struct mt792x_sta {
+ 
+ 	u16 valid_links;
+ 	u8 deflink_id;
+-
+-	/* NAN peer schedule */
+-	struct mt792x_sta_nan_sched nan_sched;
+ };
+ 
+ DECLARE_EWMA(rssi, 10, 8);
+@@ -164,25 +146,6 @@ struct mt792x_bss_conf {
+ 	unsigned int link_id;
+ };
+ 
+-struct mt792x_nan_conf {
+-	u8 master_pref;
+-	u8 bands;
+-	u8 cluster_id[ETH_ALEN];
+-	u32 discovery_beacon_interval;
+-	bool enable_dw_notification;
+-};
+-
+-struct mt792x_nan {
+-	struct mt792x_nan_conf conf;
+-
+-	/* Scheduler */
+-	struct cfg80211_chan_def local_sched[CFG80211_NAN_SCHED_NUM_TIME_SLOTS];
+-	u32 seq_id;
+-
+-	/* Connection index bitmap, up to NAN_MAX_CONN_CFG peers */
+-	unsigned long conn_bitmap;
+-};
+-
+ struct mt792x_vif {
+ 	struct mt792x_bss_conf bss_conf; /* must be first */
+ 	struct mt792x_bss_conf __rcu *link_conf[IEEE80211_MLD_MAX_NUM_LINKS];
+@@ -197,8 +160,6 @@ struct mt792x_vif {
+ 
+ 	struct work_struct csa_work;
+ 	struct timer_list csa_timer;
+-
+-	struct mt792x_nan nan;
+ };
+ 
+ struct mt792x_phy {
+@@ -339,18 +300,6 @@ struct mt792x_dev {
+ 	u32 backup_l2;
+ 
+ 	struct ieee80211_chanctx_conf *new_ctx;
+-
+-	struct ieee80211_vif *nan_vif;
+-	const struct ieee80211_iface_combination *iface_combinations;
+-	int n_iface_combinations;
+-	/* deferred NAN MCU events run out of the atomic RX path on one shared
+-	 * work; see mt7925_nan_deferred_work() and enum mt7925_nan_deferred_event
+-	 */
+-	struct work_struct nan_deferred_work;
+-	/* protects @nan_deferred_pending */
+-	spinlock_t nan_deferred_lock;
+-	unsigned long nan_deferred_pending;
+-	u8 nan_started_cluster_id[ETH_ALEN];
+ };
+ 
+ static inline struct mt792x_bss_conf *
+diff --git a/mt792x_core.c b/mt792x_core.c
+index 0ad33f74..7d40bbfe 100644
+--- a/mt792x_core.c
++++ b/mt792x_core.c
+@@ -61,41 +61,7 @@ static const struct ieee80211_iface_limit if_limits_chanctx_scc[] = {
+ 	}
+ };
+ 
+-static const struct ieee80211_iface_limit if_limits_nan_mcc[] = {
+-	{
+-		.max = 2,
+-		.types = BIT(NL80211_IFTYPE_STATION),
+-	},
+-	{
+-		.max = 1,
+-		.types = BIT(NL80211_IFTYPE_NAN),
+-	},
+-	{
+-		.max = 2,
+-		.types = BIT(NL80211_IFTYPE_NAN_DATA),
+-	},
+-};
+-
+-static const struct ieee80211_iface_limit if_limits_nan_scc[] = {
+-	{
+-		.max = 2,
+-		.types = BIT(NL80211_IFTYPE_STATION),
+-	},
+-	{
+-		.max = 1,
+-		.types = BIT(NL80211_IFTYPE_NAN),
+-	},
+-	{
+-		.max = 2,
+-		.types = BIT(NL80211_IFTYPE_NAN_DATA),
+-	},
+-	{
+-		.max = 1,
+-		.types = BIT(NL80211_IFTYPE_AP),
+-	},
+-};
+-
+-static const struct ieee80211_iface_combination if_comb_chanctx_base[] = {
++static const struct ieee80211_iface_combination if_comb_chanctx[] = {
+ 	{
+ 		.limits = if_limits_chanctx_mcc,
+ 		.n_limits = ARRAY_SIZE(if_limits_chanctx_mcc),
+@@ -112,60 +78,6 @@ static const struct ieee80211_iface_combination if_comb_chanctx_base[] = {
+ 	}
+ };
+ 
+-static const struct ieee80211_iface_combination if_comb_chanctx_nan[] = {
+-	{
+-		.limits = if_limits_nan_mcc,
+-		.n_limits = ARRAY_SIZE(if_limits_nan_mcc),
+-		.max_interfaces = MT792x_MAX_INTERFACES,
+-		.num_different_channels = 2,
+-		.beacon_int_infra_match = false,
+-	},
+-	{
+-		.limits = if_limits_nan_scc,
+-		.n_limits = ARRAY_SIZE(if_limits_nan_scc),
+-		.max_interfaces = MT792x_MAX_INTERFACES,
+-		.num_different_channels = 1,
+-		.beacon_int_infra_match = false,
+-	},
+-};
+-
+-static int mt792x_setup_iface_combinations(struct mt792x_dev *dev,
+-					   struct wiphy *wiphy)
+-{
+-	const bool cnm = !!(dev->fw_features & MT792x_FW_CAP_CNM);
+-	const bool nan = !!(dev->fw_features & MT792x_FW_CAP_NAN);
+-	const int n_base = ARRAY_SIZE(if_comb_chanctx_base);
+-	const int n_nan = ARRAY_SIZE(if_comb_chanctx_nan);
+-	struct ieee80211_iface_combination *comb;
+-
+-	if (!cnm) {
+-		dev->iface_combinations = if_comb;
+-		dev->n_iface_combinations = ARRAY_SIZE(if_comb);
+-		return 0;
+-	}
+-
+-	/* CNM enabled, NAN optional */
+-	if (!nan) {
+-		dev->iface_combinations = if_comb_chanctx_base;
+-		dev->n_iface_combinations = ARRAY_SIZE(if_comb_chanctx_base);
+-		return 0;
+-	}
+-
+-	/* CNM + NAN: dynamically build base + nan list */
+-	comb = devm_kcalloc(&wiphy->dev, n_base + n_nan, sizeof(*comb),
+-			    GFP_KERNEL);
+-	if (!comb)
+-		return -ENOMEM;
+-
+-	memcpy(comb, if_comb_chanctx_base, sizeof(if_comb_chanctx_base));
+-	memcpy(comb + n_base, if_comb_chanctx_nan, sizeof(if_comb_chanctx_nan));
+-
+-	dev->iface_combinations = comb;
+-	dev->n_iface_combinations = n_base + n_nan;
+-
+-	return 0;
+-}
+-
+ void mt792x_tx(struct ieee80211_hw *hw, struct ieee80211_tx_control *control,
+ 	       struct sk_buff *skb)
+ {
+@@ -752,7 +664,6 @@ int mt792x_init_wiphy(struct ieee80211_hw *hw)
+ 	struct mt792x_phy *phy = mt792x_hw_phy(hw);
+ 	struct mt792x_dev *dev = phy->dev;
+ 	struct wiphy *wiphy = hw->wiphy;
+-	int err;
+ 
+ 	hw->queues = 4;
+ 	if (dev->has_eht) {
+@@ -773,17 +684,15 @@ int mt792x_init_wiphy(struct ieee80211_hw *hw)
+ 	hw->vif_data_size = sizeof(struct mt792x_vif);
+ 	hw->chanctx_data_size = sizeof(struct mt792x_chanctx);
+ 
+-	if (dev->fw_features & MT792x_FW_CAP_CNM)
++	if (dev->fw_features & MT792x_FW_CAP_CNM) {
+ 		wiphy->flags |= WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL;
+-	else
++		wiphy->iface_combinations = if_comb_chanctx;
++		wiphy->n_iface_combinations = ARRAY_SIZE(if_comb_chanctx);
++	} else {
+ 		wiphy->flags &= ~WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL;
+-
+-	err = mt792x_setup_iface_combinations(dev, wiphy);
+-	if (err)
+-		return err;
+-
+-	wiphy->iface_combinations = dev->iface_combinations;
+-	wiphy->n_iface_combinations = dev->n_iface_combinations;
++		wiphy->iface_combinations = if_comb;
++		wiphy->n_iface_combinations = ARRAY_SIZE(if_comb);
++	}
+ 	wiphy->flags &= ~(WIPHY_FLAG_IBSS_RSN | WIPHY_FLAG_4ADDR_AP |
+ 			  WIPHY_FLAG_4ADDR_STATION);
+ 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
+@@ -792,21 +701,6 @@ int mt792x_init_wiphy(struct ieee80211_hw *hw)
+ 				 BIT(NL80211_IFTYPE_P2P_GO) |
+ 				 BIT(NL80211_IFTYPE_P2P_DEVICE);
+ 
+-	if ((dev->fw_features & MT792x_FW_CAP_CNM) &&
+-	    (dev->fw_features & MT792x_FW_CAP_NAN)) {
+-		wiphy->interface_modes |= BIT(NL80211_IFTYPE_NAN) |
+-					  BIT(NL80211_IFTYPE_NAN_DATA);
+-		wiphy->nan_supported_bands = BIT(NL80211_BAND_2GHZ) |
+-					      BIT(NL80211_BAND_5GHZ);
+-		wiphy->nan_capa.flags = WIPHY_NAN_FLAGS_CONFIGURABLE_SYNC |
+-					WIPHY_NAN_FLAGS_USERSPACE_DE;
+-		wiphy->nan_capa.op_mode = NAN_OP_MODE_PHY_MODE_MASK;
+-		wiphy->nan_capa.n_antennas = 0x22;
+-		wiphy->nan_capa.max_channel_switch_time = 12;
+-		wiphy->nan_capa.dev_capabilities = NAN_DEV_CAPA_EXT_KEY_ID_SUPPORTED;
+-		wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_SECURE_NAN);
+-	}
+-
+ 	wiphy->max_scan_ie_len = MT76_CONNAC_SCAN_IE_LEN;
+ 	wiphy->max_scan_ssids = 4;
+ 	wiphy->max_sched_scan_plan_interval =
