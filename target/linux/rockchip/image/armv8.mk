@@ -284,6 +284,18 @@ define Device/friendlyarm_nanopi-r4se
 endef
 TARGET_DEVICES += friendlyarm_nanopi-r4se
 
+define Device/friendlyarm_nanopi-r4s-enterprise
+  DEVICE_VENDOR := FriendlyARM
+  DEVICE_MODEL := NanoPi R4S Enterprise Edition
+  DEVICE_VARIANT := 4GB LPDDR4
+  SOC := rk3399
+  DEVICE_DTS := rk3399-nanopi-r4s-enterprise
+  UBOOT_DEVICE_NAME := nanopi-r4s-rk3399
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-bin | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-r8168
+endef
+TARGET_DEVICES += friendlyarm_nanopi-r4s-enterprise
+
 define Device/friendlyarm_nanopi-r5c
   DEVICE_VENDOR := FriendlyARM
   DEVICE_MODEL := NanoPi R5C
