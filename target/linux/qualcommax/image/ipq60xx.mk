@@ -31,6 +31,19 @@ define Device/cmiot_ax18
 endef
 TARGET_DEVICES += cmiot_ax18
 
+define Device/zn_m2
+	$(call Device/FitImage)
+	$(call Device/UbiFit)
+	DEVICE_VENDOR := ZN
+	DEVICE_MODEL := M2
+	DEVICE_DTS := ipq6018-m2
+	DEVICE_DTS_CONFIG := config@cp03-c1
+	BLOCKSIZE := 128k
+	PAGESIZE := 2048
+	SOC := ipq6018
+endef
+TARGET_DEVICES += zn_m2
+
 define Device/dptech_ap3000-2c
 	$(call Device/FitImage)
 	$(call Device/UbiFit)
