@@ -649,7 +649,7 @@ define KernelPackage/crypto-lib-poly1305
   TITLE:=Poly1305 library interface
   KCONFIG:=CONFIG_CRYPTO_LIB_POLY1305
   HIDDEN:=1
-  FILES:=$(LINUX_DIR)/lib/crypto/libpoly1305.ko
+  FILES:=$(LINUX_DIR)/lib/crypto/libpoly1305.ko@lt6.18
   $(call AddDepends/crypto,+kmod-crypto-hash)
 endef
 
