@@ -1,0 +1,77 @@
+From f46ea96205db8e28cfb870fb71b8642ff277a629 Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Sat, 9 May 2026 14:16:34 +0800
+Subject: [PATCH 177/268] PCI/pwrctrl: tc9563: Add AXI half-frequency support
+
+TC9563/QPS615 exposes NBUSCTRL.FREQ to select the internal AXI bus
+frequency. When toshiba,axi-bus-frequency-half is present, write the
+vendor-documented NBUSCTRL value during the pre-link I2C configuration
+so the switch uses 125 MHz instead of the default 250 MHz.
+
+Apply the setting once before the final reset deassertion and leave the
+existing power-on sequence unchanged when the property is absent.
+
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/pci/pwrctrl/pci-pwrctrl-tc9563.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+--- a/drivers/pci/pwrctrl/pci-pwrctrl-tc9563.c
++++ b/drivers/pci/pwrctrl/pci-pwrctrl-tc9563.c
+@@ -24,6 +24,9 @@
+ 
+ #include "../pci.h"
+ 
++#define TC9563_NBUSCTRL		0x801014
++#define TC9563_NBUSCTRL_FREQ_HALF	BIT(16)
++
+ #define TC9563_GPIO_CONFIG		0x801208
+ #define TC9563_RESET_GPIO		0x801210
+ 
+@@ -113,6 +116,7 @@ struct tc9563_pwrctrl {
+ 	struct gpio_desc *reset_gpio;
+ 	struct i2c_adapter *adapter;
+ 	struct i2c_client *client;
++	bool axi_bus_frequency_half;
+ 	bool powered_on;
+ };
+ 
+@@ -422,6 +426,15 @@ static int tc9563_pwrctrl_assert_deasser
+ 	return tc9563_pwrctrl_i2c_write(tc9563->client, TC9563_RESET_GPIO, val);
+ }
+ 
++static int tc9563_pwrctrl_set_axi_bus_frequency(struct tc9563_pwrctrl *tc9563)
++{
++	if (!tc9563->axi_bus_frequency_half)
++		return 0;
++
++	return tc9563_pwrctrl_i2c_write(tc9563->client, TC9563_NBUSCTRL,
++					TC9563_NBUSCTRL_FREQ_HALF);
++}
++
+ static int tc9563_pwrctrl_parse_device_dt(struct tc9563_pwrctrl *tc9563,
+ 					  struct device_node *node,
+ 					  enum tc9563_pwrctrl_ports port)
+@@ -499,6 +512,12 @@ static int tc9563_pwrctrl_power_on(struc
+ 	if (ret)
+ 		goto power_off;
+ 
++	ret = tc9563_pwrctrl_set_axi_bus_frequency(tc9563);
++	if (ret) {
++		dev_err(dev, "Setting AXI bus frequency failed\n");
++		goto power_off;
++	}
++
+ 	for (i = 0; i < TC9563_MAX; i++) {
+ 		cfg = &tc9563->cfg[i];
+ 		ret = tc9563_pwrctrl_disable_port(tc9563, i);
+@@ -604,6 +623,9 @@ static int tc9563_pwrctrl_probe(struct p
+ 
+ 	pci_pwrctrl_init(&tc9563->pwrctrl, dev);
+ 
++	tc9563->axi_bus_frequency_half =
++		of_property_read_bool(node, "toshiba,axi-bus-frequency-half");
++
+ 	port = TC9563_USP;
+ 	ret = tc9563_pwrctrl_parse_device_dt(tc9563, node, port);
+ 	if (ret)

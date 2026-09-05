@@ -1,0 +1,79 @@
+--- a/drivers/pci/of.c
++++ b/drivers/pci/of.c
+@@ -22,8 +22,8 @@
+  * pci_set_of_node - Find and set device's DT device_node
+  * @dev: the PCI device structure to fill
+  *
+- * Returns 0 on success with of_node set or when no device is described in the
+- * DT. Returns -ENODEV if the device is present, but disabled in the DT.
++ * Return 0 on success with of_node set or when no device is described in the
++ * DT.
+  */
+ int pci_set_of_node(struct pci_dev *dev)
+ {
+@@ -44,6 +44,30 @@ int pci_set_of_node(struct pci_dev *dev)
+ 	return 0;
+ }
+ 
++/**
++ * pci_of_device_skip_config_read - check whether to skip probing a PCI device
++ * @bus: PCI bus to scan
++ * @devfn: device/function number to check
++ *
++ * Return true only when firmware explicitly describes an unavailable PCI
++ * bridge/port node. Disabled endpoints remain discoverable so fixups still run,
++ * while driver binding is suppressed later in pci_bus_add_device().
++ */
++bool pci_of_device_skip_config_read(struct pci_bus *bus, unsigned int devfn)
++{
++	if (!bus->dev.of_node)
++		return false;
++
++	struct device_node *node __free(device_node) =
++		of_pci_find_child_device(bus->dev.of_node, devfn);
++
++	if (!node || of_device_is_available(node))
++		return false;
++
++	return of_node_is_type(node, "pci") &&
++	       of_property_present(node, "bus-range");
++}
++
+ void pci_release_of_node(struct pci_dev *dev)
+ {
+ 	of_node_put(dev->dev.of_node);
+--- a/drivers/pci/pci.h
++++ b/drivers/pci/pci.h
+@@ -1073,6 +1073,7 @@ u32 of_pci_get_slot_power_limit(struct d
+ 				u8 *slot_power_limit_scale);
+ bool of_pci_preserve_config(struct device_node *node);
+ int pci_set_of_node(struct pci_dev *dev);
++bool pci_of_device_skip_config_read(struct pci_bus *bus, unsigned int devfn);
+ void pci_release_of_node(struct pci_dev *dev);
+ void pci_set_bus_of_node(struct pci_bus *bus);
+ void pci_release_bus_of_node(struct pci_bus *bus);
+@@ -1113,6 +1114,10 @@ static inline bool of_pci_preserve_confi
+ }
+ 
+ static inline int pci_set_of_node(struct pci_dev *dev) { return 0; }
++static inline bool pci_of_device_skip_config_read(struct pci_bus *bus, unsigned int devfn)
++{
++	return false;
++}
+ static inline void pci_release_of_node(struct pci_dev *dev) { }
+ static inline void pci_set_bus_of_node(struct pci_bus *bus) { }
+ static inline void pci_release_bus_of_node(struct pci_bus *bus) { }
+--- a/drivers/pci/probe.c
++++ b/drivers/pci/probe.c
+@@ -2548,6 +2548,11 @@ bool pci_bus_generic_read_dev_vendor_id(
+ bool pci_bus_read_dev_vendor_id(struct pci_bus *bus, int devfn, u32 *l,
+ 				int timeout)
+ {
++	if (pci_of_device_skip_config_read(bus, devfn)) {
++		PCI_SET_ERROR_RESPONSE(l);
++		return false;
++	}
++
+ #ifdef CONFIG_PCI_QUIRKS
+ 	struct pci_dev *bridge = bus->self;
+ 

@@ -1,0 +1,135 @@
+From 3ad6bf36c183d2c7b72a59fa0813ce8745d62255 Mon Sep 17 00:00:00 2001
+From: Chris Lew <chris.lew@oss.qualcomm.com>
+Date: Tue, 27 Jan 2026 16:08:46 +0530
+Subject: [PATCH 002/268] soc: qcom: smp2p: Add support for smp2p v2
+
+smp2p v2 adds support for allowing remote processors to write outbound
+smp2p items without completing the feature negotiation. This is required
+for processors that start before linux to write out signals like error
+and clock ready and unblock their bootup.
+
+If a remote processor only supports v1, smp2p can version down by
+mirroring the peer version during the negotiation stage.
+
+When using smp2p version 2, the remote does not wait for the ssr ack
+before setting the items. To accommodate this, set the last_value of all
+the entries to 0 when SSR is detected. This forces smp2p to detect the
+new values written by the remote. Because the SSR ack is skipped, the
+down transition of bits is missed in smp2p version 2.
+
+Signed-off-by: Chris Lew <chris.lew@oss.qualcomm.com>
+Signed-off-by: Deepak Kumar Singh <deepak.singh@oss.qualcomm.com>
+---
+ drivers/soc/qcom/smp2p.c | 48 ++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 44 insertions(+), 4 deletions(-)
+
+--- a/drivers/soc/qcom/smp2p.c
++++ b/drivers/soc/qcom/smp2p.c
+@@ -36,6 +36,10 @@
+  * The driver uses the Linux GPIO and interrupt framework to expose a virtual
+  * GPIO for each outbound entry and a virtual interrupt controller for each
+  * inbound entry.
++ *
++ * V2 of SMP2P allows remote processors to write to outbound smp2p items before
++ * the full smp2p connection is negotiated. This is important for processors
++ * started before linux runs.
+  */
+ 
+ #define SMP2P_MAX_ENTRY 16
+@@ -47,11 +51,12 @@
+ 
+ #define SMP2P_MAGIC 0x504d5324
+ #define SMP2P_ALL_FEATURES	SMP2P_FEATURE_SSR_ACK
++#define MAX_VERSION 2
+ 
+ /**
+  * struct smp2p_smem_item - in memory communication structure
+  * @magic:		magic number
+- * @version:		version - must be 1
++ * @version:		version
+  * @features:		features flag - currently unused
+  * @local_pid:		processor id of sending end
+  * @remote_pid:		processor id of receiving end
+@@ -180,14 +185,22 @@ static void qcom_smp2p_kick(struct qcom_
+ static bool qcom_smp2p_check_ssr(struct qcom_smp2p *smp2p)
+ {
+ 	struct smp2p_smem_item *in = smp2p->in;
++	struct smp2p_entry *entry;
++	bool restart_done;
+ 	bool restart;
+ 
+ 	if (!smp2p->ssr_ack_enabled)
+ 		return false;
+ 
+-	restart = in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT);
++	restart_done = in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT);
++	restart = restart_done != smp2p->ssr_ack;
++	list_for_each_entry(entry, &smp2p->inbound, node) {
++		if (!entry->value)
++			continue;
++		entry->last_value = 0;
++	}
+ 
+-	return restart != smp2p->ssr_ack;
++	return restart;
+ }
+ 
+ static void qcom_smp2p_do_ssr_ack(struct qcom_smp2p *smp2p)
+@@ -219,9 +232,26 @@ static void qcom_smp2p_negotiate(struct
+ 
+ 		smp2p->negotiation_done = true;
+ 		trace_smp2p_negotiate(smp2p->dev, out->features);
++	} else if (in->version && in->version < out->version) {
++		out->version = in->version;
++		qcom_smp2p_kick(smp2p);
+ 	}
+ }
+ 
++static int qcom_smp2p_in_version(struct qcom_smp2p *smp2p)
++{
++	unsigned int smem_id = smp2p->smem_items[SMP2P_INBOUND];
++	unsigned int pid = smp2p->remote_pid;
++	struct smp2p_smem_item *in;
++	size_t size;
++
++	in = qcom_smem_get(pid, smem_id, &size);
++	if (IS_ERR(in))
++		return 0;
++
++	return in->version;
++}
++
+ static void qcom_smp2p_start_in(struct qcom_smp2p *smp2p)
+ {
+ 	unsigned int smem_id = smp2p->smem_items[SMP2P_INBOUND];
+@@ -516,6 +546,7 @@ static int qcom_smp2p_alloc_outbound_ite
+ 	struct smp2p_smem_item *out;
+ 	unsigned smem_id = smp2p->smem_items[SMP2P_OUTBOUND];
+ 	unsigned pid = smp2p->remote_pid;
++	u8 in_version;
+ 	int ret;
+ 
+ 	ret = qcom_smem_alloc(pid, smem_id, sizeof(*out));
+@@ -537,12 +568,21 @@ static int qcom_smp2p_alloc_outbound_ite
+ 	out->valid_entries = 0;
+ 	out->features = SMP2P_ALL_FEATURES;
+ 
++	in_version = qcom_smp2p_in_version(smp2p);
++	if (in_version > MAX_VERSION) {
++		dev_err(smp2p->dev, "Unsupported smp2p version %d\n", in_version);
++		return -EINVAL;
++	}
++
+ 	/*
+ 	 * Make sure the rest of the header is written before we validate the
+ 	 * item by writing a valid version number.
+ 	 */
+ 	wmb();
+-	out->version = 1;
++	if (in_version && in_version <= 2)
++		out->version = in_version;
++	else
++		out->version = 2;
+ 
+ 	qcom_smp2p_kick(smp2p);
+ 

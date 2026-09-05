@@ -1,0 +1,1657 @@
+From 7e923ee564097d5642f4806560f4eed2c0c69d0f Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Mon, 27 Apr 2026 10:49:44 +0800
+Subject: [PATCH 082/268] platform: arm64: Add Radxa SVC GLINK driver
+
+Add a Radxa SVC GLINK rpmsg driver for Radxa boards using Qualcomm SoCs.
+
+The driver binds to the RADXA_SVC_ADSP_APPS service and validates the
+service version and required capabilities before exposing userspace
+interfaces. It exposes fan control through standard kernel interfaces:
+hwmon provides pwm1 and pwm1_enable, and platform_profile provides quiet
+and performance profile selection.
+
+A debugfs interface is also provided for bring-up and diagnostics,
+including protocol version, profile, TSENS readings, PWM state, fan state,
+remote log retrieval and request statistics.
+
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/platform/arm64/Kconfig           |   11 +
+ drivers/platform/arm64/Makefile          |    1 +
+ drivers/platform/arm64/radxa_svc_glink.c | 1604 ++++++++++++++++++++++
+ 3 files changed, 1616 insertions(+)
+ create mode 100644 drivers/platform/arm64/radxa_svc_glink.c
+
+--- a/drivers/platform/arm64/Kconfig
++++ b/drivers/platform/arm64/Kconfig
+@@ -90,4 +90,15 @@ config EC_LENOVO_THINKPAD_T14S
+ 
+ 	  Say M or Y here to include this support.
+ 
++config RADXA_SVC_GLINK
++	tristate "Radxa SVC GLINK driver"
++	depends on ARCH_QCOM || COMPILE_TEST
++	depends on RPMSG
++	depends on HWMON
++	select PLATFORM_PROFILE
++	help
++	  Say M or Y here to enable the Radxa SVC GLINK driver. This driver
++	  talks to the RADXA_SVC_ADSP_APPS rpmsg service and exposes fan
++	  control through hwmon and platform-profile interfaces.
++
+ endif # ARM64_PLATFORM_DEVICES
+--- a/drivers/platform/arm64/Makefile
++++ b/drivers/platform/arm64/Makefile
+@@ -9,3 +9,4 @@ obj-$(CONFIG_EC_ACER_ASPIRE1)	+= acer-as
+ obj-$(CONFIG_EC_HUAWEI_GAOKUN)	+= huawei-gaokun-ec.o
+ obj-$(CONFIG_EC_LENOVO_YOGA_C630) += lenovo-yoga-c630.o
+ obj-$(CONFIG_EC_LENOVO_THINKPAD_T14S) += lenovo-thinkpad-t14s.o
++obj-$(CONFIG_RADXA_SVC_GLINK)	+= radxa_svc_glink.o
+--- /dev/null
++++ b/drivers/platform/arm64/radxa_svc_glink.c
+@@ -0,0 +1,1604 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Radxa SVC GLINK driver.
++ */
++
++#include <linux/atomic.h>
++#include <linux/completion.h>
++#include <linux/debugfs.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/hwmon.h>
++#include <linux/kernel.h>
++#include <linux/minmax.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/platform_profile.h>
++#include <linux/rpmsg.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++
++#define RADXA_SVC_DEBUGFS_DIR		"radxa_svc_glink"
++
++#define RADXA_SVC_MAGIC		0x58444152 /* "RADX" */
++#define RADXA_SVC_VERSION	1
++#define RADXA_SVC_TIMEOUT	msecs_to_jiffies(5000)
++
++#define RADXA_SVC_MAX_TX_PAYLOAD	64
++#define RADXA_SVC_MAX_RX_PAYLOAD	2048
++
++#define RADXA_SVC_OP_PING		0x01
++#define RADXA_SVC_OP_GET_VERSION	0x02
++#define RADXA_SVC_OP_SET_PROFILE	0x10
++#define RADXA_SVC_OP_GET_PROFILE	0x11
++#define RADXA_SVC_OP_GET_LOG		0x20
++#define RADXA_SVC_OP_TSENS_GET_COUNT	0x30
++#define RADXA_SVC_OP_TSENS_GET_TEMP	0x31
++#define RADXA_SVC_OP_TSENS_GET_MAX	0x32
++#define RADXA_SVC_OP_TSENS_GET_ALL	0x33
++#define RADXA_SVC_OP_PWM_GET_INFO	0x40
++#define RADXA_SVC_OP_PWM_APPLY		0x41
++#define RADXA_SVC_OP_PWM_GET_STATE	0x42
++#define RADXA_SVC_OP_FAN_GET_STATE	0x50
++#define RADXA_SVC_OP_FAN_SET_CONTROL	0x51
++#define RADXA_SVC_OP_FAN_GET_CONTROL	0x52
++
++#define RADXA_SVC_PROFILE_QUIET		0
++#define RADXA_SVC_PROFILE_PERFORMANCE	1
++#define RADXA_SVC_PWM_DEFAULT_CHANNEL	3
++
++#define RADXA_SVC_FAN_CONTROL_FULL_SPEED	0
++#define RADXA_SVC_FAN_CONTROL_MANUAL		1
++#define RADXA_SVC_FAN_CONTROL_AUTO		2
++#define RADXA_SVC_FAN_PWM_MAX			255
++
++#define RADXA_SVC_CAP_PING		BIT(0)
++#define RADXA_SVC_CAP_PROFILE		BIT(1)
++#define RADXA_SVC_CAP_LOG		BIT(2)
++#define RADXA_SVC_CAP_TSENS		BIT(3)
++#define RADXA_SVC_CAP_PWM		BIT(4)
++#define RADXA_SVC_CAP_FANCTL		BIT(5)
++#define RADXA_SVC_CAP_FANCTL_CTRL	BIT(6)
++
++#define RADXA_SVC_REQUIRED_CAPS		(RADXA_SVC_CAP_PROFILE | \
++					 RADXA_SVC_CAP_FANCTL | \
++					 RADXA_SVC_CAP_FANCTL_CTRL)
++
++#define RADXA_SVC_PONG			0x474e4f50 /* "PONG" */
++#define RADXA_SVC_TSENS_MAX_SENSORS	64
++
++struct radxa_svc_hdr {
++	__le32 magic;
++	__le16 version;
++	__le16 header_size;
++	__le32 opcode;
++	__le32 seq;
++	__le32 status;
++	__le32 payload_len;
++} __packed;
++
++struct radxa_svc_version_resp {
++	__le16 major;
++	__le16 minor;
++	__le32 caps;
++} __packed;
++
++struct radxa_svc_ping_resp {
++	__le32 pong;
++	__le16 major;
++	__le16 minor;
++} __packed;
++
++struct radxa_svc_tsens_count_resp {
++	__le32 num_sensors;
++} __packed;
++
++struct radxa_svc_tsens_get_temp_req {
++	__le32 sensor;
++} __packed;
++
++struct radxa_svc_tsens_temp_resp {
++	__le32 sensor;
++	__le32 controller;
++	__le32 channel;
++	__le32 temp_deci_c;
++} __packed;
++
++struct radxa_svc_tsens_all_resp {
++	__le32 num_sensors;
++	__le64 valid_mask;
++	__le32 temp_deci_c[];
++} __packed;
++
++struct radxa_svc_pwm_info_resp {
++	__le32 channel_count;
++	__le32 supported_mask;
++	__le32 default_channel;
++	__le32 min_period_ns;
++	__le32 max_period_ns;
++} __packed;
++
++struct radxa_svc_pwm_apply_req {
++	__le32 channel;
++	__le32 enable;
++	__le32 period_ns;
++	__le32 duty_ns;
++} __packed;
++
++struct radxa_svc_pwm_state_req {
++	__le32 channel;
++} __packed;
++
++struct radxa_svc_pwm_state_resp {
++	__le32 channel;
++	__le32 enabled;
++	__le32 period_ns;
++	__le32 duty_ns;
++	__le32 actual_period_ns;
++	__le32 actual_duty_ns;
++	__le32 pwm_value;
++} __packed;
++
++struct radxa_svc_fan_state_resp {
++	__le32 profile;
++	__le32 running;
++	__le32 emergency;
++	__le32 cpu_valid;
++	__le32 cpu_stale_ticks;
++	__le32 cpu_temp_deci_c;
++	__le32 gpu_valid;
++	__le32 gpu_stale_ticks;
++	__le32 gpu_temp_deci_c;
++	__le32 current_duty_ns;
++	__le32 target_duty_ns;
++	__le32 pwm_channel;
++	__le32 pwm_period_ns;
++	__le32 loop_count;
++	__le32 fault_count;
++	__le32 last_status;
++	__le32 control_mode;
++	__le32 manual_pwm;
++} __packed;
++
++struct radxa_svc_fan_control_req {
++	__le32 control_mode;
++	__le32 manual_pwm;
++} __packed;
++
++struct radxa_svc_fan_control_resp {
++	__le32 control_mode;
++	__le32 manual_pwm;
++} __packed;
++
++struct radxa_svc_glink {
++	struct device *dev;
++	struct rpmsg_device *rpdev;
++	struct dentry *debugfs_dir;
++	struct device *hwmon_dev;
++	struct device *platform_profile_dev;
++
++	struct mutex xfer_lock; /* serializes request/response transactions */
++	spinlock_t rsp_lock;
++	struct completion rsp;
++	bool pending;
++	u32 pending_seq;
++	u32 seq;
++
++	u32 rsp_opcode;
++	int rsp_status;
++	size_t rsp_len;
++	u8 rsp_payload[RADXA_SVC_MAX_RX_PAYLOAD];
++	u32 tsens_sensor;
++	u32 pwm_channel;
++	u32 caps;
++
++	atomic64_t tx_count;
++	atomic64_t rx_count;
++	atomic64_t timeout_count;
++	atomic64_t bad_msg_count;
++	atomic64_t dropped_msg_count;
++};
++
++static const char *radxa_svc_profile_name(u32 profile)
++{
++	switch (profile) {
++	case RADXA_SVC_PROFILE_QUIET:
++		return "quiet";
++	case RADXA_SVC_PROFILE_PERFORMANCE:
++		return "performance";
++	default:
++		return "unknown";
++	}
++}
++
++static int radxa_svc_profile_value(const char *buf, u32 *profile)
++{
++	if (sysfs_streq(buf, "quiet")) {
++		*profile = RADXA_SVC_PROFILE_QUIET;
++		return 0;
++	}
++
++	if (sysfs_streq(buf, "performance")) {
++		*profile = RADXA_SVC_PROFILE_PERFORMANCE;
++		return 0;
++	}
++
++	return -EINVAL;
++}
++
++static void radxa_svc_print_deci_c(struct seq_file *s, s32 temp_deci_c)
++{
++	u32 abs_temp;
++
++	if (temp_deci_c < 0) {
++		seq_putc(s, '-');
++		abs_temp = -((s64)temp_deci_c);
++	} else {
++		abs_temp = temp_deci_c;
++	}
++
++	seq_printf(s, "%u.%u", abs_temp / 10, abs_temp % 10);
++}
++
++static void radxa_svc_print_tsens_sample(struct seq_file *s,
++					 const struct radxa_svc_tsens_temp_resp *resp)
++{
++	s32 temp_deci_c = (s32)le32_to_cpu(resp->temp_deci_c);
++
++	seq_printf(s, "sensor: %u\n", le32_to_cpu(resp->sensor));
++	seq_printf(s, "controller: %u\n", le32_to_cpu(resp->controller));
++	seq_printf(s, "channel: %u\n", le32_to_cpu(resp->channel));
++	seq_printf(s, "temp_deci_c: %d\n", temp_deci_c);
++	seq_puts(s, "temp_c: ");
++	radxa_svc_print_deci_c(s, temp_deci_c);
++	seq_putc(s, '\n');
++}
++
++static int radxa_svc_request(struct radxa_svc_glink *svc, u32 opcode,
++			     const void *req_payload, size_t req_len,
++			     void *rsp_payload, size_t *rsp_len);
++
++static int radxa_svc_get_version(struct radxa_svc_glink *svc,
++				 struct radxa_svc_version_resp *resp)
++{
++	size_t len = sizeof(*resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_GET_VERSION, NULL, 0,
++				resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < sizeof(*resp))
++		return -EIO;
++
++	return 0;
++}
++
++static int radxa_svc_check_version(struct device *dev,
++				   const struct radxa_svc_version_resp *resp,
++				   u32 *caps)
++{
++	u32 missing_caps;
++	u16 major;
++
++	major = le16_to_cpu(resp->major);
++	*caps = le32_to_cpu(resp->caps);
++
++	if (major != RADXA_SVC_VERSION)
++		return dev_err_probe(dev, -EPROTONOSUPPORT,
++				     "unsupported service major version %u\n",
++				     major);
++
++	missing_caps = RADXA_SVC_REQUIRED_CAPS & ~*caps;
++	if (missing_caps)
++		return dev_err_probe(dev, -ENODEV,
++				     "service missing required caps 0x%08x\n",
++				     missing_caps);
++
++	return 0;
++}
++
++static int radxa_svc_get_profile(struct radxa_svc_glink *svc, u32 *profile)
++{
++	__le32 resp;
++	size_t len = sizeof(resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_GET_PROFILE, NULL, 0,
++				&resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < sizeof(resp))
++		return -EIO;
++
++	*profile = le32_to_cpu(resp);
++
++	return 0;
++}
++
++static int radxa_svc_set_profile(struct radxa_svc_glink *svc, u32 profile)
++{
++	__le32 payload;
++
++	switch (profile) {
++	case RADXA_SVC_PROFILE_QUIET:
++	case RADXA_SVC_PROFILE_PERFORMANCE:
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	payload = cpu_to_le32(profile);
++
++	return radxa_svc_request(svc, RADXA_SVC_OP_SET_PROFILE, &payload,
++				 sizeof(payload), NULL, NULL);
++}
++
++static void radxa_svc_platform_profile_notify(struct radxa_svc_glink *svc)
++{
++	if (svc->platform_profile_dev)
++		platform_profile_notify(svc->platform_profile_dev);
++}
++
++static int radxa_svc_tsens_get_count(struct radxa_svc_glink *svc,
++				     u32 *num_sensors)
++{
++	struct radxa_svc_tsens_count_resp resp = {};
++	size_t len = sizeof(resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_TSENS_GET_COUNT, NULL, 0,
++				&resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < sizeof(resp))
++		return -EIO;
++
++	*num_sensors = le32_to_cpu(resp.num_sensors);
++	if (*num_sensors > RADXA_SVC_TSENS_MAX_SENSORS)
++		return -EOVERFLOW;
++
++	return 0;
++}
++
++static int radxa_svc_pwm_get_info(struct radxa_svc_glink *svc,
++				  struct radxa_svc_pwm_info_resp *resp)
++{
++	size_t len = sizeof(*resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_PWM_GET_INFO, NULL, 0,
++				resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < sizeof(*resp))
++		return -EIO;
++
++	return 0;
++}
++
++static int radxa_svc_fan_get_state(struct radxa_svc_glink *svc,
++				   struct radxa_svc_fan_state_resp *resp,
++				   size_t *rsp_len)
++{
++	size_t len = sizeof(*resp);
++	size_t base_len = offsetof(struct radxa_svc_fan_state_resp,
++				   control_mode);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_FAN_GET_STATE, NULL, 0,
++				resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < base_len)
++		return -EIO;
++
++	if (rsp_len)
++		*rsp_len = len;
++
++	return 0;
++}
++
++static int radxa_svc_fan_get_control(struct radxa_svc_glink *svc,
++				     struct radxa_svc_fan_control_resp *resp)
++{
++	size_t len = sizeof(*resp);
++	u32 control_mode;
++	u32 manual_pwm;
++	int ret;
++
++	if (!(svc->caps & RADXA_SVC_CAP_FANCTL_CTRL))
++		return -EOPNOTSUPP;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_FAN_GET_CONTROL, NULL, 0,
++				resp, &len);
++	if (ret)
++		return ret;
++
++	if (len < sizeof(*resp))
++		return -EIO;
++
++	control_mode = le32_to_cpu(resp->control_mode);
++	manual_pwm = le32_to_cpu(resp->manual_pwm);
++	if (control_mode > RADXA_SVC_FAN_CONTROL_AUTO ||
++	    manual_pwm > RADXA_SVC_FAN_PWM_MAX)
++		return -EIO;
++
++	return 0;
++}
++
++static int radxa_svc_fan_set_control(struct radxa_svc_glink *svc,
++				     u32 control_mode, u32 manual_pwm)
++{
++	struct radxa_svc_fan_control_req req;
++
++	if (!(svc->caps & RADXA_SVC_CAP_FANCTL_CTRL))
++		return -EOPNOTSUPP;
++
++	if (control_mode > RADXA_SVC_FAN_CONTROL_AUTO ||
++	    manual_pwm > RADXA_SVC_FAN_PWM_MAX)
++		return -EINVAL;
++
++	req.control_mode = cpu_to_le32(control_mode);
++	req.manual_pwm = cpu_to_le32(manual_pwm);
++
++	return radxa_svc_request(svc, RADXA_SVC_OP_FAN_SET_CONTROL, &req,
++				 sizeof(req), NULL, NULL);
++}
++
++static long radxa_svc_fan_duty_to_pwm(u32 period_ns, u32 duty_ns)
++{
++	u64 pwm;
++
++	if (!period_ns)
++		return 0;
++
++	if (duty_ns >= period_ns)
++		return 0;
++
++	pwm = (u64)(period_ns - duty_ns) * RADXA_SVC_FAN_PWM_MAX;
++
++	return min_t(long, DIV_ROUND_CLOSEST_ULL(pwm, period_ns),
++		     RADXA_SVC_FAN_PWM_MAX);
++}
++
++static int radxa_svc_request(struct radxa_svc_glink *svc, u32 opcode,
++			     const void *req_payload, size_t req_len,
++			     void *rsp_payload, size_t *rsp_len)
++{
++	struct radxa_svc_hdr *hdr;
++	unsigned long flags;
++	size_t tx_len;
++	u32 seq;
++	u8 *tx_buf;
++	int ret;
++
++	if (req_len > RADXA_SVC_MAX_TX_PAYLOAD)
++		return -EMSGSIZE;
++
++	tx_len = sizeof(*hdr) + req_len;
++	tx_buf = kzalloc(tx_len, GFP_KERNEL);
++	if (!tx_buf)
++		return -ENOMEM;
++
++	mutex_lock(&svc->xfer_lock);
++
++	if (!svc->rpdev || !svc->rpdev->ept) {
++		ret = -ENODEV;
++		goto out_unlock;
++	}
++
++	seq = ++svc->seq;
++	if (!seq)
++		seq = ++svc->seq;
++
++	hdr = (struct radxa_svc_hdr *)tx_buf;
++	hdr->magic = cpu_to_le32(RADXA_SVC_MAGIC);
++	hdr->version = cpu_to_le16(RADXA_SVC_VERSION);
++	hdr->header_size = cpu_to_le16(sizeof(*hdr));
++	hdr->opcode = cpu_to_le32(opcode);
++	hdr->seq = cpu_to_le32(seq);
++	hdr->status = cpu_to_le32(0);
++	hdr->payload_len = cpu_to_le32(req_len);
++
++	if (req_len)
++		memcpy(tx_buf + sizeof(*hdr), req_payload, req_len);
++
++	reinit_completion(&svc->rsp);
++
++	spin_lock_irqsave(&svc->rsp_lock, flags);
++	svc->pending = true;
++	svc->pending_seq = seq;
++	svc->rsp_opcode = 0;
++	svc->rsp_status = 0;
++	svc->rsp_len = 0;
++	spin_unlock_irqrestore(&svc->rsp_lock, flags);
++
++	ret = rpmsg_send(svc->rpdev->ept, tx_buf, tx_len);
++	if (ret) {
++		spin_lock_irqsave(&svc->rsp_lock, flags);
++		svc->pending = false;
++		spin_unlock_irqrestore(&svc->rsp_lock, flags);
++		goto out_unlock;
++	}
++
++	atomic64_inc(&svc->tx_count);
++
++	if (!wait_for_completion_timeout(&svc->rsp, RADXA_SVC_TIMEOUT)) {
++		spin_lock_irqsave(&svc->rsp_lock, flags);
++		svc->pending = false;
++		spin_unlock_irqrestore(&svc->rsp_lock, flags);
++		atomic64_inc(&svc->timeout_count);
++		ret = -ETIMEDOUT;
++		goto out_unlock;
++	}
++
++	spin_lock_irqsave(&svc->rsp_lock, flags);
++	if (svc->rsp_opcode != opcode) {
++		ret = -EIO;
++	} else {
++		ret = svc->rsp_status;
++		if (rsp_payload && rsp_len) {
++			size_t copy_len = min(*rsp_len, svc->rsp_len);
++
++			memcpy(rsp_payload, svc->rsp_payload, copy_len);
++			if (*rsp_len < svc->rsp_len && !ret)
++				ret = -EMSGSIZE;
++			*rsp_len = svc->rsp_len;
++		}
++	}
++	spin_unlock_irqrestore(&svc->rsp_lock, flags);
++
++out_unlock:
++	mutex_unlock(&svc->xfer_lock);
++	kfree(tx_buf);
++
++	return ret;
++}
++
++static int radxa_svc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
++				    int len, void *priv, u32 addr)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(&rpdev->dev);
++	const struct radxa_svc_hdr *hdr = data;
++	unsigned long flags;
++	size_t header_size;
++	size_t payload_len;
++	bool do_complete = false;
++	u32 seq;
++
++	if (len < sizeof(*hdr))
++		goto bad_msg;
++
++	if (le32_to_cpu(hdr->magic) != RADXA_SVC_MAGIC ||
++	    le16_to_cpu(hdr->version) != RADXA_SVC_VERSION)
++		goto bad_msg;
++
++	header_size = le16_to_cpu(hdr->header_size);
++	if (header_size < sizeof(*hdr) || header_size > len)
++		goto bad_msg;
++
++	payload_len = le32_to_cpu(hdr->payload_len);
++	if (payload_len > len - header_size ||
++	    payload_len > RADXA_SVC_MAX_RX_PAYLOAD)
++		goto bad_msg;
++
++	seq = le32_to_cpu(hdr->seq);
++
++	spin_lock_irqsave(&svc->rsp_lock, flags);
++	if (svc->pending && seq == svc->pending_seq) {
++		svc->rsp_opcode = le32_to_cpu(hdr->opcode);
++		svc->rsp_status = (s32)le32_to_cpu(hdr->status);
++		svc->rsp_len = payload_len;
++		memcpy(svc->rsp_payload, data + header_size, payload_len);
++		svc->pending = false;
++		do_complete = true;
++	} else {
++		atomic64_inc(&svc->dropped_msg_count);
++	}
++	spin_unlock_irqrestore(&svc->rsp_lock, flags);
++
++	atomic64_inc(&svc->rx_count);
++
++	if (do_complete)
++		complete(&svc->rsp);
++
++	return 0;
++
++bad_msg:
++	atomic64_inc(&svc->bad_msg_count);
++	return 0;
++}
++
++static int radxa_svc_ping_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_ping_resp resp = {};
++	size_t len = sizeof(resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_PING, NULL, 0, &resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	if (len < sizeof(resp) || le32_to_cpu(resp.pong) != RADXA_SVC_PONG) {
++		seq_puts(s, "error: invalid pong\n");
++		return 0;
++	}
++
++	seq_printf(s, "pong: ok\nversion: %u.%u\n",
++		   le16_to_cpu(resp.major), le16_to_cpu(resp.minor));
++
++	return 0;
++}
++
++static int radxa_svc_version_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_version_resp resp = {};
++	int ret;
++
++	ret = radxa_svc_get_version(svc, &resp);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	seq_printf(s, "major: %u\nminor: %u\ncaps: 0x%08x\n",
++		   le16_to_cpu(resp.major), le16_to_cpu(resp.minor),
++		   le32_to_cpu(resp.caps));
++
++	return 0;
++}
++
++static int radxa_svc_profile_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	u32 value;
++	int ret;
++
++	ret = radxa_svc_get_profile(svc, &value);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	seq_printf(s, "%s\n", radxa_svc_profile_name(value));
++
++	return 0;
++}
++
++static ssize_t radxa_svc_profile_write(struct file *file, const char __user *buf,
++				       size_t count, loff_t *ppos)
++{
++	struct seq_file *s = file->private_data;
++	struct radxa_svc_glink *svc = s->private;
++	char input[32];
++	size_t len;
++	u32 profile;
++	int ret;
++
++	len = min(count, sizeof(input) - 1);
++	if (copy_from_user(input, buf, len))
++		return -EFAULT;
++
++	input[len] = '\0';
++	ret = radxa_svc_profile_value(input, &profile);
++	if (ret)
++		return ret;
++
++	ret = radxa_svc_set_profile(svc, profile);
++	if (ret)
++		return ret;
++
++	radxa_svc_platform_profile_notify(svc);
++
++	return count;
++}
++
++static int radxa_svc_log_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	__le32 max_len = cpu_to_le32(RADXA_SVC_MAX_RX_PAYLOAD);
++	char *log;
++	size_t len = RADXA_SVC_MAX_RX_PAYLOAD;
++	size_t text_len;
++	int ret;
++
++	log = kzalloc(RADXA_SVC_MAX_RX_PAYLOAD + 1, GFP_KERNEL);
++	if (!log)
++		return -ENOMEM;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_GET_LOG, &max_len,
++				sizeof(max_len), log, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		goto out_free;
++	}
++
++	text_len = strnlen(log, min(len, (size_t)RADXA_SVC_MAX_RX_PAYLOAD));
++	seq_write(s, log, text_len);
++	if (!text_len || log[text_len - 1] != '\n')
++		seq_putc(s, '\n');
++
++out_free:
++	kfree(log);
++	return 0;
++}
++
++static int radxa_svc_tsens_count_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	u32 num_sensors;
++	int ret;
++
++	ret = radxa_svc_tsens_get_count(svc, &num_sensors);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	seq_printf(s, "num_sensors: %u\n", num_sensors);
++
++	return 0;
++}
++
++static int radxa_svc_tsens_temp_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_tsens_temp_resp resp = {};
++	struct radxa_svc_tsens_get_temp_req req;
++	size_t len = sizeof(resp);
++	u32 sensor = READ_ONCE(svc->tsens_sensor);
++	int ret;
++
++	req.sensor = cpu_to_le32(sensor);
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_TSENS_GET_TEMP, &req,
++				sizeof(req), &resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	if (len < sizeof(resp)) {
++		seq_puts(s, "error: short tsens temp response\n");
++		return 0;
++	}
++
++	radxa_svc_print_tsens_sample(s, &resp);
++
++	return 0;
++}
++
++static ssize_t radxa_svc_tsens_temp_write(struct file *file,
++					  const char __user *buf,
++					  size_t count, loff_t *ppos)
++{
++	struct seq_file *s = file->private_data;
++	struct radxa_svc_glink *svc = s->private;
++	char input[32];
++	u32 num_sensors;
++	size_t len;
++	u32 sensor;
++	int ret;
++
++	len = min(count, sizeof(input) - 1);
++	if (copy_from_user(input, buf, len))
++		return -EFAULT;
++
++	input[len] = '\0';
++	ret = kstrtou32(strim(input), 0, &sensor);
++	if (ret)
++		return ret;
++
++	ret = radxa_svc_tsens_get_count(svc, &num_sensors);
++	if (ret)
++		return ret;
++
++	if (sensor >= num_sensors)
++		return -EINVAL;
++
++	WRITE_ONCE(svc->tsens_sensor, sensor);
++
++	return count;
++}
++
++static int radxa_svc_tsens_max_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_tsens_temp_resp resp = {};
++	size_t len = sizeof(resp);
++	int ret;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_TSENS_GET_MAX, NULL, 0,
++				&resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	if (len < sizeof(resp)) {
++		seq_puts(s, "error: short tsens max response\n");
++		return 0;
++	}
++
++	radxa_svc_print_tsens_sample(s, &resp);
++
++	return 0;
++}
++
++static int radxa_svc_tsens_all_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_tsens_all_resp *resp;
++	u32 num_sensors;
++	u64 valid_mask;
++	size_t header_len = offsetof(struct radxa_svc_tsens_all_resp, temp_deci_c);
++	size_t expected_len;
++	size_t len;
++	int ret;
++	u32 i;
++
++	len = header_len + RADXA_SVC_TSENS_MAX_SENSORS * sizeof(__le32);
++	resp = kzalloc(len, GFP_KERNEL);
++	if (!resp)
++		return -ENOMEM;
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_TSENS_GET_ALL, NULL, 0,
++				resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		goto out_free;
++	}
++
++	if (len < header_len) {
++		seq_puts(s, "error: short tsens all response\n");
++		goto out_free;
++	}
++
++	num_sensors = le32_to_cpu(resp->num_sensors);
++	valid_mask = le64_to_cpu(resp->valid_mask);
++	if (num_sensors > RADXA_SVC_TSENS_MAX_SENSORS) {
++		seq_printf(s, "error: invalid num_sensors %u\n", num_sensors);
++		goto out_free;
++	}
++
++	expected_len = header_len + num_sensors * sizeof(__le32);
++	if (len < expected_len) {
++		seq_printf(s, "error: short tsens all response: %zu < %zu\n",
++			   len, expected_len);
++		goto out_free;
++	}
++
++	seq_printf(s, "num_sensors: %u\n", num_sensors);
++	seq_printf(s, "valid_mask: 0x%016llx\n", (unsigned long long)valid_mask);
++	seq_puts(s, "sensor valid temp_deci_c temp_c\n");
++
++	for (i = 0; i < num_sensors; i++) {
++		s32 temp_deci_c = (s32)le32_to_cpu(resp->temp_deci_c[i]);
++		bool valid = valid_mask & BIT_ULL(i);
++
++		seq_printf(s, "%u %u %d ", i, valid ? 1 : 0, temp_deci_c);
++		if (valid)
++			radxa_svc_print_deci_c(s, temp_deci_c);
++		else
++			seq_puts(s, "n/a");
++		seq_putc(s, '\n');
++	}
++
++out_free:
++	kfree(resp);
++	return 0;
++}
++
++static void radxa_svc_print_pwm_state(struct seq_file *s,
++				      const struct radxa_svc_pwm_state_resp *resp)
++{
++	seq_printf(s, "channel: %u\n", le32_to_cpu(resp->channel));
++	seq_printf(s, "enabled: %u\n", le32_to_cpu(resp->enabled));
++	seq_printf(s, "period_ns: %u\n", le32_to_cpu(resp->period_ns));
++	seq_printf(s, "duty_ns: %u\n", le32_to_cpu(resp->duty_ns));
++	seq_printf(s, "actual_period_ns: %u\n",
++		   le32_to_cpu(resp->actual_period_ns));
++	seq_printf(s, "actual_duty_ns: %u\n",
++		   le32_to_cpu(resp->actual_duty_ns));
++	seq_printf(s, "pwm_value: %u\n", le32_to_cpu(resp->pwm_value));
++}
++
++static int radxa_svc_stats_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	unsigned long flags;
++	bool pending;
++	u32 pending_seq;
++
++	spin_lock_irqsave(&svc->rsp_lock, flags);
++	pending = svc->pending;
++	pending_seq = svc->pending_seq;
++	spin_unlock_irqrestore(&svc->rsp_lock, flags);
++
++	seq_printf(s, "channel_up: %u\n", !!svc->rpdev);
++	seq_printf(s, "tx_count: %lld\n", atomic64_read(&svc->tx_count));
++	seq_printf(s, "rx_count: %lld\n", atomic64_read(&svc->rx_count));
++	seq_printf(s, "timeout_count: %lld\n", atomic64_read(&svc->timeout_count));
++	seq_printf(s, "bad_msg_count: %lld\n", atomic64_read(&svc->bad_msg_count));
++	seq_printf(s, "dropped_msg_count: %lld\n", atomic64_read(&svc->dropped_msg_count));
++	seq_printf(s, "pending: %u\n", pending);
++	seq_printf(s, "pending_seq: %u\n", pending_seq);
++
++	return 0;
++}
++
++static int radxa_svc_pwm_info_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_pwm_info_resp resp = {};
++	int ret;
++
++	ret = radxa_svc_pwm_get_info(svc, &resp);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	seq_printf(s, "channel_count: %u\n", le32_to_cpu(resp.channel_count));
++	seq_printf(s, "supported_mask: 0x%08x\n",
++		   le32_to_cpu(resp.supported_mask));
++	seq_printf(s, "default_channel: %u\n",
++		   le32_to_cpu(resp.default_channel));
++	seq_printf(s, "min_period_ns: %u\n",
++		   le32_to_cpu(resp.min_period_ns));
++	seq_printf(s, "max_period_ns: %u\n",
++		   le32_to_cpu(resp.max_period_ns));
++
++	return 0;
++}
++
++static ssize_t radxa_svc_pwm_apply_write(struct file *file,
++					 const char __user *buf,
++					 size_t count, loff_t *ppos)
++{
++	struct radxa_svc_glink *svc = file->private_data;
++	struct radxa_svc_pwm_info_resp info = {};
++	struct radxa_svc_pwm_apply_req req;
++	char input[64];
++	u32 supported_mask;
++	u32 max_period_ns;
++	u32 min_period_ns;
++	size_t len;
++	u32 channel;
++	u32 enable;
++	u32 period_ns;
++	u32 duty_ns;
++	int ret;
++
++	len = min(count, sizeof(input) - 1);
++	if (copy_from_user(input, buf, len))
++		return -EFAULT;
++
++	input[len] = '\0';
++	if (sscanf(input, "%u %u %u %u", &channel, &enable, &period_ns,
++		   &duty_ns) != 4)
++		return -EINVAL;
++
++	if (enable > 1 || duty_ns > period_ns)
++		return -EINVAL;
++
++	ret = radxa_svc_pwm_get_info(svc, &info);
++	if (ret)
++		return ret;
++
++	supported_mask = le32_to_cpu(info.supported_mask);
++	min_period_ns = le32_to_cpu(info.min_period_ns);
++	max_period_ns = le32_to_cpu(info.max_period_ns);
++	if (channel >= 32 || !(supported_mask & BIT(channel)))
++		return -EINVAL;
++
++	if (period_ns < min_period_ns || period_ns > max_period_ns)
++		return -EINVAL;
++
++	req.channel = cpu_to_le32(channel);
++	req.enable = cpu_to_le32(enable);
++	req.period_ns = cpu_to_le32(period_ns);
++	req.duty_ns = cpu_to_le32(duty_ns);
++
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_PWM_APPLY, &req,
++				sizeof(req), NULL, NULL);
++	if (ret)
++		return ret;
++
++	WRITE_ONCE(svc->pwm_channel, channel);
++
++	return count;
++}
++
++static int radxa_svc_pwm_state_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_pwm_state_resp resp = {};
++	struct radxa_svc_pwm_state_req req;
++	size_t len = sizeof(resp);
++	u32 channel = READ_ONCE(svc->pwm_channel);
++	int ret;
++
++	req.channel = cpu_to_le32(channel);
++	ret = radxa_svc_request(svc, RADXA_SVC_OP_PWM_GET_STATE, &req,
++				sizeof(req), &resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	if (len < sizeof(resp)) {
++		seq_puts(s, "error: short pwm state response\n");
++		return 0;
++	}
++
++	radxa_svc_print_pwm_state(s, &resp);
++
++	return 0;
++}
++
++static int radxa_svc_fan_state_show(struct seq_file *s, void *unused)
++{
++	struct radxa_svc_glink *svc = s->private;
++	struct radxa_svc_fan_state_resp resp = {};
++	size_t len;
++	s32 cpu_temp_deci_c;
++	s32 gpu_temp_deci_c;
++	s32 last_status;
++	u32 profile;
++	int ret;
++
++	ret = radxa_svc_fan_get_state(svc, &resp, &len);
++	if (ret) {
++		seq_printf(s, "error: %d\n", ret);
++		return 0;
++	}
++
++	profile = le32_to_cpu(resp.profile);
++	cpu_temp_deci_c = (s32)le32_to_cpu(resp.cpu_temp_deci_c);
++	gpu_temp_deci_c = (s32)le32_to_cpu(resp.gpu_temp_deci_c);
++	last_status = (s32)le32_to_cpu(resp.last_status);
++
++	seq_printf(s, "profile: %s\n", radxa_svc_profile_name(profile));
++	seq_printf(s, "running: %u\n", le32_to_cpu(resp.running));
++	seq_printf(s, "emergency: %u\n", le32_to_cpu(resp.emergency));
++	seq_printf(s, "cpu_valid: %u\n", le32_to_cpu(resp.cpu_valid));
++	seq_printf(s, "cpu_stale_ticks: %u\n",
++		   le32_to_cpu(resp.cpu_stale_ticks));
++	seq_printf(s, "cpu_temp_deci_c: %d\n", cpu_temp_deci_c);
++	seq_puts(s, "cpu_temp_c: ");
++	radxa_svc_print_deci_c(s, cpu_temp_deci_c);
++	seq_putc(s, '\n');
++	seq_printf(s, "gpu_valid: %u\n", le32_to_cpu(resp.gpu_valid));
++	seq_printf(s, "gpu_stale_ticks: %u\n",
++		   le32_to_cpu(resp.gpu_stale_ticks));
++	seq_printf(s, "gpu_temp_deci_c: %d\n", gpu_temp_deci_c);
++	seq_puts(s, "gpu_temp_c: ");
++	radxa_svc_print_deci_c(s, gpu_temp_deci_c);
++	seq_putc(s, '\n');
++	seq_printf(s, "current_duty_ns: %u\n",
++		   le32_to_cpu(resp.current_duty_ns));
++	seq_printf(s, "target_duty_ns: %u\n",
++		   le32_to_cpu(resp.target_duty_ns));
++	seq_printf(s, "pwm_channel: %u\n", le32_to_cpu(resp.pwm_channel));
++	seq_printf(s, "pwm_period_ns: %u\n",
++		   le32_to_cpu(resp.pwm_period_ns));
++	seq_printf(s, "loop_count: %u\n", le32_to_cpu(resp.loop_count));
++	seq_printf(s, "fault_count: %u\n", le32_to_cpu(resp.fault_count));
++	seq_printf(s, "last_status: %d\n", last_status);
++	if (len >= sizeof(resp)) {
++		seq_printf(s, "control_mode: %u\n",
++			   le32_to_cpu(resp.control_mode));
++		seq_printf(s, "manual_pwm: %u\n",
++			   le32_to_cpu(resp.manual_pwm));
++	}
++
++	return 0;
++}
++
++static int radxa_svc_open(struct inode *inode, struct file *file,
++			  int (*show)(struct seq_file *, void *))
++{
++	return single_open(file, show, inode->i_private);
++}
++
++static int radxa_svc_ping_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_ping_show);
++}
++
++static int radxa_svc_version_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_version_show);
++}
++
++static int radxa_svc_profile_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_profile_show);
++}
++
++static int radxa_svc_log_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_log_show);
++}
++
++static int radxa_svc_tsens_count_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_tsens_count_show);
++}
++
++static int radxa_svc_tsens_temp_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_tsens_temp_show);
++}
++
++static int radxa_svc_tsens_max_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_tsens_max_show);
++}
++
++static int radxa_svc_tsens_all_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_tsens_all_show);
++}
++
++static int radxa_svc_stats_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_stats_show);
++}
++
++static int radxa_svc_pwm_info_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_pwm_info_show);
++}
++
++static int radxa_svc_pwm_state_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_pwm_state_show);
++}
++
++static int radxa_svc_fan_state_open(struct inode *inode, struct file *file)
++{
++	return radxa_svc_open(inode, file, radxa_svc_fan_state_show);
++}
++
++#define RADXA_SVC_RO_FOPS(_name)						\
++static const struct file_operations radxa_svc_##_name##_fops = {		\
++	.owner = THIS_MODULE,							\
++	.open = radxa_svc_##_name##_open,					\
++	.read = seq_read,							\
++	.llseek = seq_lseek,							\
++	.release = single_release,						\
++}
++
++RADXA_SVC_RO_FOPS(ping);
++RADXA_SVC_RO_FOPS(version);
++RADXA_SVC_RO_FOPS(log);
++RADXA_SVC_RO_FOPS(tsens_count);
++RADXA_SVC_RO_FOPS(tsens_max);
++RADXA_SVC_RO_FOPS(tsens_all);
++RADXA_SVC_RO_FOPS(stats);
++RADXA_SVC_RO_FOPS(pwm_info);
++RADXA_SVC_RO_FOPS(pwm_state);
++RADXA_SVC_RO_FOPS(fan_state);
++
++static const struct file_operations radxa_svc_profile_fops = {
++	.owner = THIS_MODULE,
++	.open = radxa_svc_profile_open,
++	.read = seq_read,
++	.write = radxa_svc_profile_write,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static const struct file_operations radxa_svc_tsens_temp_fops = {
++	.owner = THIS_MODULE,
++	.open = radxa_svc_tsens_temp_open,
++	.read = seq_read,
++	.write = radxa_svc_tsens_temp_write,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++static const struct file_operations radxa_svc_pwm_apply_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.write = radxa_svc_pwm_apply_write,
++	.llseek = noop_llseek,
++};
++
++static void radxa_svc_debugfs_init(struct radxa_svc_glink *svc)
++{
++	svc->debugfs_dir = debugfs_create_dir(RADXA_SVC_DEBUGFS_DIR, NULL);
++
++	debugfs_create_file("ping", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_ping_fops);
++	debugfs_create_file("version", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_version_fops);
++	debugfs_create_file("profile", 0644, svc->debugfs_dir, svc,
++			    &radxa_svc_profile_fops);
++	debugfs_create_file("log", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_log_fops);
++	debugfs_create_file("tsens_count", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_tsens_count_fops);
++	debugfs_create_file("tsens_temp", 0644, svc->debugfs_dir, svc,
++			    &radxa_svc_tsens_temp_fops);
++	debugfs_create_file("tsens_max", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_tsens_max_fops);
++	debugfs_create_file("tsens_all", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_tsens_all_fops);
++	debugfs_create_file("pwm_info", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_pwm_info_fops);
++	debugfs_create_file("pwm_apply", 0200, svc->debugfs_dir, svc,
++			    &radxa_svc_pwm_apply_fops);
++	debugfs_create_file("pwm_state", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_pwm_state_fops);
++	debugfs_create_file("fan_state", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_fan_state_fops);
++	debugfs_create_file("stats", 0444, svc->debugfs_dir, svc,
++			    &radxa_svc_stats_fops);
++}
++
++static umode_t radxa_svc_hwmon_is_visible(const void *data,
++					  enum hwmon_sensor_types type,
++					  u32 attr, int channel)
++{
++	const struct radxa_svc_glink *svc = data;
++
++	if (type != hwmon_pwm || channel)
++		return 0;
++
++	switch (attr) {
++	case hwmon_pwm_input:
++	case hwmon_pwm_enable:
++		return svc->caps & RADXA_SVC_CAP_FANCTL_CTRL ? 0644 : 0444;
++	default:
++		return 0;
++	}
++}
++
++static int radxa_svc_hwmon_read(struct device *dev,
++				enum hwmon_sensor_types type, u32 attr,
++				int channel, long *val)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(dev);
++	struct radxa_svc_fan_control_resp control = {};
++	struct radxa_svc_fan_state_resp state = {};
++	u32 duty_ns;
++	u32 period_ns;
++	int ret;
++
++	if (type != hwmon_pwm || channel)
++		return -EOPNOTSUPP;
++
++	switch (attr) {
++	case hwmon_pwm_input:
++		ret = radxa_svc_fan_get_state(svc, &state, NULL);
++		if (ret)
++			return ret;
++
++		period_ns = le32_to_cpu(state.pwm_period_ns);
++		duty_ns = le32_to_cpu(state.current_duty_ns);
++		if (!period_ns)
++			return -ENODATA;
++
++		*val = radxa_svc_fan_duty_to_pwm(period_ns, duty_ns);
++		return 0;
++	case hwmon_pwm_enable:
++		if (!(svc->caps & RADXA_SVC_CAP_FANCTL_CTRL)) {
++			*val = RADXA_SVC_FAN_CONTROL_AUTO;
++			return 0;
++		}
++
++		ret = radxa_svc_fan_get_control(svc, &control);
++		if (ret)
++			return ret;
++
++		*val = le32_to_cpu(control.control_mode);
++		return 0;
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
++static int radxa_svc_hwmon_write(struct device *dev,
++				 enum hwmon_sensor_types type, u32 attr,
++				 int channel, long val)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(dev);
++	struct radxa_svc_fan_control_resp control = {};
++	struct radxa_svc_fan_state_resp state = {};
++	u32 duty_ns;
++	u32 manual_pwm;
++	u32 period_ns;
++	int ret;
++
++	if (type != hwmon_pwm || channel)
++		return -EOPNOTSUPP;
++
++	if (!(svc->caps & RADXA_SVC_CAP_FANCTL_CTRL))
++		return -EOPNOTSUPP;
++
++	switch (attr) {
++	case hwmon_pwm_input:
++		if (val < 0 || val > RADXA_SVC_FAN_PWM_MAX)
++			return -EINVAL;
++
++		ret = radxa_svc_fan_get_control(svc, &control);
++		if (ret)
++			return ret;
++
++		if (le32_to_cpu(control.control_mode) !=
++		    RADXA_SVC_FAN_CONTROL_MANUAL)
++			return -EINVAL;
++
++		return radxa_svc_fan_set_control(svc,
++						 RADXA_SVC_FAN_CONTROL_MANUAL,
++						 val);
++	case hwmon_pwm_enable:
++		if (val < RADXA_SVC_FAN_CONTROL_FULL_SPEED ||
++		    val > RADXA_SVC_FAN_CONTROL_AUTO)
++			return -EINVAL;
++
++		if (val == RADXA_SVC_FAN_CONTROL_FULL_SPEED) {
++			ret = radxa_svc_fan_set_control(svc, val,
++							RADXA_SVC_FAN_PWM_MAX);
++			if (!ret)
++				radxa_svc_platform_profile_notify(svc);
++
++			return ret;
++		}
++
++		if (val == RADXA_SVC_FAN_CONTROL_MANUAL) {
++			ret = radxa_svc_fan_get_state(svc, &state, NULL);
++			if (ret)
++				return ret;
++
++			period_ns = le32_to_cpu(state.pwm_period_ns);
++			duty_ns = le32_to_cpu(state.current_duty_ns);
++			manual_pwm = radxa_svc_fan_duty_to_pwm(period_ns,
++							       duty_ns);
++
++			ret = radxa_svc_fan_set_control(svc, val, manual_pwm);
++			if (!ret)
++				radxa_svc_platform_profile_notify(svc);
++
++			return ret;
++		}
++
++		ret = radxa_svc_fan_get_control(svc, &control);
++		if (ret)
++			return ret;
++
++		ret = radxa_svc_fan_set_control(svc, val,
++						le32_to_cpu(control.manual_pwm));
++		if (!ret)
++			radxa_svc_platform_profile_notify(svc);
++
++		return ret;
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
++static const struct hwmon_ops radxa_svc_hwmon_ops = {
++	.is_visible = radxa_svc_hwmon_is_visible,
++	.read = radxa_svc_hwmon_read,
++	.write = radxa_svc_hwmon_write,
++};
++
++static const struct hwmon_channel_info * const radxa_svc_hwmon_info[] = {
++	HWMON_CHANNEL_INFO(pwm, HWMON_PWM_INPUT | HWMON_PWM_ENABLE),
++	NULL
++};
++
++static const struct hwmon_chip_info radxa_svc_hwmon_chip_info = {
++	.ops = &radxa_svc_hwmon_ops,
++	.info = radxa_svc_hwmon_info,
++};
++
++static int radxa_svc_hwmon_init(struct radxa_svc_glink *svc)
++{
++	if (!(svc->caps & RADXA_SVC_CAP_FANCTL))
++		return 0;
++
++	svc->hwmon_dev = devm_hwmon_device_register_with_info(svc->dev,
++							      "radxa_svc_glink",
++							      svc,
++							      &radxa_svc_hwmon_chip_info,
++							      NULL);
++
++	return PTR_ERR_OR_ZERO(svc->hwmon_dev);
++}
++
++static int radxa_svc_platform_profile_probe(void *drvdata,
++					    unsigned long *choices)
++{
++	set_bit(PLATFORM_PROFILE_QUIET, choices);
++	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
++
++	return 0;
++}
++
++static int radxa_svc_platform_profile_get(struct device *dev,
++					  enum platform_profile_option *profile)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(dev);
++	struct radxa_svc_fan_control_resp control = {};
++	u32 svc_profile;
++	int ret;
++
++	if (svc->caps & RADXA_SVC_CAP_FANCTL_CTRL) {
++		ret = radxa_svc_fan_get_control(svc, &control);
++		if (ret)
++			return ret;
++
++		if (le32_to_cpu(control.control_mode) !=
++		    RADXA_SVC_FAN_CONTROL_AUTO) {
++			*profile = PLATFORM_PROFILE_CUSTOM;
++			return 0;
++		}
++	}
++
++	ret = radxa_svc_get_profile(svc, &svc_profile);
++	if (ret)
++		return ret;
++
++	switch (svc_profile) {
++	case RADXA_SVC_PROFILE_QUIET:
++		*profile = PLATFORM_PROFILE_QUIET;
++		return 0;
++	case RADXA_SVC_PROFILE_PERFORMANCE:
++		*profile = PLATFORM_PROFILE_PERFORMANCE;
++		return 0;
++	default:
++		return -EIO;
++	}
++}
++
++static int radxa_svc_platform_profile_set(struct device *dev,
++					  enum platform_profile_option profile)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(dev);
++	struct radxa_svc_fan_control_resp control = {};
++	u32 manual_pwm = 0;
++	u32 svc_profile;
++	int ret;
++
++	switch (profile) {
++	case PLATFORM_PROFILE_QUIET:
++		svc_profile = RADXA_SVC_PROFILE_QUIET;
++		break;
++	case PLATFORM_PROFILE_PERFORMANCE:
++		svc_profile = RADXA_SVC_PROFILE_PERFORMANCE;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	if (svc->caps & RADXA_SVC_CAP_FANCTL_CTRL) {
++		ret = radxa_svc_fan_get_control(svc, &control);
++		if (ret)
++			return ret;
++
++		manual_pwm = le32_to_cpu(control.manual_pwm);
++		ret = radxa_svc_fan_set_control(svc,
++						RADXA_SVC_FAN_CONTROL_AUTO,
++						manual_pwm);
++		if (ret)
++			return ret;
++	}
++
++	return radxa_svc_set_profile(svc, svc_profile);
++}
++
++static const struct platform_profile_ops radxa_svc_platform_profile_ops = {
++	.probe = radxa_svc_platform_profile_probe,
++	.profile_get = radxa_svc_platform_profile_get,
++	.profile_set = radxa_svc_platform_profile_set,
++};
++
++static int radxa_svc_platform_profile_init(struct radxa_svc_glink *svc)
++{
++	if (!(svc->caps & RADXA_SVC_CAP_PROFILE))
++		return 0;
++
++	svc->platform_profile_dev =
++		devm_platform_profile_register(svc->dev, "radxa_svc_glink",
++					       svc,
++					       &radxa_svc_platform_profile_ops);
++
++	return PTR_ERR_OR_ZERO(svc->platform_profile_dev);
++}
++
++static int radxa_svc_rpmsg_probe(struct rpmsg_device *rpdev)
++{
++	struct radxa_svc_version_resp version = {};
++	struct radxa_svc_glink *svc;
++	int ret;
++
++	svc = devm_kzalloc(&rpdev->dev, sizeof(*svc), GFP_KERNEL);
++	if (!svc)
++		return -ENOMEM;
++
++	svc->dev = &rpdev->dev;
++	svc->rpdev = rpdev;
++	svc->pwm_channel = RADXA_SVC_PWM_DEFAULT_CHANNEL;
++	mutex_init(&svc->xfer_lock);
++	spin_lock_init(&svc->rsp_lock);
++	init_completion(&svc->rsp);
++
++	dev_set_drvdata(&rpdev->dev, svc);
++
++	ret = radxa_svc_get_version(svc, &version);
++	if (ret)
++		return dev_err_probe(&rpdev->dev, ret,
++				     "failed to read service version\n");
++
++	ret = radxa_svc_check_version(&rpdev->dev, &version, &svc->caps);
++	if (ret)
++		return ret;
++
++	ret = radxa_svc_hwmon_init(svc);
++	if (ret)
++		return dev_err_probe(&rpdev->dev, ret,
++				     "failed to register hwmon\n");
++
++	ret = radxa_svc_platform_profile_init(svc);
++	if (ret)
++		return dev_err_probe(&rpdev->dev, ret,
++				     "failed to register platform profile\n");
++
++	radxa_svc_debugfs_init(svc);
++
++	return 0;
++}
++
++static void radxa_svc_rpmsg_remove(struct rpmsg_device *rpdev)
++{
++	struct radxa_svc_glink *svc = dev_get_drvdata(&rpdev->dev);
++	unsigned long flags;
++
++	debugfs_remove_recursive(svc->debugfs_dir);
++
++	spin_lock_irqsave(&svc->rsp_lock, flags);
++	svc->pending = false;
++	spin_unlock_irqrestore(&svc->rsp_lock, flags);
++	complete_all(&svc->rsp);
++
++	mutex_lock(&svc->xfer_lock);
++	svc->rpdev = NULL;
++	mutex_unlock(&svc->xfer_lock);
++}
++
++static const struct rpmsg_device_id radxa_svc_rpmsg_id_match[] = {
++	{ "RADXA_SVC_ADSP_APPS" },
++	{}
++};
++MODULE_DEVICE_TABLE(rpmsg, radxa_svc_rpmsg_id_match);
++
++static struct rpmsg_driver radxa_svc_rpmsg_driver = {
++	.probe = radxa_svc_rpmsg_probe,
++	.remove = radxa_svc_rpmsg_remove,
++	.callback = radxa_svc_rpmsg_callback,
++	.id_table = radxa_svc_rpmsg_id_match,
++	.drv = {
++		.name = "radxa_svc_glink",
++	},
++};
++module_rpmsg_driver(radxa_svc_rpmsg_driver);
++
++MODULE_DESCRIPTION("Radxa SVC GLINK driver");
++MODULE_LICENSE("GPL");

@@ -1,0 +1,102 @@
+From 060be380b3ef9bbdab1aed99e1c4ab0165e59049 Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Mon, 6 Apr 2026 10:59:29 +0800
+Subject: [PATCH 057/268] clk: qcom: clk-rcg2: fix clk_rcg2_calc_mnd()
+ producing wrong M/N/pre_div
+
+Fix three related bugs in clk_rcg2_calc_mnd() that cause the GP clock
+MND divider to produce incorrect frequencies and duty cycles:
+
+1) n_max and n_candidate are declared as u16 but can hold values
+   exceeding 65535 during computation. When mnd_width is 16 and
+   mnd_max is 65535, even m=1 gives n_max=65536 which overflows u16
+   to 0, making "n_candidate < n_max" always false. Similarly
+   n_candidate overflows on intermediate products (e.g., 15360 * 5 =
+   76800 wraps to 11264), causing the wrong value to be accepted as n.
+
+   Fix by changing both n_max and n_candidate from u16 to u32.
+
+2) n_max is computed as (m + mnd_max), which only accounts for the N
+   register constraint (n - m must fit in mnd_width bits). However,
+   the D register shares the same mnd_width bits but must store values
+   up to 2*n for duty cycle control. When n > mnd_max/2, the D
+   register cannot represent high duty cycles, silently clamping the
+   maximum achievable duty cycle (e.g. to 85% instead of 99%).
+
+   Fix by computing n_max as (mnd_max + 1) / 2, ensuring 2*n always
+   fits within the D register's bit width.
+
+3) When no pre-division is needed (pre_div stays at its initial value
+   of 1), "pre_div > 1 ? pre_div : 0" sets f->pre_div to 0. The
+   subsequent convert_to_reg_val() computes (0 * 2 - 1) which
+   underflows the u8 pre_div field to 255, programming a 128x
+   pre-divider into hardware.
+
+   Fix by assigning pre_div unconditionally. Since pre_div is
+   initialized to 1 and only multiplied, it is always >= 1. A value
+   of 1 correctly converts to register value 1 via
+   convert_to_reg_val(), which means no pre-division in calc_rate().
+
+Example with parent=19.2 MHz XO, requesting 25 kHz:
+
+  Before: m=1, n=48,  pre_div=15 -> 26666 Hz  (6.7% error)
+  After:  m=1, n=768, pre_div=1  -> 25000 Hz  (exact)
+
+Fixes: 898b72fa44f5 ("clk: qcom: gcc-sdm845: Add general purpose clock ops")
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/clk/qcom/clk-rcg2.c | 20 ++++++++++++++------
+ 1 file changed, 14 insertions(+), 6 deletions(-)
+
+--- a/drivers/clk/qcom/clk-rcg2.c
++++ b/drivers/clk/qcom/clk-rcg2.c
+@@ -437,27 +437,35 @@ static void clk_rcg2_calc_mnd(u64 parent
+ 	int i = 2;
+ 	unsigned int pre_div = 1;
+ 	unsigned long rates_gcd, scaled_parent_rate;
+-	u16 m, n = 1, n_candidate = 1, n_max;
++	u32 n_max, n_candidate = 1;
++	u16 m, n = 1;
+ 
+ 	rates_gcd = gcd(parent_rate, rate);
+ 	m = div64_u64(rate, rates_gcd);
+ 	scaled_parent_rate = div64_u64(parent_rate, rates_gcd);
+-	while (scaled_parent_rate > (mnd_max + m) * pre_div_max) {
++
++	/*
++	 * Limit n so that the D register can represent the full duty cycle
++	 * range. The D register stores values up to 2*(n-m) using mnd_width
++	 * bits. Since m >= 1, n <= (mnd_max + 1) / 2 guarantees
++	 * 2*(n-m) <= mnd_max - 1.
++	 */
++	n_max = (mnd_max + 1) / 2;
++
++	while (scaled_parent_rate > (unsigned long)n_max * pre_div_max) {
+ 		// we're exceeding divisor's range, trying lower scale.
+ 		if (m > 1) {
+ 			m--;
+ 			scaled_parent_rate = mult_frac(scaled_parent_rate, m, (m + 1));
+ 		} else {
+ 			// cannot lower scale, just set max divisor values.
+-			f->n = mnd_max + m;
++			f->n = n_max;
+ 			f->pre_div = pre_div_max;
+ 			f->m = m;
+ 			return;
+ 		}
+ 	}
+ 
+-	n_max = m + mnd_max;
+-
+ 	while (scaled_parent_rate > 1) {
+ 		while (scaled_parent_rate % i == 0) {
+ 			n_candidate *= i;
+@@ -475,7 +483,7 @@ static void clk_rcg2_calc_mnd(u64 parent
+ 
+ 	f->m = m;
+ 	f->n = n;
+-	f->pre_div = pre_div > 1 ? pre_div : 0;
++	f->pre_div = pre_div;
+ }
+ 
+ static int clk_rcg2_determine_gp_rate(struct clk_hw *hw,

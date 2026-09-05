@@ -1,0 +1,85 @@
+From 355ef1b67a8fe38d101cf5cd34da68b18e7fc58b Mon Sep 17 00:00:00 2001
+From: Stephan Gerhold <stephan.gerhold@linaro.org>
+Date: Sun, 20 Jul 2025 16:15:54 +0200
+Subject: [PATCH 009/268] wip: firmware: qcom: tzmem: Use "self owner" bits
+ when running in EL2
+
+It seems like the SHM bridge needs to use a different set of bits (the
+"self owner" bits) when running as the hypervisor in EL2.
+
+Make the SHM bridge (and SCM calls in general) work properly in EL2 by
+porting a similar change from the msm-5.4 vendor kernel:
+git.codelinaro.org/clo/la/kernel/msm-5.4/-/commit/9cb1271ce620ab7cdd53f00c9d951004c9713254
+
+TODO: This should be likely changed to a DT property, since usage of
+is_hyp_mode_available() is discouraged in drivers.
+
+Add qcom,shm-bridge-vmid property instead of checking explicitly for
+running in EL2.
+
+Signed-off-by: Stephan Gerhold <stephan@gerhold.net>
+Signed-off-by: Abel Vesa <abel.vesa@oss.qualcomm.com>
+---
+ drivers/firmware/qcom/qcom_tzmem.c | 26 +++++++++++++++++++++-----
+ 1 file changed, 21 insertions(+), 5 deletions(-)
+
+--- a/drivers/firmware/qcom/qcom_tzmem.c
++++ b/drivers/firmware/qcom/qcom_tzmem.c
+@@ -71,9 +71,12 @@ static void qcom_tzmem_cleanup_area(stru
+ #include <linux/firmware/qcom/qcom_scm.h>
+ #include <linux/of.h>
+ 
++#define QCOM_SHM_BRIDGE_SELF_OWNER BIT(1)
++#define QCOM_SHM_BRIDGE_SELF_OWNER_PERM_SHIFT 2
+ #define QCOM_SHM_BRIDGE_NUM_VM_SHIFT 9
+ 
+ static bool qcom_tzmem_using_shm_bridge;
++static u32 qcom_tzmem_vmid = QCOM_SCM_VMID_HLOS;
+ 
+ /* List of machines that are known to not support SHM bridge correctly. */
+ static const char *const qcom_tzmem_blacklist[] = {
+@@ -91,9 +94,15 @@ static int qcom_tzmem_init(void)
+ 	const char *const *platform;
+ 	int ret;
+ 
+-	for (platform = qcom_tzmem_blacklist; *platform; platform++) {
+-		if (of_machine_is_compatible(*platform))
+-			goto notsupp;
++	device_property_read_u32(qcom_tzmem_dev, "qcom,shm-bridge-vmid",
++				 &qcom_tzmem_vmid);
++
++	/* Skip blocklist if self owner is requested */
++	if (qcom_tzmem_vmid != QCOM_SCM_VMID_SELF_OWNER) {
++		for (platform = qcom_tzmem_blacklist; *platform; platform++) {
++			if (of_machine_is_compatible(*platform))
++				goto notsupp;
++		}
+ 	}
+ 
+ 	ret = qcom_scm_shm_bridge_enable(qcom_tzmem_dev);
+@@ -125,6 +134,7 @@ notsupp:
+ int qcom_tzmem_shm_bridge_create(phys_addr_t paddr, size_t size, u64 *handle)
+ {
+ 	u64 pfn_and_ns_perm, ipfn_and_s_perm, size_and_flags;
++	u64 ns_vmids = qcom_tzmem_vmid;
+ 	int ret;
+ 
+ 	if (!qcom_tzmem_using_shm_bridge)
+@@ -134,9 +144,15 @@ int qcom_tzmem_shm_bridge_create(phys_ad
+ 	ipfn_and_s_perm = paddr | QCOM_SCM_PERM_RW;
+ 	size_and_flags = size | (1 << QCOM_SHM_BRIDGE_NUM_VM_SHIFT);
+ 
++	if (qcom_tzmem_vmid == QCOM_SCM_VMID_SELF_OWNER) {
++		size_and_flags = size | QCOM_SHM_BRIDGE_SELF_OWNER |
++				 (QCOM_SCM_PERM_RW << QCOM_SHM_BRIDGE_SELF_OWNER_PERM_SHIFT);
++		ns_vmids = 0;
++	}
++
++
+ 	ret = qcom_scm_shm_bridge_create(pfn_and_ns_perm, ipfn_and_s_perm,
+-					 size_and_flags, QCOM_SCM_VMID_HLOS,
+-					 handle);
++					 size_and_flags, ns_vmids, handle);
+ 	if (ret) {
+ 		dev_err(qcom_tzmem_dev,
+ 			"SHM Bridge failed: ret %d paddr 0x%pa, size %zu\n",

@@ -1,0 +1,105 @@
+From 6f6c8b0105a54918160e8a94cf3d82bd1b4bd13c Mon Sep 17 00:00:00 2001
+From: Chris Lew <chris.lew@oss.qualcomm.com>
+Date: Tue, 27 Jan 2026 16:08:45 +0530
+Subject: [PATCH 001/268] soc: qcom: smp2p: Add irqchip state support
+
+A remoteproc booted during earlier boot stages such as UEFI or the
+bootloader, may need to be attached to without restarting the remoteproc
+hardware. To do this the remoteproc will need to check the ready and
+handover states in smp2p without an interrupt notification. Create
+qcom_smp2p_start_in() to initialize the shadow state without notifying
+clients because these early events happened in the past.
+
+Add support for the .irq_get_irqchip_state callback so remoteproc can
+read the current state of the fatal, ready and handover bits.
+
+Signed-off-by: Chris Lew <chris.lew@oss.qualcomm.com>
+Signed-off-by: Deepak Kumar Singh <deepak.singh@oss.qualcomm.com>
+---
+ drivers/soc/qcom/smp2p.c | 55 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+--- a/drivers/soc/qcom/smp2p.c
++++ b/drivers/soc/qcom/smp2p.c
+@@ -222,6 +222,39 @@ static void qcom_smp2p_negotiate(struct
+ 	}
+ }
+ 
++static void qcom_smp2p_start_in(struct qcom_smp2p *smp2p)
++{
++	unsigned int smem_id = smp2p->smem_items[SMP2P_INBOUND];
++	unsigned int pid = smp2p->remote_pid;
++	char buf[SMP2P_MAX_ENTRY_NAME];
++	struct smp2p_smem_item *in;
++	struct smp2p_entry *entry;
++	size_t size;
++	int i;
++
++	in = qcom_smem_get(pid, smem_id, &size);
++	if (IS_ERR(in))
++		return;
++
++	smp2p->in = in;
++
++	/* Check if version is initialized by the remote. */
++	if (in->version == 0)
++		return;
++
++	for (i = smp2p->valid_entries; i < in->valid_entries; i++) {
++		list_for_each_entry(entry, &smp2p->inbound, node) {
++			memcpy(buf, in->entries[i].name, sizeof(buf));
++			if (!strcmp(buf, entry->name)) {
++				entry->value = &in->entries[i].value;
++				entry->last_value = readl(entry->value);
++				break;
++			}
++		}
++	}
++	smp2p->valid_entries = i;
++}
++
+ static void qcom_smp2p_notify_in(struct qcom_smp2p *smp2p)
+ {
+ 	struct smp2p_smem_item *in;
+@@ -368,12 +401,31 @@ static void smp2p_irq_print_chip(struct
+ 	seq_printf(p, "%8s", dev_name(entry->smp2p->dev));
+ }
+ 
++static int smp2p_irq_get_irqchip_state(struct irq_data *irqd, enum irqchip_irq_state which,
++				       bool *state)
++{
++	struct smp2p_entry *entry = irq_data_get_irq_chip_data(irqd);
++	u32 val;
++
++	if (which != IRQCHIP_STATE_LINE_LEVEL)
++		return -EINVAL;
++
++	if (!entry->value)
++		return -ENODEV;
++
++	val = readl(entry->value);
++	*state = !!(val & BIT(irqd_to_hwirq(irqd)));
++
++	return 0;
++}
++
+ static struct irq_chip smp2p_irq_chip = {
+ 	.name           = "smp2p",
+ 	.irq_mask       = smp2p_mask_irq,
+ 	.irq_unmask     = smp2p_unmask_irq,
+ 	.irq_set_type	= smp2p_set_irq_type,
+ 	.irq_print_chip = smp2p_irq_print_chip,
++	.irq_get_irqchip_state = smp2p_irq_get_irqchip_state,
+ };
+ 
+ static int smp2p_irq_map(struct irq_domain *d,
+@@ -618,6 +670,9 @@ static int qcom_smp2p_probe(struct platf
+ 		}
+ 	}
+ 
++	/* Check inbound entries in the case of early boot processor */
++	qcom_smp2p_start_in(smp2p);
++
+ 	/* Kick the outgoing edge after allocating entries */
+ 	qcom_smp2p_kick(smp2p);
+ 

@@ -1,0 +1,59 @@
+From 2439c04e9f61bd3cbe4c4ea6064f246628b9351e Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Thu, 7 May 2026 15:39:55 +0800
+Subject: [PATCH 123/268] PCI: qcom: Restrict PERST# parsing to PCI bridge
+ nodes
+
+Commit 2fd60a2edb83 ("PCI: qcom: Parse PERST# from all PCIe bridge
+nodes") extended PERST# parsing below the Root Port, so that downstream
+PCIe switch bridge nodes can describe their own PERST# GPIOs.
+
+However, the implementation recurses into every available child node.  A
+PCI hierarchy may contain non-bridge child nodes with unrelated
+"reset-gpios" properties, such as an Ethernet PHY below an MDIO bus.  If
+such a reset GPIO is provided by a PCI endpoint GPIO controller, the
+endpoint has not been enumerated while the host bridge is still probing.
+Trying to acquire that GPIO then returns -EPROBE_DEFER and the Root Port
+probe is deferred indefinitely.
+
+Only recurse into child nodes that are PCI bridge/bus nodes.  Keep parsing
+the Root Port passed by qcom_pcie_parse_port(), but filter descendants to
+nodes with device_type = "pci" and either a bus-range property or an
+explicit PCI bridge class compatible.
+
+Fixes: 2fd60a2edb83 ("PCI: qcom: Parse PERST# from all PCIe bridge nodes")
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/pci/controller/dwc/pcie-qcom.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+--- a/drivers/pci/controller/dwc/pcie-qcom.c
++++ b/drivers/pci/controller/dwc/pcie-qcom.c
+@@ -1681,7 +1681,16 @@ static const struct pci_ecam_ops pci_qco
+ 	}
+ };
+ 
+-/* Parse PERST# from all nodes in depth first manner starting from @np */
++static bool qcom_pcie_is_bridge_node(struct device_node *np)
++{
++	if (!of_node_is_type(np, "pci"))
++		return false;
++
++	return of_property_present(np, "bus-range") ||
++	       of_device_is_compatible(np, "pciclass,0604");
++}
++
++/* Parse PERST# from all PCIe bridge nodes starting from @np */
+ static int qcom_pcie_parse_perst(struct qcom_pcie *pcie,
+ 				 struct qcom_pcie_port *port,
+ 				 struct device_node *np)
+@@ -1719,6 +1728,9 @@ static int qcom_pcie_parse_perst(struct
+ 
+ parse_child_node:
+ 	for_each_available_child_of_node_scoped(np, child) {
++		if (!qcom_pcie_is_bridge_node(child))
++			continue;
++
+ 		ret = qcom_pcie_parse_perst(pcie, port, child);
+ 		if (ret)
+ 			return ret;

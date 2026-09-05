@@ -1,0 +1,231 @@
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -20,6 +20,7 @@
+ 
+ #define Q6V5_LOAD_STATE_MSG_LEN	64
+ #define Q6V5_PANIC_DELAY_MS	200
++#define Q6V5_PING_TIMEOUT_MS	500
+ 
+ static int q6v5_load_state_toggle(struct qcom_q6v5 *q6v5, bool enable)
+ {
+@@ -234,6 +235,74 @@ unsigned long qcom_q6v5_panic(struct qco
+ }
+ EXPORT_SYMBOL_GPL(qcom_q6v5_panic);
+ 
++static irqreturn_t q6v5_pong_interrupt(int irq, void *data)
++{
++	struct qcom_q6v5 *q6v5 = data;
++
++	complete(&q6v5->ping_done);
++
++	return IRQ_HANDLED;
++}
++
++int qcom_q6v5_ping_subsystem(struct qcom_q6v5 *q6v5)
++{
++	int ret;
++	int ping_failed = 0;
++
++	reinit_completion(&q6v5->ping_done);
++
++	ret = qcom_smem_state_update_bits(q6v5->ping_state,
++					  BIT(q6v5->ping_bit), BIT(q6v5->ping_bit));
++	if (ret) {
++		dev_err(q6v5->dev, "Failed to update ping bits\n");
++		return ret;
++	}
++
++	ret = wait_for_completion_timeout(&q6v5->ping_done,
++					  msecs_to_jiffies(Q6V5_PING_TIMEOUT_MS));
++	if (!ret) {
++		ping_failed = -ETIMEDOUT;
++		dev_err(q6v5->dev, "Failed to get back pong\n");
++	}
++
++	ret = qcom_smem_state_update_bits(q6v5->ping_state, BIT(q6v5->ping_bit), 0);
++	if (ret) {
++		dev_err(q6v5->dev, "Failed to clear master kernel bits\n");
++		return ret;
++	}
++
++	return ping_failed;
++}
++EXPORT_SYMBOL_GPL(qcom_q6v5_ping_subsystem);
++
++int qcom_q6v5_ping_subsystem_init(struct qcom_q6v5 *q6v5, struct platform_device *pdev)
++{
++	int ret = -ENODEV;
++
++	q6v5->ping_state = devm_qcom_smem_state_get(&pdev->dev, "ping", &q6v5->ping_bit);
++	if (IS_ERR(q6v5->ping_state)) {
++		dev_err(&pdev->dev, "Failed to acquire smem state %ld\n",
++			PTR_ERR(q6v5->ping_state));
++		return PTR_ERR(q6v5->ping_state);
++	}
++
++	init_completion(&q6v5->ping_done);
++
++	q6v5->pong_irq = platform_get_irq_byname(pdev, "pong");
++	if (q6v5->pong_irq < 0)
++		return q6v5->pong_irq;
++
++	ret = devm_request_threaded_irq(&pdev->dev, q6v5->pong_irq, NULL,
++					q6v5_pong_interrupt,
++					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
++					"q6v5 pong", q6v5);
++	if (ret)
++		dev_err(&pdev->dev, "Failed to acquire pong IRQ\n");
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(qcom_q6v5_ping_subsystem_init);
++
+ /**
+  * qcom_q6v5_init() - initializer of the q6v5 common struct
+  * @q6v5:	handle to be initialized
+--- a/drivers/remoteproc/qcom_q6v5.h
++++ b/drivers/remoteproc/qcom_q6v5.h
+@@ -17,22 +17,26 @@ struct qcom_q6v5 {
+ 	struct rproc *rproc;
+ 
+ 	struct qcom_smem_state *state;
++	struct qcom_smem_state *ping_state;
+ 	struct qmp *qmp;
+ 
+ 	struct icc_path *path;
+ 
+ 	unsigned stop_bit;
++	unsigned int ping_bit;
+ 
+ 	int wdog_irq;
+ 	int fatal_irq;
+ 	int ready_irq;
+ 	int handover_irq;
+ 	int stop_irq;
++	int pong_irq;
+ 
+ 	bool handover_issued;
+ 
+ 	struct completion start_done;
+ 	struct completion stop_done;
++	struct completion ping_done;
+ 
+ 	int crash_reason;
+ 
+@@ -52,5 +56,7 @@ int qcom_q6v5_unprepare(struct qcom_q6v5
+ int qcom_q6v5_request_stop(struct qcom_q6v5 *q6v5, struct qcom_sysmon *sysmon);
+ int qcom_q6v5_wait_for_start(struct qcom_q6v5 *q6v5, int timeout);
+ unsigned long qcom_q6v5_panic(struct qcom_q6v5 *q6v5);
++int qcom_q6v5_ping_subsystem(struct qcom_q6v5 *q6v5);
++int qcom_q6v5_ping_subsystem_init(struct qcom_q6v5 *q6v5, struct platform_device *pdev);
+ 
+ #endif
+--- a/drivers/remoteproc/qcom_q6v5_pas.c
++++ b/drivers/remoteproc/qcom_q6v5_pas.c
+@@ -59,6 +59,7 @@ struct qcom_pas_data {
+ 	int region_assign_count;
+ 	bool region_assign_shared;
+ 	int region_assign_vmid;
++	bool early_boot;
+ };
+ 
+ struct qcom_pas {
+@@ -402,9 +403,15 @@ static int qcom_pas_stop(struct rproc *r
+ 			dev_err(pas->dev, "failed to shutdown dtb: %d\n", ret);
+ 	}
+ 
+-	handover = qcom_q6v5_unprepare(&pas->q6v5);
+-	if (handover)
+-		qcom_pas_handover(&pas->q6v5);
++	/*
++	 * qcom_q6v5_prepare is not called in qcom_pas_attach, skip unprepare to
++	 * avoid mismatch.
++	 */
++	if (pas->rproc->state != RPROC_ATTACHED) {
++		handover = qcom_q6v5_unprepare(&pas->q6v5);
++		if (handover)
++			qcom_pas_handover(&pas->q6v5);
++	}
+ 
+ 	if (pas->smem_host_id)
+ 		ret = qcom_smem_bust_hwspin_lock_by_host(pas->smem_host_id);
+@@ -434,6 +441,55 @@ static unsigned long qcom_pas_panic(stru
+ 	return qcom_q6v5_panic(&pas->q6v5);
+ }
+ 
++static int qcom_pas_attach(struct rproc *rproc)
++{
++	int ret;
++	struct qcom_pas *pas = rproc->priv;
++	bool ready_state;
++	bool crash_state;
++
++	pas->q6v5.running = true;
++	ret = irq_get_irqchip_state(pas->q6v5.fatal_irq,
++				    IRQCHIP_STATE_LINE_LEVEL, &crash_state);
++	if (ret)
++		goto disable_running;
++
++	if (crash_state) {
++		dev_err(pas->dev, "Subsystem has crashed before driver probe\n");
++		rproc_report_crash(rproc, RPROC_FATAL_ERROR);
++		ret = -EINVAL;
++		goto disable_running;
++	}
++
++	ret = irq_get_irqchip_state(pas->q6v5.ready_irq,
++				    IRQCHIP_STATE_LINE_LEVEL, &ready_state);
++	if (ret)
++		goto disable_running;
++
++	if (unlikely(!ready_state)) {
++		dev_err(pas->dev, "Failed to get subsystem ready interrupt\n");
++		pas->rproc->state = RPROC_OFFLINE;
++		ret = -EINVAL;
++		goto disable_running;
++	}
++
++	ret = qcom_q6v5_ping_subsystem(&pas->q6v5);
++	if (ret) {
++		dev_err(pas->dev, "Failed to ping subsystem, assuming device crashed\n");
++		rproc_report_crash(rproc, RPROC_FATAL_ERROR);
++		goto disable_running;
++	}
++
++	pas->q6v5.handover_issued = true;
++
++	return 0;
++
++disable_running:
++	pas->q6v5.running = false;
++
++	return ret;
++}
++
+ static const struct rproc_ops qcom_pas_ops = {
+ 	.unprepare = qcom_pas_unprepare,
+ 	.start = qcom_pas_start,
+@@ -442,6 +498,7 @@ static const struct rproc_ops qcom_pas_o
+ 	.parse_fw = qcom_register_dump_segments,
+ 	.load = qcom_pas_load,
+ 	.panic = qcom_pas_panic,
++	.attach = qcom_pas_attach,
+ };
+ 
+ static const struct rproc_ops qcom_pas_minidump_ops = {
+@@ -779,6 +836,15 @@ static int qcom_pas_probe(struct platfor
+ 	}
+ 
+ 	qcom_add_ssr_subdev(rproc, &pas->ssr_subdev, desc->ssr_name);
++
++	if (desc->early_boot) {
++		ret = qcom_q6v5_ping_subsystem_init(&pas->q6v5, pdev);
++		if (ret)
++			dev_warn(&pdev->dev, "Falling back to firmware load\n");
++		else
++			pas->rproc->state = RPROC_DETACHED;
++	}
++
+ 	ret = rproc_add(rproc);
+ 	if (ret)
+ 		goto remove_ssr_sysmon;

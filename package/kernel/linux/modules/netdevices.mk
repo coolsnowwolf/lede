@@ -2122,7 +2122,7 @@ $(eval $(call KernelPackage,sfc-siena))
 define KernelPackage/pcs-xpcs
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Synopsis DesignWare PCS driver
-  DEPENDS:=@(TARGET_x86_64||TARGET_armsr) +kmod-phylink +LINUX_6_12||LINUX_6_18:kmod-mdio-devres
+  DEPENDS:=@(TARGET_x86_64||TARGET_armsr||TARGET_qcom) +kmod-phylink +LINUX_6_12||LINUX_6_18:kmod-mdio-devres
   KCONFIG:=CONFIG_PCS_XPCS
   FILES:=$(LINUX_DIR)/drivers/net/pcs/pcs_xpcs.ko
   AUTOLOAD:=$(call AutoLoad,20,pcs_xpcs)
@@ -2134,7 +2134,7 @@ $(eval $(call KernelPackage,pcs-xpcs))
 define KernelPackage/stmmac-core
   SUBMENU:=$(NETWORK_DEVICES_MENU)
   TITLE:=Synopsis Ethernet Controller core (NXP,STMMicro,others)
-  DEPENDS:=@TARGET_x86_64||TARGET_armsr +kmod-pcs-xpcs +kmod-ptp
+  DEPENDS:=@(TARGET_x86_64||TARGET_armsr||TARGET_qcom) +kmod-pcs-xpcs +kmod-ptp
   KCONFIG:=CONFIG_STMMAC_ETH \
     CONFIG_STMMAC_SELFTESTS=n \
     CONFIG_STMMAC_PLATFORM \
@@ -2277,4 +2277,3 @@ define KernelPackage/lan743x/description
 endef
 
 $(eval $(call KernelPackage,lan743x))
-

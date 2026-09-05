@@ -1,0 +1,60 @@
+From 740a30a237fdd8f1a68f0c78c8d5e239db592d36 Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Mon, 6 Apr 2026 18:10:53 +0800
+Subject: [PATCH 061/268] clk: qcom: clk-rcg2: fix set_duty_cycle() integer
+ overflow in boundary checks
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The duty cycle boundary checks in clk_rcg2_set_duty_cycle() use
+integer division to compare the 2d value against hardware limits:
+
+    if ((d / 2) > (n - m))
+        d = (n - m) * 2;
+    else if ((d / 2) < (m / 2))
+        d = m;
+
+When d is odd, d/2 truncates, allowing values one beyond the hardware
+maximum to pass. For example with n=7680, m=1, requesting 99.995%
+duty:
+
+    d = 15359  (raw 2d value)
+    d / 2 = 7679  (truncated)
+    n - m = 7679
+    7679 > 7679 → false, check passes
+
+But d=15359 exceeds the hardware limit of 2*(n-m)=15358. Writing this
+invalid value causes the RCG to fail its configuration update, the
+CMD_UPDATE bit never clears, and the clock output stops entirely.
+
+The initial D value in __clk_rcg2_configure_mnd() correctly uses
+direct comparison without division:
+
+    d_val = clamp_t(u32, d_val, f->m, 2 * (f->n - f->m));
+
+Align set_duty_cycle() with the same bounds by comparing directly:
+
+    if (d > (n - m) * 2)
+    else if (d < m)
+
+Fixes: 7f891faf596e ("clk: qcom: clk-rcg2: Add support for duty-cycle for RCG")
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/clk/qcom/clk-rcg2.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+--- a/drivers/clk/qcom/clk-rcg2.c
++++ b/drivers/clk/qcom/clk-rcg2.c
+@@ -814,9 +814,9 @@ static int clk_rcg2_set_duty_cycle(struc
+ 	 */
+ 	d = clamp_val(d, 1, mask);
+ 
+-	if ((d / 2) > (n - m))
++	if (d > (n - m) * 2)
+ 		d = (n - m) * 2;
+-	else if ((d / 2) < (m / 2))
++	else if (d < m)
+ 		d = m;
+ 
+ 	not2d = ~d & mask;

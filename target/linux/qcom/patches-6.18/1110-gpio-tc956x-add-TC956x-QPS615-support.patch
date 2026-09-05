@@ -1,0 +1,264 @@
+From a31a605eabff6aade3ff92b5442da6ad81d3aa2b Mon Sep 17 00:00:00 2001
+From: Alex Elder <elder@riscstar.com>
+Date: Tue, 2 Dec 2025 13:02:00 +0000
+Subject: [PATCH 110/268] gpio: tc956x: add TC956x/QPS615 support
+
+Toshiba TC956x is an Ethernet-AVB/TSN bridge and is essentially
+a small and highly-specialized SoC.  TC956x includes a GPIO block that
+can be accessed, alongside several other peripherals, via two PCIe
+endpoint functions.  The PCIe function driver creates an auxiliary
+device for the GPIO block, and that device gets bound to this auxiliary
+device driver.
+
+Co-developed-by: Daniel Thompson <daniel@riscstar.com>
+Signed-off-by: Daniel Thompson <daniel@riscstar.com>
+Signed-off-by: Alex Elder <elder@riscstar.com>
+---
+ drivers/gpio/Kconfig       |  11 ++
+ drivers/gpio/Makefile      |   1 +
+ drivers/gpio/gpio-tc956x.c | 209 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 221 insertions(+)
+ create mode 100644 drivers/gpio/gpio-tc956x.c
+
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -1603,6 +1603,17 @@ config GPIO_TC3589X
+ 	  This enables support for the GPIOs found on the TC3589X
+ 	  I/O Expander.
+ 
++config GPIO_TC956X
++	tristate "Toshiba TC956X GPIO support"
++	depends on TOSHIBA_TC956X_PCI
++	default m if TOSHIBA_TC956X_PCI
++	help
++	  This enables support for the GPIO controller embedded in the Toshiba
++	  TC956X (and Qualcomm QPS615).  This device connects to the host
++	  via PCIe port, which is the upstream port on an internal PCIe
++	  switch.  On some platforms, a few of the GPIO lines are used to
++	  manage external resets.
++
+ config GPIO_TIMBERDALE
+ 	bool "Support for timberdale GPIO IP"
+ 	depends on MFD_TIMBERDALE
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -174,6 +174,7 @@ obj-$(CONFIG_GPIO_SYSCON)		+= gpio-sysco
+ obj-$(CONFIG_GPIO_TANGIER)		+= gpio-tangier.o
+ obj-$(CONFIG_GPIO_TB10X)		+= gpio-tb10x.o
+ obj-$(CONFIG_GPIO_TC3589X)		+= gpio-tc3589x.o
++obj-$(CONFIG_GPIO_TC956X)		+= gpio-tc956x.o
+ obj-$(CONFIG_GPIO_TEGRA186)		+= gpio-tegra186.o
+ obj-$(CONFIG_GPIO_TEGRA)		+= gpio-tegra.o
+ obj-$(CONFIG_GPIO_THUNDERX)		+= gpio-thunderx.o
+--- /dev/null
++++ b/drivers/gpio/gpio-tc956x.c
+@@ -0,0 +1,209 @@
++// SPDX-License-Identifier: GPL-2.0
++
++/*
++ * Copyright (C) 2026 by RISCstar Solutions Corporation.  All rights reserved.
++ */
++
++/*
++ * The Toshiba TC956X implements a PCIe Gen 3 switch that connects an
++ * upstream x4 port to two downstream PCIe x2 ports.  It incorporates
++ * an internal endpoint on a internal PCIe port that implements two
++ * Synopsys XGMAC Ethernet interfaces.
++ *
++ * 35 GPIOs are also implemented by an embedded GPIO controller.  Three
++ * registers control the first 32 GPIOs (other than 20 and 21, which are
++ * reserved).  Three other registers control GPIOs 32 through 36. GPIOs
++ * 22-24, 27-28, 31, and 34 are treated as "input only".
++ *
++ * There is a TC956X PCI power controller driver that accesses the
++ * direction and output value registers for GPIOs 2 and 3.  These
++ * GPIOs control the reset signal for the two downstream PCIe ports.
++ * Their values will never change during operation of this driver, and
++ * this driver reserves these two GPIOS.
++ */
++
++#include <linux/auxiliary_bus.h>
++#include <linux/dev_printk.h>
++#include <linux/gpio/driver.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++
++#define DRIVER_NAME		"tc956x-gpio"
++
++#define TC956X_GPIO_COUNT	37	/* Number of GPIOs (20-21 reserved) */
++
++/* The GPIO offsets are relative to 0x1200 in TC956X SFR space */
++#define GPIO_IN0_OFFSET		0x00		/* Input value (0-31) */
++#define GPIO_EN0_OFFSET		0x08		/* 0: out; 1: in (0-31) */
++#define GPIO_OUT0_OFFSET	0x10		/* Output value (0-31) */
++
++#define GPIO_IN1_OFFSET		0x04		/* Input value (32-36) */
++#define GPIO_EN1_OFFSET		0x0c		/* 0: out; 1: in (32-36) */
++#define GPIO_OUT1_OFFSET	0x14		/* Output value (32-36) */
++
++/*
++ * struct tc956x_gpio - Information related to the embedded GPIO controller
++ * @chip:		GPIO chip structure
++ * @regmap:		MMIO register map for SFR GPIO region access
++ * @input_only:		Bitmap indicating which GPIOs are input-only
++ */
++struct tc956x_gpio {
++	struct gpio_chip chip;
++	struct regmap *regmap;
++	DECLARE_BITMAP(input_only, TC956X_GPIO_COUNT);
++};
++
++static int tc956x_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
++{
++	struct tc956x_gpio *gpio = gpiochip_get_data(gc);
++	u32 reg;
++	u32 val;
++
++	if (test_bit(offset, gpio->input_only))
++		return GPIO_LINE_DIRECTION_IN;
++
++	reg = offset < 32 ? GPIO_EN0_OFFSET : GPIO_EN1_OFFSET;
++
++	regmap_read(gpio->regmap, reg, &val);
++	if (val & BIT(offset % 32))
++		return GPIO_LINE_DIRECTION_IN;
++
++	return GPIO_LINE_DIRECTION_OUT;
++}
++
++static int tc956x_gpio_direction_input(struct gpio_chip *gc,
++				       unsigned int offset)
++{
++	u32 reg = offset < 32 ? GPIO_EN0_OFFSET : GPIO_EN1_OFFSET;
++	struct tc956x_gpio *gpio = gpiochip_get_data(gc);
++	u32 mask = BIT(offset % 32);
++
++	return regmap_update_bits(gpio->regmap, reg, mask, mask);
++}
++
++static int tc956x_gpio_direction_output(struct gpio_chip *gc,
++					unsigned int offset, int value)
++{
++	struct tc956x_gpio *gpio = gpiochip_get_data(gc);
++	u32 vreg;
++	u32 dreg;
++	u32 mask;
++
++	if (test_bit(offset, gpio->input_only))
++		return -EINVAL;
++
++	if (offset < 32) {
++		vreg = GPIO_OUT0_OFFSET;
++		dreg = GPIO_EN0_OFFSET;
++	} else {
++		vreg = GPIO_OUT1_OFFSET;
++		dreg = GPIO_EN1_OFFSET;
++	}
++	mask = BIT(offset % 32);
++
++	/* Set output value first, then direction */
++	regmap_update_bits(gpio->regmap, vreg, mask, value ? mask : 0);
++
++	return regmap_update_bits(gpio->regmap, dreg, mask, 0);
++}
++
++static int tc956x_gpio_get(struct gpio_chip *gc, unsigned int offset)
++{
++	u32 reg = offset < 32 ? GPIO_IN0_OFFSET : GPIO_IN1_OFFSET;
++	struct tc956x_gpio *gpio = gpiochip_get_data(gc);
++	u32 val;
++
++	regmap_read(gpio->regmap, reg, &val);
++
++	return val & BIT(offset % 32) ? 1 : 0;
++}
++
++static int tc956x_gpio_set(struct gpio_chip *gc, unsigned int offset, int value)
++{
++	u32 reg = offset < 32 ? GPIO_OUT0_OFFSET : GPIO_OUT1_OFFSET;
++	struct tc956x_gpio *gpio = gpiochip_get_data(gc);
++	u32 mask = BIT(offset % 32);
++
++	return regmap_update_bits(gpio->regmap, reg, mask, value ? mask : 0);
++}
++
++static int tc956x_gpio_init_valid_mask(struct gpio_chip *gc,
++				       unsigned long *valid_mask,
++				       unsigned int ngpios)
++{
++	/*
++	 * GPIOs 2 and 3 are used by the PCI power control driver, and
++	 * we don't allow them to be used.  GPIOs 20 and 21 are reserved
++	 * (and not usable).
++	 */
++	bitmap_fill(valid_mask, ngpios);
++	bitmap_clear(valid_mask, 2, 2);
++	bitmap_clear(valid_mask, 20, 2);
++
++	return 0;
++}
++
++static int tc956x_gpio_probe(struct auxiliary_device *adev,
++			     const struct auxiliary_device_id *id)
++{
++	struct device *dev = &adev->dev;
++	struct tc956x_gpio *gpio;
++	struct gpio_chip *gc;
++
++	if (!dev->platform_data)
++		return -EINVAL;
++
++	gpio = devm_kzalloc(dev, sizeof(*gpio), GFP_KERNEL);
++	if (!gpio)
++		return -ENOMEM;
++	gpio->regmap = dev->platform_data;
++
++	/* Mark GPIOs 22, 23, 24, 27, 28, 31, and 34 as input only */
++	bitmap_set(gpio->input_only, 22, 3);
++	bitmap_set(gpio->input_only, 27, 2);
++	set_bit(31, gpio->input_only);
++	set_bit(34, gpio->input_only);
++
++	gc = &gpio->chip;
++
++	gc->label = DRIVER_NAME;
++	gc->parent = dev->parent;
++
++	gc->get_direction = tc956x_gpio_get_direction;
++	gc->direction_input = tc956x_gpio_direction_input;
++	gc->direction_output = tc956x_gpio_direction_output;
++	gc->get = tc956x_gpio_get;
++	gc->set = tc956x_gpio_set;
++	gc->init_valid_mask = tc956x_gpio_init_valid_mask;
++
++	gc->base = -1;
++	gc->ngpio = TC956X_GPIO_COUNT;
++	gc->can_sleep = false;
++
++	dev_set_drvdata(dev, gpio);
++
++	return devm_gpiochip_add_data(dev, gc, gpio);
++}
++
++static const struct auxiliary_device_id tc956x_gpio_ids[] = {
++	{ .name = "tc956x_pci.tc9564-gpio", },
++	{ }
++};
++MODULE_DEVICE_TABLE(auxiliary, tc956x_gpio_ids);
++
++static struct auxiliary_driver tc956x_gpio_driver = {
++	.name		= DRIVER_NAME,
++	.probe          = tc956x_gpio_probe,
++	.id_table       = tc956x_gpio_ids,
++	.driver = {
++		.name		= DRIVER_NAME,
++		.owner		= THIS_MODULE,
++		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,
++	},
++};
++module_auxiliary_driver(tc956x_gpio_driver);
++
++MODULE_DESCRIPTION("Toshiba TC956X PCIe GPIO Driver");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("auxiliary:" DRIVER_NAME);

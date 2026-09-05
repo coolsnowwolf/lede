@@ -1,0 +1,133 @@
+--- a/include/linux/stmmac.h
++++ b/include/linux/stmmac.h
+@@ -192,6 +192,8 @@ enum dwmac_core_type {
+ #define STMMAC_FLAG_EN_TX_LPI_CLK_PHY_CAP	BIT(12)
+ #define STMMAC_FLAG_HWTSTAMP_CORRECT_LATENCY	BIT(13)
+ 
++struct mac_device_info;
++
+ struct plat_stmmacenet_data {
+ 	enum dwmac_core_type core_type;
+ 	int bus_id;
+@@ -265,7 +267,7 @@ struct plat_stmmacenet_data {
+ 	void (*exit)(struct platform_device *pdev, void *priv);
+ 	int (*suspend)(struct device *dev, void *priv);
+ 	int (*resume)(struct device *dev, void *priv);
+-	struct mac_device_info *(*setup)(void *priv);
++	int (*mac_setup)(void *priv, struct mac_device_info *mac);
+ 	int (*clks_config)(void *priv, bool enabled);
+ 	int (*crosststamp)(ktime_t *device, struct system_counterval_t *system,
+ 			   void *ctx);
+--- a/drivers/net/ethernet/stmicro/stmmac/hwif.c
++++ b/drivers/net/ethernet/stmicro/stmmac/hwif.c
+@@ -322,17 +322,19 @@ int stmmac_hwif_init(struct stmmac_priv
+ 			priv->estaddr = priv->ioaddr + EST_XGMAC_OFFSET;
+ 	}
+ 
++	mac = devm_kzalloc(priv->device, sizeof(*mac), GFP_KERNEL);
++	if (!mac)
++		return -ENOMEM;
++
+ 	/* Check for HW specific setup first */
+-	if (priv->plat->setup) {
+-		mac = priv->plat->setup(priv);
++	if (priv->plat->mac_setup) {
++		ret = priv->plat->mac_setup(priv, mac);
++		if (ret)
++			return ret;
++
+ 		needs_setup = false;
+-	} else {
+-		mac = devm_kzalloc(priv->device, sizeof(*mac), GFP_KERNEL);
+ 	}
+ 
+-	if (!mac)
+-		return -ENOMEM;
+-
+ 	/* Fallback to generic HW */
+ 	for (i = ARRAY_SIZE(stmmac_hw) - 1; i >= 0; i--) {
+ 		entry = &stmmac_hw[i];
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-loongson.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-loongson.c
+@@ -320,10 +320,9 @@ static int loongson_dwmac_dma_interrupt(
+ 	return ret;
+ }
+ 
+-static struct mac_device_info *loongson_dwmac_setup(void *apriv)
++static int loongson_dwmac_setup(void *apriv, struct mac_device_info *mac)
+ {
+ 	struct stmmac_priv *priv = apriv;
+-	struct mac_device_info *mac;
+ 	struct stmmac_dma_ops *dma;
+ 	struct loongson_data *ld;
+ 	struct pci_dev *pdev;
+@@ -331,13 +330,9 @@ static struct mac_device_info *loongson_
+ 	ld = priv->plat->bsp_priv;
+ 	pdev = to_pci_dev(priv->device);
+ 
+-	mac = devm_kzalloc(priv->device, sizeof(*mac), GFP_KERNEL);
+-	if (!mac)
+-		return NULL;
+-
+ 	dma = devm_kzalloc(priv->device, sizeof(*dma), GFP_KERNEL);
+ 	if (!dma)
+-		return NULL;
++		return -ENOMEM;
+ 
+ 	/* The Loongson GMAC and GNET devices are based on the DW GMAC
+ 	 * v3.50a and v3.73a IP-cores. But the HW designers have changed
+@@ -396,7 +391,7 @@ static struct mac_device_info *loongson_
+ 	mac->mii.clk_csr_shift = 2;
+ 	mac->mii.clk_csr_mask = GENMASK(5, 2);
+ 
+-	return mac;
++	return 0;
+ }
+ 
+ static int loongson_dwmac_msi_config(struct pci_dev *pdev,
+@@ -591,7 +586,7 @@ static int loongson_dwmac_probe(struct p
+ 		goto err_disable_device;
+ 
+ 	plat->bsp_priv = ld;
+-	plat->setup = loongson_dwmac_setup;
++	plat->mac_setup = loongson_dwmac_setup;
+ 	plat->fix_soc_reset = loongson_dwmac_fix_reset;
+ 	plat->suspend = loongson_dwmac_suspend;
+ 	plat->resume = loongson_dwmac_resume;
+--- a/drivers/net/ethernet/stmicro/stmmac/dwmac-sun8i.c
++++ b/drivers/net/ethernet/stmicro/stmmac/dwmac-sun8i.c
+@@ -1040,15 +1040,10 @@ static const struct stmmac_ops sun8i_dwm
+ 	.set_mac_loopback = sun8i_dwmac_set_mac_loopback,
+ };
+ 
+-static struct mac_device_info *sun8i_dwmac_setup(void *ppriv)
++static int sun8i_dwmac_setup(void *ppriv, struct mac_device_info *mac)
+ {
+-	struct mac_device_info *mac;
+ 	struct stmmac_priv *priv = ppriv;
+ 
+-	mac = devm_kzalloc(priv->device, sizeof(*mac), GFP_KERNEL);
+-	if (!mac)
+-		return NULL;
+-
+ 	mac->pcsr = priv->ioaddr;
+ 	mac->mac = &sun8i_dwmac_ops;
+ 	mac->dma = &sun8i_dwmac_dma_ops;
+@@ -1079,7 +1074,7 @@ static struct mac_device_info *sun8i_dwm
+ 	/* Synopsys Id is not available */
+ 	priv->synopsys_id = 0;
+ 
+-	return mac;
++	return 0;
+ }
+ 
+ static struct regmap *sun8i_dwmac_get_syscon_from_dev(struct device_node *node)
+@@ -1192,7 +1187,7 @@ static int sun8i_dwmac_probe(struct plat
+ 	plat_dat->bsp_priv = gmac;
+ 	plat_dat->init = sun8i_dwmac_init;
+ 	plat_dat->exit = sun8i_dwmac_exit;
+-	plat_dat->setup = sun8i_dwmac_setup;
++	plat_dat->mac_setup = sun8i_dwmac_setup;
+ 	plat_dat->tx_fifo_size = 4096;
+ 	plat_dat->rx_fifo_size = 16384;
+ 

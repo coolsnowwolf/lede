@@ -1,0 +1,84 @@
+--- a/drivers/pci/pwrctrl/slot.c
++++ b/drivers/pci/pwrctrl/slot.c
+@@ -17,13 +17,40 @@ struct pci_pwrctrl_slot_data {
+ 	struct pci_pwrctrl ctx;
+ 	struct regulator_bulk_data *supplies;
+ 	int num_supplies;
++	struct clk *clk;
+ };
+ 
+-static void devm_pci_pwrctrl_slot_power_off(void *data)
++static int slot_pwrctrl_power_on(struct pci_pwrctrl *pwrctrl)
+ {
+-	struct pci_pwrctrl_slot_data *slot = data;
++	struct pci_pwrctrl_slot_data *slot = container_of(pwrctrl,
++						      struct pci_pwrctrl_slot_data, ctx);
++	int ret;
++
++	ret = regulator_bulk_enable(slot->num_supplies, slot->supplies);
++	if (ret < 0) {
++		dev_err(slot->ctx.dev, "Failed to enable slot regulators\n");
++		return ret;
++	}
++
++	return clk_prepare_enable(slot->clk);
++}
++
++static int slot_pwrctrl_power_off(struct pci_pwrctrl *pwrctrl)
++{
++	struct pci_pwrctrl_slot_data *slot = container_of(pwrctrl,
++						      struct pci_pwrctrl_slot_data, ctx);
+ 
+ 	regulator_bulk_disable(slot->num_supplies, slot->supplies);
++	clk_disable_unprepare(slot->clk);
++
++	return 0;
++}
++
++static void devm_pci_pwrctrl_slot_release(void *data)
++{
++	struct pci_pwrctrl_slot_data *slot = data;
++
++	slot_pwrctrl_power_off(&slot->ctx);
+ 	regulator_bulk_free(slot->num_supplies, slot->supplies);
+ }
+ 
+@@ -31,7 +58,6 @@ static int pci_pwrctrl_slot_probe(struct
+ {
+ 	struct pci_pwrctrl_slot_data *slot;
+ 	struct device *dev = &pdev->dev;
+-	struct clk *clk;
+ 	int ret;
+ 
+ 	slot = devm_kzalloc(dev, sizeof(*slot), GFP_KERNEL);
+@@ -46,24 +72,20 @@ static int pci_pwrctrl_slot_probe(struct
+ 	}
+ 
+ 	slot->num_supplies = ret;
+-	ret = regulator_bulk_enable(slot->num_supplies, slot->supplies);
+-	if (ret < 0) {
+-		dev_err_probe(dev, ret, "Failed to enable slot regulators\n");
+-		regulator_bulk_free(slot->num_supplies, slot->supplies);
+-		return ret;
+-	}
+ 
+-	ret = devm_add_action_or_reset(dev, devm_pci_pwrctrl_slot_power_off,
++	ret = devm_add_action_or_reset(dev, devm_pci_pwrctrl_slot_release,
+ 				       slot);
+ 	if (ret)
+ 		return ret;
+ 
+-	clk = devm_clk_get_optional_enabled(dev, NULL);
+-	if (IS_ERR(clk)) {
+-		return dev_err_probe(dev, PTR_ERR(clk),
++	slot->clk = devm_clk_get_optional(dev, NULL);
++	if (IS_ERR(slot->clk)) {
++		return dev_err_probe(dev, PTR_ERR(slot->clk),
+ 				     "Failed to enable slot clock\n");
+ 	}
+ 
++	slot_pwrctrl_power_on(&slot->ctx);
++
+ 	slot->ctx.power_on = slot_pwrctrl_power_on;
+ 	slot->ctx.power_off = slot_pwrctrl_power_off;
+ 

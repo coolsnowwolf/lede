@@ -1,0 +1,59 @@
+From 4557f34d4b6f97684080444434fe8d33b68067e1 Mon Sep 17 00:00:00 2001
+From: Jiali Chen <chenjiali@radxa.com>
+Date: Tue, 30 Dec 2025 09:41:46 +0000
+Subject: [PATCH 153/268] usb: typec: fusb302: workaround for fixed VBUS
+ hardware
+
+On some hardware designs where the 5V VBUS is fixed (always on) or cannot
+be controlled by the FUSB302, the TCPM state machine may hang during the
+transition to SRC_ATTACHED.
+
+Normally, when TCPM instructs the driver to enable VBUS, it waits for a
+VBUS_PRESENT signal from the port driver. However, if VBUS is already
+physically present (because it's hardwired), the FUSB302 does not generate
+a new interrupt or status change, causing the TCPM to time out waiting for
+VBUS.
+
+This patch introduces a new device property "fcs,force-vbus-toggle".
+When set, the driver manually toggles the internal VBUS presence state
+and notifies the TCPM during the VBUS enabling phase. This simulates a
+VBUS rising edge, satisfying the state machine's requirement to proceed.
+
+Signed-off-by: Jiali Chen <chenjiali@radxa.com>
+---
+ drivers/usb/typec/tcpm/fusb302.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+--- a/drivers/usb/typec/tcpm/fusb302.c
++++ b/drivers/usb/typec/tcpm/fusb302.c
+@@ -99,6 +99,7 @@ struct fusb302_chip {
+ 	bool intr_togdone;
+ 	bool intr_bc_lvl;
+ 	bool intr_comp_chng;
++	bool force_vbus_toggle;
+ 
+ 	/* port status */
+ 	bool vconn_on;
+@@ -776,6 +777,13 @@ static int tcpm_set_vbus(struct tcpc_dev
+ 		}
+ 		chip->vbus_on = on;
+ 		fusb302_log(chip, "vbus := %s", str_on_off(on));
++		if (on && chip->force_vbus_toggle) {
++			fusb302_log(chip, "WORKAROUND: Forcing VBUS toggle for TCPM state machine");
++			chip->vbus_present = false;
++			tcpm_vbus_change(chip->tcpm_port);
++			chip->vbus_present = true;
++			tcpm_vbus_change(chip->tcpm_port);
++		}
+ 	}
+ 	if (chip->charge_on == charge)
+ 		fusb302_log(chip, "charge is already %s", str_on_off(charge));
+@@ -1723,6 +1731,8 @@ static int fusb302_probe(struct i2c_clie
+ 	if (IS_ERR(chip->vbus))
+ 		return PTR_ERR(chip->vbus);
+ 
++	chip->force_vbus_toggle = device_property_read_bool(chip->dev, "fcs,force-vbus-toggle");
++
+ 	chip->wq = create_singlethread_workqueue(dev_name(chip->dev));
+ 	if (!chip->wq)
+ 		return -ENOMEM;

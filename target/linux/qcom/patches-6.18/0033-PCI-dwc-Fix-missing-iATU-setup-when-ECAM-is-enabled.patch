@@ -1,0 +1,91 @@
+--- a/drivers/pci/controller/dwc/pcie-designware-host.c
++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
+@@ -630,13 +630,6 @@ int dw_pcie_host_init(struct dw_pcie_rp
+ 	if (ret)
+ 		goto err_free_msi;
+ 
+-	if (pp->ecam_enabled) {
+-		ret = dw_pcie_config_ecam_iatu(pp);
+-		if (ret) {
+-			dev_err(dev, "Failed to configure iATU in ECAM mode\n");
+-			goto err_free_msi;
+-		}
+-	}
+ 
+ 	/*
+ 	 * Allocate the resource for MSG TLP before programming the iATU
+@@ -899,8 +892,21 @@ static int dw_pcie_iatu_setup(struct dw_
+ 	 * NOTE: For outbound address translation, outbound iATU at index 0 is
+ 	 * reserved for CFG IOs (dw_pcie_other_conf_map_bus()), thus start at
+ 	 * index 1.
++	 *
++	 * If using ECAM, outbound iATU at index 0 and index 1 is reserved for
++	 * CFG IOs.
+ 	 */
+-	ob_iatu_index = 1;
++	if (pp->ecam_enabled) {
++		ob_iatu_index = 2;
++		ret = dw_pcie_config_ecam_iatu(pp);
++		if (ret) {
++			dev_err(pci->dev, "Failed to configure iATU in ECAM mode\n");
++			return ret;
++		}
++	} else {
++		ob_iatu_index = 1;
++	}
++
+ 	resource_list_for_each_entry(entry, &pp->bridge->windows) {
+ 		resource_size_t res_size;
+ 
+@@ -963,6 +969,20 @@ static int dw_pcie_iatu_setup(struct dw_
+ 			}
+ 			ob_iatu_index++;
+ 		} else {
++			/*
++			 * If there are not enough outbound windows to give I/O
++			 * space its own iATU, the outbound iATU at index 0 will
++			 * be shared between I/O space and CFG IOs, by
++			 * temporarily reconfiguring the iATU to CFG space, in
++			 * order to do a CFG IO, and then immediately restoring
++			 * it to I/O space. This is only implemented when using
++			 * dw_pcie_other_conf_map_bus(), which is not the case
++			 * when using ECAM.
++			 */
++			if (pp->ecam_enabled) {
++				dev_err(pci->dev, "Cannot add outbound window for I/O\n");
++				return -ENOMEM;
++			}
+ 			pp->cfg0_io_shared = true;
+ 		}
+ 	}
+@@ -1132,7 +1152,7 @@ int dw_pcie_setup_rc(struct dw_pcie_rp *
+ 	 * the platform uses its own address translation component rather than
+ 	 * ATU, so we should not program the ATU here.
+ 	 */
+-	if (pp->bridge->child_ops == &dw_child_pcie_ops) {
++	if (pp->bridge->child_ops == &dw_child_pcie_ops || pp->ecam_enabled) {
+ 		ret = dw_pcie_iatu_setup(pp);
+ 		if (ret)
+ 			return ret;
+--- a/drivers/pci/controller/dwc/pcie-designware.c
++++ b/drivers/pci/controller/dwc/pcie-designware.c
+@@ -531,6 +531,9 @@ int dw_pcie_prog_outbound_atu(struct dw_
+ 	u32 retries, val;
+ 	u64 limit_addr;
+ 
++	if (atu->index >= pci->num_ob_windows)
++		return -ENOSPC;
++
+ 	limit_addr = parent_bus_addr + atu->size - 1;
+ 
+ 	if ((limit_addr & ~pci->region_limit) != (parent_bus_addr & ~pci->region_limit) ||
+@@ -604,6 +607,9 @@ int dw_pcie_prog_inbound_atu(struct dw_p
+ 	u64 limit_addr = pci_addr + size - 1;
+ 	u32 retries, val;
+ 
++	if (index >= pci->num_ib_windows)
++		return -ENOSPC;
++
+ 	if ((limit_addr & ~pci->region_limit) != (pci_addr & ~pci->region_limit) ||
+ 	    !IS_ALIGNED(parent_bus_addr, pci->region_align) ||
+ 	    !IS_ALIGNED(pci_addr, pci->region_align) || !size) {

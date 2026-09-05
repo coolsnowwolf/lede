@@ -1,0 +1,150 @@
+From bf107185e0625462bf04c9809d6eee52f92f3970 Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Mon, 27 Apr 2026 09:47:22 +0800
+Subject: [PATCH 079/268] ACPI: platform_profile: Make legacy sysfs optional
+
+The platform profile core creates both the per-handler class devices and
+the legacy aggregate files under /sys/firmware/acpi.  The latter need
+acpi_kobj, which is not present when ACPI support is built but the system
+boots without enabling the ACPI interpreter.
+
+Keep the class device registration available in that case and make the
+legacy ACPI sysfs notifications/group updates no-ops when acpi_kobj is
+absent. This preserves the fix for non-ACPI boot warnings while allowing
+non-ACPI platform profile handlers to use the generic class interface.
+
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/acpi/platform_profile.c | 42 +++++++++++++++++++++++----------
+ 1 file changed, 29 insertions(+), 13 deletions(-)
+
+--- a/drivers/acpi/platform_profile.c
++++ b/drivers/acpi/platform_profile.c
+@@ -39,10 +39,17 @@ static const char * const profile_names[
+ 	[PLATFORM_PROFILE_PERFORMANCE] = "performance",
+ 	[PLATFORM_PROFILE_CUSTOM] = "custom",
+ };
++
+ static_assert(ARRAY_SIZE(profile_names) == PLATFORM_PROFILE_LAST);
+ 
+ static DEFINE_IDA(platform_profile_ida);
+ 
++static void platform_profile_legacy_notify(void)
++{
++	if (acpi_kobj)
++		sysfs_notify(acpi_kobj, NULL, "platform_profile");
++}
++
+ /**
+  * _commmon_choices_show - Show the available profile choices
+  * @choices: The available profile choices
+@@ -215,7 +222,7 @@ static ssize_t profile_store(struct devi
+ 			return ret;
+ 	}
+ 
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	platform_profile_legacy_notify();
+ 
+ 	return count;
+ }
+@@ -435,7 +442,7 @@ static ssize_t platform_profile_store(st
+ 			return ret;
+ 	}
+ 
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	platform_profile_legacy_notify();
+ 
+ 	return count;
+ }
+@@ -472,6 +479,14 @@ static const struct attribute_group plat
+ 	.is_visible = profile_class_is_visible,
+ };
+ 
++static int platform_profile_legacy_update_group(void)
++{
++	if (!acpi_kobj)
++		return 0;
++
++	return sysfs_update_group(acpi_kobj, &platform_profile_group);
++}
++
+ /**
+  * platform_profile_notify - Notify class device and legacy sysfs interface
+  * @dev: The class device
+@@ -481,7 +496,7 @@ void platform_profile_notify(struct devi
+ 	scoped_cond_guard(mutex_intr, return, &profile_lock) {
+ 		_notify_class_profile(dev, NULL);
+ 	}
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	platform_profile_legacy_notify();
+ }
+ EXPORT_SYMBOL_GPL(platform_profile_notify);
+ 
+@@ -529,7 +544,7 @@ int platform_profile_cycle(void)
+ 			return err;
+ 	}
+ 
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	platform_profile_legacy_notify();
+ 
+ 	return 0;
+ }
+@@ -554,7 +569,7 @@ struct device *platform_profile_register
+ 
+ 	/* Sanity check */
+ 	if (WARN_ON_ONCE(!dev || !name || !ops || !ops->profile_get ||
+-	    !ops->profile_set || !ops->probe))
++			 !ops->profile_set || !ops->probe))
+ 		return ERR_PTR(-EINVAL);
+ 
+ 	struct platform_profile_handler *pprof __free(kfree) = kzalloc(
+@@ -603,9 +618,9 @@ struct device *platform_profile_register
+ 		goto cleanup_ida;
+ 	}
+ 
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	platform_profile_legacy_notify();
+ 
+-	err = sysfs_update_group(acpi_kobj, &platform_profile_group);
++	err = platform_profile_legacy_update_group();
+ 	if (err)
+ 		goto cleanup_cur;
+ 
+@@ -639,8 +654,8 @@ void platform_profile_remove(struct devi
+ 	ida_free(&platform_profile_ida, pprof->minor);
+ 	device_unregister(&pprof->dev);
+ 
+-	sysfs_notify(acpi_kobj, NULL, "platform_profile");
+-	sysfs_update_group(acpi_kobj, &platform_profile_group);
++	platform_profile_legacy_notify();
++	platform_profile_legacy_update_group();
+ }
+ EXPORT_SYMBOL_GPL(platform_profile_remove);
+ 
+@@ -688,13 +703,13 @@ static int __init platform_profile_init(
+ {
+ 	int err;
+ 
+-	if (acpi_disabled)
+-		return -EOPNOTSUPP;
+-
+ 	err = class_register(&platform_profile_class);
+ 	if (err)
+ 		return err;
+ 
++	if (!acpi_kobj)
++		return 0;
++
+ 	err = sysfs_create_group(acpi_kobj, &platform_profile_group);
+ 	if (err)
+ 		class_unregister(&platform_profile_class);
+@@ -704,7 +719,8 @@ static int __init platform_profile_init(
+ 
+ static void __exit platform_profile_exit(void)
+ {
+-	sysfs_remove_group(acpi_kobj, &platform_profile_group);
++	if (acpi_kobj)
++		sysfs_remove_group(acpi_kobj, &platform_profile_group);
+ 	class_unregister(&platform_profile_class);
+ }
+ module_init(platform_profile_init);

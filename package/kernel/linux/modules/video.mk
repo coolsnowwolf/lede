@@ -419,6 +419,18 @@ endef
 
 $(eval $(call KernelPackage,drm-exec))
 
+define KernelPackage/drm-gem-shmem-helper
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=GEM shmem helper functions
+  PROVIDES:=kmod-drm-shmem-helper
+  DEPENDS:=@DISPLAY_SUPPORT +kmod-drm +kmod-drm-kms-helper
+  KCONFIG:=CONFIG_DRM_GEM_SHMEM_HELPER
+  FILES:=$(LINUX_DIR)/drivers/gpu/drm/drm_shmem_helper.ko
+  AUTOLOAD:=$(call AutoProbe,drm_shmem_helper)
+endef
+
+$(eval $(call KernelPackage,drm-gem-shmem-helper))
+
 define KernelPackage/drm-dma-helper
   SUBMENU:=$(VIDEO_MENU)
   HIDDEN:=1
@@ -1660,6 +1672,16 @@ define KernelPackage/video-mem2mem/description
 endef
 
 $(eval $(call KernelPackage,video-mem2mem))
+
+define KernelPackage/video-dma
+  SUBMENU:=$(VIDEO_MENU)
+  TITLE:=Video DMA support
+  HIDDEN:=1
+  DEPENDS:=+kmod-video-dma-contig +kmod-video-dma-sg
+  $(call AddDepends/video)
+endef
+
+$(eval $(call KernelPackage,video-dma))
 
 define KernelPackage/video-dma-contig
   SUBMENU:=$(VIDEO_MENU)

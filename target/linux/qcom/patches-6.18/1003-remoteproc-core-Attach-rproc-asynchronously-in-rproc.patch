@@ -1,0 +1,69 @@
+From c780a295ef4facb19da637b368105248c3e0f445 Mon Sep 17 00:00:00 2001
+From: Jingyi Wang <jingyi.wang@oss.qualcomm.com>
+Date: Thu, 9 Apr 2026 01:46:21 -0700
+Subject: [PATCH 003/268] remoteproc: core: Attach rproc asynchronously in
+ rproc_add() path
+
+For rproc with state RPROC_DETACHED and auto_boot enabled, the attach
+callback will be called in the rproc_add()->rproc_trigger_auto_boot()->
+rproc_boot() path, the failure in this path will cause the rproc_add()
+fail and the resource release, which will cause issue like rproc recovery
+or falling back to firmware load fail. Add attach_work for rproc and call
+it asynchronously in rproc_add() path like what rproc_start() do.
+
+Signed-off-by: Jingyi Wang <jingyi.wang@oss.qualcomm.com>
+---
+ drivers/remoteproc/remoteproc_core.c | 20 ++++++++++++--------
+ include/linux/remoteproc.h           |  1 +
+ 2 files changed, 13 insertions(+), 8 deletions(-)
+
+--- a/drivers/remoteproc/remoteproc_core.c
++++ b/drivers/remoteproc/remoteproc_core.c
+@@ -1678,18 +1678,21 @@ static void rproc_auto_boot_callback(con
+ 	release_firmware(fw);
+ }
+ 
++static void rproc_attach_work(struct work_struct *work)
++{
++	struct rproc *rproc = container_of(work, struct rproc, attach_work);
++
++	rproc_boot(rproc);
++}
++
+ static int rproc_trigger_auto_boot(struct rproc *rproc)
+ {
+ 	int ret;
+ 
+-	/*
+-	 * Since the remote processor is in a detached state, it has already
+-	 * been booted by another entity.  As such there is no point in waiting
+-	 * for a firmware image to be loaded, we can simply initiate the process
+-	 * of attaching to it immediately.
+-	 */
+-	if (rproc->state == RPROC_DETACHED)
+-		return rproc_boot(rproc);
++	if (rproc->state == RPROC_DETACHED) {
++		schedule_work(&rproc->attach_work);
++		return 0;
++	}
+ 
+ 	/*
+ 	 * We're initiating an asynchronous firmware loading, so we can
+@@ -2517,6 +2520,7 @@ struct rproc *rproc_alloc(struct device
+ 	INIT_LIST_HEAD(&rproc->dump_segments);
+ 
+ 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
++	INIT_WORK(&rproc->attach_work, rproc_attach_work);
+ 
+ 	rproc->state = RPROC_OFFLINE;
+ 
+--- a/include/linux/remoteproc.h
++++ b/include/linux/remoteproc.h
+@@ -568,6 +568,7 @@ struct rproc {
+ 	struct list_head subdevs;
+ 	struct idr notifyids;
+ 	int index;
++	struct work_struct attach_work;
+ 	struct work_struct crash_handler;
+ 	unsigned int crash_cnt;
+ 	bool recovery_disabled;

@@ -1,0 +1,85 @@
+From f9b0143575f62d3ec9c496c59f29148f6eb85509 Mon Sep 17 00:00:00 2001
+From: Daniel Thompson <daniel@riscstar.com>
+Date: Thu, 26 Feb 2026 15:34:29 +0000
+Subject: [PATCH 103/268] net: pcs: pcs-xpcs: select operating mode for
+ 10G-baseR capable PCS
+
+Currently the XPCS found on Toshiba TC9564 (a.k.a. Qualcomm QPS615)
+is unable to operate at 1000base-X and slower with a PHY connected
+using SGMII/2500base-X (in our case a Qualcomm QCA8081).
+
+The problem arises when the XPCS supports 10Gbase-R. That means that
+the reset value of SR_XS_PCS_CTRL2:PCS_TYPE_SEL (0) is valid and this
+suppresses the modal switching based on bit 13 of SR_PMA_CTRL1 or
+SR_XS_PCS_CTRL1.
+
+The reported XPCS dev ID on a TC9564 is exactly the same as every other
+XPCS supported by the kernel so we can't use the dev ID to automatically
+determine what operating mode to select. However we can use the feature
+bits in SR_XS_PCS_STS2 to detect 10Gbase-R support.
+
+Rather than introduce a quirk let's attempt to solve this generically by
+setting SR_XS_PCS_CTRL2:PCS_TYPE_SEL to a reserved value when we detect
+the right we detect the right combination of phy interface and XPCS
+feature support.
+
+Signed-off-by: Daniel Thompson <daniel@riscstar.com>
+Signed-off-by: Alex Elder <elder@riscstar.com>
+---
+ drivers/net/pcs/pcs-xpcs.c | 38 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+--- a/drivers/net/pcs/pcs-xpcs.c
++++ b/drivers/net/pcs/pcs-xpcs.c
+@@ -647,6 +647,40 @@ static void xpcs_pre_config(struct phyli
+ 	xpcs->need_reset = false;
+ }
+ 
++static int xpcs_config_operating_mode(struct dw_xpcs *xpcs, int an_mode)
++{
++	int mdio_stat2, ret;
++
++	switch (an_mode) {
++	case DW_AN_C37_SGMII:
++	case DW_AN_C37_1000BASEX:
++	case DW_2500BASEX:
++		mdio_stat2 = xpcs_read(xpcs, MDIO_MMD_PCS, MDIO_STAT2);
++		if (mdio_stat2 < 0)
++			return mdio_stat2;
++
++		/*
++		 * If this XPCS supports 10Gbase-R then it will be the default
++		 * which prevents 1000base-X and slower from working correctly.
++		 *
++		 * Why are we writing MDIO_PCS_CTRL2_TYPE + 1? We want the modal
++		 * behaviour that comes when we pick a reserved value. XPCS
++		 * allocates extra bits to this field and allocates values from
++		 * 15 down so MDIO_PCS_CTRL2_TYPE + 1 is the value likely to
++		 * be allocated last (and hopefully never).
++		 */
++		if (mdio_stat2 & MDIO_PCS_STAT2_10GBR) {
++			ret = xpcs_write(xpcs, MDIO_MMD_PCS, MDIO_CTRL2,
++					 MDIO_PCS_CTRL2_TYPE + 1);
++			if (ret < 0)
++				return ret;
++		}
++		break;
++	}
++
++	return 0;
++}
++
+ static int xpcs_config_aneg_c37_sgmii(struct dw_xpcs *xpcs,
+ 				      unsigned int neg_mode)
+ {
+@@ -819,6 +853,10 @@ static int xpcs_do_config(struct dw_xpcs
+ 	if (!compat)
+ 		return -ENODEV;
+ 
++	ret = xpcs_config_operating_mode(xpcs, compat->an_mode);
++	if (ret < 0)
++		return ret;
++
+ 	if (xpcs->info.pma == WX_TXGBE_XPCS_PMA_10G_ID) {
+ 		/* Wangxun devices need backplane CL37 AN enabled for
+ 		 * SGMII and 1000base-X

@@ -35,7 +35,7 @@ define Package/grub2/Default
   SECTION:=boot
   TITLE:=GRand Unified Bootloader ($(2))
   URL:=http://www.gnu.org/software/grub/
-  DEPENDS:=@(TARGET_x86||TARGET_armsr||TARGET_armvirt||TARGET_phytium_armv8||TARGET_loongarch64)
+  DEPENDS:=@(TARGET_x86||TARGET_armsr||TARGET_armvirt||TARGET_phytium_armv8||TARGET_loongarch64||TARGET_qcom)
   VARIANT:=$(2)
 endef
 

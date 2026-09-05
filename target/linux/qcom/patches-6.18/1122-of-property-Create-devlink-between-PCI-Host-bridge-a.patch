@@ -1,0 +1,91 @@
+From ab005ecfdd05cd634d7b95be7810c964240b8183 Mon Sep 17 00:00:00 2001
+From: Manivannan Sadhasivam <manivannan.sadhasivam@oss.qualcomm.com>
+Date: Wed, 6 May 2026 13:26:25 +0530
+Subject: [PATCH 122/268] of: property: Create devlink between PCI Host bridge
+ and Root Port supplies
+
+Recently, devicetree started to represent the PCI Host bridge supplies like
+PHY in the Root Port nodes as seen in commit 38fcbfbd4207
+("dt-bindings: PCI: qcom: Move PHY & reset GPIO to Root Port node"). But
+the Host bridge drivers still control the Root Port supplies as a part of
+their controller initialization/deinitialization sequence.
+
+So the Host bridge drivers end up parsing the Root Port supplies in their
+probe() and control them. A downside to this approach is that the devlink
+dependency between the suppliers and Host bridge is completely broken. Due
+to this, the driver core probes the Host bridge drivers even if the
+supplies are not ready, causing probe deferrals and setup teardowns in
+Host bridge probe().
+
+These probe deferrals sometime happen over 1000 times (as reported in Qcom
+Glymur platform) leading to a waste of CPU resources and increase in boot
+time. So to fix these unnecessary deferrals, create devlink between the
+Host bridge and Root Port supplies in of_fwnode_add_links(). This will
+allow the driver core to probe the Host bridge drivers only when all Root
+Port supplies are available.
+
+Reported-by: Bjorn Andersson <andersson@kernel.org>
+Signed-off-by: Manivannan Sadhasivam <manivannan.sadhasivam@oss.qualcomm.com>
+---
+ drivers/of/property.c | 29 +++++++++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+--- a/drivers/of/property.c
++++ b/drivers/of/property.c
+@@ -1541,6 +1541,7 @@ static const struct supplier_bindings of
+ /**
+  * of_link_property - Create device links to suppliers listed in a property
+  * @con_np: The consumer device tree node which contains the property
++ * @parent_np: Optional parent device tree node requiring child's supplies
+  * @prop_name: Name of property to be parsed
+  *
+  * This function checks if the property @prop_name that is present in the
+@@ -1557,7 +1558,8 @@ static const struct supplier_bindings of
+  * device tree nodes even when attempts to create a link to one or more
+  * suppliers fail.
+  */
+-static int of_link_property(struct device_node *con_np, const char *prop_name)
++static int of_link_property(struct device_node *con_np, struct device_node *parent_np,
++			    const char *prop_name)
+ {
+ 	struct device_node *phandle;
+ 	const struct supplier_bindings *s = of_supplier_bindings;
+@@ -1578,6 +1580,10 @@ static int of_link_property(struct devic
+ 			matched = true;
+ 			i++;
+ 			of_link_to_phandle(con_dev_np, phandle, s->fwlink_flags);
++
++			/* Link the child's supplies to parent if needed */
++			if (parent_np)
++				of_link_to_phandle(parent_np, phandle, s->fwlink_flags);
+ 			of_node_put(phandle);
+ 		}
+ 		s++;
+@@ -1612,7 +1618,26 @@ static int of_fwnode_add_links(struct fw
+ 		return -EINVAL;
+ 
+ 	for_each_property_of_node(con_np, p)
+-		of_link_property(con_np, p->name);
++		of_link_property(con_np, NULL, p->name);
++
++	/*
++	 * Since the host bridge drivers parse and control the Root Port
++	 * supplies, create a devlink between host bridge and Root Port
++	 * supplies. This will prevent the host bridge drivers from being
++	 * probed before the supplies become available.
++	 *
++	 * For checking the host bridge node, first ensure that it is a PCI node
++	 * and its parent is not a PCI node. Only host bridge nodes will have
++	 * this structure.
++	 */
++	if (of_node_is_type(con_np, "pci") && !of_node_is_type(con_np->parent, "pci")) {
++		for_each_available_child_of_node_scoped(con_np, child) {
++			if (of_node_is_type(child, "pci")) {
++				for_each_property_of_node(child, p)
++					of_link_property(child, con_np, p->name);
++			}
++		}
++	}
+ 
+ 	return 0;
+ }

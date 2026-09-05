@@ -1,0 +1,66 @@
+From e51ad3670a8d35a30b1369cce1edf55ddfac246c Mon Sep 17 00:00:00 2001
+From: Xilin Wu <sophon@radxa.com>
+Date: Mon, 6 Apr 2026 23:15:41 +0800
+Subject: [PATCH 059/268] clk: qcom: clk-branch: calculate timeout based on
+ clock frequency
+
+Clock branches with extremely low rates (tens of Hz to low kHz) take
+much longer to toggle than the fixed 200 us timeout allows. A 1 kHz
+clock needs at least 3 ms (3 cycles) to toggle.
+
+Instead of increasing the timeout to a huge fixed value for all clocks,
+dynamically compute the required timeout based on the current clock
+rate, accounting for 3 cycles at the current clock rate.
+
+Based on a downstream patch by Mike Tipton:
+https://git.codelinaro.org/clo/la/kernel/qcom/-/commit/aa899c2d1fa31e247f04810f125ac9c60927c901
+
+Fixes: 6e0ad1b6c1c9 ("clk: qcom: Add support for branches/gate clocks")
+Signed-off-by: Mike Tipton <quic_mdtipton@quicinc.com>
+Signed-off-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/clk/qcom/clk-branch.c | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+--- a/drivers/clk/qcom/clk-branch.c
++++ b/drivers/clk/qcom/clk-branch.c
+@@ -59,9 +59,27 @@ static bool clk_branch2_check_halt(const
+ 	return (val & CBCR_CLK_OFF) == (invert ? 0 : CBCR_CLK_OFF);
+ }
+ 
++static int get_branch_timeout(const struct clk_branch *br)
++{
++	unsigned long rate;
++	int timeout;
++
++	/*
++	 * The time it takes a clock branch to toggle is roughly 3 clock cycles.
++	 */
++	rate = clk_hw_get_rate(&br->clkr.hw);
++	if (!rate)
++		return 200;
++
++	timeout = 3 * (USEC_PER_SEC / rate);
++
++	return max(timeout, 200);
++}
++
+ static int clk_branch_wait(const struct clk_branch *br, bool enabling,
+ 		bool (check_halt)(const struct clk_branch *, bool))
+ {
++	int timeout, count;
+ 	bool voted = br->halt_check & BRANCH_VOTED;
+ 	const char *name = clk_hw_get_name(&br->clkr.hw);
+ 
+@@ -77,9 +95,9 @@ static int clk_branch_wait(const struct
+ 	} else if (br->halt_check == BRANCH_HALT_ENABLE ||
+ 		   br->halt_check == BRANCH_HALT ||
+ 		   (enabling && voted)) {
+-		int count = 200;
++		timeout = get_branch_timeout(br);
+ 
+-		while (count-- > 0) {
++		for (count = timeout; count > 0; count--) {
+ 			if (check_halt(br, enabling))
+ 				return 0;
+ 			udelay(1);

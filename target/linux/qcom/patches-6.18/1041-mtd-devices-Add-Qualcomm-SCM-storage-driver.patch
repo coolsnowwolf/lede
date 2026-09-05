@@ -1,0 +1,314 @@
+From 0230a7ed950900e1137300b7c3d634979374b9ba Mon Sep 17 00:00:00 2001
+From: Junhao Xie <bigfoot@radxa.com>
+Date: Fri, 19 Dec 2025 02:02:05 +0800
+Subject: [PATCH 041/268] mtd: devices: Add Qualcomm SCM storage driver
+
+Add MTD driver for accessing storage devices managed by Qualcomm's
+TrustZone firmware. On some platforms, BIOS/firmware storage (typically
+SPI NOR flash) is not directly accessible from the non-secure world and
+all operations must go through SCM (Secure Channel Manager) calls.
+
+Signed-off-by: Junhao Xie <bigfoot@radxa.com>
+Tested-by: Xilin Wu <sophon@radxa.com>
+---
+ drivers/mtd/devices/Kconfig            |  17 ++
+ drivers/mtd/devices/Makefile           |   1 +
+ drivers/mtd/devices/qcom_scm_storage.c | 256 +++++++++++++++++++++++++
+ 3 files changed, 274 insertions(+)
+ create mode 100644 drivers/mtd/devices/qcom_scm_storage.c
+
+--- a/drivers/mtd/devices/Kconfig
++++ b/drivers/mtd/devices/Kconfig
+@@ -194,6 +194,23 @@ config MTD_INTEL_DG
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called mtd-intel-dg.
+ 
++config MTD_QCOM_SCM_STORAGE
++	tristate "Qualcomm TrustZone protected storage MTD driver"
++	depends on MTD
++	depends on QCOM_SCM || COMPILE_TEST
++	help
++	  This provides an MTD device to access storage (typically SPI NOR
++	  flash) that is managed by Qualcomm's TrustZone firmware. On some
++	  platforms, the firmware storage is not directly accessible from
++	  the non-secure world and all operations must go through secure
++	  monitor calls.
++
++	  This driver is only functional on devices where the bootloader
++	  has configured TrustZone to expose the storage interface.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called qcom_scm_storage.
++
+ comment "Disk-On-Chip Device Drivers"
+ 
+ config MTD_DOCG3
+--- a/drivers/mtd/devices/Makefile
++++ b/drivers/mtd/devices/Makefile
+@@ -19,6 +19,7 @@ obj-$(CONFIG_MTD_BCM47XXSFLASH)	+= bcm47
+ obj-$(CONFIG_MTD_ST_SPI_FSM)    += st_spi_fsm.o
+ obj-$(CONFIG_MTD_POWERNV_FLASH)	+= powernv_flash.o
+ obj-$(CONFIG_MTD_INTEL_DG)	+= mtd_intel_dg.o
++obj-$(CONFIG_MTD_QCOM_SCM_STORAGE)	+= qcom_scm_storage.o
+ 
+ 
+ CFLAGS_docg3.o			+= -I$(src)
+--- /dev/null
++++ b/drivers/mtd/devices/qcom_scm_storage.c
+@@ -0,0 +1,256 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Qualcomm TrustZone SCM Storage Flash driver
++ *
++ * Copyright (c) 2025 Junhao Xie <bigfoot@radxa.com>
++ */
++
++#include <linux/dma-mapping.h>
++#include <linux/module.h>
++#include <linux/mtd/mtd.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++
++#include <linux/firmware/qcom/qcom_scm.h>
++
++/*
++ * This driver provides MTD access to storage devices managed by Qualcomm's
++ * TrustZone firmware. The storage (typically SPI NOR flash) is not directly
++ * accessible from the non-secure world and all operations must go through
++ * SCM (Secure Channel Manager) calls.
++ *
++ * A bounce buffer is required because the interface requires
++ * block-aligned addresses and sizes
++ */
++struct qcom_scm_storage {
++	struct device *dev;
++	struct mutex lock;	/* Protects SCM storage operations */
++	struct mtd_info mtd;
++	struct qcom_scm_storage_info info;
++	size_t buffer_size;
++	u8 *buffer;
++};
++
++static int qcom_scm_storage_erase(struct mtd_info *mtd,
++				  struct erase_info *instr)
++{
++	struct qcom_scm_storage *host =
++		container_of(mtd, struct qcom_scm_storage, mtd);
++
++	if (instr->addr % host->info.block_size ||
++	    instr->len % host->info.block_size)
++		return -EINVAL;
++
++	guard(mutex)(&host->lock);
++
++	return qcom_scm_storage_send_cmd(QCOM_SCM_STORAGE_SPINOR,
++					 QCOM_SCM_STORAGE_ERASE,
++					 instr->addr / host->info.block_size,
++					 0, instr->len);
++}
++
++static int qcom_scm_storage_read(struct mtd_info *mtd,
++				 loff_t from, size_t len,
++				 size_t *retlen, u_char *buf)
++{
++	struct qcom_scm_storage *host =
++		container_of(mtd, struct qcom_scm_storage, mtd);
++	size_t block_size = host->info.block_size;
++	loff_t block_start, block_off, lba;
++	size_t chunk, to_read;
++	int ret = 0;
++
++	if (retlen)
++		*retlen = 0;
++
++	if (from + len > mtd->size)
++		return -EINVAL;
++
++	if (len == 0)
++		return 0;
++
++	guard(mutex)(&host->lock);
++
++	while (len > 0) {
++		block_start = round_down(from, block_size);
++		block_off = from - block_start;
++		lba = block_start / block_size;
++
++		if (block_off || len < block_size) {
++			chunk = min_t(size_t, block_size - block_off, len);
++			to_read = block_size;
++		} else {
++			chunk = round_down(len, block_size);
++			chunk = min_t(size_t, chunk, host->buffer_size);
++			to_read = chunk;
++		}
++
++		ret = qcom_scm_storage_send_cmd(QCOM_SCM_STORAGE_SPINOR,
++						QCOM_SCM_STORAGE_READ,
++						lba, host->buffer,
++						to_read);
++		if (ret)
++			return ret;
++
++		memcpy(buf, host->buffer + block_off, chunk);
++
++		buf += chunk;
++		from += chunk;
++		len -= chunk;
++		if (retlen)
++			*retlen += chunk;
++	}
++
++	return 0;
++}
++
++static int qcom_scm_storage_write(struct mtd_info *mtd,
++				  loff_t to, size_t len,
++				  size_t *retlen, const u_char *buf)
++{
++	struct qcom_scm_storage *host =
++		container_of(mtd, struct qcom_scm_storage, mtd);
++	size_t block_size = host->info.block_size;
++	loff_t block_start, block_off, lba;
++	size_t chunk, to_write;
++	int ret = 0;
++
++	if (retlen)
++		*retlen = 0;
++
++	if (to + len > mtd->size)
++		return -EINVAL;
++
++	if (len == 0)
++		return 0;
++
++	guard(mutex)(&host->lock);
++
++	while (len > 0) {
++		block_start = round_down(to, block_size);
++		block_off = to - block_start;
++		lba = block_start / block_size;
++
++		if (block_off || len < block_size) {
++			chunk = min_t(size_t, block_size - block_off, len);
++			to_write = block_size;
++
++			ret = qcom_scm_storage_send_cmd(QCOM_SCM_STORAGE_SPINOR,
++							QCOM_SCM_STORAGE_READ,
++							lba, host->buffer,
++							block_size);
++			if (ret)
++				return ret;
++		} else {
++			chunk = round_down(len, block_size);
++			chunk = min_t(size_t, chunk, host->buffer_size);
++			to_write = chunk;
++		}
++
++		memcpy(host->buffer + block_off, buf, chunk);
++
++		ret = qcom_scm_storage_send_cmd(QCOM_SCM_STORAGE_SPINOR,
++						QCOM_SCM_STORAGE_WRITE,
++						lba, host->buffer,
++						to_write);
++		if (ret)
++			return ret;
++
++		buf += chunk;
++		to += chunk;
++		len -= chunk;
++		if (retlen)
++			*retlen += chunk;
++	}
++
++	return 0;
++}
++
++static int qcom_scm_storage_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct qcom_scm_storage *host;
++	int ret;
++
++	host = devm_kzalloc(dev, sizeof(*host), GFP_KERNEL);
++	if (!host)
++		return -ENOMEM;
++
++	platform_set_drvdata(pdev, host);
++	host->dev = dev;
++
++	ret = devm_mutex_init(dev, &host->lock);
++	if (ret)
++		return ret;
++
++	host->buffer_size = SZ_256K;
++	host->buffer = devm_kzalloc(dev, host->buffer_size, GFP_KERNEL);
++	if (!host->buffer)
++		return -ENOMEM;
++
++	ret = qcom_scm_storage_send_cmd(QCOM_SCM_STORAGE_SPINOR,
++					QCOM_SCM_STORAGE_GET_INFO,
++					0, &host->info,
++					sizeof(host->info));
++	if (ret < 0)
++		return dev_err_probe(dev, ret,
++				     "failed to get storage info\n");
++
++	if (!host->info.block_size || !host->info.total_blocks)
++		return dev_err_probe(dev, -EINVAL,
++				     "invalid storage geometry\n");
++
++	if (host->info.block_size > host->buffer_size)
++		return dev_err_probe(dev, -EINVAL,
++				     "block size %u exceeds buffer size\n",
++				     host->info.block_size);
++
++	host->mtd.name = dev_name(dev);
++	host->mtd.owner = THIS_MODULE;
++	host->mtd.dev.parent = dev;
++	host->mtd.size = host->info.total_blocks * host->info.block_size;
++	host->mtd.erasesize = host->info.block_size;
++	host->mtd.writesize = host->info.block_size;
++	host->mtd.writebufsize = host->info.block_size;
++	host->mtd.type = MTD_NORFLASH;
++	host->mtd.flags = MTD_WRITEABLE;
++	host->mtd._erase = qcom_scm_storage_erase;
++	host->mtd._read = qcom_scm_storage_read;
++	host->mtd._write = qcom_scm_storage_write;
++
++	ret = mtd_device_register(&host->mtd, NULL, 0);
++	if (ret)
++		return ret;
++
++	dev_info(dev, "scm storage 0x%llx registered with size %llu bytes\n",
++		 host->info.serial_num, host->mtd.size);
++
++	return 0;
++}
++
++static void qcom_scm_storage_remove(struct platform_device *pdev)
++{
++	struct qcom_scm_storage *host = platform_get_drvdata(pdev);
++
++	WARN_ON(mtd_device_unregister(&host->mtd));
++}
++
++static const struct platform_device_id qcom_scm_storage_ids[] = {
++	{ "qcom_scm_storage", 0 },
++	{}
++};
++MODULE_DEVICE_TABLE(platform, qcom_scm_storage_ids);
++
++static struct platform_driver qcom_scm_storage_driver = {
++	.probe	= qcom_scm_storage_probe,
++	.remove	= qcom_scm_storage_remove,
++	.driver = {
++		.name	= "qcom_scm_storage",
++	},
++	.id_table = qcom_scm_storage_ids,
++};
++module_platform_driver(qcom_scm_storage_driver);
++
++MODULE_AUTHOR("Junhao Xie <bigfoot@radxa.com>");
++MODULE_DESCRIPTION("Qualcomm TrustZone SCM Storage Flash driver");
++MODULE_LICENSE("GPL");

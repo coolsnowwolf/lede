@@ -1,0 +1,225 @@
+--- a/drivers/gpu/drm/bridge/simple-bridge.c
++++ b/drivers/gpu/drm/bridge/simple-bridge.c
+@@ -7,11 +7,13 @@
+  */
+ 
+ #include <linux/gpio/consumer.h>
++#include <linux/mutex.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/of_graph.h>
+ #include <linux/platform_device.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/workqueue.h>
+ 
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_bridge.h>
+@@ -32,8 +34,14 @@ struct simple_bridge {
+ 	const struct simple_bridge_info *info;
+ 
+ 	struct drm_bridge	*next_bridge;
++	struct mutex		lock;
+ 	struct regulator	*vdd;
+ 	struct gpio_desc	*enable;
++	struct work_struct	hpd_work;
++	enum drm_connector_status hpd_status;
++	bool			hpd_enabled;
++	bool			stream_enabled;
++	bool			powered;
+ };
+ 
+ static inline struct simple_bridge *
+@@ -107,6 +115,8 @@ static int simple_bridge_attach(struct d
+ 				enum drm_bridge_attach_flags flags)
+ {
+ 	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++	struct drm_bridge *prev __free(drm_bridge_put) =
++		drm_bridge_get_prev_bridge(bridge);
+ 	int ret;
+ 
+ 	ret = drm_bridge_attach(encoder, sbridge->next_bridge, bridge,
+@@ -114,6 +124,18 @@ static int simple_bridge_attach(struct d
+ 	if (ret < 0)
+ 		return ret;
+ 
++	/*
++	 * Some transparent bridges need to stay powered while HPD monitoring
++	 * is enabled, otherwise late hotplug events never reach the upstream
++	 * source. Proxy HPD to the previous bridge so we can keep power
++	 * applied only while HPD or video streaming is active.
++	 */
++	if ((sbridge->vdd || sbridge->enable) && prev &&
++	    (prev->ops & DRM_BRIDGE_OP_HPD))
++		sbridge->bridge.ops |= DRM_BRIDGE_OP_HPD;
++	else
++		sbridge->bridge.ops &= ~DRM_BRIDGE_OP_HPD;
++
+ 	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
+ 		return 0;
+ 
+@@ -133,34 +155,143 @@ static int simple_bridge_attach(struct d
+ 	return 0;
+ }
+ 
+-static void simple_bridge_enable(struct drm_bridge *bridge)
++static int simple_bridge_update_power_locked(struct simple_bridge *sbridge)
+ {
+-	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++	bool enable = sbridge->hpd_enabled || sbridge->stream_enabled;
+ 	int ret;
+ 
+-	if (sbridge->vdd) {
+-		ret = regulator_enable(sbridge->vdd);
+-		if (ret)
+-			DRM_ERROR("Failed to enable vdd regulator: %d\n", ret);
++	if (sbridge->powered == enable)
++		return 0;
++
++	if (enable) {
++		if (sbridge->vdd) {
++			ret = regulator_enable(sbridge->vdd);
++			if (ret) {
++				DRM_ERROR("Failed to enable vdd regulator: %d\n", ret);
++				return ret;
++			}
++		}
++
++		gpiod_set_value_cansleep(sbridge->enable, 1);
++	} else {
++		gpiod_set_value_cansleep(sbridge->enable, 0);
++
++		if (sbridge->vdd) {
++			ret = regulator_disable(sbridge->vdd);
++			if (ret) {
++				DRM_ERROR("Failed to disable vdd regulator: %d\n", ret);
++				return ret;
++			}
++		}
+ 	}
+ 
+-	gpiod_set_value_cansleep(sbridge->enable, 1);
++	sbridge->powered = enable;
++
++	return 0;
++}
++
++static void simple_bridge_upstream_hpd_work(struct work_struct *work)
++{
++	struct simple_bridge *sbridge =
++		container_of(work, struct simple_bridge, hpd_work);
++
++	drm_bridge_hpd_notify(&sbridge->bridge, READ_ONCE(sbridge->hpd_status));
++}
++
++static void simple_bridge_upstream_hpd_cb(void *data,
++					  enum drm_connector_status status)
++{
++	struct simple_bridge *sbridge = data;
++
++	WRITE_ONCE(sbridge->hpd_status, status);
++	schedule_work(&sbridge->hpd_work);
++}
++
++static void simple_bridge_pre_enable(struct drm_bridge *bridge)
++{
++	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++
++	mutex_lock(&sbridge->lock);
++	sbridge->stream_enabled = true;
++	simple_bridge_update_power_locked(sbridge);
++	mutex_unlock(&sbridge->lock);
++}
++
++static void simple_bridge_post_disable(struct drm_bridge *bridge)
++{
++	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++
++	mutex_lock(&sbridge->lock);
++	sbridge->stream_enabled = false;
++	simple_bridge_update_power_locked(sbridge);
++	mutex_unlock(&sbridge->lock);
++}
++
++static void simple_bridge_hpd_enable(struct drm_bridge *bridge)
++{
++	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++	struct drm_bridge *prev __free(drm_bridge_put) =
++		drm_bridge_get_prev_bridge(bridge);
++	int ret;
++
++	mutex_lock(&sbridge->lock);
++	sbridge->hpd_enabled = true;
++	ret = simple_bridge_update_power_locked(sbridge);
++	if (ret)
++		sbridge->hpd_enabled = false;
++	mutex_unlock(&sbridge->lock);
++
++	if (ret || !prev || !(prev->ops & DRM_BRIDGE_OP_HPD))
++		return;
++
++	drm_bridge_hpd_enable(prev, simple_bridge_upstream_hpd_cb, sbridge);
+ }
+ 
+-static void simple_bridge_disable(struct drm_bridge *bridge)
++static void simple_bridge_hpd_disable(struct drm_bridge *bridge)
+ {
+ 	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++	struct drm_bridge *prev __free(drm_bridge_put) =
++		drm_bridge_get_prev_bridge(bridge);
++	bool was_enabled;
++
++	mutex_lock(&sbridge->lock);
++	was_enabled = sbridge->hpd_enabled;
++	sbridge->hpd_enabled = false;
++	mutex_unlock(&sbridge->lock);
++
++	if (was_enabled && prev && (prev->ops & DRM_BRIDGE_OP_HPD))
++		drm_bridge_hpd_disable(prev);
++
++	mutex_lock(&sbridge->lock);
++	simple_bridge_update_power_locked(sbridge);
++	mutex_unlock(&sbridge->lock);
++}
++
++static void simple_bridge_detach(struct drm_bridge *bridge)
++{
++	struct simple_bridge *sbridge = drm_bridge_to_simple_bridge(bridge);
++	struct drm_bridge *prev __free(drm_bridge_put) =
++		drm_bridge_get_prev_bridge(bridge);
++
++	if (sbridge->hpd_enabled && prev && (prev->ops & DRM_BRIDGE_OP_HPD))
++		drm_bridge_hpd_disable(prev);
+ 
+-	gpiod_set_value_cansleep(sbridge->enable, 0);
++	cancel_work_sync(&sbridge->hpd_work);
+ 
+-	if (sbridge->vdd)
+-		regulator_disable(sbridge->vdd);
++	mutex_lock(&sbridge->lock);
++	sbridge->hpd_enabled = false;
++	sbridge->stream_enabled = false;
++	simple_bridge_update_power_locked(sbridge);
++	mutex_unlock(&sbridge->lock);
+ }
+ 
+ static const struct drm_bridge_funcs simple_bridge_bridge_funcs = {
+ 	.attach		= simple_bridge_attach,
+-	.enable		= simple_bridge_enable,
+-	.disable	= simple_bridge_disable,
++	.detach		= simple_bridge_detach,
++	.pre_enable	= simple_bridge_pre_enable,
++	.post_disable	= simple_bridge_post_disable,
++	.hpd_enable	= simple_bridge_hpd_enable,
++	.hpd_disable	= simple_bridge_hpd_disable,
+ };
+ 
+ static int simple_bridge_probe(struct platform_device *pdev)
+@@ -174,6 +305,8 @@ static int simple_bridge_probe(struct pl
+ 		return PTR_ERR(sbridge);
+ 
+ 	sbridge->info = of_device_get_match_data(&pdev->dev);
++	mutex_init(&sbridge->lock);
++	INIT_WORK(&sbridge->hpd_work, simple_bridge_upstream_hpd_work);
+ 
+ 	/* Get the next bridge in the pipeline. */
+ 	remote = of_graph_get_remote_node(pdev->dev.of_node, 1, -1);

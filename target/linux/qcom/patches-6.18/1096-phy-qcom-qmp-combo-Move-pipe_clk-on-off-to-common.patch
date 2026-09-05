@@ -1,0 +1,77 @@
+From 46a3dabfcd27fbe4db31849cbb654b427a4dfae5 Mon Sep 17 00:00:00 2001
+From: Val Packett <val@packett.cool>
+Date: Wed, 4 Mar 2026 16:06:23 -0300
+Subject: [PATCH 096/268] phy: qcom: qmp-combo: Move pipe_clk on/off to common
+
+Keep the USB pipe clock working when the phy is in DP-only mode, because
+the dwc controller still needs it for USB 2.0 over the same Type-C port.
+
+Tested with the BenQ RD280UA monitor which has a downstream-facing port
+for data passthrough that's manually switchable between USB 2 and 3,
+corresponding to 4-lane and 2-lane DP respectively.
+
+Note: the suspend/resume callbacks were already gating the enable/disable
+of this clock only on init_count and not usb_init_count!
+
+Reviewed-by: Neil Armstrong <neil.armstrong@linaro.org>
+Reviewed-by: Konrad Dybcio <konrad.dybcio@oss.qualcomm.com>
+Signed-off-by: Val Packett <val@packett.cool>
+---
+ drivers/phy/qualcomm/phy-qcom-qmp-combo.c | 18 ++++++++++--------
+ 1 file changed, 10 insertions(+), 8 deletions(-)
+
+--- a/drivers/phy/qualcomm/phy-qcom-qmp-combo.c
++++ b/drivers/phy/qualcomm/phy-qcom-qmp-combo.c
+@@ -3035,6 +3035,13 @@ static int qmp_combo_com_init(struct qmp
+ 	if (ret)
+ 		goto err_assert_reset;
+ 
++	/* In DP-only mode, the pipe clk is still required for USB2 */
++	ret = clk_prepare_enable(qmp->pipe_clk);
++	if (ret) {
++		dev_err(qmp->dev, "pipe_clk enable failed err=%d\n", ret);
++		goto err_disable_clocks;
++	}
++
+ 	qphy_setbits(com, QPHY_V3_DP_COM_POWER_DOWN_CTRL, SW_PWRDN);
+ 
+ 	/* override hardware control for reset of qmp phy */
+@@ -3083,6 +3090,8 @@ static int qmp_combo_com_init(struct qmp
+ 
+ 	return 0;
+ 
++err_disable_clocks:
++	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+ err_assert_reset:
+ 	reset_control_bulk_assert(cfg->num_resets, qmp->resets);
+ err_disable_regulators:
+@@ -3102,6 +3111,7 @@ static int qmp_combo_com_exit(struct qmp
+ 
+ 	reset_control_bulk_assert(cfg->num_resets, qmp->resets);
+ 
++	clk_disable_unprepare(qmp->pipe_clk);
+ 	clk_bulk_disable_unprepare(qmp->num_clks, qmp->clks);
+ 
+ 	regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
+@@ -3205,12 +3215,6 @@ static int qmp_combo_usb_power_on(struct
+ 
+ 	qmp_configure(qmp->dev, serdes, cfg->serdes_tbl, cfg->serdes_tbl_num);
+ 
+-	ret = clk_prepare_enable(qmp->pipe_clk);
+-	if (ret) {
+-		dev_err(qmp->dev, "pipe_clk enable failed err=%d\n", ret);
+-		return ret;
+-	}
+-
+ 	/* Tx, Rx, and PCS configurations */
+ 	qmp_configure_lane(qmp->dev, tx, cfg->tx_tbl, cfg->tx_tbl_num, 1);
+ 	qmp_configure_lane(qmp->dev, tx2, cfg->tx_tbl, cfg->tx_tbl_num, 2);
+@@ -3254,8 +3258,6 @@ static int qmp_combo_usb_power_off(struc
+ 	struct qmp_combo *qmp = phy_get_drvdata(phy);
+ 	const struct qmp_phy_cfg *cfg = qmp->cfg;
+ 
+-	clk_disable_unprepare(qmp->pipe_clk);
+-
+ 	/* PHY reset */
+ 	qphy_setbits(qmp->pcs, cfg->regs[QPHY_SW_RESET], SW_RESET);
+ 

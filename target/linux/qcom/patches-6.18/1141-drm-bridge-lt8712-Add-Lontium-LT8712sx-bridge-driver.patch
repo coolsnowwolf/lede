@@ -1,0 +1,1120 @@
+From 58c04066c30171f6ff0bfafc327ad078cf9fa5e8 Mon Sep 17 00:00:00 2001
+From: Jiali Chen <chenjiali@radxa.com>
+Date: Mon, 27 Apr 2026 17:39:30 +0800
+Subject: [PATCH 141/268] drm/bridge: lt8712: Add Lontium LT8712sx bridge
+ driver
+
+Add driver for Lontium LT8712sx Single DisplayPort to Dual HDMI bridge.
+The LT8713sx is in place, but is untested.
+
+Signed-off-by: Jiali Chen <chenjiali@radxa.com>
+---
+ drivers/gpu/drm/bridge/Kconfig            |   14 +
+ drivers/gpu/drm/bridge/Makefile           |    1 +
+ drivers/gpu/drm/bridge/lontium-lt8712sx.c | 1067 +++++++++++++++++++++
+ 3 files changed, 1082 insertions(+)
+ create mode 100644 drivers/gpu/drm/bridge/lontium-lt8712sx.c
+
+--- a/drivers/gpu/drm/bridge/Kconfig
++++ b/drivers/gpu/drm/bridge/Kconfig
+@@ -184,6 +184,20 @@ config DRM_LONTIUM_LT9611UXC
+ 	  HDMI signals
+ 	  Please say Y if you have such hardware.
+ 
++config DRM_LONTIUM_LT8712SX
++	tristate "Lontium LT8712SX DP/eDP to HDMI bridge"
++	depends on OF
++	select DRM_KMS_HELPER
++	select REGMAP_I2C
++	help
++	  Driver for the Lontium LT8712SX and LT8713SX DP/eDP to HDMI
++	  bridge chips. At runtime the chip behaves like a simple DRM bridge.
++	  During probe the driver can optionally refresh onboard flash by
++	  loading a firmware image referenced by the firmware-name property.
++
++	  Say M here if you want to build support as a module. The module
++	  will be called lontium-lt8712sx.
++
+ config DRM_ITE_IT66121
+ 	tristate "ITE IT66121 HDMI bridge"
+ 	depends on OF
+--- a/drivers/gpu/drm/bridge/Makefile
++++ b/drivers/gpu/drm/bridge/Makefile
+@@ -16,6 +16,7 @@ obj-$(CONFIG_DRM_LONTIUM_LT8912B) += lon
+ obj-$(CONFIG_DRM_LONTIUM_LT9211) += lontium-lt9211.o
+ obj-$(CONFIG_DRM_LONTIUM_LT9611) += lontium-lt9611.o
+ obj-$(CONFIG_DRM_LONTIUM_LT9611UXC) += lontium-lt9611uxc.o
++obj-$(CONFIG_DRM_LONTIUM_LT8712SX) += lontium-lt8712sx.o
+ obj-$(CONFIG_DRM_LVDS_CODEC) += lvds-codec.o
+ obj-$(CONFIG_DRM_MEGACHIPS_STDPXXXX_GE_B850V3_FW) += megachips-stdpxxxx-ge-b850v3-fw.o
+ obj-$(CONFIG_DRM_MICROCHIP_LVDS_SERIALIZER) += microchip-lvds.o
+--- /dev/null
++++ b/drivers/gpu/drm/bridge/lontium-lt8712sx.c
+@@ -0,0 +1,1067 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Lontium LT8712SX DP/eDP to HDMI bridge driver
++ *
++ * The LT8712SX behaves like a mostly transparent bridge once valid
++ * firmware has been stored in its internal flash. Keep the DRM runtime
++ * model close to simple-bridge and integrate the optional I2C firmware
++ * update path into probe().
++ */
++
++#include <linux/bitops.h>
++#include <linux/device.h>
++#include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/module.h>
++#include <linux/of_graph.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/slab.h>
++
++#include <drm/drm_atomic_helper.h>
++#include <drm/drm_bridge.h>
++#include <drm/drm_edid.h>
++#include <drm/drm_print.h>
++#include <drm/drm_probe_helper.h>
++
++#define LT8712SX_PAGE_SIZE			256
++#define LT8712SX_MAIN_FW_SIZE			SZ_64K
++#define LT8712SX_MAIN_FW_PAYLOAD_SIZE		(LT8712SX_MAIN_FW_SIZE - 1)
++#define LT8712SX_BANK_FW_SIZE			(12 * 1024)
++#define LT8712SX_FLASH_BLOCK_SIZE		0x8000
++#define LT8712SX_FLASH_BLOCK_COUNT		8
++#define LT8712SX_MAX_FW_SIZE			SZ_256K
++#define LT8712SX_MAX_BANKS			16
++
++#define LT8712SX_DEFAULT_FIRMWARE		"LT8712SX.bin"
++#define LT8713SX_DEFAULT_FIRMWARE		"LT8713SX.bin"
++
++#define LT8712SX_POWER_ON_DELAY_MS		1000
++#define LT8712SX_MAIN_LOAD_DELAY_MS		200
++#define LT8712SX_BANK_LOAD_DELAY_MS		50
++#define LT8712SX_BLOCK_ERASE_DELAY_MS		100
++#define LT8712SX_STATUS_POLL_DELAY_MS		50
++#define LT8712SX_STATUS_POLL_RETRIES		50
++
++struct lt8712sx_info {
++	unsigned int connector_type;
++	const char *firmware_name;
++};
++
++static const struct lt8712sx_info lt8712sx_hdmi_info = {
++	.connector_type = DRM_MODE_CONNECTOR_HDMIA,
++};
++
++static const struct lt8712sx_info lt8712sx_info = {
++	.connector_type = DRM_MODE_CONNECTOR_HDMIA,
++	.firmware_name = LT8712SX_DEFAULT_FIRMWARE,
++};
++
++static const struct lt8712sx_info lt8713sx_info = {
++	.connector_type = DRM_MODE_CONNECTOR_HDMIA,
++	.firmware_name = LT8713SX_DEFAULT_FIRMWARE,
++};
++
++struct lt8712sx_firmware {
++	u8 *data;
++	size_t size;
++	u8 main_crc;
++	u8 bank_crc[LT8712SX_MAX_BANKS];
++	unsigned int bank_count;
++};
++
++struct lt8712sx {
++	struct drm_bridge bridge;
++	struct drm_connector connector;
++
++	struct device *dev;
++	struct regmap *regmap;
++	const struct lt8712sx_info *info;
++	struct drm_bridge *next_bridge;
++	struct regulator *vdd;
++	struct gpio_desc *power_gpio;
++	struct gpio_desc *reset_gpio;
++	struct gpio_desc *enable_gpio;
++	struct mutex lock;
++	bool powered;
++};
++
++static inline struct lt8712sx *bridge_to_lt8712sx(struct drm_bridge *bridge)
++{
++	return container_of(bridge, struct lt8712sx, bridge);
++}
++
++static inline struct lt8712sx *connector_to_lt8712sx(
++	struct drm_connector *connector)
++{
++	return container_of(connector, struct lt8712sx, connector);
++}
++
++static const struct regmap_config lt8712sx_regmap_config = {
++	.reg_bits = 8,
++	.val_bits = 8,
++	.max_register = 0xff,
++	.cache_type = REGCACHE_NONE,
++};
++
++static const struct reg_sequence lt8712sx_i2c_enable_seq[] = {
++	{ 0xff, 0xe0 },
++	{ 0xee, 0x01 },
++};
++
++static const struct reg_sequence lt8712sx_i2c_disable_seq[] = {
++	{ 0xff, 0xe0 },
++	{ 0xee, 0x00 },
++};
++
++static const struct reg_sequence lt8712sx_config_seq[] = {
++	{ 0xff, 0xe0 },
++	{ 0xee, 0x01 },
++	{ 0x5e, 0xc1 },
++	{ 0x58, 0x00 },
++	{ 0x59, 0x50 },
++	{ 0x5a, 0x10 },
++	{ 0x5a, 0x00 },
++	{ 0x58, 0x21 },
++};
++
++static const struct reg_sequence lt8712sx_wren_seq[] = {
++	{ 0xff, 0xe1 },
++	{ 0x03, 0xbf },
++	{ 0x03, 0xff },
++	{ 0xff, 0xe0 },
++	{ 0x5a, 0x04 },
++	{ 0x5a, 0x00 },
++};
++
++static const struct reg_sequence lt8712sx_wrdi_seq[] = {
++	{ 0x5a, 0x08 },
++	{ 0x5a, 0x00 },
++};
++
++static const struct reg_sequence lt8712sx_fifo_reset_seq[] = {
++	{ 0xff, 0xe1 },
++	{ 0x03, 0xbf },
++	{ 0x03, 0xff },
++};
++
++static const struct reg_sequence lt8712sx_disable_sram_write_seq[] = {
++	{ 0xff, 0xe0 },
++	{ 0x55, 0x00 },
++};
++
++static const struct reg_sequence lt8712sx_sram_to_flash_seq[] = {
++	{ 0x5a, 0x30 },
++	{ 0x5a, 0x00 },
++};
++
++static const struct reg_sequence lt8712sx_i2c_to_sram_seq[] = {
++	{ 0x55, 0x80 },
++	{ 0x5e, 0xc0 },
++	{ 0x58, 0x21 },
++};
++
++static int lt8712sx_write_seq(struct lt8712sx *lt8712sx,
++			      const struct reg_sequence *seq,
++			      size_t count)
++{
++	return regmap_multi_reg_write(lt8712sx->regmap, seq, count);
++}
++
++static int lt8712sx_write(struct lt8712sx *lt8712sx, u8 reg, u8 value)
++{
++	return regmap_write(lt8712sx->regmap, reg, value);
++}
++
++static int lt8712sx_read(struct lt8712sx *lt8712sx, u8 reg, u8 *value)
++{
++	unsigned int tmp;
++	int ret;
++
++	ret = regmap_read(lt8712sx->regmap, reg, &tmp);
++	if (ret)
++		return ret;
++
++	*value = tmp;
++
++	return 0;
++}
++
++static u8 lt8712sx_crc8_update(u8 crc, u8 value)
++{
++	int bit;
++
++	crc ^= value;
++
++	for (bit = 0; bit < 8; bit++)
++		crc = (crc & BIT(7)) ? (crc << 1) ^ 0x31 : crc << 1;
++
++	return crc;
++}
++
++static u8 lt8712sx_crc8_padded(const u8 *data, size_t len, size_t padded_len)
++{
++	u8 crc = 0;
++	size_t index;
++
++	for (index = 0; index < len; index++)
++		crc = lt8712sx_crc8_update(crc, data[index]);
++
++	for (; index < padded_len; index++)
++		crc = lt8712sx_crc8_update(crc, 0xff);
++
++	return crc;
++}
++
++static int lt8712sx_power_on(struct lt8712sx *lt8712sx)
++{
++	int ret;
++
++	if (lt8712sx->powered)
++		return 0;
++
++	if (lt8712sx->vdd) {
++		ret = regulator_enable(lt8712sx->vdd);
++		if (ret)
++			return ret;
++	}
++
++	if (lt8712sx->power_gpio)
++		gpiod_set_value_cansleep(lt8712sx->power_gpio, 1);
++
++	if (lt8712sx->reset_gpio)
++		gpiod_set_value_cansleep(lt8712sx->reset_gpio, 1);
++
++	lt8712sx->powered = true;
++
++	msleep(10);
++
++	return 0;
++}
++
++static void lt8712sx_power_off_action(void *data)
++{
++	struct lt8712sx *lt8712sx = data;
++
++	mutex_lock(&lt8712sx->lock);
++
++	if (lt8712sx->enable_gpio)
++		gpiod_set_value_cansleep(lt8712sx->enable_gpio, 0);
++
++	if (lt8712sx->reset_gpio)
++		gpiod_set_value_cansleep(lt8712sx->reset_gpio, 0);
++
++	if (lt8712sx->power_gpio)
++		gpiod_set_value_cansleep(lt8712sx->power_gpio, 0);
++
++	if (lt8712sx->vdd && lt8712sx->powered)
++		regulator_disable(lt8712sx->vdd);
++
++	lt8712sx->powered = false;
++
++	mutex_unlock(&lt8712sx->lock);
++}
++
++static int lt8712sx_hw_reset(struct lt8712sx *lt8712sx)
++{
++	if (!lt8712sx->reset_gpio)
++		return 0;
++
++	gpiod_set_value_cansleep(lt8712sx->reset_gpio, 1);
++	msleep(5);
++	gpiod_set_value_cansleep(lt8712sx->reset_gpio, 0);
++	msleep(5);
++	gpiod_set_value_cansleep(lt8712sx->reset_gpio, 1);
++	msleep(5);
++
++	return 0;
++}
++
++static int lt8712sx_i2c_enable(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_i2c_enable_seq,
++				  ARRAY_SIZE(lt8712sx_i2c_enable_seq));
++}
++
++static int lt8712sx_i2c_disable(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_i2c_disable_seq,
++				  ARRAY_SIZE(lt8712sx_i2c_disable_seq));
++}
++
++static int lt8712sx_configure(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_config_seq,
++				  ARRAY_SIZE(lt8712sx_config_seq));
++}
++
++static int lt8712sx_wren(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_wren_seq,
++				  ARRAY_SIZE(lt8712sx_wren_seq));
++}
++
++static int lt8712sx_wrdi(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_wrdi_seq,
++				  ARRAY_SIZE(lt8712sx_wrdi_seq));
++}
++
++static int lt8712sx_fifo_reset(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_fifo_reset_seq,
++				  ARRAY_SIZE(lt8712sx_fifo_reset_seq));
++}
++
++static int lt8712sx_disable_sram_write(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx,
++				  lt8712sx_disable_sram_write_seq,
++				  ARRAY_SIZE(lt8712sx_disable_sram_write_seq));
++}
++
++static int lt8712sx_sram_to_flash(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_sram_to_flash_seq,
++				  ARRAY_SIZE(lt8712sx_sram_to_flash_seq));
++}
++
++static int lt8712sx_i2c_to_sram(struct lt8712sx *lt8712sx)
++{
++	return lt8712sx_write_seq(lt8712sx, lt8712sx_i2c_to_sram_seq,
++				  ARRAY_SIZE(lt8712sx_i2c_to_sram_seq));
++}
++
++static int lt8712sx_flash_to_fifo(struct lt8712sx *lt8712sx, u32 address)
++{
++	int ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5e, 0x40);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5a, 0x20);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5a, 0x00);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5b, FIELD_GET(0xff0000, address));
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5c, FIELD_GET(0x00ff00, address));
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5d, address & 0xff);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x5a, 0x10);
++	if (ret)
++		return ret;
++
++	return lt8712sx_write(lt8712sx, 0x5a, 0x00);
++}
++
++static int lt8712sx_flash_read_status(struct lt8712sx *lt8712sx, u8 *status)
++{
++	static const struct reg_sequence seq[] = {
++		{ 0xff, 0xe1 },
++		{ 0x03, 0x3f },
++		{ 0x03, 0xff },
++		{ 0xff, 0xe0 },
++		{ 0x5e, 0x40 },
++		{ 0x56, 0x05 },
++		{ 0x55, 0x25 },
++		{ 0x55, 0x01 },
++		{ 0x58, 0x21 },
++	};
++	int ret;
++
++	ret = lt8712sx_write_seq(lt8712sx, seq, ARRAY_SIZE(seq));
++	if (ret)
++		return ret;
++
++	return lt8712sx_read(lt8712sx, 0x5f, status);
++}
++
++static int lt8712sx_block_erase(struct lt8712sx *lt8712sx)
++{
++	unsigned int block;
++	int ret;
++
++	for (block = 0; block < LT8712SX_FLASH_BLOCK_COUNT; block++) {
++		u32 address = block * LT8712SX_FLASH_BLOCK_SIZE;
++		u8 status = 0;
++		unsigned int retry;
++
++		ret = lt8712sx_write(lt8712sx, 0xff, 0xe0);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0xee, 0x01);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5a, 0x04);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5a, 0x00);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5b,
++				     FIELD_GET(0xff0000, address));
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5c,
++				     FIELD_GET(0x00ff00, address));
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5d, address & 0xff);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5a, 0x01);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_write(lt8712sx, 0x5a, 0x00);
++		if (ret)
++			return ret;
++
++		msleep(LT8712SX_BLOCK_ERASE_DELAY_MS);
++
++		for (retry = 0; retry < LT8712SX_STATUS_POLL_RETRIES; retry++) {
++			ret = lt8712sx_flash_read_status(lt8712sx, &status);
++			if (ret)
++				return ret;
++
++			if (!(status & BIT(0)))
++				break;
++
++			msleep(LT8712SX_STATUS_POLL_DELAY_MS);
++		}
++
++		if (status & BIT(0))
++			return -ETIMEDOUT;
++	}
++
++	return 0;
++}
++
++static int lt8712sx_load_main_fw_to_sram(struct lt8712sx *lt8712sx)
++{
++	static const struct reg_sequence seq[] = {
++		{ 0xff, 0xe0 },
++		{ 0xee, 0x01 },
++		{ 0x68, 0x00 },
++		{ 0x69, 0x00 },
++		{ 0x6a, 0x00 },
++		{ 0x65, 0x00 },
++		{ 0x66, 0xff },
++		{ 0x67, 0xff },
++		{ 0x6b, 0x00 },
++		{ 0x6c, 0x00 },
++		{ 0x60, 0x01 },
++	};
++	int ret;
++
++	ret = lt8712sx_write_seq(lt8712sx, seq, ARRAY_SIZE(seq));
++	if (ret)
++		return ret;
++
++	msleep(LT8712SX_MAIN_LOAD_DELAY_MS);
++
++	return lt8712sx_write(lt8712sx, 0x60, 0x00);
++}
++
++static int lt8712sx_load_bank_fw_to_sram(struct lt8712sx *lt8712sx,
++					 u32 address)
++{
++	int ret;
++
++	ret = lt8712sx_write(lt8712sx, 0xff, 0xe0);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0xee, 0x01);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x68, FIELD_GET(0xff0000, address));
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x69, FIELD_GET(0x00ff00, address));
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x6a, address & 0xff);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x65, 0x00);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x66, 0x30);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x67, 0x00);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x6b, 0x00);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x6c, 0x00);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x60, 0x01);
++	if (ret)
++		return ret;
++
++	msleep(LT8712SX_BANK_LOAD_DELAY_MS);
++
++	return lt8712sx_write(lt8712sx, 0x60, 0x00);
++}
++
++static int lt8712sx_write_firmware_pages(struct lt8712sx *lt8712sx,
++					 const struct lt8712sx_firmware *fw)
++{
++	u8 page_buf[LT8712SX_PAGE_SIZE];
++	unsigned int page_count;
++	unsigned int page;
++	int ret;
++
++	page_count = DIV_ROUND_UP(fw->size, LT8712SX_PAGE_SIZE);
++
++	for (page = 0; page < page_count; page++) {
++		size_t offset = page * LT8712SX_PAGE_SIZE;
++		size_t copy_len = min_t(size_t, fw->size - offset,
++				       LT8712SX_PAGE_SIZE);
++
++		memset(page_buf, 0xff, sizeof(page_buf));
++		memcpy(page_buf, fw->data + offset, copy_len);
++
++		ret = lt8712sx_i2c_to_sram(lt8712sx);
++		if (ret)
++			return ret;
++
++		ret = regmap_noinc_write(lt8712sx->regmap, 0x59, page_buf,
++					 sizeof(page_buf));
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_wren(lt8712sx);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_sram_to_flash(lt8712sx);
++		if (ret)
++			return ret;
++	}
++
++	ret = lt8712sx_wrdi(lt8712sx);
++	if (ret)
++		return ret;
++
++	return lt8712sx_disable_sram_write(lt8712sx);
++}
++
++static int lt8712sx_needs_firmware_update(struct lt8712sx *lt8712sx,
++					  u8 expected_crc,
++					  bool *needs_update)
++{
++	u8 flash_crc;
++	int ret;
++
++	ret = lt8712sx_configure(lt8712sx);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_flash_to_fifo(lt8712sx, LT8712SX_MAIN_FW_PAYLOAD_SIZE);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_write(lt8712sx, 0x58, 0x21);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_read(lt8712sx, 0x5f, &flash_crc);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_wrdi(lt8712sx);
++	if (ret)
++		return ret;
++
++	ret = lt8712sx_fifo_reset(lt8712sx);
++	if (ret)
++		return ret;
++
++	*needs_update = flash_crc != expected_crc;
++
++	return 0;
++}
++
++static int lt8712sx_verify_main_firmware(struct lt8712sx *lt8712sx,
++					 u8 expected_crc)
++{
++	u8 actual_crc;
++	int ret;
++
++	ret = lt8712sx_read(lt8712sx, 0x23, &actual_crc);
++	if (ret)
++		return ret;
++
++	if (actual_crc != expected_crc)
++		return -EIO;
++
++	return 0;
++}
++
++static int lt8712sx_verify_bank_firmware(struct lt8712sx *lt8712sx,
++					 const struct lt8712sx_firmware *fw)
++{
++	unsigned int bank;
++	int ret;
++
++	for (bank = 0; bank < fw->bank_count; bank++) {
++		u8 actual_crc;
++		u32 address = 0x010000 + bank * LT8712SX_BANK_FW_SIZE;
++
++		ret = lt8712sx_load_bank_fw_to_sram(lt8712sx, address);
++		if (ret)
++			return ret;
++
++		ret = lt8712sx_read(lt8712sx, 0x23, &actual_crc);
++		if (ret)
++			return ret;
++
++		if (actual_crc != fw->bank_crc[bank])
++			return -EIO;
++	}
++
++	return 0;
++}
++
++static int lt8712sx_prepare_firmware(const struct firmware *firmware,
++				     struct lt8712sx_firmware *prepared)
++{
++	size_t bank_payload_size;
++	unsigned int bank;
++
++	if (firmware->size > LT8712SX_MAX_FW_SIZE - 1)
++		return -EFBIG;
++
++	prepared->data = kzalloc(LT8712SX_MAX_FW_SIZE, GFP_KERNEL);
++	if (!prepared->data)
++		return -ENOMEM;
++
++	memset(prepared->data, 0xff, LT8712SX_MAX_FW_SIZE);
++
++	if (firmware->size < LT8712SX_MAIN_FW_SIZE) {
++		memcpy(prepared->data, firmware->data, firmware->size);
++		prepared->main_crc = lt8712sx_crc8_padded(firmware->data,
++							 firmware->size,
++							 LT8712SX_MAIN_FW_PAYLOAD_SIZE);
++		prepared->data[LT8712SX_MAIN_FW_PAYLOAD_SIZE] = prepared->main_crc;
++		prepared->size = LT8712SX_MAIN_FW_SIZE;
++
++		return 0;
++	}
++
++	memcpy(prepared->data, firmware->data, LT8712SX_MAIN_FW_PAYLOAD_SIZE);
++	prepared->main_crc = lt8712sx_crc8_padded(prepared->data,
++						  LT8712SX_MAIN_FW_PAYLOAD_SIZE,
++						  LT8712SX_MAIN_FW_PAYLOAD_SIZE);
++	prepared->data[LT8712SX_MAIN_FW_PAYLOAD_SIZE] = prepared->main_crc;
++
++	if (firmware->size > LT8712SX_MAIN_FW_SIZE)
++		memcpy(prepared->data + LT8712SX_MAIN_FW_SIZE,
++		       firmware->data + LT8712SX_MAIN_FW_SIZE,
++		       firmware->size - LT8712SX_MAIN_FW_SIZE);
++
++	prepared->size = firmware->size;
++	prepared->bank_count = DIV_ROUND_UP(firmware->size - LT8712SX_MAIN_FW_SIZE,
++					    LT8712SX_BANK_FW_SIZE);
++	if (prepared->bank_count > LT8712SX_MAX_BANKS)
++		return -EINVAL;
++
++	bank_payload_size = firmware->size - LT8712SX_MAIN_FW_SIZE;
++
++	for (bank = 0; bank < prepared->bank_count; bank++) {
++		size_t offset = LT8712SX_MAIN_FW_SIZE + bank * LT8712SX_BANK_FW_SIZE;
++		size_t valid = 0;
++
++		if (bank * LT8712SX_BANK_FW_SIZE < bank_payload_size)
++			valid = min_t(size_t,
++				      bank_payload_size - bank * LT8712SX_BANK_FW_SIZE,
++				      LT8712SX_BANK_FW_SIZE);
++
++		prepared->bank_crc[bank] =
++			lt8712sx_crc8_padded(prepared->data + offset, valid,
++					    LT8712SX_BANK_FW_SIZE);
++	}
++
++	return 0;
++}
++
++static int lt8712sx_program_firmware(struct lt8712sx *lt8712sx,
++				     const struct lt8712sx_firmware *fw)
++{
++	bool needs_update;
++	bool updated = false;
++	int ret;
++
++	mutex_lock(&lt8712sx->lock);
++
++	msleep(LT8712SX_POWER_ON_DELAY_MS);
++
++	ret = lt8712sx_i2c_enable(lt8712sx);
++	if (ret)
++		goto unlock;
++
++	ret = lt8712sx_needs_firmware_update(lt8712sx, fw->main_crc,
++					    &needs_update);
++	if (ret)
++		goto disable_i2c;
++
++	if (!needs_update) {
++		ret = 0;
++		goto disable_i2c;
++	}
++
++	ret = lt8712sx_configure(lt8712sx);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_block_erase(lt8712sx);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_write_firmware_pages(lt8712sx, fw);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_load_main_fw_to_sram(lt8712sx);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_verify_main_firmware(lt8712sx, fw->main_crc);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_verify_bank_firmware(lt8712sx, fw);
++	if (ret)
++		goto disable_i2c;
++
++	ret = lt8712sx_wrdi(lt8712sx);
++	if (ret)
++		goto disable_i2c;
++
++	updated = true;
++
++disable_i2c:
++	if (lt8712sx_i2c_disable(lt8712sx) && !ret)
++		ret = -EIO;
++
++	if (lt8712sx_hw_reset(lt8712sx) && !ret)
++		ret = -EIO;
++
++unlock:
++	mutex_unlock(&lt8712sx->lock);
++
++	if (ret)
++		return ret;
++
++	return updated;
++}
++
++static void lt8712sx_try_optional_firmware(struct lt8712sx *lt8712sx)
++{
++	struct lt8712sx_firmware prepared = {};
++	const struct firmware *firmware;
++	const char *firmware_name = lt8712sx->info->firmware_name;
++	int ret;
++
++	ret = device_property_read_string(lt8712sx->dev, "firmware-name",
++					  &firmware_name);
++	if (ret)
++		firmware_name = lt8712sx->info->firmware_name;
++
++	if (!firmware_name)
++		return;
++
++	ret = firmware_request_nowarn(&firmware, firmware_name, lt8712sx->dev);
++	if (ret) {
++		dev_info(lt8712sx->dev,
++			 "optional firmware %s unavailable (%d), continuing\n",
++			 firmware_name, ret);
++		return;
++	}
++
++	ret = lt8712sx_prepare_firmware(firmware, &prepared);
++	if (ret) {
++		dev_warn(lt8712sx->dev,
++			 "failed to prepare firmware %s (%d), continuing\n",
++			 firmware_name, ret);
++		goto free_prepared;
++	}
++
++	ret = lt8712sx_program_firmware(lt8712sx, &prepared);
++	if (ret < 0) {
++		dev_warn(lt8712sx->dev,
++			 "failed to update firmware %s (%d), continuing\n",
++			 firmware_name, ret);
++	} else if (ret > 0) {
++		dev_info(lt8712sx->dev, "updated firmware from %s\n",
++			 firmware_name);
++	} else {
++		dev_dbg(lt8712sx->dev, "firmware %s already matches flash\n",
++			firmware_name);
++	}
++
++	/* Fall through so partially prepared buffers also get cleaned up. */
++
++	free_prepared:
++	kfree(prepared.data);
++	release_firmware(firmware);
++}
++
++static int lt8712sx_connector_get_modes(struct drm_connector *connector)
++{
++	struct lt8712sx *lt8712sx = connector_to_lt8712sx(connector);
++	const struct drm_edid *drm_edid;
++	int ret;
++
++	if (lt8712sx->next_bridge->ops & DRM_BRIDGE_OP_EDID) {
++		drm_edid = drm_bridge_edid_read(lt8712sx->next_bridge, connector);
++		if (!drm_edid)
++			DRM_INFO("EDID read failed. Fallback to standard modes\n");
++	} else {
++		drm_edid = NULL;
++	}
++
++	drm_edid_connector_update(connector, drm_edid);
++
++	if (!drm_edid) {
++		/*
++		 * If the downstream HDMI connector does not expose DDC to the SoC,
++		 * keep the same no-EDID fallback used by simple-bridge.
++		 */
++		ret = drm_add_modes_noedid(connector, 1920, 1200);
++		drm_set_preferred_mode(connector, 1024, 768);
++		return ret;
++	}
++
++	ret = drm_edid_connector_add_modes(connector);
++	drm_edid_free(drm_edid);
++
++	return ret;
++}
++
++static const struct drm_connector_helper_funcs lt8712sx_con_helper_funcs = {
++	.get_modes = lt8712sx_connector_get_modes,
++};
++
++static enum drm_connector_status
++lt8712sx_connector_detect(struct drm_connector *connector, bool force)
++{
++	struct lt8712sx *lt8712sx = connector_to_lt8712sx(connector);
++
++	return drm_bridge_detect(lt8712sx->next_bridge, connector);
++}
++
++static const struct drm_connector_funcs lt8712sx_con_funcs = {
++	.detect = lt8712sx_connector_detect,
++	.fill_modes = drm_helper_probe_single_connector_modes,
++	.destroy = drm_connector_cleanup,
++	.reset = drm_atomic_helper_connector_reset,
++	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
++	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
++};
++
++static int lt8712sx_attach(struct drm_bridge *bridge,
++			   struct drm_encoder *encoder,
++			   enum drm_bridge_attach_flags flags)
++{
++	struct lt8712sx *lt8712sx = bridge_to_lt8712sx(bridge);
++	int ret;
++
++	ret = drm_bridge_attach(encoder, lt8712sx->next_bridge, bridge,
++				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
++	if (ret)
++		return ret;
++
++	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
++		return 0;
++
++	drm_connector_helper_add(&lt8712sx->connector,
++				 &lt8712sx_con_helper_funcs);
++
++	ret = drm_connector_init_with_ddc(bridge->dev, &lt8712sx->connector,
++					  &lt8712sx_con_funcs,
++					  lt8712sx->info->connector_type,
++					  lt8712sx->next_bridge->ddc);
++	if (ret) {
++		DRM_ERROR("Failed to initialize connector\n");
++		return ret;
++	}
++
++	drm_connector_attach_encoder(&lt8712sx->connector, encoder);
++
++	return 0;
++}
++
++static void lt8712sx_enable(struct drm_bridge *bridge)
++{
++	struct lt8712sx *lt8712sx = bridge_to_lt8712sx(bridge);
++
++	if (lt8712sx->enable_gpio)
++		gpiod_set_value_cansleep(lt8712sx->enable_gpio, 1);
++}
++
++static void lt8712sx_disable(struct drm_bridge *bridge)
++{
++	struct lt8712sx *lt8712sx = bridge_to_lt8712sx(bridge);
++
++	if (lt8712sx->enable_gpio)
++		gpiod_set_value_cansleep(lt8712sx->enable_gpio, 0);
++}
++
++static const struct drm_bridge_funcs lt8712sx_bridge_funcs = {
++	.attach = lt8712sx_attach,
++	.enable = lt8712sx_enable,
++	.disable = lt8712sx_disable,
++};
++
++static int lt8712sx_probe(struct i2c_client *client)
++{
++	struct lt8712sx *lt8712sx;
++	struct device *dev = &client->dev;
++	struct device_node *remote;
++	int ret;
++
++	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
++		return -ENXIO;
++
++	lt8712sx = devm_drm_bridge_alloc(dev, struct lt8712sx, bridge,
++					 &lt8712sx_bridge_funcs);
++	if (IS_ERR(lt8712sx))
++		return PTR_ERR(lt8712sx);
++
++	lt8712sx->dev = dev;
++	lt8712sx->info = i2c_get_match_data(client);
++	if (!lt8712sx->info)
++		lt8712sx->info = &lt8712sx_hdmi_info;
++
++	mutex_init(&lt8712sx->lock);
++	i2c_set_clientdata(client, lt8712sx);
++
++	lt8712sx->regmap = devm_regmap_init_i2c(client, &lt8712sx_regmap_config);
++	if (IS_ERR(lt8712sx->regmap))
++		return dev_err_probe(dev, PTR_ERR(lt8712sx->regmap),
++				     "failed to initialize regmap\n");
++
++	remote = of_graph_get_remote_node(dev->of_node, 1, -1);
++	if (!remote)
++		return dev_err_probe(dev, -ENODEV, "port@1 is unconnected\n");
++
++	lt8712sx->next_bridge = of_drm_find_bridge(remote);
++	of_node_put(remote);
++	if (!lt8712sx->next_bridge) {
++		dev_dbg(dev, "next bridge not found, deferring probe\n");
++		return -EPROBE_DEFER;
++	}
++
++	lt8712sx->vdd = devm_regulator_get_optional(dev, "vdd");
++	if (IS_ERR(lt8712sx->vdd)) {
++		ret = PTR_ERR(lt8712sx->vdd);
++		if (ret == -EPROBE_DEFER)
++			return -EPROBE_DEFER;
++
++		lt8712sx->vdd = NULL;
++		dev_dbg(dev, "no vdd regulator found: %d\n", ret);
++	}
++
++	lt8712sx->power_gpio = devm_gpiod_get_optional(dev, "power",
++						       GPIOD_OUT_LOW);
++	if (IS_ERR(lt8712sx->power_gpio))
++		return dev_err_probe(dev, PTR_ERR(lt8712sx->power_gpio),
++				     "failed to get power GPIO\n");
++
++	lt8712sx->reset_gpio = devm_gpiod_get_optional(dev, "reset",
++						       GPIOD_OUT_LOW);
++	if (IS_ERR(lt8712sx->reset_gpio))
++		return dev_err_probe(dev, PTR_ERR(lt8712sx->reset_gpio),
++				     "failed to get reset GPIO\n");
++
++	lt8712sx->enable_gpio = devm_gpiod_get_optional(dev, "enable",
++							GPIOD_OUT_LOW);
++	if (IS_ERR(lt8712sx->enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(lt8712sx->enable_gpio),
++				     "failed to get enable GPIO\n");
++
++	ret = lt8712sx_power_on(lt8712sx);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to power on bridge\n");
++
++	ret = devm_add_action_or_reset(dev, lt8712sx_power_off_action, lt8712sx);
++	if (ret)
++		return ret;
++
++	lt8712sx_try_optional_firmware(lt8712sx);
++
++	lt8712sx->bridge.of_node = dev->of_node;
++	lt8712sx->bridge.type = lt8712sx->info->connector_type;
++
++	return devm_drm_bridge_add(dev, &lt8712sx->bridge);
++}
++
++static const struct of_device_id lt8712sx_of_match[] = {
++	{
++		.compatible = "lontium,lt8712sx",
++		.data = &lt8712sx_info,
++	}, {
++		.compatible = "lontium,lt8713sx",
++		.data = &lt8713sx_info,
++	}, {}
++};
++MODULE_DEVICE_TABLE(of, lt8712sx_of_match);
++
++static const struct i2c_device_id lt8712sx_i2c_ids[] = {
++	{ "lt8712sx", (kernel_ulong_t)&lt8712sx_info },
++	{ "lt8713sx", (kernel_ulong_t)&lt8713sx_info },
++	{ }
++};
++MODULE_DEVICE_TABLE(i2c, lt8712sx_i2c_ids);
++
++static struct i2c_driver lt8712sx_driver = {
++	.probe = lt8712sx_probe,
++	.id_table = lt8712sx_i2c_ids,
++	.driver = {
++		.name = "lontium-lt8712sx",
++		.of_match_table = lt8712sx_of_match,
++	},
++};
++module_i2c_driver(lt8712sx_driver);
++
++MODULE_AUTHOR("Chen Jiali");
++MODULE_DESCRIPTION("Lontium LT8712SX DP/eDP to HDMI bridge driver");
++MODULE_LICENSE("GPL");
++MODULE_FIRMWARE(LT8712SX_DEFAULT_FIRMWARE);
++MODULE_FIRMWARE(LT8713SX_DEFAULT_FIRMWARE);
