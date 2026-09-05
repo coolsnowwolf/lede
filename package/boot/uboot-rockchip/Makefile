@@ -445,6 +445,7 @@ define U-Boot/generic-rk3588
   $(U-Boot/rk3588/Default)
   NAME:=Generic RK3588
   BUILD_DEVICES:= \
+    bdy_g98 \
     radxa_e52c \
     radxa_e54c \
     seewo_srcm3588-io \

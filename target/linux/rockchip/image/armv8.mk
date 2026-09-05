@@ -103,6 +103,18 @@ define Device/armsom_w3
 endef
 TARGET_DEVICES += armsom_w3
 
+define Device/bdy_g98
+  DEVICE_VENDOR := BYD
+  DEVICE_MODEL := G98
+  SOC := rk3588
+  DEVICE_DTS := rk3588-bdy-g98
+  SUPPORTED_DEVICES := bdy,bdy-g98
+  UBOOT_DEVICE_NAME := generic-rk3588
+  IMAGE/sysupgrade.img.gz := boot-common | boot-script | pine64-img | gzip | append-metadata
+  DEVICE_PACKAGES := kmod-r8125-rss kmod-phy-motorcomm kmod-dsa-yt921x
+endef
+TARGET_DEVICES += bdy_g98
+
 define Device/codinge_xiaobao-nas-v1
   DEVICE_VENDOR := Codinge
   DEVICE_MODEL := XiaoBao NAS-I
