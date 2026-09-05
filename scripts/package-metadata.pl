@@ -234,7 +234,7 @@ sub mconf_depends {
 		mconf_depends($pkgname, $tdep->[0], 1, $dep, $seen, $tdep->[1]);
 	}
 
-	foreach my $depend (keys %$dep) {
+	foreach my $depend (sort keys %$dep) {
 		my $m = $dep->{$depend};
 		$res .= "\t\t$m $depend\n";
 	}
