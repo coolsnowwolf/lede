@@ -905,3 +905,22 @@ $(call Device/widora_mangopi-m28)
   DEVICE_PACKAGES += kmod-i2c-gpio kmod-r8125
 endef
 TARGET_DEVICES += widora_mangopi-m28k-pro
+
+define Device/wxy_oec-turbo-4g
+  DEVICE_VENDOR := WXY
+  DEVICE_MODEL := OEC Turbo 4G
+  SOC := rk3568
+  DEVICE_DTS := rk3566-oec-turbo-4g
+  UBOOT_DEVICE_NAME := wxy-rk3566
+  IMAGE_PART_OFFSET := 184320
+  IMAGE_PART_ALIGN := 2048
+  IMAGE_GPT := 1
+  IMAGE_BOOTFS := 1
+  BOOTLOADER_IMAGE := bootloader.img
+  BOOTLOADER_OFFSET := 64
+  ENV_IMAGE := env.bin
+  ENV_OFFSET := 294912
+  DEVICE_PACKAGES := kmod-ata-ahci-dwc
+  IMAGE/sysupgrade.img.gz := boot-img-ext4 | pine64-img | gzip | append-metadata
+endef
+TARGET_DEVICES += wxy_oec-turbo-4g
