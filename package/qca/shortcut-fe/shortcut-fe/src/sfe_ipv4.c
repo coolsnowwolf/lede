@@ -19,6 +19,7 @@
 #include <linux/sysfs.h>
 #include <linux/skbuff.h>
 #include <linux/icmp.h>
+#include <linux/timer.h>
 #include <net/tcp.h>
 #include <linux/etherdevice.h>
 #include <linux/version.h>
@@ -2864,6 +2865,8 @@ static void sfe_ipv4_periodic_sync(struct timer_list *tl)
 {
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 15, 0))
 	struct sfe_ipv4 *si = (struct sfe_ipv4 *)arg;
+#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	struct sfe_ipv4 *si = timer_container_of(si, tl, timer);
 #else
 	struct sfe_ipv4 *si = from_timer(si, tl, timer);
 #endif
@@ -3585,7 +3588,11 @@ static void __exit sfe_ipv4_exit(void)
 	 */
 	sfe_ipv4_destroy_all_rules_for_dev(NULL);
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	timer_delete_sync(&si->timer);
+#else
 	del_timer_sync(&si->timer);
+#endif
 
 	unregister_chrdev(si->debug_dev, "sfe_ipv4");
 
@@ -3615,4 +3622,3 @@ EXPORT_SYMBOL(sfe_unregister_flow_cookie_cb);
 
 MODULE_DESCRIPTION("Shortcut Forwarding Engine - IPv4 edition");
 MODULE_LICENSE("Dual BSD/GPL");
-
