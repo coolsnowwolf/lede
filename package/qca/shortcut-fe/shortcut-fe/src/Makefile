@@ -10,6 +10,8 @@ endif
 
 obj-m += shortcut-fe-cm.o
 
+ccflags-$(SFE_SUPPORT_IPV6) += -DSFE_SUPPORT_IPV6
+
 shortcut-fe-objs := \
 	sfe_ipv4.o
 
