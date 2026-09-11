@@ -170,9 +170,6 @@ define Package/samba36-server/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/uci_defaults_samba $(1)/etc/uci-defaults/99_uci_defaults_samba
 
-	$(INSTALL_DIR)	$(1)/etc/hotplug.d/block
-	$(INSTALL_DATA) ./files/smb.auto $(1)/etc/hotplug.d/block/20-smb
-	
 	$(INSTALL_BIN) $(PKG_BUILD_BIN)/samba_multicall $(1)/usr/sbin
 	ln -sf samba_multicall $(1)/usr/sbin/smbd
 	ln -sf samba_multicall $(1)/usr/sbin/nmbd
