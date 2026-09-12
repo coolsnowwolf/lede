@@ -248,6 +248,10 @@ sub mconf_conflicts {
 
 	foreach my $depend (@$depends) {
 		next unless $package{$depend};
+		my $reverse = $package{$depend}->{conflicts};
+		# One Kconfig edge is enough for a reciprocal package conflict.
+		next if $reverse && $pkgname gt $depend &&
+			grep { $_ eq $pkgname } @$reverse;
 		$res .= "\t\tdepends on m || (PACKAGE_$depend != y)\n";
 	}
 	return $res;
