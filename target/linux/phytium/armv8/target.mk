@@ -5,6 +5,9 @@
 ARCH:=aarch64
 SUBTARGET:=armv8
 BOARDNAME:=64-bit (armv8) SystemReady (EFI) compliant
+FEATURES+=display
+
+DEFAULT_PACKAGES += kmod-phytium-dc kmod-phytium-gpu kmod-phytium-vpu kmod-phytium-npu
 
 define Target/Description
   Build multi-platform images for the Phytium ARMv8 instruction set architecture

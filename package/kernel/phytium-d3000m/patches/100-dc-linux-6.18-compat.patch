@@ -1,0 +1,632 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] phytium: dc linux 6.18 compat
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/dc_driver/Kbuild
++++ b/dc_driver/Kbuild
+@@ -5,6 +5,7 @@
+ 
+ # Enable dynamic debug for modules
+ subdir-ccflags-y += -DDYNAMIC_DEBUG_MODULE=1
++subdir-ccflags-y += $(EXTRA_CFLAGS)
+ 
+ ROOT_PATH = $(src)
+ 
+--- a/dc_driver/phytium/FTD330/ftd330_dc.c
++++ b/dc_driver/phytium/FTD330/ftd330_dc.c
+@@ -977,7 +977,13 @@
+ 	struct dc_hw_cursor cursor;
+ 	struct drm_crtc *crtc = state->crtc;
+ 	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
+-	struct drm_framebuffer *fb = state->fb;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
++	int hot_x = state->hotspot_x;
++	int hot_y = state->hotspot_y;
++#else
++	int hot_x = state->fb->hot_x;
++	int hot_y = state->fb->hot_y;
++#endif
+ 
+ 	cursor.address = (u32)plane->dma_addr[0];
+ 	cursor.x = state->crtc_x;
+@@ -1002,9 +1008,9 @@
+ 	         (mode->crtc_vdisplay != mode->vdisplay)))	{
+ 		
+ 		if (cursor.x > 0) {
+-			cursor.x = ((((cursor.x + fb->hot_x) << 13) * mode->crtc_hdisplay / mode->hdisplay) >> 13) - fb->hot_x;
++			cursor.x = ((((cursor.x + hot_x) << 13) * mode->crtc_hdisplay / mode->hdisplay) >> 13) - hot_x;
+ 		} else {
+-			cursor.x = ((((fb->hot_x - cursor.hot_x) << 13) * mode->crtc_hdisplay / mode->hdisplay) >> 13) - fb->hot_x;
++			cursor.x = ((((hot_x - cursor.hot_x) << 13) * mode->crtc_hdisplay / mode->hdisplay) >> 13) - hot_x;
+ 			if (cursor.x >= 0) {
+ 				cursor.hot_x = 0;
+ 			} else {
+@@ -1014,9 +1020,9 @@
+ 		}
+ 	
+ 		if (cursor.y > 0) {
+-			cursor.y = ((((cursor.y + fb->hot_y) << 13) * mode->crtc_vdisplay / mode->vdisplay) >> 13) - fb->hot_y;
++			cursor.y = ((((cursor.y + hot_y) << 13) * mode->crtc_vdisplay / mode->vdisplay) >> 13) - hot_y;
+ 		} else {
+-			cursor.y = ((((fb->hot_y - cursor.hot_y) << 13) * mode->crtc_vdisplay / mode->vdisplay) >> 13) - fb->hot_y;
++			cursor.y = ((((hot_y - cursor.hot_y) << 13) * mode->crtc_vdisplay / mode->vdisplay) >> 13) - hot_y;
+ 			if (cursor.y >= 0) {
+                                 cursor.hot_y = 0;
+                         } else {
+@@ -2393,11 +2399,16 @@
+ 	return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void dc_be_remove(struct platform_device *pdev)
++#else
+ static int dc_be_remove(struct platform_device *pdev)
++#endif
+ {
+-	int ret = 0;
+ 	/* TODO */
+-	return ret;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
++	return 0;
++#endif
+ }
+ 
+ static int dc_fe0_probe(struct platform_device *pdev)
+@@ -2407,11 +2418,16 @@
+ 	return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void dc_fe0_remove(struct platform_device *pdev)
++#else
+ static int dc_fe0_remove(struct platform_device *pdev)
++#endif
+ {
+-	int ret = 0;
+ 	/* TODO */
+-	return ret;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
++	return 0;
++#endif
+ }
+ 
+ static int dc_fe1_probe(struct platform_device *pdev)
+@@ -2421,11 +2437,16 @@
+ 	return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void dc_fe1_remove(struct platform_device *pdev)
++#else
+ static int dc_fe1_remove(struct platform_device *pdev)
++#endif
+ {
+-	int ret = 0;
+ 	/* TODO */
+-	return ret;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
++	return 0;
++#endif
+ }
+ 
+ static int dc_wb_probe(struct platform_device *pdev)
+@@ -2435,11 +2456,16 @@
+ 	return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void dc_wb_remove(struct platform_device *pdev)
++#else
+ static int dc_wb_remove(struct platform_device *pdev)
++#endif
+ {
+-	int ret = 0;
+ 	/* TODO */
+-	return ret;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
++	return 0;
++#endif
+ }
+ 
+ //struct platform_driver dc_platform_driver = {
+--- a/dc_driver/phytium/ftd330_drv.c
++++ b/dc_driver/phytium/ftd330_drv.c
+@@ -8,12 +8,17 @@
+ #include <linux/of_graph.h>
+ #include <linux/version.h>
+ #include <linux/async.h>
++#include <linux/vmalloc.h>
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0))
++#include <linux/aperture.h>
++#endif
+ 
+ #include <drm/drm_crtc.h>
+ #include <drm/drm_crtc_helper.h>
+ #include <drm/drm_fb_helper.h>
+ #include <drm/drm_of.h>
+-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)) && \
++	(LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0))
+ #include <drm/drm_aperture.h>
+ #endif
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 18))
+@@ -214,7 +219,9 @@
+ #else
+ 	.driver_features = DRIVER_MODESET | DRIVER_ATOMIC | DRIVER_GEM,
+ #endif
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+ 	.lastclose = drm_fb_helper_lastclose,
++#endif
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+ 	.gem_free_object	= ftd330_gem_free_object,
+ 	.gem_vm_ops		= &ftd330_vm_ops,
+@@ -235,6 +242,10 @@
+ 	.gem_prime_mmap = ftd330_gem_prime_mmap,
+ #endif
+ 	.dumb_create = ftd330_gem_dumb_create,
++#if defined(CONFIG_PHYTIUM_FBDEV_ON) && \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	.fbdev_probe = phytium_drm_fbdev_create,
++#endif
+ #if KERNEL_VERSION(5, 7, 0) > LINUX_VERSION_CODE
+ 	//.get_vblank_timestamp = drm_calc_vbltimestamp_from_scanoutpos,
+ 	//.get_scanout_position = ftd330_display_get_crtc_scanoutpos,
+@@ -247,7 +258,9 @@
+ 	.fops = &fops,
+ 	.name = DRV_NAME,
+ 	.desc = DRV_DESC,
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0)
+ 	.date = DRV_DATE,
++#endif
+ 	.major = DRV_MAJOR,
+ 	.minor = DRV_MINOR,
+ };
+@@ -358,9 +371,12 @@
+ 		return -1;
+ 	}
+ 
+-#if LINUX_VERSION_CODE > KERNEL_VERSION(5, 20, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	return aperture_remove_conflicting_devices(base, size,
++						   ftd330_drm_driver.name);
++#elif LINUX_VERSION_CODE > KERNEL_VERSION(5, 20, 0)
+ 	return drm_aperture_remove_conflicting_framebuffers(base,
+-					size,&ftd330_drm_driver);
++						size,&ftd330_drm_driver);
+ #else
+ 	ap->ranges[0].base = base;
+ 	ap->ranges[0].size = size;
+@@ -947,7 +963,11 @@
+ 	return ret;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void ftd330_drm_platform_remove(struct platform_device *pdev)
++#else
+ static int ftd330_drm_platform_remove(struct platform_device *pdev)
++#endif
+ {
+ 	struct drm_device *dev = dev_drm;
+ 	struct ftd330_drm_private *priv = dev->dev_private;
+@@ -986,7 +1006,9 @@
+ 	dev_set_drvdata(&pdev->dev, NULL);
+ 	drm_dev_put(dev);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+ 	return 0;
++#endif
+ }
+ 
+ 
+@@ -1059,5 +1081,9 @@
+ MODULE_LICENSE("GPL v2");
+ MODULE_VERSION(DC_DRIVER_VERSION);
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 18))
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0))
++MODULE_IMPORT_NS("DMA_BUF");
++#else
+ MODULE_IMPORT_NS(DMA_BUF);
+ #endif
++#endif
+--- a/dc_driver/phytium/ftd330_fb.c
++++ b/dc_driver/phytium/ftd330_fb.c
+@@ -139,7 +139,15 @@
+ 	if (!fb)
+ 		return ERR_PTR(-ENOMEM);
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
++	drm_helper_mode_fill_fb_struct(dev, fb,
++				       drm_get_format_info(dev,
++							   mode_cmd->pixel_format,
++							   mode_cmd->modifier[0]),
++				       mode_cmd);
++#else
+ 	drm_helper_mode_fill_fb_struct(dev, fb, mode_cmd);
++#endif
+ 
+ 	for (i = 0; i < num_planes; i++) {
+ 		addr = obj[i]->iova + mode_cmd->offsets[i];
+@@ -170,17 +178,25 @@
+ }
+ 
+ static struct drm_framebuffer *ftd330_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+-					    const struct drm_mode_fb_cmd2 *mode_cmd)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
++						    const struct drm_format_info *info,
++#endif
++						    const struct drm_mode_fb_cmd2 *mode_cmd)
+ {
+ 	struct drm_framebuffer *fb;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
+ 	const struct drm_format_info *info;
++#endif
+ 	struct ftd330_gem_object *objs[MAX_NUM_PLANES];
+ 	struct drm_gem_object *obj;
+ 	unsigned int height, size;
+ 	unsigned char i, num_planes;
+ 	int ret = 0;
+ 
+-	info = drm_get_format_info(dev, mode_cmd);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
++	info = drm_get_format_info(dev, mode_cmd->pixel_format,
++					   mode_cmd->modifier[0]);
++#endif
+ 	if (!info)
+ 		return ERR_PTR(-EINVAL);
+ 
+@@ -326,11 +342,11 @@
+ 	return NULL;
+ }
+ 
+-static const struct drm_format_info *ftd330_get_format_info(const struct drm_mode_fb_cmd2 *cmd)
++static const struct drm_format_info *ftd330_get_format_info(u32 format, u64 modifier)
+ {
+-	if (fourcc_mod_is_custom_format(cmd->modifier[0]))
++	if (fourcc_mod_is_custom_format(modifier))
+ 		return ftd330_lookup_format_info(ftd330_formats_custom, ARRAY_SIZE(ftd330_formats_custom),
+-					     cmd->pixel_format);
++						     format);
+ 	else
+ 		return NULL;
+ }
+@@ -413,7 +429,9 @@
+ static const struct drm_mode_config_funcs ftd330_mode_config_funcs = {
+ 	.fb_create = ftd330_fb_create,
+ 	.get_format_info = ftd330_get_format_info,
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
+ 	.output_poll_changed = drm_fb_helper_output_poll_changed,
++#endif
+ 	.atomic_check = drm_atomic_helper_check,
+ 	.atomic_commit = drm_atomic_helper_commit,
+ };
+@@ -579,4 +597,3 @@
+ 	drm_framebuffer_put(fb);
+ 	return ret;
+ }
+-
+--- a/dc_driver/phytium/ftd330_plane.c
++++ b/dc_driver/phytium/ftd330_plane.c
+@@ -4,9 +4,7 @@
+  */
+ #include <linux/file.h>
+ #include <linux/version.h>
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 18)
+ #include <linux/debugfs.h>
+-#endif
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_plane_helper.h>
+--- a/dc_driver/phytium/ftd330_simple_enc.c
++++ b/dc_driver/phytium/ftd330_simple_enc.c
+@@ -409,7 +409,11 @@
+ 	return component_add(dev, &encoder_component_ops);
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void encoder_remove(struct platform_device *pdev)
++#else
+ static int encoder_remove(struct platform_device *pdev)
++#endif
+ {
+ 	struct device *dev = &pdev->dev;
+ 
+@@ -417,7 +421,9 @@
+ 
+ 	dev_set_drvdata(dev, NULL);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+ 	return 0;
++#endif
+ }
+ 
+ struct platform_driver simple_encoder_driver = {
+--- a/dc_driver/phytium/phytium_dp.c
++++ b/dc_driver/phytium/phytium_dp.c
+@@ -7,6 +7,7 @@
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 4, 18)
+ #include <linux/acpi.h>
+ #endif
++#include <drm/drm_edid.h>
+ 
+ #include "phytium_dp.h"
+ #include "phytium_dp_reg.h"
+@@ -21,9 +22,7 @@
+ #include "ftd330_crtc.h"
+ #include "FTD330/ftd330_dc.h"
+ 
+-#ifdef CONFIG_PHYTIUM_LANE_TRAIN
+ static int phytium_rate[] = {162000, 270000, 540000, 810000};
+-#endif
+ 
+ // #ifdef DRM_DEBUG_KMS
+ // #undef DRM_DEBUG_KMS
+@@ -2623,8 +2622,8 @@
+ 	if (physical_display_id == DISPLAY_0) {
+ 		mutex_lock(&priv->power_mutex);
+ 		power_status = true;
+-		if (priv->info.pipe_mask & BIT(DISPLAY_0) &&
+-			!(priv->info.edp_mask & BIT(DISPLAY_0))) {
++			if (priv->info.pipe_mask & BIT(DISPLAY_0) &&
++				!(priv->info.edp_mask & BIT(DISPLAY_0))) {
+ #ifdef CONFIG_PHYTIUM_POWER_OPERATION
+ 			phytium_dp = priv->phytium_dp[physical_display_id];
+ 			if (!phytium_dp) {
+@@ -2639,11 +2638,14 @@
+ #endif
+ 					phytium_dplp_init_port(phytium_dp);
+ 			}
+-		}
+-		mutex_unlock(&priv->power_mutex);
+-		if (!power_status) {
+-			phytium_dp_hw_hpd_irq_setup(priv->phytium_dp[DISPLAY_0], true, handle_irq);
+-		}
++
++#endif
++			}
++			mutex_unlock(&priv->power_mutex);
++#ifdef CONFIG_PHYTIUM_POWER_OPERATION
++			if (!power_status) {
++				phytium_dp_hw_hpd_irq_setup(priv->phytium_dp[DISPLAY_0], true, handle_irq);
++			}
+ #endif
+ 	} else {
+ 		mutex_lock(&priv->power_mutex);
+@@ -4346,4 +4348,3 @@
+ 		}
+ 	}
+ }
+-
+--- a/dc_driver/phytium/phytium_dp.h
++++ b/dc_driver/phytium/phytium_dp.h
+@@ -351,10 +351,8 @@
+ phytium_encoder_mode_valid(struct drm_encoder *encoder,
+ 						const struct drm_display_mode
+ 						*mode);
+-#ifdef CONFIG_PHYTIUM_POWER_OPERATION
+ void phytium_display_power_request_on(struct drm_device *dev, int display_id, bool handle_irq);
+ void phytium_display_power_request_off(struct drm_device *dev, int display_id);
+-#endif
+ void phytium_dp_platform_init(struct drm_device *dev);
+ int phytium_dp_start_link_train(struct phytium_dp_device *phytium_dp);
+ bool phytium_dp_fast_link_train(struct phytium_dp_device *phytium_dp);
+--- a/dc_driver/phytium/phytium_dp_debugfs.c
++++ b/dc_driver/phytium/phytium_dp_debugfs.c
+@@ -12,6 +12,7 @@
+ #endif
+ #include <drm/drm_file.h>
+ #include <drm/drm_atomic.h>
++#include <drm/drm_edid.h>
+ #include "ftd330_drv.h"
+ #include "ftd330_dc_hw.h"
+ #include "ftd330_dc.h"
+--- a/dc_driver/phytium/phytium_fbdev.c
++++ b/dc_driver/phytium/phytium_fbdev.c
+@@ -11,35 +11,80 @@
+ #include "ftd330_gem.h"
+ #include "ftd330_fb.h"
+ #include "phytium_fbdev.h"
+-#if KERNEL_VERSION(6, 6, 0) <= LINUX_VERSION_CODE
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 14, 0)
++#include <drm/clients/drm_client_setup.h>
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++#include <drm/drm_client_setup.h>
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+ #include <drm/drm_fbdev_generic.h>
+ #endif
+ 
+ #define	PHYTIUM_MAX_CONNECTOR	1
+ #define	helper_to_drm_private(x) container_of(x, struct ftd330_drm_private, fbdev_helper)
+ 
+-#if KERNEL_VERSION(6, 6, 0) > LINUX_VERSION_CODE
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0) || \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+ static int phytium_fbdev_mmap(struct fb_info *info, struct vm_area_struct *vma)
+ {
+ 	struct drm_fb_helper *helper = info->par;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	struct ftd330_drm_private *priv = helper->dev->dev_private;
++#else
+ 	struct ftd330_drm_private *priv = helper_to_drm_private(helper);
++#endif
+ 
+ 	return ftd330_gem_mmap_obj(&priv->fbdev_phytium_gem->base, vma);
+ }
+ 
+-static struct fb_ops phytium_fbdev_ops = {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++static void phytium_fbdev_destroy(struct fb_info *info)
++{
++	struct drm_fb_helper *helper = info->par;
++	struct drm_framebuffer *fb = helper->fb;
++
++	drm_fb_helper_fini(helper);
++	drm_framebuffer_remove(fb);
++	drm_client_release(&helper->client);
++	drm_fb_helper_unprepare(helper);
++	kfree(helper);
++}
++#endif
++
++static const struct fb_ops phytium_fbdev_ops = {
+ 	.owner = THIS_MODULE,
+-	 DRM_FB_HELPER_DEFAULT_OPS,
+-	.fb_mmap = phytium_fbdev_mmap,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	__FB_DEFAULT_DMAMEM_OPS_RDWR,
++	DRM_FB_HELPER_DEFAULT_OPS,
++	__FB_DEFAULT_DMAMEM_OPS_DRAW,
++#else
++	DRM_FB_HELPER_DEFAULT_OPS,
+ 	.fb_fillrect = drm_fb_helper_cfb_fillrect,
+ 	.fb_copyarea = drm_fb_helper_cfb_copyarea,
+ 	.fb_imageblit = drm_fb_helper_cfb_imageblit,
++#endif
++	.fb_mmap = phytium_fbdev_mmap,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	.fb_destroy = phytium_fbdev_destroy,
++#endif
+ };
+ 
+-static int
+-phytium_drm_fbdev_create(struct drm_fb_helper *helper, struct drm_fb_helper_surface_size *sizes)
++int phytium_drm_fbdev_create(struct drm_fb_helper *helper,
++			     struct drm_fb_helper_surface_size *sizes);
++
++static const struct drm_fb_helper_funcs phytium_drm_fb_helper_funcs = {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
++	.fb_probe = phytium_drm_fbdev_create,
++#endif
++};
++
++int phytium_drm_fbdev_create(struct drm_fb_helper *helper,
++			     struct drm_fb_helper_surface_size *sizes)
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	struct ftd330_drm_private *priv = helper->dev->dev_private;
++#else
+ 	struct ftd330_drm_private *priv = helper_to_drm_private(helper);
++#endif
+ 	struct drm_device *dev = helper->dev;
+ 	unsigned int bytes_per_pixel;
+ 	struct drm_mode_fb_cmd2	mode_cmd = {0};
+@@ -58,21 +103,34 @@
+ 	mode_cmd.pixel_format = drm_mode_legacy_fb_format(sizes->surface_bpp, sizes->surface_depth);
+ 	size = PAGE_ALIGN(mode_cmd.pitches[0] * mode_cmd.height);
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+ 	ret = mutex_lock_interruptible(&dev->struct_mutex);
+ 	if (ret < 0) {
+ 		DRM_ERROR("failed to get mutex lock\n");
+ 		return ret;
+ 	}
++#endif
+ 
+ 	//priv->fbdev_phytium_gem = phytium_gem_create_object(dev, size);
+ 	priv->fbdev_phytium_gem = ftd330_gem_create_object(dev, size);
+-	if (!priv->fbdev_phytium_gem) {
++	if (IS_ERR(priv->fbdev_phytium_gem)) {
++		ret = PTR_ERR(priv->fbdev_phytium_gem);
++		priv->fbdev_phytium_gem = NULL;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
++		mutex_unlock(&dev->struct_mutex);
++#endif
+ 		DRM_ERROR("failed to create gem object\n");
+-		return -ENOMEM;
++		return ret;
+ 	}
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+ 	mutex_unlock(&dev->struct_mutex);
++#endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	fbi = drm_fb_helper_alloc_info(helper);
++#else
+ 	fbi = drm_fb_helper_alloc_fbi(helper);
++#endif
+ 	if (IS_ERR(fbi)) {
+ 		DRM_DEV_ERROR(dev->dev, "Failed to create framebuffer info.");
+ 		ret = PTR_ERR(fbi);
+@@ -87,8 +145,13 @@
+ 	}
+ 
+ 	helper->fb = phytium_fb;
++	helper->funcs = &phytium_drm_fb_helper_funcs;
+ 	fbi->par = helper;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+ 	fbi->flags = FBINFO_FLAG_DEFAULT;
++#else
++	fbi->flags |= FBINFO_VIRTFB;
++#endif
+ 	fbi->fbops = &phytium_fbdev_ops;
+ 
+ 	fb = helper->fb;
+@@ -100,7 +163,9 @@
+ #endif
+ 	offset = fbi->var.xoffset * bytes_per_pixel;
+ 	offset += fbi->var.yoffset * fb->pitches[0];
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 13, 0)
+ 	dev->mode_config.fb_base = 0;
++#endif
+ 	fbi->screen_base = priv->fbdev_phytium_gem->cookie + offset;
+ 	fbi->screen_size = priv->fbdev_phytium_gem->base.size;
+ 	fbi->fix.smem_len = priv->fbdev_phytium_gem->base.size;
+@@ -114,16 +179,16 @@
+ 	return ret;
+ }
+ 
+-static const struct drm_fb_helper_funcs phytium_drm_fb_helper_funcs = {
+-	.fb_probe = phytium_drm_fbdev_create,
+-};
+ #endif
+ 
+ 
+ void phytium_drm_fbdev_init(struct ftd330_drm_private *priv)
+ {
+ 	struct drm_device *dev = priv->drm_dev;
+-#if KERNEL_VERSION(6, 1, 0) >= LINUX_VERSION_CODE
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	drm_client_setup(dev, NULL);
++	return;
++#elif KERNEL_VERSION(6, 1, 0) >= LINUX_VERSION_CODE
+ 	struct drm_fb_helper *helper;
+ 	int ret;
+ 
+@@ -177,4 +242,3 @@
+ 	return;
+ #endif
+ }
+-
+--- a/dc_driver/phytium/phytium_fbdev.h
++++ b/dc_driver/phytium/phytium_fbdev.h
+@@ -9,6 +9,10 @@
+ 
+ void phytium_drm_fbdev_init(struct ftd330_drm_private *priv);
+ void phytium_drm_fbdev_fini(struct drm_device *dev);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++int phytium_drm_fbdev_create(struct drm_fb_helper *helper,
++			     struct drm_fb_helper_surface_size *sizes);
++#endif
+ 
+ 
+ #endif
+--- a/dc_driver/phytium/phytium_panel.c
++++ b/dc_driver/phytium/phytium_panel.c
+@@ -4,6 +4,7 @@
+  * Copyright (C) 2021-2025 Phytium Technology Co., Ltd.
+  */
+ #include <linux/version.h>
++#include <linux/backlight.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_atomic.h>
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+--- a/dc_driver/phytium/phytium_vrr.c
++++ b/dc_driver/phytium/phytium_vrr.c
+@@ -5,6 +5,7 @@
+  */
+ #include <linux/version.h>
+ #include <drm/drm_atomic_helper.h>
++#include <drm/drm_edid.h>
+ 
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
+ #include <drm/display/drm_dp.h>

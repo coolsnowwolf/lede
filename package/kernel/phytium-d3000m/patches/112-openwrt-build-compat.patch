@@ -1,0 +1,387 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] phytium: support OpenWrt builds on Linux 5.10 and 6.18
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/dc_driver/phytium/ftd330_fb.c
++++ b/dc_driver/phytium/ftd330_fb.c
+@@ -194,8 +194,7 @@
+ 	int ret = 0;
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 17, 0)
+-	info = drm_get_format_info(dev, mode_cmd->pixel_format,
+-					   mode_cmd->modifier[0]);
++	info = drm_get_format_info(dev, mode_cmd);
+ #endif
+ 	if (!info)
+ 		return ERR_PTR(-EINVAL);
+@@ -342,8 +341,15 @@
+ 	return NULL;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+ static const struct drm_format_info *ftd330_get_format_info(u32 format, u64 modifier)
+ {
++#else
++static const struct drm_format_info *ftd330_get_format_info(const struct drm_mode_fb_cmd2 *cmd)
++{
++	u32 format = cmd->pixel_format;
++	u64 modifier = cmd->modifier[0];
++#endif
+ 	if (fourcc_mod_is_custom_format(modifier))
+ 		return ftd330_lookup_format_info(ftd330_formats_custom, ARRAY_SIZE(ftd330_formats_custom),
+ 						     format);
+--- a/dc_driver/phytium/phytium_fbdev.c
++++ b/dc_driver/phytium/phytium_fbdev.c
+@@ -126,7 +126,9 @@
+ 	mutex_unlock(&dev->struct_mutex);
+ #endif
+ 
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
++	fbi = helper->info;
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+ 	fbi = drm_fb_helper_alloc_info(helper);
+ #else
+ 	fbi = drm_fb_helper_alloc_fbi(helper);
+--- a/gpu_driver/Makefile
++++ b/gpu_driver/Makefile
+@@ -67,10 +67,10 @@
+ 
+ .PHONY: all clean install
+ all: 
+-	@make -f Kbuild ARCH_TYPE=$(ARCH_TYPE)
++	@$(MAKE) -f Kbuild ARCH_TYPE=$(ARCH_TYPE)
+ 
+ clean:
+-	@make -f Kbuild clean
++	@$(MAKE) -f Kbuild clean
+ 
+ install: all
+-	@make -f Kbuild ARCH_TYPE=$(ARCH_TYPE) install
++	@$(MAKE) -f Kbuild ARCH_TYPE=$(ARCH_TYPE) install
+--- a/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_driver.c
++++ b/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_driver.c
+@@ -1412,29 +1412,31 @@
+ #if gcdENABLE_PHYTIUM_DEVFREQ
+ #include <acpi/actypes.h>
+ 
+-    acpi_handle handle = ACPI_HANDLE(device_acpi);
+-    union acpi_object args[4];
+-    
+-    struct acpi_object_list arg_list = {
+-	    .pointer = args,
+-	    .count = ARRAY_SIZE(args),
+-    };
+-    acpi_status acpi_status;
+-    unsigned long long data;
++    {
++        acpi_handle handle = ACPI_HANDLE(device_acpi);
++        union acpi_object args[4];
+ 
+-    args[0].type = ACPI_TYPE_INTEGER;
+-    args[0].integer.value = FT_DEVICE_TYPE;
+-    args[1].type = ACPI_TYPE_INTEGER;
+-    args[1].integer.value = device->kernels[0]->tmp_freq;
+-    args[2].type = ACPI_TYPE_INTEGER;
+-    args[2].integer.value = 1;
+-    args[3].type = ACPI_TYPE_INTEGER;
+-    args[3].integer.value = 1;
++        struct acpi_object_list arg_list = {
++    	    .pointer = args,
++    	    .count = ARRAY_SIZE(args),
++        };
++        acpi_status acpi_status;
++        unsigned long long data;
+ 
+-    acpi_status = acpi_evaluate_integer(handle, "PSCF", &arg_list, &data);
+-    if (ACPI_FAILURE(acpi_status)) {
+-	    pr_err("PSCF Method for shader failed %s\n", __func__);
+-	    return -ENODEV;
++        args[0].type = ACPI_TYPE_INTEGER;
++        args[0].integer.value = FT_DEVICE_TYPE;
++        args[1].type = ACPI_TYPE_INTEGER;
++        args[1].integer.value = device->kernels[0]->tmp_freq;
++        args[2].type = ACPI_TYPE_INTEGER;
++        args[2].integer.value = 1;
++        args[3].type = ACPI_TYPE_INTEGER;
++        args[3].integer.value = 1;
++
++        acpi_status = acpi_evaluate_integer(handle, "PSCF", &arg_list, &data);
++        if (ACPI_FAILURE(acpi_status)) {
++    	    pr_err("PSCF Method for shader failed %s\n", __func__);
++    	    return -ENODEV;
++        }
+     }
+ #endif
+ 
+--- a/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_drm.c
++++ b/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_drm.c
+@@ -784,7 +784,9 @@
+ 
+ static const struct file_operations viv_drm_fops = {
+     .owner              = THIS_MODULE,
++#ifdef FOP_UNSIGNED_OFFSET
+     .fop_flags          = FOP_UNSIGNED_OFFSET,
++#endif
+     .open               = drm_open,
+     .release            = drm_release,
+     .unlocked_ioctl     = drm_ioctl,
+--- a/npu_driver/heap/phytium_npu_heap.c
++++ b/npu_driver/heap/phytium_npu_heap.c
+@@ -4,6 +4,7 @@
+  * Copyright (C) 2023 Phytium Technology Co., Ltd.
+  */
+ 
++#include "linux/phytium_npu_compat.h"
+ #include <linux/dma-buf.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/dma-heap.h>
+@@ -258,6 +259,22 @@
+ 	iosys_map_clear(map);
+ }
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++static void *npu_system_heap_vmap_legacy(struct dma_buf *buf)
++{
++	struct iosys_map map;
++
++	return npu_system_heap_vmap(buf, &map) ? NULL : map.vaddr;
++}
++
++static void npu_system_heap_vunmap_legacy(struct dma_buf *buf, void *vaddr)
++{
++	struct iosys_map map = { .vaddr = vaddr };
++
++	npu_system_heap_vunmap(buf, &map);
++}
++#endif
++
+ static void npu_system_heap_dma_buf_release(struct dma_buf *pdmabuf)
+ {
+ 	struct npu_unified_heap_buffer *buffer = pdmabuf->priv;
+@@ -283,8 +300,13 @@
+ 	.begin_cpu_access = npu_system_heap_dma_buf_begin_cpu_access,
+ 	.end_cpu_access = npu_system_heap_dma_buf_end_cpu_access,
+ 	.mmap = npu_system_heap_mmap,
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++	.vmap = npu_system_heap_vmap_legacy,
++	.vunmap = npu_system_heap_vunmap_legacy,
++#else
+ 	.vmap = npu_system_heap_vmap,
+ 	.vunmap = npu_system_heap_vunmap,
++#endif
+ 	.release = npu_system_heap_dma_buf_release,
+ };
+ 
+@@ -347,7 +369,11 @@
+ 	}
+ 
+ 	/* create the pdmabuf */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++	exp_info.exp_name = "npu_heap";
++#else
+ 	exp_info.exp_name = dma_heap_get_name(heap);
++#endif
+ 	exp_info.ops = &npu_system_heap_buf_ops;
+ 	exp_info.size = buffer->req_len;
+ 	exp_info.flags = fd_flags;
+@@ -374,8 +400,30 @@
+ 	return ERR_PTR(ret);
+ }
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++static int npu_system_heap_alloc_legacy(struct dma_heap *heap, unsigned long len,
++				       unsigned long fd_flags, unsigned long heap_flags)
++{
++	struct dma_buf *buf;
++	int fd;
++
++	buf = npu_system_heap_alloc(heap, len, fd_flags, heap_flags);
++	if (IS_ERR(buf))
++		return PTR_ERR(buf);
++
++	fd = dma_buf_fd(buf, fd_flags);
++	if (fd < 0)
++		dma_buf_put(buf);
++	return fd;
++}
++#endif
++
+ static const struct dma_heap_ops npu_system_heap_ops = {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++	.allocate = npu_system_heap_alloc_legacy,
++#else
+ 	.allocate = npu_system_heap_alloc,
++#endif
+ };
+ 
+ static int npu_system_heap_create(void)
+@@ -395,7 +443,13 @@
+ module_init(npu_system_heap_create);
+ 
+ MODULE_LICENSE("GPL");
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+ MODULE_IMPORT_NS("DMA_BUF");
++#else
++MODULE_IMPORT_NS(DMA_BUF);
++#endif
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+ MODULE_IMPORT_NS("DMA_BUF_HEAP");
++#endif
+ MODULE_AUTHOR("Cheng Quan <chengquan@phytium.com.cn>");
+ MODULE_DESCRIPTION("Phytium NPU DMA BUF heap driver");
+--- a/npu_driver/include/linux/phytium_npu_compat.h
++++ b/npu_driver/include/linux/phytium_npu_compat.h
+@@ -0,0 +1,45 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef PHYTIUM_NPU_COMPAT_H
++#define PHYTIUM_NPU_COMPAT_H
++
++#include <linux/version.h>
++#include <linux/dma-buf.h>
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
++struct iosys_map {
++	void *vaddr;
++};
++
++static inline void iosys_map_set_vaddr(struct iosys_map *map, void *vaddr)
++{
++	map->vaddr = vaddr;
++}
++
++static inline void iosys_map_clear(struct iosys_map *map)
++{
++	map->vaddr = NULL;
++}
++
++static inline int phytium_dma_buf_vmap(struct dma_buf *buf, struct iosys_map *map)
++{
++	map->vaddr = dma_buf_vmap(buf);
++	return map->vaddr ? 0 : -ENOMEM;
++}
++
++static inline void phytium_dma_buf_vunmap(struct dma_buf *buf, struct iosys_map *map)
++{
++	dma_buf_vunmap(buf, map->vaddr);
++	iosys_map_clear(map);
++}
++#define dma_buf_vmap phytium_dma_buf_vmap
++#define dma_buf_vunmap phytium_dma_buf_vunmap
++#elif LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
++#include <linux/dma-buf-map.h>
++#define iosys_map dma_buf_map
++#define iosys_map_set_vaddr dma_buf_map_set_vaddr
++#define iosys_map_clear dma_buf_map_clear
++#else
++#include <linux/iosys-map.h>
++#endif
++
++#endif
+--- a/npu_driver/phytium-npu/phytium_npu.h
++++ b/npu_driver/phytium-npu/phytium_npu.h
+@@ -7,7 +7,7 @@
+ #include <linux/list.h>
+ #include <linux/spinlock.h>
+ #include <linux/miscdevice.h>
+-#include <linux/iosys-map.h>
++#include "linux/phytium_npu_compat.h"
+ #include "phytium_npu_mmu.h"
+ 
+ #define NPU_FTN300_PCI_DRV_NAME         "NPU_FTN300_pci"
+--- a/npu_driver/phytium-npu/phytium_npu_common.c
++++ b/npu_driver/phytium-npu/phytium_npu_common.c
+@@ -3,6 +3,7 @@
+  *
+  * Copyright (C) 2023 Phytium Technology Co., Ltd.
+  */
++#include <linux/version.h>
+ #include "phytium_npu.h"
+ #include "phytium_npu_mmu.h"
+ #include "linux/phytium_npu_dma_buf_heap.h"
+@@ -697,5 +698,9 @@
+ 
+ MODULE_AUTHOR("Cheng Quan <chengquan@phytium.com.cn>");
+ MODULE_DESCRIPTION("Phytium NPU driver common lib");
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
+ MODULE_IMPORT_NS("DMA_BUF");
++#else
++MODULE_IMPORT_NS(DMA_BUF);
++#endif
+ MODULE_LICENSE("GPL");
+--- a/npu_driver/phytium-npu/phytium_npu_debug.c
++++ b/npu_driver/phytium-npu/phytium_npu_debug.c
+@@ -4,7 +4,7 @@
+  * Copyright (C) 2023 Phytium Technology Co., Ltd.
+  */
+ #include <linux/debugfs.h>
+-#include <linux/iosys-map.h>
++#include "linux/phytium_npu_compat.h"
+ #include <linux/dma-buf.h>
+ #include "phytium_npu.h"
+ #include "phytium_npu_mmu.h"
+--- a/npu_driver/phytium-npu/phytium_npu_platform.c
++++ b/npu_driver/phytium-npu/phytium_npu_platform.c
+@@ -3,6 +3,7 @@
+  *
+  * Copyright (C) 2023 Phytium Technology Co., Ltd.
+  */
++#include <linux/version.h>
+ #include <linux/acpi.h>
+ #include <linux/interrupt.h>
+ #include <linux/device.h>
+@@ -120,9 +121,17 @@
+ 	return ret;
+ }
+ 
+-static void phytium_npu_remove(struct platform_device *pdev)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void
++#else
++static int
++#endif
++phytium_npu_remove(struct platform_device *pdev)
+ {
+ 	phytium_npu_unregister_dev(&pdev->dev);
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
++	return 0;
++#endif
+ }
+ 
+ #ifdef CONFIG_PM
+--- a/vpu_driver/Makefile
++++ b/vpu_driver/Makefile
+@@ -68,7 +68,7 @@
+ endif
+ 
+ FTV310_VPU_CFLAGS += -I$(src)
+-ccflags-y += $(FTV310_VPU_CFLAGS)
++ccflags-y += $(FTV310_VPU_CFLAGS) $(EXTRA_CFLAGS)
+ 
+ 
+ KDIR ?= /lib/modules/$(shell uname -r)/build
+--- a/vpu_driver/ftv310_vpu_drm.c
++++ b/vpu_driver/ftv310_vpu_drm.c
+@@ -1803,7 +1803,9 @@
+ /* VFS methods */
+ static const struct file_operations ftv310_vpu_fops = {
+ 	.owner = THIS_MODULE,
++#ifdef FOP_UNSIGNED_OFFSET
+ 	.fop_flags = FOP_UNSIGNED_OFFSET,
++#endif
+ 	.open = ftv310_vpu_device_open,
+ 	.mmap = ftv310_vpu_mmap,
+ 	.release = ftv310_vpu_device_release,
+--- a/vpu_driver/ftv310_vpu_priv.h
++++ b/vpu_driver/ftv310_vpu_priv.h
+@@ -34,7 +34,8 @@
+ 
+ #if KERNEL_VERSION(5, 0, 0) <= LINUX_VERSION_CODE
+ #define ftv310_vpu_access_ok(a, b, c) access_ok(b, c)
+-#if KERNEL_VERSION(5, 19, 0) > LINUX_VERSION_CODE
++#if KERNEL_VERSION(5, 19, 0) > LINUX_VERSION_CODE && \
++	!defined(PHYTIUM_DMA_RESV_RESERVE_FENCES)
+ #define ftv310_vpu_reserve_obj_shared(a, b) dma_resv_reserve_shared(a, b)
+ #else
+ #define ftv310_vpu_reserve_obj_shared(a, b) dma_resv_reserve_fences(a, b)

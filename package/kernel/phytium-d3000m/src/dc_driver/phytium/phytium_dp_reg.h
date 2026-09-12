@@ -1,0 +1,653 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Phytium display drm driver
+ *
+ * Copyright (C) 2021-2025 Phytium Technology Co., Ltd.
+ */
+
+#ifndef __PHYTIUM_REG_H__
+#define __PHYTIUM_REG_H__
+
+/******************************dc register start******************************************/
+#define PHYTIUM_DC_FRAMEBUFFER_Y_ADDRESS		0x1400
+	#define ADDRESS_MASK					0xffffff80
+#define PHYTIUM_DC_FRAMEBUFFER_Y_STRIDE			0x1408
+#define PHYTIUM_DC_HDISPLAY				0x1430
+	#define HDISPLAY_END_SHIFT				0
+	#define HDISPLAY_END_MASK				0x7fff
+	#define HDISPLAY_TOTAL_SHIFT				16
+	#define HDISPLAY_TOTAL_MASK				0x7fff
+#define	PHYTIUM_DC_HSYNC				0x1438
+	#define HSYNC_START_SHIFT				0
+	#define HSYNC_START_MASK				0x7fff
+	#define HSYNC_END_SHIFT					15
+	#define HSYNC_END_MASK					0x7fff
+	#define HSYNC_PULSE_ENABLED				(1<<30)
+	#define HSYNC_NEGATIVE					(1<<31)
+#define	PHYTIUM_DC_VDISPLAY				0x1440
+	#define VDISPLAY_END_SHIFT				0
+	#define VDISPLAY_END_MASK				0x7fff
+	#define VDISPLAY_TOTAL_SHIFT				16
+	#define VDISPLAY_TOTAL_MASK				0x7fff
+#define	PHYTIUM_DC_PHYYNC				0x1448
+	#define PHYYNC_START_SHIFT				0
+	#define PHYYNC_START_MASK				0x7fff
+	#define PHYYNC_END_SHIFT					15
+	#define PHYYNC_END_MASK					0x7fff
+	#define PHYYNC_PULSE_ENABLED				(1<<30)
+	#define PHYYNC_NEGATIVE					(1<<31)
+#define	PHYTIUM_DC_DISPLAY_CURRENT_LOCATION		0x1450
+#define	PHYTIUM_DC_GAMMA_INDEX				0x1458
+	#define GAMMA_INDEX_MAX					256
+#define	PHYTIUM_DC_GAMMA_DATA				0x1460
+	#define GAMMA_BLUE_SHIFT				0
+	#define GAMMA_BLUE_MASK					0x3ff
+	#define GAMMA_GREEN_SHIFT				10
+	#define GAMMA_GREEN_MASK				0x3ff
+	#define GAMMA_RED_SHIFT					20
+	#define GAMMA_RED_MASK					0x3ff
+#define PHYTIUM_DC_CURSOR_CONFIG			0x1468
+	#define CURSOR_FORMAT_DISABLED				0x0
+	#define CURSOR_FORMAT_MASKMODE				0x3
+	#define CURSOR_FORMAT_ARGB8888				0x2
+	#define CURSOR_FORMAT_MASK				0x3
+	#define	CURSOR_HOT_Y_SHIFT				8
+	#define CURSOR_HOT_Y_MASK				0x1f
+	#define	CURSOR_HOT_X_SHIFT				16
+	#define CURSOR_HOT_X_MASK				0x1f
+#define	PHYTIUM_DC_CURSOR_ADDRESS			0x146c
+#define	PHYTIUM_DC_CURSOR_LOCATION			0x1470
+	#define CURSOR_X_SHIFT					0
+	#define	CURSOR_X_MASK					0x7fff
+	#define CURSOR_Y_SHIFT					16
+	#define	CURSOR_Y_MASK					0x7fff
+#define	PHYTIUM_DC_CURSOR_BACKGROUND			0x1474
+#define PHYTIUM_DC_CURSOR_FOREGROUND			0x1478
+#define PHYTIUM_DC_INT_STATUS				0x147c
+	#define INT_STATUS					0x1
+#define	PHYTIUM_DC_INT_ENABLE				0x1480
+	#define INT_ENABLE					0x1
+	#define INT_DISABLE					0x0
+
+#define PHYTIUM_DC_FRAMEBUFFER_CONFIG			0x1518
+	#define FRAMEBUFFER_OUTPUT				BIT(0)
+	#define FRAMEBUFFER_GAMMA_ENABLE			BIT(2)
+	#define FRAMEBUFFER_VALID_PENDING			BIT(3)
+	#define FRAMEBUFFER_RESET				BIT(4)
+	#define FRAMEBUFFER_PROGRESS				BIT(6)
+	#define FRAMEBUFFER_ROT_ANGLE_SHIFT			(11)
+	#define FRAMEBUFFER_ROT_ANGLE_MASK			(0x7)
+	#define FRAMEBUFFER_ROT_ANGLE_ROT0			(0)
+	#define FRAMEBUFFER_ROT_ANGLE_FLIP_X			(1)
+	#define FRAMEBUFFER_ROT_ANGLE_FLIP_Y			(2)
+	#define FRAMEBUFFER_TILE_MODE_SHIFT			(17)
+	#define FRAMEBUFFER_TILE_MODE_MASK			(0x1f)
+	#define FRAMEBUFFER_LINEAR				0
+	#define FRAMEBUFFER_TILE_MODE0				4
+	#define FRAMEBUFFER_TILE_MODE3				7
+	#define FRAMEBUFFER_FORMAT_SHIFT			26
+	#define FRAMEBUFFER_FORMAT_MASK				0x3f
+	#define FRAMEBUFFER_FORMAT_XRGB4444			0x0
+	#define FRAMEBUFFER_FORMAT_ARGB4444			0x1
+	#define FRAMEBUFFER_FORMAT_XRGB1555			0x2
+	#define FRAMEBUFFER_FORMAT_ARGB1555			0x3
+	#define FRAMEBUFFER_FORMAT_RGB565			0x4
+	#define	FRAMEBUFFER_FORMAT_XRGB8888			0x5
+	#define FRAMEBUFFER_FORMAT_ARGB8888			0x6
+	#define FRAMEBUFFER_FORMAT_YUYV				0x7
+	#define FRAMEBUFFER_FORMAT_UYVY				0x8
+	#define FRAMEBUFFER_FORMAT_NV12				0x11
+	#define FRAMEBUFFER_FORMAT_NV16				0x12
+	#define FRAMEBUFFER_FORMAT_ARGB2101010			0x16
+	#define FRAMEBUFFER_SWIZZLE_SHIFT			23
+	#define FRAMEBUFFER_SWIZZLE_MASK			0x3
+	#define	FRAMEBUFFER_SWIZZLE_ARGB			0
+	#define	FRAMEBUFFER_SWIZZLE_RGBA			1
+	#define	FRAMEBUFFER_SWIZZLE_ABGR			2
+	#define	FRAMEBUFFER_SWIZZLE_BGRA			3
+	#define FRAMEBUFFER_UPHYWIZZLE_SHIFT			25
+	#define FRAMEBUFFER_UPHYWIZZLE_DISABLE			0
+	#define FRAMEBUFFER_UPHYWIZZLE_ENABLE			1
+	#define FRAMEBUFFER_CLEAR				BIT(8)
+	#define FRAMEBUFFER_SCALE_ENABLE			BIT(22)
+#define PHYTIUM_DC_FRAMEBUFFER_SCALECONFIG		0x1520
+	#define FRAMEBUFFER_FILTER_TAP				3
+	#define FRAMEBUFFER_HORIZONTAL_FILTER_TAP		3
+	#define FRAMEBUFFER_TAP					0x33
+#define	PHYTIUM_DC_FRAMEBUFFER_U_ADDRESS		0x1530
+#define PHYTIUM_DC_FRAMEBUFFER_V_ADDRESS		0x1538
+#define PHYTIUM_DC_OVERLAY_CONFIG			0x1540
+	#define	X100_DC_OVERLAY_ENABLE				BIT(24)
+
+#define PHYTIUM_DC_FRAMEBUFFER_U_STRIDE			0x1800
+#define PHYTIUM_DC_FRAMEBUFFER_V_STRIDE			0x1808
+#define PHYTIUM_DC_FRAMEBUFFER_SIZE			0x1810
+	#define WIDTH_SHIFT					0
+	#define WIDTH_MASK					0x7fff
+	#define HEIGHT_SHIFT					15
+	#define HEIGHT_MASK					0x7fff
+
+#define PHYTIUM_DC_FRAMEBUFFER_SCALE_FACTOR_X		0x1828
+	#define SCALE_FACTOR_X_MASK				0x7fffffff
+#define PHYTIUM_DC_FRAMEBUFFER_SCALE_FACTOR_Y		0x1830
+	#define SCALE_FACTOR_Y_MASK				0x7fffffff
+	#define SCALE_FACTOR_Y_MAX				0x3
+	#define SCALE_FACTOR_SRC_OFFSET				16
+
+#define PHYTIUM_DC_FRAMEBUFFER_HORI_FILTER_INDEX	0x1838
+	#define HORI_FILTER_INDEX				0x0
+#define PHYTIUM_DC_FRAMEBUFFER_HORI_FILTER		0x1a00
+#define PHYTIUM_DC_FRAMEBUFFER_VERT_FILTER_INDEX	0x1a08
+	#define VERT_FILTER_INDEX				0x0
+#define PHYTIUM_DC_FRAMEBUFFER_VERT_FILTER		0x1a10
+#define PHYTIUM_DC_FRAMEBUFFER_CLEARVALUE		0x1a18
+	#define CLEAR_VALUE_RED					0x00ff0000
+	#define CLEAR_VALUE_GREEN				0x0000ff00
+	#define CLEAR_VALUE_BLACK				0x00000000
+#define PHYTIUM_DC_FRAMEBUFFER_INITIALOFFSET		0x1a20
+	#define INITIALOFFSET					(0x8000 | (0X8000 << 16))
+#define PHYTIUM_DC_DP_CONFIG				0x1cd0
+	#define	OUTPUT_DP					(1<<3)
+	#define DP_RGB666					(0x1)
+	#define DP_RGB888					(0x2)
+	#define DP_RGB101010					(0x3)
+/******************************dc register end********************************************/
+
+/******************************phy access register****************************************/
+#define	PHYTIUM_PHY_ACCESS_ADDRESS			0x0000
+#define	PHYTIUM_PHY_WRITE_DATA				0x0004
+#define	PHYTIUM_PHY_READ_DATA				0x0008
+#define	PHYTIUM_PHY_ACCESS_CTRL				0x000c
+	#define ACCESS_WRITE					(1<<0)
+	#define ACCESS_READ					(1<<1)
+/******************************phy access register end*************************************/
+
+/******************************DPCD phy access register****************************************/
+#define DP_TEST_PHY_PATTERN						0x248
+/******************************DPCD phy access register end*************************************/
+
+/******************************dp register start******************************************/
+#define PHYTIUM_DP_LINK_BW_SET				0x0000
+#define PHYTIUM_DP_LANE_COUNT_SET			0x0004
+#define PHYTIUM_DP_ENHANCED_FRAME_EN			0x0008
+	#define ENHANCED_FRAME_ENABLE				0x1
+	#define ENHANCED_FRAME_DISABLE				0x0
+#define PHYTIUM_DP_TRAINING_PATTERN_SET			0x000c
+	#define TRAINING_OFF					0x0
+	#define TRAINING_PATTERN_1				0x1
+	#define TRAINING_PATTERN_2				0x2
+	#define TRAINING_PATTERN_3				0x3
+	#define TRAINING_PATTERN_4				0x4
+#define PHYTIUM_DP_LINK_QUAL_PATTERN_SET		0x0010
+	#define TEST_PATTERN_NONE				0x0
+	#define TEST_PATTERN_D10_2				0x1
+	#define TEST_PATTERN_SYMBOL_ERROR			0x2
+	#define TEST_PATTERN_PRBS7				0x3
+	#define TEST_PATTERN_80BIT_CUSTOM			0x4
+	#define TEST_PATTERN_CP2520_1				0x5
+	#define TEST_PATTERN_CP2520_2				0x6
+	#define TEST_PATTERN_CP2520_3				0x7
+	#define TEST_PATTERN_LANE_SHIFT				8
+#define PHYTIUM_DP_SCRAMBLING_DISABLE			0x0014
+	#define SCRAMBLING_ENABLE				0x0
+	#define SCRAMBLING_DISABLE				0x1
+#define PHYTIUM_DP_DOWNSPREAD_CTRL			0x0018
+#define PHYTIUM_DP_ALT_SCRAMBLER_RESET			0x001c
+#define PHYTIUM_DP_HBR2_SCRAMBLER_RESET			0x0020
+#define PHYTIUM_DP_DISPLAYPORT_VERSION			0x0024
+#define PHYTIUM_DP_CUSTOM_80BIT_PATTERN_0		0x0030
+#define PHYTIUM_DP_CUSTOM_80BIT_PATTERN_1		0x0034
+#define PHYTIUM_DP_CUSTOM_80BIT_PATTERN_2		0x0038
+#define PHYTIUM_DP_TRANSMITTER_OUTPUT_ENABLE		0x0080
+	#define TRANSMITTER_OUTPUT_ENABLE			BIT(0)
+	#define TRANSMITTER_OUTPUT_DISABLE			0
+#define PHYTIUM_DP_VIDEO_STREAM_ENABLE			0x0084
+	#define SST_MST_SOURCE_0_ENABLE				BIT(0)
+	#define SST_MST_SOURCE_0_ENABLE_MASK			0x1
+	#define SST_MST_SOURCE_0_DISABLE			0
+#define PHYTIUM_DP_SECONDARY_STREAM_ENABLE		0x0088
+	#define SECONDARY_STREAM_ENABLE				0x1
+	#define SECONDARY_STREAM_DISABLE			0x0
+#define PHYTIUM_DP_SEC_DATA_WINDOW			0x008C
+#define PHYTIUM_DP_SOFT_RESET				0x0090
+	#define LINK_SOFT_RESET					(0x1 << 0)
+	#define VIDEO_SOFT_RESET				(0x1 << 1)
+#define PHYTIUM_INPUT_SOURCE_ENABLE			0x0094
+	#define VIRTUAL_SOURCE_0_ENABLE				BIT(0)
+	#define VIRTUAL_SOURCE_0_ENABLE_MASK			0x1
+#define PHYTIUM_DP_FORCE_SCRAMBLER_RESET		0x00C0
+	#define SCRAMBLER_RESET					BIT(0)
+#define PHYTIUM_DP_SOURCE_CONTROL_STATUS		0x00C4
+#define PHYTIUM_DP_DATA_CONTROL				0x00C8
+#define PHYTIUM_DP_CORE_CAPABILITY			0x00F8
+#define PHYTIUM_DP_CORE_ID				0x00FC
+#define PHYTIUM_DP_AUX_COMMAND				0x0100
+	#define BYTE_COUNT_MASK					0xf
+	#define COMMAND_SHIFT					8
+	#define COMMAND_MASK					0xf
+	#define ADDRESS_ONLY					(1<<12)
+#define PHYTIUM_DP_AUX_WRITE_FIFO			0x0104
+#define PHYTIUM_DP_AUX_ADDRESS				0x0108
+#define PHYTIUM_DP_AUX_CLK_DIVIDER			0x010C
+	#define	AUX_CLK_DIVIDER					48
+	#define AUX_CLK_DIVIDER_100				100
+#define PHYTIUM_DP_SINK_HPD_STATE			0x0128
+	#define HPD_CONNECT					0x1
+	#define HPD_DISCONNECT					0x0
+#define PHYTIUM_DP_INTERRUPT_RAW_STATUS			0x0130
+	#define REPLY_TIMEOUT					(1<<3)
+	#define DP_STATUS_REQUEST_IN_PROGRESS			(1<<1)
+	#define HPD_STATE					(0<<1)
+#define PHYTIUM_DP_HPD_STATE_RESET			0x900
+#define PHYTIUM_DP_AUX_REPLY_DATA			0x0134
+#define PHYTIUM_DP_AUX_REPLY_CODE			0x0138
+	#define AUX_NATIVE_ACK					(0x0<<0)
+	#define AUX_NATIVE_NACK					(0x1<<0)
+	#define AUX_NATIVE_DEFER				(0x2<<0)
+	#define	AUX_NATIVE_MASK					(0x3 << 0)
+	#define AUX_I2C_ACK					(0x0<<2)
+	#define AUX_I2C_NACK					(0x1<<2)
+	#define AUX_I2C_DEFER					(0x2<<2)
+	#define AUX_I2C_MASK					(0x3 << 2)
+#define PHYTIUM_DP_INTERRUPT_STATUS			0x0140
+	#define HPD_IRQ						(1<<1)
+	#define HPD_EVENT					(1<<0)
+#define PHYTIUM_DP_INTERRUPT_MASK			0x0144
+	#define HPD_IRQ_MASK					(1<<1)
+	#define HPD_EVENT_MASK					(1<<0)
+	#define HPD_OTHER_MASK					0x3c
+#define PHYTIUM_DP_AUX_REPLY_DATA_COUNT			0x0148
+#define PHYTIUM_DP_AUX_STATUS				0x014C
+	#define REPLY_RECEIVED					0x1
+	#define REPLY_IN_PROGRESS				0x2
+	#define REQUEST_IN_PROGRESS				0x4
+	#define REPLY_ERROR					0x8
+#define PHYTIUM_DP_AUX_TIMER				0x0158
+#define PHYTIUM_DP_MAIN_LINK_HTOTAL			0x0180
+#define PHYTIUM_DP_MAIN_LINK_VTOTAL			0x0184
+#define PHYTIUM_DP_MAIN_LINK_POLARITY			0x0188
+	#define	PHYYNC_POLARITY_LOW				BIT(1)
+	#define	HSYNC_POLARITY_LOW				BIT(0)
+#define PHYTIUM_DP_MAIN_LINK_HSWIDTH			0x018C
+#define PHYTIUM_DP_MAIN_LINK_VSWIDTH			0x0190
+#define PHYTIUM_DP_MAIN_LINK_HRES			0x0194
+#define PHYTIUM_DP_MAIN_LINK_VRES			0x0198
+#define PHYTIUM_DP_MAIN_LINK_HSTART			0x019C
+#define PHYTIUM_DP_MAIN_LINK_VSTART			0x01A0
+#define PHYTIUM_DP_MAIN_LINK_MISC0			0x01A4
+	#define MISC0_SYNCHRONOUS_CLOCK				BIT(0)
+	#define MISC0_BIT_DEPTH_OFFSET				5
+	#define MISC0_BIT_DEPTH_6BIT				0x0
+	#define	MISC0_BIT_DEPTH_8BIT				0x1
+	#define MISC0_BIT_DEPTH_10BIT				0x2
+	#define MISC0_COMPONENT_FORMAT_SHIFT			1
+	#define MISC0_COMPONENT_FORMAT_RGB			0x0
+#define PHYTIUM_DP_MAIN_LINK_MISC1			0x01A8
+#define PHYTIUM_DP_M_VID				0x01AC
+#define PHYTIUM_DP_TRANSFER_UNIT_SIZE			0x01B0
+#define PHYTIUM_DP_N_VID				0x01B4
+#define PHYTIUM_DP_USER_PIXEL_WIDTH			0x01B8
+#define PHYTIUM_DP_DATA_COUNT				0x01BC
+#define PHYTIUM_DP_INTERLACED				0x01C0
+#define PHYTIUM_DP_USER_SYNC_POLARITY			0x01C4
+	#define USER_ODDEVEN_POLARITY_HIGH			BIT(3)
+	#define USER_DATA_ENABLE_POLARITY_HIGH			BIT(2)
+	#define USER_PHYYNC_POLARITY_HIGH			BIT(1)
+	#define USER_HSYNC_POLARITY_HIGH			BIT(0)
+#define PHYTIUM_DP_USER_CONTROL				0x01C8
+#define PHYTIUM_EDP_CRC_ENABLE				0x01D0
+	#define ENABLE_CRC						BIT(0)
+	#define SUPPORT_EDP_1_4					BIT(1)
+#define PHYTIUM_EDP_CRC_RED				0x01D4
+#define PHYTIUM_EDP_CRC_GREEN				0x01D8
+#define PHYTIUM_EDP_CRC_BLUE				0x01DC
+#define PHYTIUM_DP_SEC_AUDIO_ENABLE			0x0300
+	#define SEC_AUDIO_ENABLE				BIT(0)
+	#define CHANNEL_MUTE_ENABLE				BIT(1)
+#define PHYTIUM_DP_SEC_INPUT_SELECT			0x0304
+	#define INPUT_SELECT_I2S				0x0
+#define PHYTIUM_DP_SEC_CHANNEL_COUNT			0x0308
+	#define CHANNEL_2					0x2
+	#define CHANNEL_2_LFE					0x3
+	#define CHANNEL_5_1					0x6
+	#define CHANNEL_7_1					0x7
+	#define CHANNEL_MASK					0xf
+#define PHYTIUM_DP_SEC_DIRECT_CLKDIV			0x030c
+	#define APB_CLOCK					48000000
+	#define APB_CLOCK_100				100000000
+#define PHYTIUM_DP_SEC_MAUD				0x0318
+#define PHYTIUM_DP_SEC_NAUD				0x031c
+#define PHYTIUM_DP_SEC_CLOCK_MODE			0x0320
+	#define CLOCK_MODE_SYNC					0x1
+#define PHYTIUM_DP_SEC_CS_SOURCE_FORMAT			0x0340
+	#define CS_SOURCE_FORMAT_DEFAULT			0x0
+#define PHYTIUM_DP_SEC_CS_CATEGORY_CODE			0x0344
+#define PHYTIUM_DP_SEC_CS_LENGTH_ORIG_FREQ		0x0348
+	#define ORIG_FREQ_32000					0xc
+	#define ORIG_FREQ_44100					0xf
+	#define ORIG_FREQ_48000					0xd
+	#define ORIG_FREQ_88200					0x7
+	#define ORIG_FREQ_96000					0x5
+	#define ORIG_FREQ_176400				0x3
+	#define ORIG_FREQ_192000				0x1
+	#define ORIG_FREQ_MASK					0xf
+	#define ORIG_FREQ_SHIFT					0
+	#define WORD_LENGTH_16					0x4
+	#define WORD_LENGTH_18					0x2
+	#define WORD_LENGTH_20					0xc
+	#define WORD_LENGTH_24					0xd
+	#define WORD_LENGTH_MASK				0xf
+	#define WORD_LENGTH_SHIFT				4
+#define PHYTIUM_DP_SEC_CS_FREQ_CLOCK_ACCURACY		0x034c // not used
+	#define SAMPLING_FREQ_32000				0xc
+	#define SAMPLING_FREQ_44100				0x0
+	#define SAMPLING_FREQ_48000				0x4
+	#define SAMPLING_FREQ_88200				0x1
+	#define SAMPLING_FREQ_96000				0x5
+	#define SAMPLING_FREQ_176400				0x3
+	#define SAMPLING_FREQ_192000				0x7
+	#define SAMPLING_FREQ_MASK				0xf
+	#define SAMPLING_FREQ_SHIFT				4
+#define PHYTIUM_DP_SEC_CHANNEL_MAP			0x035C
+	#define CHANNEL_MAP_DEFAULT				0x87654321
+#define PHYTIUM_DP_SEC_PACKET_COUNT			0x0374
+#define ftd330_DP_CONTROLLER_RESET			0x850
+	#define DP_I2S_RESET					0x1
+	#define DP_RESET_RELEASE				0x7
+#define PHYTIUM_DP_IDLE_PATTERN_DISBALE		0x910
+	#define DISABLE							0x1
+	#define ENABLE							0x0
+/******************************dp register end********************************************/
+
+/******************************edp pwm backlight register start**************************/
+#define EDP_BACKLIGHT_CONTROL				0x904
+	#define EDP_BL_PWR_ON					BIT(0)
+	#define EDP_BL_PWR_OFF_MASK                             (1<<0)
+	#define EDP_BL_ENABLE					BIT(1)
+	#define EDP_BL_DISABLE_MASK                             (1<<1)
+#define PWM_TIM_CTRL						0x04
+	#define PWM_ENABLE_MASK					0x2
+	#define PWM_DIV_MASK					0xfff0000
+#define PWM_CTRL							0x10
+	#define PWM_IE_MASK						0x8
+	#define PWM_MODE_MASK					0x4
+	#define PWM_DUTY_SEL_MASK				0x100
+#define PWM_PERIOD							0x0C
+	#define PWM_PERIOD_MASK					0xffff
+#define PWM_CCR								0x14
+	#define PWM_DUTY_MASK					0xffff
+#define PWM_STATE							0x08
+/******************************edp pwm backlightregister end****************************/
+
+/******************************edp psr start******************************/
+#define PHYTIUM_DP_SEC_PSR_3D_ENABLE			0x0360
+	#define PSR_ENABLE							BIT(0)
+#define PHYTIUM_DP_SEC_PSR_CONFIG				0x364
+	#define PSR_DISABLE_CAPTURE					BIT(0)
+	#define PSR_TWO_FRAMES_TO_ACTIVE			BIT(1)
+	#define PSR_ONE_FRAMES_TO_ACTIVE			(0<<1)
+	#define INACTIVE_NO_EXIT					BIT(2)
+	#define ENABLE_Y_COORD						BIT(3)
+#define PHYTIUM_DP_SEC_PSR_STATE			0x0368
+	#define PSR_ACTIVE					BIT(0)
+	#define PSR_INACTIVE					0
+	#define PSR_SINGLE_FRAME_UPDATE			0x3
+#define SEC_PSR_STATE_INTERNAL				0x036c
+	#define PSR_STATE_DISABLE				BIT(0)
+	#define PSR_STATE_INACTIVE				BIT(1)
+	#define PSR_STATE_TRANS_TO_ACTIVE		BIT(2)
+	#define PSR_STATE_ACTIVE				BIT(3)
+	#define PSR_STATE_ACTIVE_UPDATE			BIT(4)
+	#define PSR_STATE_EXIT					BIT(5)
+/******************************edp psr end******************************/
+
+/******************************dp dplp start******************************/
+#define PHYTIUM_DPLP_HPD_PWEUP_INIT_MASK			0X0
+	#define DPLP_HPD_CONNECT_MASK					BIT(0)
+	#define DPLP_HPD_DISCONNECT_MASK				BIT(1)
+	#define DPLP_HPD_IRQ_MASK						BIT(2)
+#define PHYTIUM_DPLP_HPD_PWRUP_INT_CLEAR			0X0c
+	#define CLEAN_HPD_CONNECT						BIT(0)
+	#define CLEAN_HPD_DISCONNECT					BIT(1)
+	#define CLEAN_HPD_IRQ							BIT(2)
+#define PHYTIUM_DPLP_FRAME_COMP_CFG					0x20
+	#define FRAME_COMPARE_EN						BIT(0)
+	#define LOWFPS_FUNC_EN							BIT(1)
+	#define PSR_FUNC_EN								BIT(2)
+	#define AUTO_LOWFPS_EN							BIT(3)
+#define PHYTIUM_DPLP_LOWFPS_CNT						0x24
+#define PHYTIUM_DPLP_PSR_CNT						0x28
+#define PHYTIUM_DPLP_FRAME_COMP_INIT_MASK			0x2c
+	#define LOWFPS_AVAILABLE_MASK					BIT(0)
+	#define LOWFPS_EXIT_MASK						BIT(3)
+	#define LOW_FPS_ENABLE_MASK						0x3f6
+	#define PSR_AVAILABLE_MASK						0x3fd
+	#define PSR_SHIELD_MASK							0x272
+	#define ALL_SHIELD_MAKS							0x3ff
+#define PHYTIUM_DPLP_FRAME_COMP_INIT_STATE			0x34
+	#define LOWFPS_AVAILABLE						BIT(0)
+	#define PSR_AVAILABLE							BIT(1)
+	#define LOWFPS_EXIT								BIT(3)
+	#define FRAME_CHANGE_IN_PSR						BIT(6)
+	#define FRAME_CHANGE_IN_WAIT_LOWFPS				BIT(8)
+#define PHYTIUM_DPLP_FRAME_COMP_INIT_CLEAR			0x38
+#define PHYTIUM_DPLP_FRAME_COMP_STATE				0x3c
+	#define DPLP_LOWFPS_AVAILABLE					BIT(0)
+	#define DPLP_PSR_AVAILABLE						BIT(1)
+	#define DPLP_LOWFPS_ACTIVE						BIT(2)
+	#define DPLP_PSR_ACTIVE							BIT(3)
+#define PHYTIUM_DPLP_FRAME_COMP_REQ					0x44
+	#define ENTER_LOWFPS_REQ						BIT(0)
+	#define EXIT_LOWFPS_REQ							BIT(1)
+	#define ENTER_PSR_REQ							BIT(2)
+	#define EXIT_PSR_REQ							BIT(3)
+#define PHYTIUM_DPLP_HPD_STATE_RESET				0x4c
+/******************************dplp end******************************/
+
+/* phy register start */
+#define FTD330_PHY_MODE_DPX4				0x01
+#define FTD330_PHY_MODE_DP_LANE23				0x02   //pciex2+dpx2
+#define FTD330_PHY_MODE_DP_LANE01				0x03	//dpx2+satax2
+
+#define FTD330_PHY_PIPE_SEL                    0x40000
+#define SEL_32BIT			      0xf
+#define FTD330_PHY_LANE_BUFFER                    0x40004
+#define LANE_BUFFER_INIT			0x0
+#define FTD330_PHY_PIPE_RESET			0x40094
+#define RESET						0x0
+#define RESET_DEASSERT				0x1
+
+#define FTD330_PHY_MODE					0x40084
+#define LANE_BIT					(0x3)
+#define LANE_BIT_SHIFT				0x2
+
+#define FTD330_PHY_LINK_CFG			0x40080
+#define LANE_MASTER					0x1
+#define LANE_MASTER_SHIFT			1
+#define LANE_SLAVE					0x0
+
+#define FTD330_PHY_PLL_EN				0x4000C
+#define PLL_EN						0x1
+#define PLL_EN_SHIFT				1
+
+#define FTD330_PHY_PMA_WIDTH				0x4001c
+#define	BIT_20						0x5
+#define	BIT_20_SHIFT				4
+
+
+#define FTD330_PHY_PMA0_POWER			0x40014
+#define	A0_ACTIVE					0x1
+#define	A0_ACTIVE_SHIFT				8
+#define	A3_POWERDOWN3				0x8
+#define	A3_POWERDOWN3_SHIFT			8
+
+#define FTD330_PHY_LINK_RESET			0x40098
+#define LINK_RESET					0x1
+#define LINK_RESET_MASK				0x1
+#define LINTK_RESET_SHIFT			0x1
+
+#define FTD330_PHY_APB_RESET				0x40090
+#define	PHY_APB_RESET					0x1
+
+#define FTD330_REG_AUX_CFG2					0x40224
+/* phy origin register */
+#define FTD330_PHY0_PLL_CFG				0x30038
+	#define SINGLE_LINK				0x0
+	#define DOUBLE_LINK				0x2
+
+#define FTD330_PHY0_PMA_CONTROL				0x3800c
+	#define CONTROL_ENABLE				0x1
+	#define PLL1_CONTROL_ENABLE			0x2
+	#define CONTROL_ENABLE_MASK			0x1
+	#define CONTROL_ENABLE_SHIFT		0x1
+
+#define FTD330_PHY0_PMA_CONTROL2				0x38004
+	#define PLL0_LOCK_DONE				(0x1 << 6)
+	#define PLL1_LOCK_DONE				(0x1 << 7)
+
+#define FTD330_PHY0_PLL0_CLK_SEL				0x684
+#define FTD330_PHY0_PLL1_CLK_SEL				0x704
+	#define PLL_LINK_RATE_162000		0xf01
+	#define PLL_LINK_RATE_270000		0x701
+	#define PLL_LINK_RATE_540000		0x301
+	#define PLL_LINK_RATE_810000		0x200
+
+#define FTD330_PHY0_HSCLK0_SEL				0x18398
+#define FTD330_PHY0_HSCLK1_SEL				0x19398
+	#define HSCLK_LINK_0					0x0
+	#define HSCLK_LINK_1					0x1
+
+#define FTD330_PHY0_HSCLK0_DIV				0x1839c
+#define FTD330_PHY0_HSCLK1_DIV				0x1939c
+	#define HSCLK_LINK_RATE_162000		0x2
+	#define HSCLK_LINK_RATE_270000		0x1
+	#define HSCLK_LINK_RATE_540000		0x0
+	#define HSCLK_LINK_RATE_810000		0x0
+
+#define FTD330_PHY0_PLLDRC0_CTRL				0x18394
+#define FTD330_PHY0_PLLDRC1_CTRL				0x19394
+	#define PLLDRC_LINK0					0x1
+	#define PLLDRC_LINK1					0x9
+
+#define FTD330_PHY0_PLL0_DSM_M0				0x250
+	#define PLL0_DSM_M0					0x4
+#define FTD330_PHY0_PLL1_DSM_M0				0x350
+	#define PLL1_DSM_M0					0x4
+
+#define FTD330_PHY0_PLL0_VCOCAL_START			0x218
+	#define PLL0_VCOCAL_START			0xc5e
+#define FTD330_PHY0_PLL1_VCOCAL_START			0X318
+	#define PLL1_VCOCAL_START			0xc5e
+
+#define FTD330_PHY0_PLL0_VCOCAL_CTRL			0x208
+	#define PLL0_VCOCAL_CTRL			0x3
+#define FTD330_PHY0_PLL1_VCOCAL_CTRL			0x308
+	#define PLL1_VCOCAL_CTRL				0x3
+
+#define FTD330_PHY0_PLL0_CP_PADJ				0x690
+#define FTD330_PHY0_PLL0_CP_IADJ				0x694
+#define FTD330_PHY0_PLL0_CP_FILT_PADJ			0x698
+#define FTD330_PHY0_PLL0_INTDIV				0x240
+#define FTD330_PHY0_PLL0_FRACDIVL			0x244
+#define FTD330_PHY0_PLL0_FRACDIVH			0x248
+#define FTD330_PHY0_PLL0_HIGH_THR			0x24c
+#define FTD330_PHY0_PLL0_PDIAG_CTRL			0x680
+#define FTD330_PHY0_PLL0_VCOCAL_PLLCNT_START		0x220
+#define FTD330_PHY0_PLL0_LOCK_PEFCNT			0x270
+#define FTD330_PHY0_PLL0_LOCK_PLLCNT_START		0x278
+#define FTD330_PHY0_PLL0_LOCK_PLLCNT_THR			0x27c
+
+#define FTD330_PHY0_PLL1_CP_PADJ				0x710
+#define FTD330_PHY0_PLL1_CP_IADJ				0x714
+#define FTD330_PHY0_PLL1_CP_FILT_PADJ			0x718
+#define FTD330_PHY0_PLL1_INTDIV				0x340
+#define FTD330_PHY0_PLL1_FRACDIVL			0x344
+#define FTD330_PHY0_PLL1_FRACDIVH			0x348
+#define FTD330_PHY0_PLL1_HIGH_THR			0x34c
+#define FTD330_PHY0_PLL1_PDIAG_CTRL			0x700
+#define FTD330_PHY0_PLL1_VCOCAL_PLLCNT_START		0x320
+#define FTD330_PHY0_PLL1_LOCK_PEFCNT			0x370
+#define FTD330_PHY0_PLL1_LOCK_PLLCNT_START		0x378
+#define FTD330_PHY0_PLL1_LOCK_PLLCNT_THR			0x37c
+
+#define	FTD330_PHY0_PLL0_TX_PSC_A0			0x18400
+	#define PLL0_TX_PSC_A0					0x2fb
+#define FTD330_PHY0_PLL0_TX_PSC_A1           0x18404
+	#define PLL0_TX_PSC_A1                  0x6ab
+#define	FTD330_PHY0_PLL0_TX_PSC_A2			0x18408
+	#define PLL0_TX_PSC_A2					0x6aa
+#define	FTD330_PHY0_PLL0_TX_PSC_A3			0x1840c
+	#define PLL0_TX_PSC_A3					0x6aa
+#define	FTD330_PHY0_PLL0_RX_PSC_A0			0x28000
+	#define PLL0_RX_PSC_A0					0xd1d
+#define FTD330_PHY0_PLL0_RX_PSC_A1           0x28004
+	#define PLL0_RX_PSC_A1                  0xd1d
+#define	FTD330_PHY0_PLL0_RX_PSC_A2			0x28008
+	#define PLL0_RX_PSC_A2					0xd00
+#define	FTD330_PHY0_PLL0_RX_PSC_A3			0x2800c
+	#define PLL0_RX_PSC_A3					0x500
+#define	FTD330_PHY0_PLL0_RX_PSC_CAL			0x28018
+	#define PLL0_RX_PSC_CAL					0x0
+
+#define	FTD330_PHY0_PLL1_TX_PSC_A0			0x19400
+	#define PLL1_TX_PSC_A0					0x2fb
+#define FTD330_PHY0_PLL1_TX_PSC_A1           0x19404
+	#define PLL1_TX_PSC_A1                  0x6ab
+#define	FTD330_PHY0_PLL1_TX_PSC_A2			0x19408
+	#define PLL1_TX_PSC_A2					0x6aa
+#define	FTD330_PHY0_PLL1_TX_PSC_A3			0x1940c
+	#define PLL1_TX_PSC_A3					0x6aa
+#define	FTD330_PHY0_PLL1_RX_PSC_A0			0x29000
+	#define PLL1_RX_PSC_A0					0xd1d
+#define FTD330_PHY0_PLL1_RX_PSC_A1           0x29004
+	#define PLL1_RX_PSC_A1                  0xd1d
+#define	FTD330_PHY0_PLL1_RX_PSC_A2			0x29008
+	#define PLL1_RX_PSC_A2					0xd00
+#define	FTD330_PHY0_PLL1_RX_PSC_A3			0x2900c
+	#define PLL1_RX_PSC_A3					0x500
+#define	FTD330_PHY0_PLL1_RX_PSC_CAL			0x29018
+	#define PLL1_RX_PSC_CAL					0x0
+
+#define FTD330_PHY0_PLL0_XCVR_CTRL			0x183a8
+	#define PLL0_XCVR_CTRL					0xf
+#define FTD330_PHY0_PLL1_XCVR_CTRL			0x193a8
+	#define PLL1_XCVR_CTRL					0xf
+
+#define FTD330_PHY0_PLL0_RX_GCSM1_CTRL			0x28420
+	#define PLL0_RX_GCSM1_CTRL				0x0
+
+#define FTD330_PHY0_PLL1_RX_GCSM1_CTRL			0x29420
+	#define PLL1_RX_GCSM1_CTRL				0x0
+	
+#define FTD330_PHY0_PLL0_RX_GCSM2_CTRL			0x28440
+	#define PLL0_RX_GCSM2_CTRL				0x0
+#define FTD330_PHY0_PLL1_RX_GCSM2_CTRL			0x29440
+	#define PLL1_RX_GCSM2_CTRL				0x0
+	
+#define FTD330_PHY0_PLL0_RX_PERGCSM_CTRL			0x28460
+	#define PLL0_RX_PERGCSM_CTRL				0x0
+#define FTD330_PHY0_PLL1_RX_PERGCSM_CTRL			0x29460
+	#define PLL1_RX_PERGCSM_CTRL				0x0
+
+/* swing and emphasis */
+#define FTD330_PHY0_PLL0_TX_DIAG_ACYA			0x1879c
+#define FTD330_PHY0_PLL1_TX_DIAG_ACYA			0x1979c
+	#define LOCK						1
+	#define UNLOCK						0
+
+#define FTD330_PHY0_PLL0_TX_TXCC_CTRL			0x18100
+#define FTD330_PHY0_PLL1_TX_TXCC_CTRL			0x19100
+	#define TX_TXCC_CTRL					0x8a4
+
+#define FTD330_PHY0_PLL0_TX_DRV				0x18318
+#define FTD330_PHY0_PLL1_TX_DRV				0x19318
+	#define TX_DRV						0x3
+
+#define FTD330_PHY0_PLL0_TX_MGNFS				0x18140
+#define FTD330_PHY0_PLL1_TX_MGNFS				0x19140
+
+#define FTD330_PHY0_PLL0_TX_CPOST				0x18130
+#define FTD330_PHY0_PLL1_TX_CPOST				0x19130
+
+#define FTD330_TXPDCAL_TUNE						0x42c
+#define FTD330_TXPUCAL_TUNE						0x40c
+#endif /* __PHYTIUM_REG_H__ */

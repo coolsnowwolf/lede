@@ -1,0 +1,454 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] phytium: vpu linux 6.18 compat
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/vpu_driver/Makefile
++++ b/vpu_driver/Makefile
+@@ -3,8 +3,9 @@
+ # PHY_FPGA_MEM
+ # USE_CMA
+ 
+-include $(PWD)/vpu_driver/ipoffset/project_config.mk
+-#include $(PWD)/ipoffset/project_config.mk
++src ?= $(CURDIR)
++
++include $(src)/ipoffset/project_config.mk
+ 
+ obj-m := ftv310_vpu_driver.o
+ ftv310_vpu_driver-objs = ftv310_vpu_drv.o ftv310_vpu_fence.o \
+@@ -73,8 +74,8 @@
+ KDIR ?= /lib/modules/$(shell uname -r)/build
+ 
+ default:
+-	$(MAKE) -C $(KDIR) M=$(PWD) modules
++	$(MAKE) -C $(KDIR) M=$(CURDIR) modules
+ 
+ clean::
+-	$(MAKE) -C $(KDIR) M=$(PWD) clean
++	$(MAKE) -C $(KDIR) M=$(CURDIR) clean
+ 	-rm -f .version
+--- a/vpu_driver/devicemgr.c
++++ b/vpu_driver/devicemgr.c
+@@ -25,6 +25,7 @@
+  */
+ 
+ #include <linux/atomic.h>
++#include <linux/vmalloc.h>
+ #include "ftv310_vpu_priv.h"
+ 
+ /*currently we simply not using dynamic chains*/
+--- a/vpu_driver/ftv310_vpu_dec.c
++++ b/vpu_driver/ftv310_vpu_dec.c
+@@ -39,6 +39,7 @@
+ #include <linux/spinlock.h>
+ #include <linux/slab.h>
+ #include <linux/version.h>
++#include <linux/vmalloc.h>
+ #include <linux/wait.h>
+ #include <linux/timer.h>
+ #include <linux/clk.h>
+--- a/vpu_driver/ftv310_vpu_dmabuf.c
++++ b/vpu_driver/ftv310_vpu_dmabuf.c
+@@ -153,7 +153,8 @@
+ #endif
+ 
+ const struct dma_buf_ops ftv310_vpu_dmabuf_ops = {
+-#if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
++#if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE && \
++	KERNEL_VERSION(6, 16, 0) > LINUX_VERSION_CODE
+ 	.cache_sgt_mapping = true,
+ #endif
+ #if KERNEL_VERSION(4, 20, 0) > LINUX_VERSION_CODE
+--- a/vpu_driver/ftv310_vpu_drm.c
++++ b/vpu_driver/ftv310_vpu_drm.c
+@@ -55,6 +55,7 @@
+ static int ftv310_vpu_prime_pin(struct drm_gem_object *obj);
+ static void ftv310_vpu_unpin_pages(struct drm_gem_ftv310_vpu_object *bo);
+ extern long mem_start;
++static DEFINE_MUTEX(ftv310_vpu_drm_mutex);
+ 
+ void record_vram_node(struct vram_record *r, void *vaddr, unsigned long size);
+ void remove_vram_node(struct vram_record *r);
+@@ -116,7 +117,7 @@
+ 	config = pslice->config;
+ 
+ 	args->handle = 0;
+-	if (mutex_lock_interruptible(&dev->struct_mutex))
++	if (mutex_lock_interruptible(&ftv310_vpu_drm_mutex))
+ 		return -EBUSY;
+ 
+ 	cma_obj = kzalloc(sizeof(*cma_obj), GFP_KERNEL);
+@@ -164,7 +165,7 @@
+ 	trace_vcmd_buf_alloc(current->pid, args->size, args->handle, cma_obj->paddr);
+ 
+ out:
+-	mutex_unlock(&dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 	return ret;
+ }
+ 
+@@ -211,11 +212,11 @@
+ 	struct drm_gem_object *obj;
+ 	struct drm_gem_ftv310_vpu_object *cma_obj;
+ 
+-	if (mutex_lock_interruptible(&dev->struct_mutex))
++	if (mutex_lock_interruptible(&ftv310_vpu_drm_mutex))
+ 		return -EBUSY;
+ 	obj = ftv310_vpu_gem_object_lookup(dev, file_priv, args->handle);
+ 	if (!obj) {
+-		mutex_unlock(&dev->struct_mutex);
++		mutex_unlock(&ftv310_vpu_drm_mutex);
+ 		return -EINVAL;
+ 	}
+ 	ftv310_vpu_unref_drmobj(obj);
+@@ -223,7 +224,7 @@
+ 	cma_obj = to_drm_gem_ftv310_vpu_obj(obj);
+ 
+ 	drm_gem_handle_delete(file_priv, args->handle);
+-	mutex_unlock(&dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 	return 0;
+ }
+ 
+@@ -408,15 +409,15 @@
+ 	vm_flags_clear(vma, VM_PFNMAP);
+ #endif
+ 	vma->vm_pgoff = 0;
+-	if (mutex_lock_interruptible(&ftv310_vpu_dev.drm_dev->struct_mutex))
++	if (mutex_lock_interruptible(&ftv310_vpu_drm_mutex))
+ 		return -EBUSY;
+ 	if (dma_mmap_coherent(obj->dev->dev, vma, cma_obj->vaddr,
+ 			      cma_obj->paddr, vma->vm_end - vma->vm_start)) {
+ 		drm_gem_vm_close(vma);
+-		mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++		mutex_unlock(&ftv310_vpu_drm_mutex);
+ 		return -EAGAIN;
+ 	}
+-	mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 	vma->vm_private_data = cma_obj;
+ 	return ret;
+ }
+@@ -450,15 +451,15 @@
+ 
+ 	vma->vm_flags &= ~VM_PFNMAP;
+ 	vma->vm_pgoff = 0;
+-	if (mutex_lock_interruptible(&ftv310_vpu_dev.drm_dev->struct_mutex))
++	if (mutex_lock_interruptible(&ftv310_vpu_drm_mutex))
+ 		return -EBUSY;
+ 	if (dma_mmap_coherent(obj->dev->dev, vma, cma_obj->vaddr,
+ 			      cma_obj->paddr, vma->vm_end - vma->vm_start)) {
+ 		drm_gem_vm_close(vma);
+-		mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++		mutex_unlock(&ftv310_vpu_drm_mutex);
+ 		return -EAGAIN;
+ 	}
+-	mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 	vma->vm_private_data = cma_obj;
+ 	return ret;
+ }
+@@ -814,7 +815,11 @@
+ 	struct ftv310_vpu_drm_fb *PHYfb;
+ 	struct drm_gem_object *objs[4];
+ 	struct drm_gem_object *obj;
+-#if KERNEL_VERSION(4, 16, 0) <= LINUX_VERSION_CODE
++#if KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE
++	const struct drm_format_info *info =
++		drm_get_format_info(dev, mode_cmd->pixel_format,
++				    mode_cmd->modifier[0]);
++#elif KERNEL_VERSION(4, 16, 0) <= LINUX_VERSION_CODE
+ 	const struct drm_format_info *info = drm_get_format_info(dev, mode_cmd);
+ #endif
+ 	unsigned int hsub;
+@@ -861,7 +866,11 @@
+ 	PHYfb = kzalloc(sizeof(*PHYfb), GFP_KERNEL);
+ 	if (!PHYfb)
+ 		return -ENOMEM;
++#if KERNEL_VERSION(6, 17, 0) <= LINUX_VERSION_CODE
++	drm_helper_mode_fill_fb_struct(dev, &PHYfb->fb, info, mode_cmd);
++#else
+ 	drm_helper_mode_fill_fb_struct(dev, &PHYfb->fb, mode_cmd);
++#endif
+ 	for (i = 0; i < num_planes; i++)
+ 		PHYfb->obj[i] = objs[i];
+ 	ret = drm_framebuffer_init(dev, &PHYfb->fb, &ftv310_vpu_drm_fb_funcs);
+@@ -1142,7 +1151,7 @@
+ 	struct drm_auth *auth = data;
+ 	int ret = 0;
+ 
+-	mutex_lock(&dev->struct_mutex);
++	mutex_lock(&ftv310_vpu_drm_mutex);
+ 	if (!file_priv->magic) {
+ 		ret = idr_alloc(&file_priv->master->magic_map, file_priv, 1, 0,
+ 				GFP_KERNEL);
+@@ -1151,7 +1160,7 @@
+ 	}
+ 	auth->magic = file_priv->magic;
+ 	DBG("kmagic %d\n", auth->magic);
+-	mutex_unlock(&dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 
+ 	return ret < 0 ? ret : 0;
+ }
+@@ -1162,14 +1171,14 @@
+ 	struct drm_auth *auth = data;
+ 	struct drm_file *file;
+ 
+-	mutex_lock(&dev->struct_mutex);
++	mutex_lock(&ftv310_vpu_drm_mutex);
+ 	file = idr_find(&file_priv->master->magic_map, auth->magic);
+ 	DBG("get kmagic %d\n", auth->magic);
+ 	if (file) {
+ 		file->authenticated = 1;
+ 		idr_replace(&file_priv->master->magic_map, NULL, auth->magic);
+ 	}
+-	mutex_unlock(&dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 
+ 	return file ? 0 : -EINVAL;
+ }
+@@ -1183,6 +1192,9 @@
+ #ifndef DRM_CONTROL_ALLOW
+ #define DRM_CONTROL_ALLOW 0
+ #endif
++#ifndef DRM_UNLOCKED
++#define DRM_UNLOCKED 0
++#endif
+ /* Ioctl table */
+ static const struct drm_ioctl_desc ftv310_vpu_ioctls[] = {
+ 	DRM_IOCTL_DEF(DRM_IOCTL_VERSION, ftv310_vpu_get_version,
+@@ -1643,7 +1655,7 @@
+ 	ftv310_vpu_mmaplog("%s :%lx", __func__, vma->vm_pgoff);
+ 	if (vma->vm_pgoff < PHY_MMAP_ADDRES_CEIL_MMAP)
+ 		return ftv310_vpu_map_internal_address(filp, vma);
+-	if (mutex_lock_interruptible(&ftv310_vpu_dev.drm_dev->struct_mutex))
++	if (mutex_lock_interruptible(&ftv310_vpu_drm_mutex))
+ 		return -EBUSY;
+ 	vma->vm_pgoff -= PHY_MMAP_ADDRES_CEIL_MMAP;
+ 	drm_vma_offset_lock_lookup(ftv310_vpu_dev.drm_dev->vma_offset_manager);
+@@ -1659,20 +1671,20 @@
+ 	drm_vma_offset_unlock_lookup(ftv310_vpu_dev.drm_dev->vma_offset_manager);
+ 
+ 	if (!obj) {
+-		mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++		mutex_unlock(&ftv310_vpu_drm_mutex);
+ 		return -EINVAL;
+ 	}
+ 	ftv310_vpu_unref_drmobj(obj);
+ 	cma_obj = to_drm_gem_ftv310_vpu_obj(obj);
+ 
+ 	if (page_num > cma_obj->num_pages) {
+-		mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++		mutex_unlock(&ftv310_vpu_drm_mutex);
+ 		return -EINVAL;
+ 	}
+ 	if (!(cma_obj->flag & FTV310_VPU_GEM_FLAG_IMPORT)) {
+ 		pslice = getslicenode(cma_obj->sliceidx);
+ 		if (!pslice) {
+-			mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++			mutex_unlock(&ftv310_vpu_drm_mutex);
+ 			return -EINVAL;
+ 		}
+ 		dev = pslice->dev;
+@@ -1681,7 +1693,7 @@
+ 	}
+ 	if ((cma_obj->flag & FTV310_VPU_GEM_FLAG_IMPORT) == 0) {
+ 		if (cma_obj->vaddr == 0) {
+-			mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++			mutex_unlock(&ftv310_vpu_drm_mutex);
+ 			return -EINVAL;
+ 		}
+ #if KERNEL_VERSION(6, 6, 0) > LINUX_VERSION_CODE
+@@ -1689,7 +1701,7 @@
+ 			obj, drm_vma_node_size(node) << PAGE_SHIFT, vma);
+ 
+ 		if (ret) {
+-			mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++			mutex_unlock(&ftv310_vpu_drm_mutex);
+ 			return ret;
+ 		}
+ #else
+@@ -1718,7 +1730,7 @@
+ 	}
+ 
+ 	if (cma_obj->flag & FTV310_VPU_GEM_FLAG_USEVMALLOC) {
+-		int i, j;
++		int i;
+ 		unsigned long uaddr = vma->vm_start;
+ 		void *address = cma_obj->vaddr;
+ 		struct page *pages = NULL;
+@@ -1738,16 +1750,9 @@
+ 				pr_err("alloc page %d fail = %lx:%lx\n", i,
+ 				       (unsigned long)address,
+ 				       (unsigned long)pages);
+-				address = cma_obj->vaddr;
+-				for (j = 0; j < i; j++) {
+-					pages = (vmalloc_to_page(address));
+-					unref_page(pages);
+-					address += PAGE_SIZE;
+-				}
+-				mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++				mutex_unlock(&ftv310_vpu_drm_mutex);
+ 				return -ENOMEM;
+ 			}
+-			ref_page(pages);
+ 			uaddr += PAGE_SIZE;
+ 			address += PAGE_SIZE;
+ 		}
+@@ -1756,7 +1761,7 @@
+ 		vma->vm_pgoff = 0;
+ 		if (dma_mmap_coherent(dev, vma, cma_obj->vaddr, cma_obj->paddr,
+ 				      page_num << PAGE_SHIFT)) {
+-			mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++			mutex_unlock(&ftv310_vpu_drm_mutex);
+ 			return -EAGAIN;
+ 		}
+ #else
+@@ -1766,7 +1771,7 @@
+ #endif
+ 	}
+ 	vma->vm_private_data = cma_obj;
+-	mutex_unlock(&ftv310_vpu_dev.drm_dev->struct_mutex);
++	mutex_unlock(&ftv310_vpu_drm_mutex);
+ 	return ret;
+ }
+ 
+@@ -1849,22 +1854,9 @@
+ // Demo. Customer maybe need change it accrording to own environment
+ static void FreeMemWithMMU(struct drm_gem_ftv310_vpu_object *cma_obj)
+ {
+-	int i, map_count;
+-	int num_pages = cma_obj->num_pages;
+-	void *address = cma_obj->vaddr;
+-	struct page *pages = NULL;
+-
+ 	if (cma_obj->pages)
+ 		ftv310_vpu_unpin_pages(cma_obj);
+ 
+-	for (i = 0; i < num_pages; i++) {
+-		pages = (vmalloc_to_page(address));
+-		map_count = page_mapcount(pages);
+-		if (map_count)
+-			unref_page(pages);
+-		address += PAGE_SIZE;
+-	}
+-
+ 	vfree(cma_obj->vaddr);
+ }
+ 
+@@ -2093,7 +2085,9 @@
+ 	.fops = &ftv310_vpu_fops,
+ 	.name = DRIVER_NAME,
+ 	.desc = DRIVER_DESC,
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 14, 0)
+ 	.date = DRIVER_DATE,
++#endif
+ 	.major = DRIVER_MAJOR,
+ 	.minor = DRIVER_MINOR,
+ };
+--- a/vpu_driver/ftv310_vpu_drv.c
++++ b/vpu_driver/ftv310_vpu_drv.c
+@@ -596,9 +596,15 @@
+ 	return 0;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void ftv310_vpu_drm_remove(struct platform_device *pdev)
++#else
+ static int ftv310_vpu_drm_remove(struct platform_device *pdev)
++#endif
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+ 	return 0;
++#endif
+ }
+ 
+ static const struct platform_device_id ftv310_vpu_drm_platform_ids[] = {
+@@ -1329,12 +1335,18 @@
+ 	return -1;
+ }
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
++static void ftv310_vpu_remove(struct platform_device *pdev)
++#else
+ static int ftv310_vpu_remove(struct platform_device *pdev)
++#endif
+ {
+ 
+ 	ftv310_vpu_cleanup();
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+ 	return 0;
++#endif
+ }
+ 
+ static const struct of_device_id vpu_of_match[] = {
+@@ -1360,6 +1372,7 @@
+ 	},
+ 	{},
+ };
++MODULE_DEVICE_TABLE(acpi, vpu_acpi_ids);
+ 
+ struct platform_driver vpu_platform_driver = {
+ 	.driver = {
+@@ -1391,8 +1404,12 @@
+ module_exit(phytium_vpu_exit);
+ 
+ #if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
++#if KERNEL_VERSION(6, 13, 0) <= LINUX_VERSION_CODE
++MODULE_IMPORT_NS("DMA_BUF");
++#else
+ MODULE_IMPORT_NS(DMA_BUF);
+ #endif
++#endif
+ /* module description */
+ MODULE_LICENSE("GPL v2");
+ MODULE_AUTHOR("Phytium");
+--- a/vpu_driver/ftv310_vpu_priv.h
++++ b/vpu_driver/ftv310_vpu_priv.h
+@@ -177,24 +177,6 @@
+ 	return fence_signal(fence);
+ }
+ 
+-static inline void ref_page(struct page *pp)
+-{
+-#if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
+-	atomic_inc(&pp->_refcount);
+-#else
+-	atomic_inc(&pp->_count);
+-#endif
+-}
+-
+-static inline void unref_page(struct page *pp)
+-{
+-#if KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE
+-	atomic_dec(&pp->_refcount);
+-#else
+-	atomic_dec(&pp->_count);
+-#endif
+-}
+-
+ static inline bool ftv310_vpu_fence_is_signaled(ftv310_vpu_fence_t *fence)
+ {
+ 	return fence_is_signaled(fence);
+@@ -249,18 +231,6 @@
+ 	return dma_fence_signal(fence);
+ }
+ 
+-static inline void ref_page(struct page *pp)
+-{
+-	atomic_inc(&pp->_refcount);
+-	atomic_inc(&pp->_mapcount);
+-}
+-
+-static inline void unref_page(struct page *pp)
+-{
+-	atomic_dec(&pp->_refcount);
+-	atomic_dec(&pp->_mapcount);
+-}
+-
+ static inline bool ftv310_vpu_fence_is_signaled(ftv310_vpu_fence_t *fence)
+ {
+ 	return dma_fence_is_signaled(fence);

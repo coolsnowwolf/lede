@@ -1,0 +1,121 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] phytium: npu fix dma page mapping
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/npu_driver/phytium-npu/phytium_npu_mm_mmu.c
++++ b/npu_driver/phytium-npu/phytium_npu_mm_mmu.c
+@@ -263,7 +263,6 @@
+ 	u32 entry, pd_entry;
+ 	u64 *addr;
+ 	int ret = 0;
+-	static int is_new_pd_entry;
+ 	dma_addr_t dma_addr;
+ 
+ 	struct phytium_npu_dev *npu = phytium_npu_get_npudev();
+@@ -300,7 +299,6 @@
+ 			ret = -ENOMEM;
+ 			goto no_pd_entry;
+ 		}
+-		is_new_pd_entry = 1;
+ 		PRDEBUG("create page directory entry %d virt address %p",
+ 			pd_entry, mmu_pc->pd[pd_entry]);
+ 	}
+@@ -321,7 +319,12 @@
+ 			mmu_pc->pd_ext.valid_pd++;
+ 		} else {
+ 			pd->desc.phys = phytium_npu_get_pd_phy_addr_in_pc_entry(mmu_pc, virt);
+-			pd->desc.cpu_addr = (u64)phys_to_virt(pd->desc.phys);
++			for (entry = 0; entry < mmu_pc->pd_ext.valid_pd; entry++) {
++				if (mmu_pc->pd_ext.pd_desc[entry]->phys == pd->desc.phys) {
++					pd->desc.cpu_addr = mmu_pc->pd_ext.pd_desc[entry]->cpu_addr;
++					break;
++				}
++			}
+ 		}
+ 
+ 		if (!pd->desc.cpu_addr) {
+@@ -347,26 +350,16 @@
+ 	pt = pd->pt;
+ 
+ 	if (!pt->desc.phys) {
+-		if (is_new_pd_entry) {
+-			pt->desc.cpu_addr = (u64)dma_alloc_coherent(npu->dev,
+-							    PHYT_MMU_ALLOC_PAGE_SIZE,
+-							    &dma_addr, GFP_KERNEL);
+-			is_new_pd_entry = 0;
+-			pd->pt_page_addr[pd_entry] = pt->desc.cpu_addr;
+-			PRDEBUG("create page table entry desc virt address %#llx",
+-				pt->desc.cpu_addr);
+-		} else {
+-			pt->desc.cpu_addr = pd->pt_page_addr[pd_entry];
+-			PRDEBUG("reuse page table entry desc virt address %#llx, pd->page:%#llx",
+-				pt->desc.cpu_addr, pd->desc.cpu_addr);
+-		}
++		pt->desc.cpu_addr = (u64)dma_alloc_coherent(npu->dev,
++						    PHYT_MMU_ALLOC_PAGE_SIZE,
++						    &dma_addr, GFP_KERNEL);
++		pt->desc.phys = dma_addr;
+ 
+ 		if (!pt->desc.cpu_addr) {
+ 			pr_err("No mem for page table.");
+ 			ret = -ENOMEM;
+ 			goto no_pt_entry;
+ 		}
+-		pt->desc.phys = virt_to_phys((u64 *)pt->desc.cpu_addr);
+ 		pt->desc.npu_addr_base = virt;
+ 	}
+ 	return 0;
+@@ -585,7 +578,7 @@
+ 	struct scatterlist *sg;
+ 	struct phytium_npu_mmu_context *pnmctx;
+ 	u64 phys_addr;
+-	int len, i, flags = 0;
++	int len, i, ret, page = 0, flags = 0;
+ 
+ 	/* the driver will use self virtual address when
+ 	 * the user's config was not included virt_addr
+@@ -606,11 +599,18 @@
+ 	for_each_sgtable_dma_sg(sgt, sg, i) {
+ 		phys_addr = sg_dma_address(sg);
+ 		len = sg_dma_len(sg);
+-		if (!PAGE_ALIGNED(phys_addr) || !PAGE_ALIGNED(len))
+-			PRDEBUG("%s:ERROR addr %llx or len %x is not page aligned!\n",
+-				__func__, phys_addr, len);
+-
+-		phytium_npu_mmu_map_addr(pnmctx, ncmap, ncmap->virt_addr, phys_addr, i, flags);
++		if (!IS_ALIGNED(phys_addr, PHYT_MMU_ALLOC_PAGE_SIZE) ||
++		    !IS_ALIGNED(len, PHYT_MMU_ALLOC_PAGE_SIZE))
++			return -EINVAL;
++
++		while (len) {
++			ret = phytium_npu_mmu_map_addr(pnmctx, ncmap, ncmap->virt_addr,
++						     phys_addr, page++, flags);
++			if (ret)
++				return ret;
++			phys_addr += PHYT_MMU_ALLOC_PAGE_SIZE;
++			len -= PHYT_MMU_ALLOC_PAGE_SIZE;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -620,7 +620,7 @@
+ {
+ 	struct scatterlist *sg;
+ 	struct phytium_npu_mmu_context *pnmctx = ncmap->mctx->pnmctx;
+-	int i;
++	int i, len, page = 0;
+ 
+ 	if (!ncmap->mctx || !ncmap->dma_buf) {
+ 		pr_err("ncmap->mctx or ncmap->dma_buf is NULL");
+@@ -632,8 +632,8 @@
+ 	}
+ 	pr_debug("unmap mmu base virt:%#llx.pnmctx:%p,ncmap:%p", ncmap->virt_addr, pnmctx, ncmap);
+ 	for_each_sgtable_dma_sg(sgt, sg, i) {
+-		PRDEBUG("unmap mmu virt:%#llx.", ncmap->virt_addr + i * 4096);
+-		phytium_npu_mmu_unmap_addr(pnmctx, ncmap, ncmap->virt_addr, i);
++		for (len = sg_dma_len(sg); len; len -= PHYT_MMU_ALLOC_PAGE_SIZE)
++			phytium_npu_mmu_unmap_addr(pnmctx, ncmap, ncmap->virt_addr, page++);
+ 	}
+ 	if (ncmap->attach && ncmap->sgt && ncmap->dma_buf) {
+ 		dma_buf_unmap_attachment(ncmap->attach, ncmap->sgt, DMA_BIDIRECTIONAL);

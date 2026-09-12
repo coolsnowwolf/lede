@@ -1,0 +1,10 @@
+PCIE = n
+PHY_FPGA_MEM = n
+PHY_VCD = y
+PHY_VCE = y
+PHY_MMU = y
+PHY_AXIFE = n
+PHY_DEC400 = y
+PHY_CACHE = n
+PHY_VCMD = y
+PHY_SUPPORT_PM = y

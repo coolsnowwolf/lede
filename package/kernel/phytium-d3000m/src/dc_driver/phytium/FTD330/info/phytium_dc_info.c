@@ -1,0 +1,1211 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (C) 2025, Phytium Technology Co., Ltd.
+ */
+
+#include <linux/version.h>
+#include "drm/ftd330_drm_fourcc.h"
+#include <drm/ftd330_drm.h>
+#include "ftd330_dc_info.h"
+#include "../../ftd330_drv.h"
+
+static const u32 primary_overlay_format0[] = {
+	DRM_FORMAT_XRGB4444,	DRM_FORMAT_XBGR4444,	DRM_FORMAT_RGBX4444,
+	DRM_FORMAT_BGRX4444,	DRM_FORMAT_ARGB4444,	DRM_FORMAT_ABGR4444,
+	DRM_FORMAT_RGBA4444,	DRM_FORMAT_BGRA4444,	DRM_FORMAT_XRGB1555,
+	DRM_FORMAT_XBGR1555,	DRM_FORMAT_RGBX5551,	DRM_FORMAT_BGRX5551,
+	DRM_FORMAT_ARGB1555,	DRM_FORMAT_ABGR1555,	DRM_FORMAT_RGBA5551,
+	DRM_FORMAT_BGRA5551,	DRM_FORMAT_RGB565,	DRM_FORMAT_BGR565,
+	DRM_FORMAT_XRGB8888,	DRM_FORMAT_XBGR8888,	DRM_FORMAT_RGBX8888,
+	DRM_FORMAT_BGRX8888,	DRM_FORMAT_ARGB8888,	DRM_FORMAT_ABGR8888,
+	DRM_FORMAT_RGBA8888,	DRM_FORMAT_BGRA8888,	DRM_FORMAT_ARGB2101010,
+	DRM_FORMAT_ABGR2101010, DRM_FORMAT_RGBA1010102, DRM_FORMAT_BGRA1010102,
+	DRM_FORMAT_YUYV,	DRM_FORMAT_YVYU,	DRM_FORMAT_UYVY,
+	DRM_FORMAT_VYUY,	DRM_FORMAT_YVU420,	DRM_FORMAT_YUV420,
+	DRM_FORMAT_NV12,	DRM_FORMAT_NV21,	DRM_FORMAT_NV16,
+	DRM_FORMAT_NV61,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 18)
+	DRM_FORMAT_P010,
+#endif
+};
+
+//static const u32 primary_overlay_format1[] = {
+//	DRM_FORMAT_ARGB8888,	DRM_FORMAT_ABGR8888,	DRM_FORMAT_RGBA8888,
+//	DRM_FORMAT_BGRA8888,	DRM_FORMAT_ARGB2101010, DRM_FORMAT_ABGR2101010,
+//	DRM_FORMAT_RGBA1010102, DRM_FORMAT_BGRA1010102, DRM_FORMAT_NV12,
+//	DRM_FORMAT_YUV444,
+//};
+
+static const u32 cursor_formats[] = { DRM_FORMAT_ARGB8888 };
+
+static const u32 wb_formats[] = {
+	DRM_FORMAT_XRGB8888,
+	/*
+	 * Use DRM_FORMAT_XRGB16161616F to represent
+	 * the writeback of DP output, as HW will write-back
+	 * at 64bits/pixel in this case.
+	 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 18)
+	DRM_FORMAT_XRGB16161616F,
+#endif
+};
+
+static const u64 rot_support_modifiers[] = {
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_YMAJOR_4X8),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_XMAJOR),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_TILE_8X8),
+#ifdef CONFIG_PHYTIUM_DEC
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_4X8, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_8X8_XMAJOR, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+#endif
+	DRM_FORMAT_MOD_INVALID,
+};
+
+
+static const u64 format_modifier0[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_PHYTIUM_SUPER_TILED,
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_LINEAR),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_XMAJOR),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_YMAJOR),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_TILE_8X8),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_TILE_8X4),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_XMAJOR_8X4),
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_SUPER_TILED_YMAJOR_4X8),
+#ifdef CONFIG_PHYTIUM_DEC
+	DRM_FORMAT_MOD_PHYTIUM_SUPER_TILED_FC,
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_8X8_XMAJOR,
+			       DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_8X4, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_8X4, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_64),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_4X8, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_256X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_128X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_64X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_16X8, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_32X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_TILE_32X8, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+#endif
+	DRM_FORMAT_MOD_INVALID,
+};
+
+
+static const u64 secondary_format_modifiers[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_LINEAR),
+#ifdef CONFIG_PHYTIUM_DEC
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_256X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_128X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_64X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+	fourcc_mod_ftd330_dec_code(DRM_FORMAT_MOD_FTD330_DEC_RASTER_32X1, DRM_FORMAT_MOD_FTD330_DEC_ALIGN_32),
+#endif
+	DRM_FORMAT_MOD_INVALID,
+};
+
+static const u64 cursor_modifier[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_LINEAR),
+	DRM_FORMAT_MOD_INVALID,
+};
+
+static const u64 wb_modifier[] = {
+	DRM_FORMAT_MOD_LINEAR,
+	fourcc_mod_ftd330_norm_code(DRM_FORMAT_MOD_FTD330_LINEAR),
+	DRM_FORMAT_MOD_INVALID,
+};
+
+#define FRAC_16_16(mult, div) (((mult) << 16) / (div))
+
+static struct ftd330_plane_info phytium_3_dc_hw_planes[] = {
+		/* DC_REV_0 *//*dc0 use single dc,dc1/2 use double dc*/
+	{
+		.name = "Primary",
+		.id = PRIMARY_PLANE_0,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 11520,
+		.max_height = 6480,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+				DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+				  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 0,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = true,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+		.crtc_id = 0x0,
+	},
+	{
+		.name = "Overlay",
+		.id = OVERLAY_PLANE_0,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 2160,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+				DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+				  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 1,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+	},
+	{
+		.name = "Overlay_1",
+		.id = OVERLAY_PLANE_1,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+		.modifiers = secondary_format_modifiers,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 4096,
+		.rotation = 0,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+				  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 2,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+
+	},
+	{
+		.name = "Primary_1",
+		.id = PRIMARY_PLANE_1,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 11520,
+		.max_height = 6480,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+			    DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 0,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = true,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+		.crtc_id = 0x1,
+
+	},
+	{
+		.name = "Overlay_2",
+		.id = OVERLAY_PLANE_2,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 4096,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+			    DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 1,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+	},
+	{
+		.name = "Overlay_3",
+		.id = OVERLAY_PLANE_3,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+		.modifiers = secondary_format_modifiers,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 4096,
+		.rotation = 0,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 2,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+	},
+	{
+		.name = "Primary_2",
+		.id = PRIMARY_PLANE_2,
+		.type = DRM_PLANE_TYPE_PRIMARY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 11520,
+		.max_height = 6480,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+			    DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 3,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = true,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+		.crtc_id = 0x2,
+	},
+	{
+		.name = "Overlay_4",
+		.id = OVERLAY_PLANE_4,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(format_modifier0),
+		.modifiers = format_modifier0,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 4096,
+		.rot_supp_mods = rot_support_modifiers,
+		.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+			    DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = FRAC_16_16(1, 32),
+		.max_scale = FRAC_16_16(2, 1),
+		.zpos = 4,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+	},
+	{
+		.name = "Overlay_5",
+		.id = OVERLAY_PLANE_5,
+		.type = DRM_PLANE_TYPE_OVERLAY,
+		.num_formats = ARRAY_SIZE(primary_overlay_format0),
+		.formats = primary_overlay_format0,
+		.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+		.modifiers = secondary_format_modifiers,
+		.min_width = 0,
+		.min_height = 0,
+		.max_width = 4096,
+		.max_height = 4096,
+		.rotation = 0,
+		.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+			      BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+		.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+		.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+		//.degamma_size = DEGAMMA_SIZE,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 5,
+		.blend_config = true,
+		.watermark = false,
+		.color_mgmt = true,
+		.roi = false,
+		.layer_ext = false,
+		.layer_ext_ex = false,
+		.program_csc = false,
+		.cgm_lut = false,
+		.gamut_map = false,
+	},
+	{
+		.name = "Cursor",
+		.id = CURSOR_PLANE_0,
+		.type = DRM_PLANE_TYPE_CURSOR,
+		.num_formats = ARRAY_SIZE(cursor_formats),
+		.formats = cursor_formats,
+		.num_modifiers = ARRAY_SIZE(cursor_modifier),
+		.modifiers = cursor_modifier,
+		.min_width = 32,
+		.min_height = 32,
+		.max_width = 128,
+		.max_height = 128,
+		.rotation = 0,
+		.degamma_size = 0,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 255,
+		.watermark = false,
+		.color_mgmt = false,
+		.roi = false,
+		.crtc_id = 0x0,
+	},
+	{
+		.name = "Cursor_1",
+		.id = CURSOR_PLANE_1,
+		.type = DRM_PLANE_TYPE_CURSOR,
+		.num_formats = ARRAY_SIZE(cursor_formats),
+		.formats = cursor_formats,
+		.num_modifiers = ARRAY_SIZE(cursor_modifier),
+		.modifiers = cursor_modifier,
+		.min_width = 32,
+		.min_height = 32,
+		.max_width = 128,
+		.max_height = 128,
+		.rotation = 0,
+		.degamma_size = 0,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 255,
+		.watermark = false,
+		.color_mgmt = false,
+		.roi = false,
+		.crtc_id = 0x1,
+	},
+	{
+		.name = "Cursor_2",
+		.id = CURSOR_PLANE_2,
+		.type = DRM_PLANE_TYPE_CURSOR,
+		.num_formats = ARRAY_SIZE(cursor_formats),
+		.formats = cursor_formats,
+		.num_modifiers = ARRAY_SIZE(cursor_modifier),
+		.modifiers = cursor_modifier,
+		.min_width = 32,
+		.min_height = 32,
+		.max_width = 128,
+		.max_height = 128,
+		.rotation = 0,
+		.degamma_size = 0,
+		.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+		.zpos = 255,
+		.watermark = false,
+		.color_mgmt = false,
+		.roi = false,
+		.crtc_id = 0x2,
+	},
+};
+
+static const struct ftd330_display_info phytium_3_dc_hw_displays[] = {
+	/* For DCFTD330: DC_REV_0, DC_REV_1 and DC_REV_2
+	 * can share a set of display configuration
+	 */
+	 /*Out_ctrl0 is single dc,Out_ctrl1/2 is double dc*/
+	{
+		.name = "Out_ctrl0",
+		.id = DISPLAY_0,
+		.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+				 DRM_COLOR_FORMAT_YCRCB422 | DRM_COLOR_FORMAT_YCRCB420,
+		.max_width = 4096,
+		.max_height = 2160,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.background = true,
+		.gamma = true,
+		.dither = true,
+	},
+	{
+		.name = "Out_ctrl1",
+		.id = DISPLAY_1,
+		.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+				 DRM_COLOR_FORMAT_YCRCB422 | DRM_COLOR_FORMAT_YCRCB420,
+		.max_width = 4096,
+		.max_height = 2160,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.background = true,
+		.gamma = true,
+		.dither = true,
+
+	},
+	{
+		.name = "Out_ctrl2",
+		.id = DISPLAY_2,
+		.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+				 DRM_COLOR_FORMAT_YCRCB422 | DRM_COLOR_FORMAT_YCRCB420,
+		.max_width = 4096,
+		.max_height = 2160,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.background = true,
+		.gamma = true,
+		.dither = true,
+
+	},
+};
+
+static const struct ftd330_wb_info phytium_3_dc_hw_wbs[] = {
+	/* For DCFTD330: DC_REV_0, DC_REV_1 and DC_REV_2
+	 * can share a set of writeback configuration
+	 */
+	{
+		.name = "Write_back0",
+		.id = DISPLAY_0,
+		.num_formats = ARRAY_SIZE(wb_formats),
+		.formats = wb_formats,
+		.modifiers = wb_modifier,
+		.max_width = 4096,
+		.max_height = 2160,
+		.rotation = 0,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.src_mask = 0x1,
+	},
+	{
+		.name = "Write_back1",
+		.id = DISPLAY_1,
+		.num_formats = ARRAY_SIZE(wb_formats),
+		.formats = wb_formats,
+		.modifiers = wb_modifier,
+		.max_width = 4096,
+		.max_height = 2160,
+		.rotation = 0,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.src_mask = 0x2,
+	},
+	{
+		.name = "Write_back2",
+		.id = DISPLAY_2,
+		.num_formats = ARRAY_SIZE(wb_formats),
+		.formats = wb_formats,
+		.modifiers = wb_modifier,
+		.max_width = 4096,
+		.max_height = 2160,
+		.rotation = 0,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.src_mask = 0x4,
+	},
+};
+
+static const struct ftd330_output_info phytium_3_dc_output_info[] = {
+	{
+		.name = "DPI0",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 0), /* 8-15 bit output id, 0-7 bit number id,*/
+		.type = DRM_MODE_ENCODER_DPI,
+	},
+	{
+		.name = "DP0",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 1),
+		.type = DRM_MODE_ENCODER_DPMST,
+	},
+	{
+		.name = "DPI1",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(1, 2),
+		.type = DRM_MODE_ENCODER_DPI,
+	},
+	{
+		.name = "DP1",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(1, 3),
+		.type = DRM_MODE_ENCODER_DPMST,
+	},
+	{
+		.name = "DPI2",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(2, 4), /* 8-15 bit output id, 0-7 bit number id,*/
+		.type = DRM_MODE_ENCODER_DPI,
+	},
+	{
+		.name = "DP2",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(2, 4),
+		.type = DRM_MODE_ENCODER_DPMST,
+	},
+};
+
+static struct ftd330_dc_info phytium_3_dc_info = {
+	/* DC_REV_0 */
+	.name = "DCFTD330",
+	.plane_num = ARRAY_SIZE(phytium_3_dc_hw_planes),
+	.planes = phytium_3_dc_hw_planes,
+	.layer_num = 9,
+	.display_num = ARRAY_SIZE(phytium_3_dc_hw_displays),
+	.displays = phytium_3_dc_hw_displays,
+	.wb_num = ARRAY_SIZE(phytium_3_dc_hw_wbs),
+	.output_num = ARRAY_SIZE(phytium_3_dc_output_info),
+	.write_back = phytium_3_dc_hw_wbs,
+	.max_bpc = 10,
+	.pitch_alignment = 128,
+	.addr_alignment = 256,
+	.max_blend_layer = 9,
+	.max_gamma_size = GAMMA_SIZE,
+	.gamma_bits = 12,
+	.std_color_lut = true,
+	.pipe_sync = false,
+	.mmu_prefetch = false,
+	.panel_sync = false,
+	.cap_dec = true,
+};
+
+static struct ftd330_plane_info phytium_1_dc_hw_planes[] = {
+{
+	.name = "Primary",
+	.id = PRIMARY_PLANE_0,
+	.type = DRM_PLANE_TYPE_PRIMARY,
+	.num_formats = ARRAY_SIZE(primary_overlay_format0),
+	.formats = primary_overlay_format0,
+	.num_modifiers = ARRAY_SIZE(format_modifier0),
+	.modifiers = format_modifier0,
+	.min_width = 0,
+	.min_height = 0,
+	.max_width = 11520,
+	.max_height = 6480,
+	.rot_supp_mods = rot_support_modifiers,
+	.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+				DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+	.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+	.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) |
+					  BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+	.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+	//.degamma_size = DEGAMMA_SIZE,
+	.min_scale = FRAC_16_16(1, 32),
+	.max_scale = FRAC_16_16(2, 1),
+	.zpos = 0,
+	.blend_config = true,
+	.watermark = false,
+	.color_mgmt = true,
+	.roi = true,
+	.layer_ext = false,
+	.layer_ext_ex = false,
+	.program_csc = false,
+	.cgm_lut = false,
+	.gamut_map = false,
+	.crtc_id = 0x0,
+},
+{
+	.name = "Overlay",
+	.id = OVERLAY_PLANE_0,
+	.type = DRM_PLANE_TYPE_OVERLAY,
+	.num_formats = ARRAY_SIZE(primary_overlay_format0),
+	.formats = primary_overlay_format0,
+	.num_modifiers = ARRAY_SIZE(format_modifier0),
+	.modifiers = format_modifier0,
+	.min_width = 0,
+	.min_height = 0,
+	.max_width = 4096,
+	.max_height = 4096,
+	.rot_supp_mods = rot_support_modifiers,
+	.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+				DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+	.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+				BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+	.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) |
+					  BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+	.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+	//.degamma_size = DEGAMMA_SIZE,
+	.min_scale = FRAC_16_16(1, 32),
+	.max_scale = FRAC_16_16(2, 1),
+	.zpos = 1,
+	.blend_config = true,
+	.watermark = false,
+	.color_mgmt = true,
+	.roi = false,
+	.layer_ext = false,
+	.layer_ext_ex = false,
+	.program_csc = false,
+	.cgm_lut = false,
+	.gamut_map = false,
+},
+{
+	.name = "Overlay_1",
+	.id = OVERLAY_PLANE_1,
+	.type = DRM_PLANE_TYPE_OVERLAY,
+	.num_formats = ARRAY_SIZE(primary_overlay_format0),
+	.formats = primary_overlay_format0,
+	.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+	.modifiers = secondary_format_modifiers,
+	.min_width = 0,
+	.min_height = 0,
+	.max_width = 4096,
+	.max_height = 4096,
+	.rotation = 0,
+	.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+				BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+	.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) |
+					BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+	.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+	//.degamma_size = DEGAMMA_SIZE,
+	.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+	.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+	.zpos = 2,
+	.blend_config = true,
+	.watermark = false,
+	.color_mgmt = true,
+	.roi = false,
+	.layer_ext = false,
+	.layer_ext_ex = false,
+	.program_csc = false,
+	.cgm_lut = false,
+	.gamut_map = false,
+},
+{
+	.name = "Cursor",
+	.id = CURSOR_PLANE_0,
+	.type = DRM_PLANE_TYPE_CURSOR,
+	.num_formats = ARRAY_SIZE(cursor_formats),
+	.formats = cursor_formats,
+	.num_modifiers = ARRAY_SIZE(cursor_modifier),
+	.modifiers = cursor_modifier,
+	.min_width = 32,
+	.min_height = 32,
+	.max_width = 128,
+	.max_height = 128,
+	.rotation = 0,
+	.degamma_size = 0,
+	.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+	.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+	.zpos = 255,
+	.watermark = false,
+	.color_mgmt = false,
+	.roi = false,
+	.crtc_id = 0x0,
+},
+};
+
+
+static struct ftd330_plane_info phytium_2_dc_hw_planes[] = {
+			/* DC_REV_0 *//*dc0 use single dc,dc1/2 use double dc*/
+		{
+			.name = "Primary",
+			.id = PRIMARY_PLANE_0,
+			.type = DRM_PLANE_TYPE_PRIMARY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(format_modifier0),
+			.modifiers = format_modifier0,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 11520,
+			.max_height = 6480,
+			.rot_supp_mods = rot_support_modifiers,
+			.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+					DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = FRAC_16_16(1, 32),
+			.max_scale = FRAC_16_16(2, 1),
+			.zpos = 0,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = true,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+			.crtc_id = 0x0,
+		},
+		{
+			.name = "Overlay",
+			.id = OVERLAY_PLANE_0,
+			.type = DRM_PLANE_TYPE_OVERLAY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(format_modifier0),
+			.modifiers = format_modifier0,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 4096,
+			.max_height = 4096,
+			.rot_supp_mods = rot_support_modifiers,
+			.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+					DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = FRAC_16_16(1, 32),
+			.max_scale = FRAC_16_16(2, 1),
+			.zpos = 1,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = false,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+		},
+		{
+			.name = "Overlay_1",
+			.id = OVERLAY_PLANE_1,
+			.type = DRM_PLANE_TYPE_OVERLAY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+			.modifiers = secondary_format_modifiers,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 4096,
+			.max_height = 4096,
+			.rotation = 0,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.zpos = 2,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = false,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+		},
+		{
+			.name = "Primary_1",
+			.id = PRIMARY_PLANE_1,
+			.type = DRM_PLANE_TYPE_PRIMARY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(format_modifier0),
+			.modifiers = format_modifier0,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 11520,
+			.max_height = 6480,
+			.rot_supp_mods = rot_support_modifiers,
+			.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+					DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = FRAC_16_16(1, 32),
+			.max_scale = FRAC_16_16(2, 1),
+			.zpos = 3,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = true,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+			.crtc_id = 0x1,
+		},
+		{
+			.name = "Overlay_2",
+			.id = OVERLAY_PLANE_2,
+			.type = DRM_PLANE_TYPE_OVERLAY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(format_modifier0),
+			.modifiers = format_modifier0,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 4096,
+			.max_height = 4096,
+			.rot_supp_mods = rot_support_modifiers,
+			.rotation = DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_180 |
+					DRM_MODE_ROTATE_270 | DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = FRAC_16_16(1, 32),
+			.max_scale = FRAC_16_16(2, 1),
+			.zpos = 4,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = false,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+		},
+		{
+			.name = "Overlay_3",
+			.id = OVERLAY_PLANE_3,
+			.type = DRM_PLANE_TYPE_OVERLAY,
+			.num_formats = ARRAY_SIZE(primary_overlay_format0),
+			.formats = primary_overlay_format0,
+			.num_modifiers = ARRAY_SIZE(secondary_format_modifiers),
+			.modifiers = secondary_format_modifiers,
+			.min_width = 0,
+			.min_height = 0,
+			.max_width = 4096,
+			.max_height = 4096,
+			.rotation = 0,
+			.blend_mode = BIT(DRM_MODE_BLEND_PIXEL_NONE) |
+					  BIT(DRM_MODE_BLEND_PREMULTI) | BIT(DRM_MODE_BLEND_COVERAGE),
+			.color_encoding = BIT(DRM_COLOR_YCBCR_BT601) | BIT(DRM_COLOR_YCBCR_BT709) | BIT(DRM_COLOR_YCBCR_BT2020),
+			.color_range = BIT(DRM_COLOR_YCBCR_LIMITED_RANGE) | BIT(DRM_COLOR_YCBCR_FULL_RANGE),
+			//.degamma_size = DEGAMMA_SIZE,
+			.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.zpos = 5,
+			.blend_config = true,
+			.watermark = false,
+			.color_mgmt = true,
+			.roi = false,
+			.layer_ext = false,
+			.layer_ext_ex = false,
+			.program_csc = false,
+			.cgm_lut = false,
+			.gamut_map = false,
+		},
+		{
+			.name = "Cursor",
+			.id = CURSOR_PLANE_0,
+			.type = DRM_PLANE_TYPE_CURSOR,
+			.num_formats = ARRAY_SIZE(cursor_formats),
+			.formats = cursor_formats,
+			.num_modifiers = ARRAY_SIZE(cursor_modifier),
+			.modifiers = cursor_modifier,
+			.min_width = 32,
+			.min_height = 32,
+			.max_width = 128,
+			.max_height = 128,
+			.rotation = 0,
+			.degamma_size = 0,
+			.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.zpos = 255,
+			.watermark = false,
+			.color_mgmt = false,
+			.roi = false,
+			.crtc_id = 0x0,
+		},
+		{
+			.name = "Cursor_1",
+			.id = CURSOR_PLANE_1,
+			.type = DRM_PLANE_TYPE_CURSOR,
+			.num_formats = ARRAY_SIZE(cursor_formats),
+			.formats = cursor_formats,
+			.num_modifiers = ARRAY_SIZE(cursor_modifier),
+			.modifiers = cursor_modifier,
+			.min_width = 32,
+			.min_height = 32,
+			.max_width = 128,
+			.max_height = 128,
+			.rotation = 0,
+			.degamma_size = 0,
+			.min_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.max_scale = DRM_PLANE_HELPER_NO_SCALING,
+			.zpos = 255,
+			.watermark = false,
+			.color_mgmt = false,
+			.roi = false,
+			.crtc_id = 0x1,
+		},
+};
+
+static const struct ftd330_display_info phytium_1_dc_hw_displays[] = {
+	{
+			.name = "Out_ctrl0",
+			.id = DISPLAY_0,
+			.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+							 DRM_COLOR_FORMAT_YCRCB422 |
+							 DRM_COLOR_FORMAT_YCRCB420,
+			.max_width = 4096,
+			.max_height = 2160,
+			.min_scale = FRAC_16_16(1, 1),
+			.max_scale = FRAC_16_16(1, 1),
+			.background = true,
+			.gamma = true,
+			.dither = true,
+	},
+};
+
+static const struct ftd330_display_info phytium_2_dc_hw_displays[] = {
+	/* For DCFTD330: DC_REV_0, DC_REV_1 and DC_REV_2
+	 * can share a set of display configuration
+	 */
+	 /*Out_ctrl0 is single dc,Out_ctrl1/2 is double dc*/
+	{
+		.name = "Out_ctrl0",
+		.id = DISPLAY_0,
+		.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+				 DRM_COLOR_FORMAT_YCRCB422 | DRM_COLOR_FORMAT_YCRCB420,
+		.max_width = 4096,
+		.max_height = 2160,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.background = true,
+		.gamma = true,
+		.dither = true,
+
+	},
+	{
+		.name = "Out_ctrl1",
+		.id = DISPLAY_1,
+		.color_formats = DRM_COLOR_FORMAT_RGB444 | DRM_COLOR_FORMAT_YCRCB444 |
+				 DRM_COLOR_FORMAT_YCRCB422 | DRM_COLOR_FORMAT_YCRCB420,
+		.max_width = 4096,
+		.max_height = 2160,
+		.min_scale = FRAC_16_16(1, 1),
+		.max_scale = FRAC_16_16(1, 1),
+		.background = true,
+		.gamma = true,
+		.dither = true,
+
+	},
+};
+
+
+static const struct ftd330_wb_info phytium_1_dc_hw_wbs[] = {
+	{
+			.name = "Write_back0",
+			.id = WB_0,
+			.num_formats = ARRAY_SIZE(wb_formats),
+			.formats = wb_formats,
+			.modifiers = wb_modifier,
+			.max_width = 4096,
+			.max_height = 2160,
+			.rotation = 0,
+			.min_scale = FRAC_16_16(1, 1),
+			.max_scale = FRAC_16_16(1, 1),
+			.src_mask = 0x1,
+	},
+};
+
+static const struct ftd330_wb_info phytium_2_dc_hw_wbs[] = {
+		{
+			.name = "Write_back0",
+			.id = DISPLAY_0,
+			.num_formats = ARRAY_SIZE(wb_formats),
+			.formats = wb_formats,
+			.modifiers = wb_modifier,
+			.max_width = 4096,
+			.max_height = 2160,
+			.rotation = 0,
+			.min_scale = FRAC_16_16(1, 1),
+			.max_scale = FRAC_16_16(1, 1),
+			.src_mask = 0x1,
+		},
+		{
+			.name = "Write_back1",
+			.id = DISPLAY_1,
+			.num_formats = ARRAY_SIZE(wb_formats),
+			.formats = wb_formats,
+			.modifiers = wb_modifier,
+			.max_width = 4096,
+			.max_height = 2160,
+			.rotation = 0,
+			.min_scale = FRAC_16_16(1, 1),
+			.max_scale = FRAC_16_16(1, 1),
+			.src_mask = 0x2,
+		},
+
+};
+
+
+static const struct ftd330_output_info phytium_1_dc_output_info[] = {
+	{
+		.name = "DPI0",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 0), /* 8-15 bit output id, 0-7 bit number id,*/
+		.type = DRM_MODE_ENCODER_DPI,
+	},
+	{
+		.name = "DP0",
+		.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 1),
+		.type = DRM_MODE_ENCODER_DPMST,
+	},
+};
+
+static const struct ftd330_output_info phytium_2_dc_output_info[] = {
+		{
+			.name = "DPI0",
+			.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 0), /* 8-15 bit output id, 0-7 bit number id,*/
+			.type = DRM_MODE_ENCODER_DPI,
+		},
+		{
+			.name = "DP0",
+			.mux_id = FTD330_SIMPLE_ENC_MUX_ID(0, 1),
+			.type = DRM_MODE_ENCODER_DPMST,
+		},
+		{
+			.name = "DPI1",
+			.mux_id = FTD330_SIMPLE_ENC_MUX_ID(1, 2),
+			.type = DRM_MODE_ENCODER_DPI,
+		},
+		{
+			.name = "DP1",
+			.mux_id = FTD330_SIMPLE_ENC_MUX_ID(1, 3),
+			.type = DRM_MODE_ENCODER_DPMST,
+		},
+
+};
+
+
+static struct ftd330_dc_info phytium_1_dc_info = {
+	.name = "DCFTD330",
+	.plane_num = ARRAY_SIZE(phytium_1_dc_hw_planes),
+	.planes = phytium_1_dc_hw_planes,
+	.layer_num = 3,
+	.display_num = ARRAY_SIZE(phytium_1_dc_hw_displays),
+	.displays = phytium_1_dc_hw_displays,
+	.output_num = ARRAY_SIZE(phytium_1_dc_output_info),
+	.wb_num = ARRAY_SIZE(phytium_1_dc_hw_wbs),
+	.write_back = phytium_1_dc_hw_wbs,
+	.max_bpc = 10,
+	.pitch_alignment = 128,
+	.addr_alignment = 256,
+	.max_blend_layer = 3,
+	.max_gamma_size = GAMMA_SIZE,
+	.gamma_bits = 12,
+	.std_color_lut = true,
+	.pipe_sync = false,
+	.mmu_prefetch = false,
+	.panel_sync = false,
+	.cap_dec = true,
+};
+
+static struct ftd330_dc_info phytium_2_dc_info = {
+	.name = "DCFTD330",
+	.plane_num = ARRAY_SIZE(phytium_2_dc_hw_planes),
+	.planes = phytium_2_dc_hw_planes,
+	.layer_num = 6,
+	.display_num = ARRAY_SIZE(phytium_2_dc_hw_displays),
+	.displays = phytium_2_dc_hw_displays,
+	.output_num = ARRAY_SIZE(phytium_2_dc_output_info),
+	.wb_num = ARRAY_SIZE(phytium_2_dc_hw_wbs),
+	.write_back = phytium_2_dc_hw_wbs,
+	.max_bpc = 10,
+	.pitch_alignment = 128,
+	.addr_alignment = 256,
+	.max_blend_layer = 6,
+	.max_gamma_size = GAMMA_SIZE,
+	.gamma_bits = 12,
+	.std_color_lut = true,
+	.pipe_sync = false,
+	.mmu_prefetch = false,
+	.panel_sync = false,
+	.cap_dec = true,
+};
+
+
+struct ftd330_dc_info *ftd330_dc_get_chip_info(int total_pipes)
+{
+	if (total_pipes == 1)
+		return &phytium_1_dc_info;
+	else if (total_pipes == 2)
+		return &phytium_2_dc_info;
+	else
+		return &phytium_3_dc_info;
+}
+
+const struct ftd330_output_info *ftd330_dc_get_output_info(int total_pipes)
+{
+	if (total_pipes == 1)
+		return phytium_1_dc_output_info;
+	else if (total_pipes == 2)
+		return phytium_2_dc_output_info;
+	else
+		return phytium_3_dc_output_info;
+
+}
+

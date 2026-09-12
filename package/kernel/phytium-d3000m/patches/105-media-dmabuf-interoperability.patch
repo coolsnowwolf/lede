@@ -1,0 +1,187 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] phytium: media dmabuf interoperability
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/gpu_driver/hal/inc/gc_hal_metadata.h
++++ b/gpu_driver/hal/inc/gc_hal_metadata.h
+@@ -23,6 +23,9 @@
+     ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+ 
+ #define VIV_VIDMEM_METADATA_MAGIC __FOURCC('v', 's', 'i', 'm')
++/* Legacy Phytium VPU exporter metadata tag.  Keep accepting it while the
++ * cross-device ABI is migrated to VIV_VIDMEM_METADATA_MAGIC. */
++#define VIV_PHYTIUM_VPU_METADATA_MAGIC __FOURCC('V', 'I', 'V', 'M')
+ 
+ #define PLANE_COUNT 3
+ 
+--- a/gpu_driver/hal/os/linux/kernel/allocator/default/gc_hal_kernel_allocator_dmabuf.c
++++ b/gpu_driver/hal/os/linux/kernel/allocator/default/gc_hal_kernel_allocator_dmabuf.c
+@@ -278,7 +278,8 @@
+         gctUINT32 *checkNum = (gctUINT32 *)dmabuf->priv;
+ 
+         /* Check if the dmabuf is a metadata. */
+-        if (*checkNum == VIV_VIDMEM_METADATA_MAGIC) {
++        if (*checkNum == VIV_VIDMEM_METADATA_MAGIC ||
++            *checkNum == VIV_PHYTIUM_VPU_METADATA_MAGIC) {
+             gcmkONERROR(gckOS_Allocate(os, gcmSIZEOF(_VIV_VIDMEM_METADATA), (gctPOINTER)&Mdl->metadata));
+             gckOS_MemCopy(Mdl->metadata, dmabuf->priv, gcmSIZEOF(_VIV_VIDMEM_METADATA));
+         }
+--- a/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_drm.c
++++ b/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_drm.c
+@@ -150,6 +150,8 @@
+ 
+     /* ioctl output */
+     gem_obj = kzalloc(sizeof(*viv_obj), GFP_KERNEL);
++    if (!gem_obj)
++        gcmkONERROR(gcvSTATUS_OUT_OF_MEMORY);
+     drm_gem_private_object_init(drm, gem_obj, dmabuf->size);
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+     gem_obj->funcs = &viv_gem_object_funcs;
+@@ -159,7 +161,10 @@
+     viv_obj->node_object = nodeObject;
+ 
+ OnError:
+-    return gem_obj;
++    /* PRIME import callbacks must return an ERR_PTR on failure.  Returning
++     * NULL makes drm_gem_prime_fd_to_handle() treat a failed HAL wrap as a
++     * valid object and can crash while dereferencing it. */
++    return gcmIS_ERROR(status) ? ERR_PTR(-EINVAL) : gem_obj;
+ }
+ 
+ void viv_gem_free_object(struct drm_gem_object *gem_obj)
+@@ -779,6 +784,7 @@
+ 
+ static const struct file_operations viv_drm_fops = {
+     .owner              = THIS_MODULE,
++    .fop_flags          = FOP_UNSIGNED_OFFSET,
+     .open               = drm_open,
+     .release            = drm_release,
+     .unlocked_ioctl     = drm_ioctl,
+--- a/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_os.c
++++ b/gpu_driver/hal/os/linux/kernel/gc_hal_kernel_os.c
+@@ -7516,7 +7516,8 @@
+     }
+ 
+     check_num = (gctUINT32 *)mdl->metadata;
+-    if (*check_num != VIV_VIDMEM_METADATA_MAGIC) {
++    if (*check_num != VIV_VIDMEM_METADATA_MAGIC &&
++        *check_num != VIV_PHYTIUM_VPU_METADATA_MAGIC) {
+         gcmkFOOTER_NO();
+         return gcvSTATUS_OK;
+     }
+@@ -7532,7 +7533,7 @@
+ 
+     /* Due to ts buffer may be transferred to other process, so we should get
+        a new fd for this process. */
+-    ts_fd = dma_buf_fd(ts_dmabuf, O_RDWR);
++    ts_fd = ts_dmabuf ? dma_buf_fd(ts_dmabuf, O_RDWR) : -1;
+ 
+     for (i = 0; i < PLANE_COUNT; i++) {
+         metadata->plane[i].ts_fd = ts_fd;
+--- a/vpu_driver/ftv310_vpu_drm.c
++++ b/vpu_driver/ftv310_vpu_drm.c
+@@ -273,29 +273,38 @@
+ {
+ 	struct drm_gem_ftv310_vpu_object *cma_obj;
+ 	struct drm_gem_object *obj;
++	unsigned int npages;
++	int ret;
++	u32 metadata_magic = 0;
+ 
+ 	cma_obj = kzalloc(sizeof(*cma_obj), GFP_KERNEL);
+ 	if (!cma_obj)
+ 		return ERR_PTR(-ENOMEM);
++	if (!sgt || !sgt->sgl || !sgt->nents) {
++		kfree(cma_obj);
++		return ERR_PTR(-EINVAL);
++	}
+ 
+-	if (sgt->nents > 1) {
+-		int npages;
+-
+-		npages = PAGE_ALIGN(attach->dmabuf->size) / PAGE_SIZE;
+-
+-		/* check if the entries in the sg_table are contiguous */
+-		cma_obj->flag |= FTV310_VPU_GEM_FLAG_IMPORT; //make it use MMU
+-		if (!cma_obj->pages)
+-			cma_obj->pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
++	mutex_init(&cma_obj->pages_lock);
++	init_ftv310_vpu_resv(&cma_obj->kresv, cma_obj);
++	npages = PAGE_ALIGN(attach->dmabuf->size) >> PAGE_SHIFT;
++	cma_obj->num_pages = npages;
++	cma_obj->flag |= FTV310_VPU_GEM_FLAG_IMPORT;
+ 
+-		cma_obj->num_pages = attach->dmabuf->size >> PAGE_SHIFT;
+-		cma_obj->pages_pin_count++; /* perma-pinned */
++	/* Always retain the page array.  A one-entry sg table is valid too. */
++	cma_obj->pages = kvmalloc_array(npages, sizeof(*cma_obj->pages), GFP_KERNEL);
++	if (!cma_obj->pages) {
++		ret = -ENOMEM;
++		goto err_resv;
++	}
+ #if KERNEL_VERSION(5, 12, 0) <= LINUX_VERSION_CODE
+-		drm_prime_sg_to_page_array(sgt, cma_obj->pages, npages);
++	ret = drm_prime_sg_to_page_array(sgt, cma_obj->pages, npages);
+ #else
+-		drm_prime_sg_to_page_addr_arrays(sgt, cma_obj->pages, NULL, npages);
++	ret = drm_prime_sg_to_page_addr_arrays(sgt, cma_obj->pages, NULL, npages);
+ #endif
+-	}
++	if (ret)
++		goto err_pages;
++	cma_obj->pages_pin_count++; /* perma-pinned */
+ 
+ 	obj = &cma_obj->base;
+ 
+@@ -304,23 +313,39 @@
+ 		obj->funcs = &ftv310_vpu_drm_gem_cma_funcs;
+ #endif
+ 
+-	if (drm_gem_object_init(dev, obj, attach->dmabuf->size) != 0) {
+-		kfree(cma_obj);
+-		return ERR_PTR(-ENOMEM);
+-	}
++	ret = drm_gem_object_init(dev, obj, attach->dmabuf->size);
++	if (ret)
++		goto err_pages;
+ 	cma_obj->paddr = sg_dma_address(sgt->sgl);
+ 	cma_obj->sgt = sgt;
+-	cma_obj->num_pages = attach->dmabuf->size >> PAGE_SHIFT;
+-	cma_obj->dmapriv.meta_data =
+-		*((struct viv_vidmem_metadata *)attach->dmabuf->priv);
++
++	/* dma_buf->priv is exporter-private.  Only copy it when it is known
++	 * to contain the shared Vivante metadata ABI. */
++	if (attach->dmabuf->priv)
++		metadata_magic = *(u32 *)attach->dmabuf->priv;
++	if (metadata_magic == FTV310_VPU_IMAGE_VIV_META_DATA_MAGIC ||
++		metadata_magic == FTV310_VPU_MAGIC('v', 's', 'i', 'm'))
++		memcpy(&cma_obj->dmapriv.meta_data, attach->dmabuf->priv,
++		       sizeof(cma_obj->dmapriv.meta_data));
++	else
++		memset(&cma_obj->dmapriv.meta_data, 0,
++		       sizeof(cma_obj->dmapriv.meta_data));
+ 	cma_obj->dmapriv.self = cma_obj;
+ 	cma_obj->dmapriv.meta_data.magic = FTV310_VPU_IMAGE_VIV_META_DATA_MAGIC;
+-	cma_obj->flag |= FTV310_VPU_GEM_FLAG_IMPORT;
+-	if ((GET_ENC_CFG_BITS(ftv310_vpu_dev.config) & CONFIG_FTV310_VPUMMU) ||
+-		(GET_DEC_CFG_BITS(ftv310_vpu_dev.config) & CONFIG_FTV310_VPUMMU))
+-		cma_obj->flag |= FTV310_VPU_GEM_FLAG_IMPORT; //make it use MMU
+ 
+ 	return obj;
++
++err_pages:
++	kvfree(cma_obj->pages);
++err_resv:
++#if KERNEL_VERSION(5, 4, 0) <= LINUX_VERSION_CODE
++	dma_resv_fini(&cma_obj->kresv);
++#else
++	reservation_object_fini(&cma_obj->kresv);
++#endif
++	mutex_destroy(&cma_obj->pages_lock);
++	kfree(cma_obj);
++	return ERR_PTR(ret);
+ }
+ 
+ #if KERNEL_VERSION(5, 11, 0) > LINUX_VERSION_CODE
