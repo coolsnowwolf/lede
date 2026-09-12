@@ -337,6 +337,7 @@ define U-Boot/generic-rk3568
     hinlink_opc-h66k \
     hinlink_opc-h68k \
     hinlink_opc-h69k \
+    linkease_easepi-r1 \
     lyt_t68m \
     nlnet_xiguapi-v3 \
     seewo_sv21
