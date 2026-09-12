@@ -326,6 +326,13 @@ define U-Boot/fastrhino-r68s-rk3568
      fastrhino_r68s
 endef
 
+define U-Boot/easepi-r1-rk3568
+  $(U-Boot/rk3568/Default)
+  NAME:=LinkEase EasePi R1
+  BUILD_DEVICES:= \
+    linkease_easepi-r1
+endef
+
 define U-Boot/generic-rk3568
   $(U-Boot/rk3568/Default)
   NAME:=GENERIC RK3568
@@ -337,7 +344,6 @@ define U-Boot/generic-rk3568
     hinlink_opc-h66k \
     hinlink_opc-h68k \
     hinlink_opc-h69k \
-    linkease_easepi-r1 \
     lyt_t68m \
     nlnet_xiguapi-v3 \
     seewo_sv21
@@ -531,6 +537,7 @@ UBOOT_TARGETS := \
   radxa-zero-3-rk3566 \
   rock-3c-rk3566 \
   bpi-r2-pro-rk3568 \
+  easepi-r1-rk3568 \
   generic-rk3568 \
   fastrhino-r66s-rk3568 \
   fastrhino-r68s-rk3568 \
