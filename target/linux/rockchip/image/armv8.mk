@@ -410,6 +410,7 @@ define Device/hinlink_opc-h66k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H66K
   SOC := rk3568
+  UBOOT_DEVICE_NAME := hinlink-h66k-rk3568
 endef
 TARGET_DEVICES += hinlink_opc-h66k
 
@@ -417,6 +418,7 @@ define Device/hinlink_opc-h68k
 $(call Device/hinlink_common)
   DEVICE_MODEL := OPC-H68K
   SOC := rk3568
+  UBOOT_DEVICE_NAME := hinlink-h68k-rk3568
 endef
 TARGET_DEVICES += hinlink_opc-h68k
 
