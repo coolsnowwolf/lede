@@ -10,8 +10,8 @@ define Device/e2000q-demo-board
   SOC := e2000
   UBOOT_PATH := ./bin/e2000q_demo_uboot.bin
   IMAGES += factory.bin
-  IMAGE/factory.bin := append-uboot | pad-to 3072k | append-dtb |\
-	  pad-to 3136k | append-kernel | pad-to 9280k |\
+  IMAGE/factory.bin := append-phytium-uboot | pad-to 3072k | append-dtb |\
+	  pad-to 3136k | append-kernel | pad-to 15424k |\
 	  append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += e2000q-demo-board
@@ -22,8 +22,8 @@ define Device/e2000d-demo-board
   SOC := e2000
   UBOOT_PATH := ./bin/e2000d_demo_uboot.bin
   IMAGES += factory.bin
-  IMAGE/factory.bin := append-uboot | pad-to 3072k | append-dtb |\
-	  pad-to 3136k | append-kernel | pad-to 9280k |\
+  IMAGE/factory.bin := append-phytium-uboot | pad-to 3072k | append-dtb |\
+	  pad-to 3136k | append-kernel | pad-to 15424k |\
 	  append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += e2000d-demo-board
@@ -34,8 +34,8 @@ define Device/e2000q-miniitx-board
   SOC := e2000
   UBOOT_PATH := ./bin/e2000_miniitx_uboot.bin
   IMAGES += factory.bin
-  IMAGE/factory.bin := append-uboot | pad-to 3072k | append-dtb |\
-	  pad-to 3136k | append-kernel | pad-to 9280k |\
+  IMAGE/factory.bin := append-phytium-uboot | pad-to 3072k | append-dtb |\
+	  pad-to 3136k | append-kernel | pad-to 15424k |\
 	  append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += e2000q-miniitx-board
@@ -46,8 +46,8 @@ define Device/e2000d-miniitx-board
   SOC := e2000
   UBOOT_PATH := ./bin/e2000_miniitx_uboot.bin
   IMAGES += factory.bin
-  IMAGE/factory.bin := append-uboot | pad-to 3072k | append-dtb |\
-	  pad-to 3136k | append-kernel | pad-to 9280k |\
+  IMAGE/factory.bin := append-phytium-uboot | pad-to 3072k | append-dtb |\
+	  pad-to 3136k | append-kernel | pad-to 15424k |\
 	  append-rootfs | pad-rootfs | append-metadata
 endef
 TARGET_DEVICES += e2000d-miniitx-board

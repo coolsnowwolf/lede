@@ -27,6 +27,13 @@ platform_check_image() {
 			echo "Invalid image type."
 			return 1
 		}
+		local kerneldev
+		export_bootdevice && export_partdevice kerneldev 2 || return 1
+		if [ ! -r "/sys/class/block/$kerneldev/size" ] ||
+		   [ "$(cat "/sys/class/block/$kerneldev/size")" -lt 24576 ]; then
+			echo "The kernel partition must be at least 12 MiB. Install the factory image to update the partition layout."
+			return 1
+		fi
 		return 0
 		;;
 	esac

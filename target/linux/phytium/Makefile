@@ -11,7 +11,9 @@ FEATURES:=fpu pci pcie rtc usb boot-part rootfs-part
 FEATURES+=cpiogz ext4 ramdisk squashfs targz vmdk usb gpio fpu pci pcie jffs2
 SUBTARGETS:=armv8 e2000 phytiumpi
 
-KERNEL_PATCHVER:=5.10
+KERNEL_PATCHVER:=6.18
+KERNEL_TESTING_PATCHVER:=5.10
+KERNELNAME:=Image dtbs
 
 include $(INCLUDE_DIR)/target.mk
 

@@ -7,7 +7,7 @@ SUBTARGET:=phytiumpi
 BOARDNAME:=PhytiumPi
 FEATURES+=emmc nand display
 
-DEFAULT_PACKAGES += hostapd hostapd-utils kmod-rtl8821cs kmod-cfg80211
+DEFAULT_PACKAGES += hostapd hostapd-utils kmod-rtw88-8821cs kmod-cfg80211
 
 define Target/Description
 	Build firmware image for Phytium PhytiumPi devices.

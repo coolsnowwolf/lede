@@ -1,0 +1,69 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] ALSA: hda: support Phytium command resend quirk
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/include/sound/hdaudio.h
++++ b/include/sound/hdaudio.h
+@@ -347,6 +347,7 @@
+ 	bool align_bdle_4k:1;		/* BDLE align 4K boundary */
+ 	bool reverse_assign:1;		/* assign devices in reverse order */
+ 	bool corbrp_self_clear:1;	/* CORBRP clears itself after reset */
++	bool cmd_resend:1;		/* command resend */
+ 	bool polling_mode:1;
+ 	bool needs_damn_long_delay:1;
+ 	bool not_use_interrupts:1;	/* prohibiting the RIRB IRQ */
+--- a/sound/hda/core/controller.c
++++ b/sound/hda/core/controller.c
+@@ -220,6 +220,9 @@
+ {
+ 	unsigned int addr = azx_command_addr(val);
+ 	unsigned int wp, rp;
++	unsigned long timeout;
++	unsigned int rirb_wp;
++	int i = 0;
+ 
+ 	guard(spinlock_irq)(&bus->reg_lock);
+ 
+@@ -244,6 +247,41 @@
+ 	bus->corb.buf[wp] = cpu_to_le32(val);
+ 	snd_hdac_chip_writew(bus, CORBWP, wp);
+ 
++	if (bus->cmd_resend) {
++		timeout = jiffies + msecs_to_jiffies(1000);
++		udelay(80);
++		rirb_wp = snd_hdac_chip_readw(bus, RIRBWP);
++		while (rirb_wp == bus->rirb.wp) {
++			udelay(80);
++			rirb_wp = snd_hdac_chip_readw(bus, RIRBWP);
++			if (rirb_wp != bus->rirb.wp)
++				break;
++			if (i > 5)
++				break;
++			if (time_after(jiffies, timeout))
++				break;
++
++			/* add command to corb */
++			wp = snd_hdac_chip_readw(bus, CORBWP);
++			if (wp == 0xffff) {
++				/* something wrong, controller likely turned to D3 */
++				return -EIO;
++			}
++			wp++;
++			wp %= AZX_MAX_CORB_ENTRIES;
++
++			rp = snd_hdac_chip_readw(bus, CORBRP);
++			if (wp == rp) {
++				/* oops, it's full */
++				return -EAGAIN;
++			}
++			bus->corb.buf[wp] = cpu_to_le32(val);
++			snd_hdac_chip_writew(bus, CORBWP, wp);
++			i++;
++		}
++	}
++
++
+ 	return 0;
+ }
+ 

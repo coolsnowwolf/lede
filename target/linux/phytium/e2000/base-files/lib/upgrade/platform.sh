@@ -27,6 +27,11 @@ platform_check_image() {
 			echo "Invalid image type."
 			return 1
 		}
+		local kernel_size="$(awk '$4 == "\"kernel\"" { print $2 }' /proc/mtd)"
+		if [ -z "$kernel_size" ] || [ "$((0x$kernel_size))" -lt 12582912 ]; then
+			echo "The kernel partition must be at least 12 MiB. Install the factory image to update the partition layout."
+			return 1
+		fi
 		return 0
 		;;
 	esac
