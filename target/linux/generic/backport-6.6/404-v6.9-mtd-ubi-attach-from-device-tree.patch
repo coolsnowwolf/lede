@@ -11,9 +11,6 @@ volumes on them can be used eg. as NVMEM providers for other drivers.
 Signed-off-by: Daniel Golle <daniel@makrotopia.org>
 Signed-off-by: Richard Weinberger <richard@nod.at>
 ---
- drivers/mtd/ubi/build.c | 135 ++++++++++++++++++++++++++++------------
- 1 file changed, 96 insertions(+), 39 deletions(-)
-
 --- a/drivers/mtd/ubi/build.c
 +++ b/drivers/mtd/ubi/build.c
 @@ -27,6 +27,7 @@
@@ -24,7 +21,7 @@ Signed-off-by: Richard Weinberger <richard@nod.at>
  #include <linux/slab.h>
  #include <linux/major.h>
  #include "ubi.h"
-@@ -1214,43 +1215,43 @@ static struct mtd_info * __init open_mtd
+@@ -1219,43 +1220,43 @@
  	return mtd;
  }
  
@@ -58,7 +55,7 @@ Signed-off-by: Richard Weinberger <richard@nod.at>
 -	err = class_register(&ubi_class);
 +	/* called while holding mtd_table_mutex */
 +	mutex_lock_nested(&ubi_devices_mutex, SINGLE_DEPTH_NESTING);
-+	err = ubi_attach_mtd_dev(mtd, UBI_DEV_NUM_AUTO, 0, 0, false);
++	err = ubi_attach_mtd_dev(mtd, UBI_DEV_NUM_AUTO, 0, 0, false, false);
 +	mutex_unlock(&ubi_devices_mutex);
  	if (err < 0)
 -		return err;
@@ -97,17 +94,17 @@ Signed-off-by: Richard Weinberger <richard@nod.at>
  
  	/* Attach MTD devices */
  	for (i = 0; i < mtd_devs; i++) {
-@@ -1298,25 +1299,79 @@ static int __init ubi_init(void)
+@@ -1304,25 +1305,79 @@
  		}
  	}
  
 +	return 0;
 +
 +out_detach:
-+	for (k = 0; k < i; k++)
++	for (k = 0; k < UBI_MAX_DEVICES; k++)
 +		if (ubi_devices[k]) {
 +			mutex_lock(&ubi_devices_mutex);
-+			ubi_detach_mtd_dev(ubi_devices[k]->ubi_num, 1);
++			ubi_detach_mtd_dev(k, 1);
 +			mutex_unlock(&ubi_devices_mutex);
 +		}
 +	return err;
@@ -174,10 +171,10 @@ Signed-off-by: Richard Weinberger <richard@nod.at>
  	return 0;
  
 -out_detach:
--	for (k = 0; k < i; k++)
+-	for (k = 0; k < UBI_MAX_DEVICES; k++)
 -		if (ubi_devices[k]) {
 -			mutex_lock(&ubi_devices_mutex);
--			ubi_detach_mtd_dev(ubi_devices[k]->ubi_num, 1);
+-			ubi_detach_mtd_dev(k, 1);
 -			mutex_unlock(&ubi_devices_mutex);
 -		}
 -	ubi_debugfs_exit();
@@ -186,7 +183,7 @@ Signed-off-by: Richard Weinberger <richard@nod.at>
  out_slab:
  	kmem_cache_destroy(ubi_wl_entry_slab);
  out_dev_unreg:
-@@ -1326,13 +1381,15 @@ out:
+@@ -1332,13 +1387,15 @@
  	pr_err("UBI error: cannot initialize UBI, error %d\n", err);
  	return err;
  }
