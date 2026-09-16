@@ -38,7 +38,7 @@ $(eval $(call KernelPackage,bluetooth))
 define KernelPackage/hci-uart
   SUBMENU:=$(BLUETOOTH_MENU)
   TITLE:=Bluetooth HCI UART support
-  DEPENDS:=+kmod-bluetooth
+  DEPENDS:=+kmod-bluetooth +PACKAGE_kmod-serdev:kmod-serdev
   KCONFIG:= \
 	CONFIG_BT_HCIUART \
 	CONFIG_BT_HCIUART_BCM=n \
