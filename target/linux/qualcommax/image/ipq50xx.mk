@@ -1,3 +1,5 @@
+DTS_DIR := $(DTS_DIR)/qcom
+
 define Device/EmmcImage
 	IMAGES += factory.bin recovery.bin
 	IMAGE/factory.bin := append-kernel | pad-to 12288k | append-rootfs | append-metadata

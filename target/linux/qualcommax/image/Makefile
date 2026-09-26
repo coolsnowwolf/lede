@@ -6,7 +6,7 @@ define Device/Default
 	KERNEL_LOADADDR := 0x41000000
 	DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
 	DEVICE_DTS_CONFIG := config@1
-	DEVICE_DTS_DIR := $(DTS_DIR)/qcom
+	DEVICE_DTS_DIR := ../dts
 	IMAGES := sysupgrade.bin
 	IMAGE/sysupgrade.bin = sysupgrade-tar | append-metadata
 	IMAGE/sysupgrade.bin/squashfs :=
