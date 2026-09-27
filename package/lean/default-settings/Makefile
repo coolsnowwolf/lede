@@ -11,6 +11,9 @@ PKG_RELEASE:=$(COMMITCOUNT)
 PKG_LICENSE:=GPLv3
 PKG_LICENSE_FILES:=LICENSE
 
+DEFAULT_SETTINGS_BUILD_DATE:=$(shell date +%y.%-m.%-d)
+PKG_CONFIG_DEPENDS:=DEFAULT_SETTINGS_BUILD_DATE
+
 include $(INCLUDE_DIR)/package.mk
 
 define Package/default-settings
@@ -31,6 +34,7 @@ endef
 define Package/default-settings/install
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/zzz-default-settings $(1)/etc/uci-defaults/99-default-settings
+	$(SED) 's/@BUILD_DATE@/$(DEFAULT_SETTINGS_BUILD_DATE)/g' $(1)/etc/uci-defaults/99-default-settings
 	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/i18n
 	po2lmo ./po/zh-cn/default.po $(1)/usr/lib/lua/luci/i18n/default.zh-cn.lmo
 endef
