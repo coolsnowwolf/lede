@@ -1,0 +1,57 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] cache: skip unrelated interval elements for standalone additions
+
+A dnsmasq nftset update adds one resolved address at a time. Loading every
+interval set for each addition makes DNS replies stall when large routing
+sets are installed. Limit element dumps to the destination set for a single
+add-element command, retaining all set, chain and object definitions and
+the full-cache path for batches and echo mode. Mark the partial snapshot
+for refresh before reusing a libnftables context.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/include/cache.h
++++ b/include/cache.h
+@@ -50,6 +50,7 @@
+ #define NFT_CACHE_HSIZE	8192
+ 
+ struct nft_cache_filter {
++	const struct handle *add_element;
+ 	struct {
+ 		uint32_t	family;
+ 		const char	*table;
+--- a/src/cache.c
++++ b/src/cache.c
+@@ -533,6 +533,19 @@
+ 		}
+ 		batch_flags |= flags;
+ 	}
++	/* A standalone element addition only needs the target set's intervals.
++	 * Keep all definitions available for maps and verdict dependencies, but
++	 * do not dump unrelated interval sets for every address from dnsmasq.
++	 * Force the next cache update: this element snapshot is incomplete.
++	 */
++	if (!list_empty(cmds) && cmds->next == cmds->prev &&
++	    !nft_output_echo(&nft->output)) {
++		cmd = list_first_entry(cmds, struct cmd, list);
++		if (cmd->op == CMD_ADD && cmd->obj == CMD_OBJ_ELEMENTS) {
++			filter->add_element = &cmd->handle;
++			batch_flags |= NFT_CACHE_REFRESH;
++		}
++	}
+ 	*pflags = batch_flags;
+ 
+ 	return 0;
+@@ -1185,6 +1198,12 @@
+ 			}
+ 		} else if (flags & NFT_CACHE_SETELEM_MAYBE) {
+ 			list_for_each_entry(set, &table->set_cache.list, cache.list) {
++				const struct handle *h = filter->add_element;
++
++				if (h && (h->family != set->handle.family ||
++					  strcmp(h->table.name, set->handle.table.name) ||
++					  strcmp(h->set.name, set->handle.set.name)))
++					continue;
+ 				if (cache_filter_find(filter, &set->handle))
+ 					continue;
+ 
