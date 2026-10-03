@@ -5,7 +5,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=firewall4
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL=$(PROJECT_GIT)/project/firewall4.git
@@ -22,7 +22,7 @@ define Package/firewall4
   CATEGORY:=Base system
   TITLE:=OpenWrt 4th gen firewall
   DEPENDS:= \
-	+kmod-nft-core +kmod-nft-fib +kmod-nft-offload \
+	+kmod-nft-core +kmod-nft-fib +kmod-tcp-bbr +kmod-nft-offload \
 	+kmod-nft-nat +kmod-nft-nat6 +kmod-nft-fullcone \
 	+nftables-json \
 	+ucode +ucode-mod-fs +ucode-mod-ubus +ucode-mod-uci

@@ -1,0 +1,77 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] firewall4: apply the configured TCP congestion control
+
+Apply the LuCI tcpcca setting on service start, restart and reload, and
+recognize it as a firewall defaults option. Keep the cubic default used
+by the UI and only apply settings after a successful firewall operation.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/root/etc/config/firewall
++++ b/root/etc/config/firewall
+@@ -5,6 +5,7 @@
+ 	option forward		REJECT
+ # Uncomment this line to disable ipv6 rules
+ #	option disable_ipv6	1
++	option tcpcca		cubic
+ 	option flow_offloading	1
+ 	option flow_offloading_hw	1
+ 	option fullcone		1
+--- a/root/etc/init.d/firewall
++++ b/root/etc/init.d/firewall
+@@ -4,17 +4,34 @@
+ USE_PROCD=1
+ QUIET=""
+ 
++apply_tcpcca_section() {
++	local tcpcca
++
++	config_get tcpcca "$1" tcpcca cubic
++
++	case "$tcpcca" in
++		bbr|cubic|reno)
++			sysctl -w net.ipv4.tcp_congestion_control="$tcpcca" >/dev/null
++		;;
++	esac
++}
++
++apply_tcpcca() {
++	config_load firewall
++	config_foreach apply_tcpcca_section defaults
++}
++
+ service_triggers() {
+ 	procd_add_reload_trigger firewall
+ 	procd_add_reload_data_trigger firewall
+ }
+ 
+ restart() {
+-	fw4 restart
++	fw4 restart && apply_tcpcca
+ }
+ 
+ start_service() {
+-	fw4 ${QUIET} start
++	fw4 ${QUIET} start && apply_tcpcca
+ }
+ 
+ stop_service() {
+@@ -22,7 +39,7 @@
+ }
+ 
+ reload_service() {
+-	fw4 reload
++	fw4 reload && apply_tcpcca
+ }
+ 
+ boot() {
+--- a/root/usr/share/ucode/fw4.uc
++++ b/root/usr/share/ucode/fw4.uc
+@@ -2038,6 +2038,7 @@
+ 			flow_offloading: [ "bool", "0" ],
+ 			flow_offloading_hw: [ "bool", "0" ],
+ 
++			tcpcca: [ "string", "cubic" ],
+ 			auto_includes: [ "bool", "1" ]
+ 		});
+ 
