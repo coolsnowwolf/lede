@@ -114,6 +114,7 @@ define Package/dnsmasq-full/config
 		default y
 	config PACKAGE_dnsmasq_full_nftset
 		bool "Build with Nftset support."
+		default y if PACKAGE_firewall4
 		default n
 	config PACKAGE_dnsmasq_full_conntrack
 		bool "Build with Conntrack support."
