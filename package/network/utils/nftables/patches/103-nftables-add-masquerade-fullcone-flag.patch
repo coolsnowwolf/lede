@@ -1,0 +1,119 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] nftables: use a NAT flag for Broadcom fullcone
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/include/statement.h
++++ b/include/statement.h
+@@ -148,6 +148,7 @@
+ 	uint32_t		flags;
+ 	uint8_t			family;
+ 	uint32_t		type_flags;
++	bool			fullcone;
+ };
+ 
+ extern struct stmt *nat_stmt_alloc(const struct location *loc,
+--- a/src/json.c
++++ b/src/json.c
+@@ -1536,6 +1536,9 @@
+ 	json_t *root = json_object();
+ 	json_t *array = nat_flags_json(stmt->nat.flags);
+ 
++	if (stmt->nat.type == NFT_NAT_MASQ && stmt->nat.fullcone)
++		json_object_set_new(root, "fullcone", json_true());
++
+ 	switch (stmt->nat.family) {
+ 	case NFPROTO_IPV4:
+ 	case NFPROTO_IPV6:
+--- a/src/netlink_delinearize.c
++++ b/src/netlink_delinearize.c
+@@ -1488,6 +1488,8 @@
+ 
+ 	stmt = nat_stmt_alloc(loc, NFT_NAT_MASQ);
+ 	stmt->nat.flags = flags;
++	if (nftnl_expr_is_set(nle, NFTNL_EXPR_MASQ_REG_FULLCONE))
++		stmt->nat.fullcone = nftnl_expr_get_u8(nle, NFTNL_EXPR_MASQ_REG_FULLCONE);
+ 
+ 	reg1 = netlink_parse_register(nle, NFTNL_EXPR_MASQ_REG_PROTO_MIN);
+ 	if (reg1) {
+--- a/src/netlink_linearize.c
++++ b/src/netlink_linearize.c
+@@ -1261,6 +1261,8 @@
+ 		break;
+ 	case NFT_NAT_MASQ:
+ 		nle = alloc_nft_expr("masq");
++		if (stmt->nat.fullcone)
++			nftnl_expr_set_u8(nle, NFTNL_EXPR_MASQ_REG_FULLCONE, 1);
+ 
+ 		nftnl_flag_attr = NFTNL_EXPR_MASQ_FLAGS;
+ 		nftnl_reg_pmin = NFTNL_EXPR_MASQ_REG_PROTO_MIN;
+--- a/src/parser_bison.y
++++ b/src/parser_bison.y
+@@ -669,6 +669,10 @@
+ %token DNAT			"dnat"
+ %token MASQUERADE		"masquerade"
+ %token FULLCONE		"fullcone"
++
++/* Prefer the BCM modifier over a second, standalone NAT statement. */
++%precedence MASQUERADE
++%precedence FULLCONE
+ %token REDIRECT			"redirect"
+ %token RANDOM			"random"
+ %token FULLY_RANDOM		"fully-random"
+@@ -4101,6 +4105,11 @@
+ 			;
+ 
+ masq_stmt_alloc		:	MASQUERADE	{ $$ = nat_stmt_alloc(&@$, NFT_NAT_MASQ); }
++			|	MASQUERADE FULLCONE
++			{
++				$$ = nat_stmt_alloc(&@$, NFT_NAT_MASQ);
++				$$->nat.fullcone = true;
++			}
+ 			;
+ 
+ masq_stmt_args		:	TO 	COLON	stmt_expr
+--- a/src/parser_json.c
++++ b/src/parser_json.c
+@@ -2313,6 +2313,16 @@
+ 	stmt = nat_stmt_alloc(int_loc, type);
+ 	stmt->nat.family = familyval;
+ 
++	if (type == NFT_NAT_MASQ &&
++	    !json_unpack(value, "{s:o}", "fullcone", &tmp)) {
++		if (!json_is_boolean(tmp)) {
++			json_error(ctx, "Invalid masquerade fullcone flag.");
++			stmt_free(stmt);
++			return NULL;
++		}
++		stmt->nat.fullcone = json_is_true(tmp);
++	}
++
+ 	if (!json_unpack(value, "{s:o}", "addr", &tmp)) {
+ 		stmt->nat.addr = json_parse_stmt_expr(ctx, tmp);
+ 		if (!stmt->nat.addr) {
+--- a/src/scanner.l
++++ b/src/scanner.l
+@@ -470,7 +470,11 @@
+ "snat"			{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return SNAT; }
+ "dnat"			{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return DNAT; }
+ "masquerade"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return MASQUERADE; }
+-"fullcone"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return FULLCONE; }
++"fullcone"		{
++				if (YY_START != SCANSTATE_STMT_NAT)
++					scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT);
++				return FULLCONE;
++			}
+ "redirect"		{ scanner_push_start_cond(yyscanner, SCANSTATE_STMT_NAT); return REDIRECT; }
+ "random"		{ return RANDOM; }
+ <SCANSTATE_STMT_NAT>{
+--- a/src/statement.c
++++ b/src/statement.c
+@@ -691,6 +691,8 @@
+ static void nat_stmt_print(const struct stmt *stmt, struct output_ctx *octx)
+ {
+ 	nft_print(octx, "%s", nat_etype2str(stmt->nat.type));
++	if (stmt->nat.type == NFT_NAT_MASQ && stmt->nat.fullcone)
++		nft_print(octx, " fullcone");
+ 	if (stmt->nat.addr || stmt->nat.proto) {
+ 		switch (stmt->nat.family) {
+ 		case NFPROTO_IPV4:

@@ -1,0 +1,113 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] firewall4: distinguish nft and Broadcom fullcone modes
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/root/usr/share/firewall4/templates/ruleset.uc
++++ b/root/usr/share/firewall4/templates/ruleset.uc
+@@ -327,7 +327,7 @@
+ {%   for (let redirect in fw4.redirects(`dstnat_${zone.name}`)): %}
+ 		{%+ include("redirect.uc", { fw4, zone, redirect }) %}
+ {%   endfor %}
+-{%   if (zone.masq && fw4.default_option("fullcone")): %}
++{%   if (zone.masq && fw4.default_option("fullcone") == 1): %}
+ 		{%+ include("zone-fullcone.uc", { fw4, zone, family: 4, direction: "dstnat" }) %}
+ {%   endif %}
+ {%   if (zone.masq6 && fw4.default_option("fullcone6")): %}
+@@ -343,10 +343,10 @@
+ {%   for (let redirect in fw4.redirects(`srcnat_${zone.name}`)): %}
+ 		{%+ include("redirect.uc", { fw4, zone, redirect }) %}
+ {%   endfor %}
+-{%   if (zone.masq && !fw4.default_option("fullcone")): %}
++{%   if (zone.masq && fw4.default_option("fullcone") != 1): %}
+ {%    for (let saddrs in zone.masq4_src_subnets): %}
+ {%     for (let daddrs in zone.masq4_dest_subnets): %}
+-		{%+ include("zone-masq.uc", { fw4, zone, family: 4, saddrs, daddrs }) %}
++		{%+ include("zone-masq.uc", { fw4, zone, family: 4, saddrs, daddrs, fullcone: fw4.default_option("fullcone") == 2 }) %}
+ {%     endfor %}
+ {%    endfor %}
+ {%   endif %}
+@@ -357,7 +357,7 @@
+ {%     endfor %}
+ {%    endfor %}
+ {%   endif %}
+-{%   if (zone.masq && fw4.default_option("fullcone")): %}
++{%   if (zone.masq && fw4.default_option("fullcone") == 1): %}
+ 		{%+ include("zone-fullcone.uc", { fw4, zone, family: 4, direction: "srcnat" }) %}
+ {%   endif %}
+ {%   if (zone.masq6 && fw4.default_option("fullcone6")): %}
+--- a/root/usr/share/firewall4/templates/zone-masq.uc
++++ b/root/usr/share/firewall4/templates/zone-masq.uc
+@@ -10,4 +10,4 @@
+ 	{{ fw4.ipproto(family) }} daddr != {{ fw4.set(map(daddrs[1], fw4.cidr)) }} {%+ endif -%}
+ {%+ for (let a in (daddrs ? daddrs[2] : [])): -%}
+ 	{{ fw4.ipproto(family) }} daddr & {{ a.mask }} {{ a.invert ? '!=' : '==' }} {{ a.addr }} {%+ endfor -%}
+-masquerade comment "!fw4: Masquerade {{ fw4.nfproto(family, true) }} {{ zone.name }} traffic"
++masquerade{% if (fullcone): %} fullcone{% endif %} comment "!fw4: Masquerade{% if (fullcone): %} (Fullcone){% endif %} {{ fw4.nfproto(family, true) }} {{ zone.name }} traffic"
+--- a/root/usr/share/ucode/fw4.uc
++++ b/root/usr/share/ucode/fw4.uc
+@@ -510,6 +510,21 @@
+ 	return ok;
+ }
+ 
++function nft_try_masq_fullcone() {
++	let nft_test =
++		'add table inet fw4-masq-fullcone-test; ' +
++		'add chain inet fw4-masq-fullcone-test srcnat { ' +
++			'type nat hook postrouting priority -100; policy accept; ' +
++			'meta nfproto ipv4 masquerade fullcone; ' +
++		'}; ';
++	let cmd = sprintf("/usr/sbin/nft -c '%s' 2>/dev/null", replace(nft_test, "'", "'\\''"));
++	let ok = system(cmd) == 0;
++	if (!ok) {
++		warn("nft_try_masq_fullcone: cmd "+ cmd + "\n");
++	}
++	return ok;
++}
++
+ 
+ return {
+ 	read_kernel_version: function() {
+@@ -1995,7 +2010,7 @@
+ 		}
+ 
+ 		let defs = this.parse_options(data, {
+-			fullcone: [ "bool", "0" ],
++			fullcone: [ "int", "0" ],
+ 			fullcone6: [ "bool", "0" ],
+ 			input: [ "policy", "drop" ],
+ 			output: [ "policy", "drop" ],
+@@ -2031,11 +2046,19 @@
+ 
+ 		delete defs.syn_flood;
+ 
+-		if (!nft_try_fullcone()) {
++		if (defs.fullcone != 1 && defs.fullcone != 2)
++			defs.fullcone = 0;
++
++		if (defs.fullcone == 1 && !nft_try_fullcone()) {
+ 			delete defs.fullcone;
+ 			warn("nft_try_fullcone failed, disable fullcone globally\n");
+ 		}
+ 
++		if (defs.fullcone == 2 && !nft_try_masq_fullcone()) {
++			delete defs.fullcone;
++			warn("nft_try_masq_fullcone failed, disable fullcone globally\n");
++		}
++
+ 		this.state.defaults = defs;
+ 	},
+ 
+@@ -2263,9 +2286,11 @@
+ 
+ 		if (zone.masq) {
+ 			zone.dflags.snat = true;
+-			if (this.state.defaults.fullcone) {
++			if (this.state.defaults.fullcone == 1) {
+ 				zone.dflags.dnat = true;
+ 				this.myinfo_section(data, "IPv4 fullcone enabled for zone '" + zone.name + "'");
++			} else if (this.state.defaults.fullcone == 2) {
++				this.myinfo_section(data, "IPv4 brcm fullcone enabled for zone '" + zone.name + "'");
+ 			}
+ 		}
+ 

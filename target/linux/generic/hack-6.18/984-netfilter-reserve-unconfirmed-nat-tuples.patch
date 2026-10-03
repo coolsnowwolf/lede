@@ -1,0 +1,252 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] netfilter: reserve source NAT tuples before confirmation
+
+Cover unconfirmed allocations while preserving the TCP TIME_WAIT eviction
+path. Keep reservation cleanup separately locked from tuple allocation.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/include/net/netfilter/nf_nat.h
++++ b/include/net/netfilter/nf_nat.h
+@@ -45,6 +45,11 @@
+ 
+ struct nf_conn_nat *nf_ct_nat_ext_add(struct nf_conn *ct);
+ 
++#define NF_NAT_MAPPING_ACTIVE 1
++
++bool nf_nat_mapping_active(struct net *net, const struct nf_conntrack_zone *zone,
++			   const struct nf_conntrack_tuple *tuple);
++
+ static inline struct nf_conn_nat *nfct_nat(const struct nf_conn *ct)
+ {
+ #if IS_ENABLED(CONFIG_NF_NAT)
+--- a/net/netfilter/nf_nat_core.c
++++ b/net/netfilter/nf_nat_core.c
+@@ -14,6 +14,8 @@
+ #include <linux/gfp.h>
+ #include <net/xfrm.h>
+ #include <linux/siphash.h>
++#include <linux/jhash.h>
++#include <linux/hashtable.h>
+ #include <linux/rtnetlink.h>
+ 
+ #include <net/netfilter/nf_conntrack_bpf.h>
+@@ -32,6 +34,28 @@
+ 
+ static spinlock_t nf_nat_locks[CONNTRACK_LOCKS];
+ 
++/* Reserve source NAT tuples until the owning conntrack is destroyed, including
++ * the interval between NAT setup and conntrack confirmation.
++ */
++struct nf_nat_binding {
++	struct hlist_node node;
++	struct nf_conn *ct;
++};
++
++static DEFINE_HASHTABLE(nf_nat_bindings, 10);
++static DEFINE_SPINLOCK(nf_nat_binding_lock);
++static DEFINE_SPINLOCK(nf_nat_setup_lock);
++static unsigned long nf_nat_binding_count;
++module_param_named(binding_count, nf_nat_binding_count, ulong, 0444);
++MODULE_PARM_DESC(binding_count, "Number of live source NAT tuple reservations");
++
++static u32 nf_nat_binding_key(const struct nf_conntrack_tuple *reply,
++			     const struct net *net)
++{
++	return jhash2(reply->dst.u3.all, ARRAY_SIZE(reply->dst.u3.all),
++		      (__force u16)reply->dst.u.all ^ net_hash_mix(net));
++}
++
+ static DEFINE_MUTEX(nf_nat_proto_mutex);
+ static unsigned int nat_net_id __read_mostly;
+ 
+@@ -179,6 +203,29 @@
+ 	return reciprocal_scale(hash, nf_nat_htable_size);
+ }
+ 
++/* The bysource index also covers unconfirmed NAT connections. */
++bool nf_nat_mapping_active(struct net *net, const struct nf_conntrack_zone *zone,
++			   const struct nf_conntrack_tuple *tuple)
++{
++	unsigned int h = hash_by_src(net, zone, tuple);
++	struct nf_conn *ct;
++	bool active = false;
++
++	spin_lock_bh(&nf_nat_locks[h % CONNTRACK_LOCKS]);
++	hlist_for_each_entry(ct, &nf_nat_bysource[h], nat_bysource) {
++		if (net_eq(net, nf_ct_net(ct)) && !nf_ct_is_dying(ct) &&
++		    (!nf_ct_is_confirmed(ct) || !nf_ct_is_expired(ct)) &&
++		    nf_ct_zone_equal(ct, zone, IP_CT_DIR_ORIGINAL) &&
++		    nf_ct_tuple_equal(tuple, &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple)) {
++			active = true;
++			break;
++		}
++	}
++	spin_unlock_bh(&nf_nat_locks[h % CONNTRACK_LOCKS]);
++	return active;
++}
++EXPORT_SYMBOL_GPL(nf_nat_mapping_active);
++
+ /**
+  * nf_nat_used_tuple - check if proposed nat tuple clashes with existing entry
+  * @tuple: proposed NAT binding
+@@ -208,6 +255,37 @@
+  *
+  * @return: true if the proposed NAT mapping collides with an existing entry.
+  */
++static bool
++nf_nat_tuple_reserved(const struct nf_conntrack_tuple *reply,
++		      const struct nf_conn *ignored_conntrack)
++{
++	struct nf_nat_binding *binding;
++	struct net *net = nf_ct_net(ignored_conntrack);
++	const struct nf_conntrack_zone *zone = nf_ct_zone(ignored_conntrack);
++
++	lockdep_assert_held(&nf_nat_setup_lock);
++	spin_lock_bh(&nf_nat_binding_lock);
++	hash_for_each_possible(nf_nat_bindings, binding, node,
++			       nf_nat_binding_key(reply, net)) {
++		const struct nf_conn *ct = binding->ct;
++
++		if (ct == ignored_conntrack || nf_ct_is_dying(ct) ||
++		    (nf_ct_is_confirmed(ct) && nf_ct_is_expired(ct)) ||
++		    !net_eq(net, nf_ct_net(ct)) ||
++		    !nf_ct_zone_equal(ct, zone, IP_CT_DIR_REPLY))
++			continue;
++		if (nf_ct_tuple_equal(reply, &ct->tuplehash[IP_CT_DIR_REPLY].tuple) &&
++		    !(nf_ct_zone_equal(ct, zone, IP_CT_DIR_ORIGINAL) &&
++		      nf_ct_tuple_equal(&ignored_conntrack->tuplehash[IP_CT_DIR_ORIGINAL].tuple,
++				&ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple))) {
++			spin_unlock_bh(&nf_nat_binding_lock);
++			return 1;
++		}
++	}
++	spin_unlock_bh(&nf_nat_binding_lock);
++	return false;
++}
++
+ static int
+ nf_nat_used_tuple(const struct nf_conntrack_tuple *tuple,
+ 		  const struct nf_conn *ignored_conntrack)
+@@ -221,7 +299,8 @@
+ 	struct nf_conntrack_tuple reply;
+ 
+ 	nf_ct_invert_tuple(&reply, tuple);
+-	return nf_conntrack_tuple_taken(&reply, ignored_conntrack);
++	return nf_nat_tuple_reserved(&reply, ignored_conntrack) ||
++	       nf_conntrack_tuple_taken(&reply, ignored_conntrack);
+ }
+ 
+ static bool nf_nat_allow_clash(const struct nf_conn *ct)
+@@ -251,6 +330,14 @@
+ 	bool taken = true;
+ 	struct net *net;
+ 
++	{
++		struct nf_conntrack_tuple reply;
++
++		nf_ct_invert_tuple(&reply, tuple);
++		if (nf_nat_tuple_reserved(&reply, ignored_ct))
++			return true;
++	}
++
+ 	if (!nf_nat_used_tuple(tuple, ignored_ct))
+ 		return false;
+ 
+@@ -351,7 +438,7 @@
+ 	if (attempts_left > NF_NAT_HARDER_THRESH ||
+ 	    tuple->dst.protonum != IPPROTO_TCP ||
+ 	    ignored_conntrack->proto.tcp.state != TCP_CONNTRACK_SYN_SENT)
+-		return nf_conntrack_tuple_taken(&reply, ignored_conntrack);
++		return nf_nat_used_tuple(tuple, ignored_conntrack);
+ 
+ 	/* :ast few attempts to find a free tcp port. Destructive
+ 	 * action: evict colliding if its in timewait state and the
+@@ -363,7 +450,7 @@
+ 
+ 	thash = nf_conntrack_find_get(net, zone, &reply);
+ 	if (!thash)
+-		return false;
++		return nf_nat_tuple_reserved(&reply, ignored_conntrack);
+ 
+ 	ct = nf_ct_tuplehash_to_ctrack(thash);
+ 
+@@ -774,6 +861,8 @@
+ {
+ 	struct net *net = nf_ct_net(ct);
+ 	struct nf_conntrack_tuple curr_tuple, new_tuple;
++	struct nf_nat_binding *binding = NULL;
++	unsigned int ret = NF_DROP;
+ 
+ 	/* Can't setup nat info for confirmed ct. */
+ 	if (nf_ct_is_confirmed(ct))
+@@ -793,6 +882,16 @@
+ 	nf_ct_invert_tuple(&curr_tuple,
+ 			   &ct->tuplehash[IP_CT_DIR_REPLY].tuple);
+ 
++	if (maniptype == NF_NAT_MANIP_SRC) {
++		if (!nf_ct_nat_ext_add(ct))
++			return NF_DROP;
++		binding = kmalloc(sizeof(*binding), GFP_ATOMIC);
++		if (!binding)
++			return NF_DROP;
++		binding->ct = ct;
++	}
++
++	spin_lock_bh(&nf_nat_setup_lock);
+ 	get_unique_tuple(&new_tuple, &curr_tuple, range, ct, maniptype);
+ 
+ 	if (!nf_ct_tuple_equal(&new_tuple, &curr_tuple)) {
+@@ -810,7 +909,7 @@
+ 
+ 		if (nfct_help(ct) && !nfct_seqadj(ct))
+ 			if (!nfct_seqadj_ext_add(ct))
+-				return NF_DROP;
++				goto unlock;
+ 	}
+ 
+ 	if (maniptype == NF_NAT_MANIP_SRC) {
+@@ -832,7 +931,19 @@
+ 	else
+ 		ct->status |= IPS_SRC_NAT_DONE;
+ 
+-	return NF_ACCEPT;
++	if (binding) {
++		spin_lock_bh(&nf_nat_binding_lock);
++		hash_add(nf_nat_bindings, &binding->node,
++			 nf_nat_binding_key(&ct->tuplehash[IP_CT_DIR_REPLY].tuple, net));
++		nf_nat_binding_count++;
++		spin_unlock_bh(&nf_nat_binding_lock);
++		binding = NULL;
++	}
++	ret = NF_ACCEPT;
++unlock:
++	spin_unlock_bh(&nf_nat_setup_lock);
++	kfree(binding);
++	return ret;
+ }
+ EXPORT_SYMBOL(nf_nat_setup_info);
+ 
+@@ -994,8 +1105,22 @@
+ 
+ static void nf_nat_cleanup_conntrack(struct nf_conn *ct)
+ {
++	struct nf_nat_binding *binding;
++	struct hlist_node *tmp;
+ 	unsigned int h;
+ 
++	spin_lock_bh(&nf_nat_binding_lock);
++	hash_for_each_possible_safe(nf_nat_bindings, binding, tmp, node,
++		nf_nat_binding_key(&ct->tuplehash[IP_CT_DIR_REPLY].tuple, nf_ct_net(ct))) {
++		if (binding->ct == ct) {
++			hash_del(&binding->node);
++			nf_nat_binding_count--;
++			kfree(binding);
++			break;
++		}
++	}
++	spin_unlock_bh(&nf_nat_binding_lock);
++
+ 	h = hash_by_src(nf_ct_net(ct), nf_ct_zone(ct), &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+ 	spin_lock_bh(&nf_nat_locks[h % CONNTRACK_LOCKS]);
+ 	hlist_del_rcu(&ct->nat_bysource);

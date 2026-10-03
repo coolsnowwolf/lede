@@ -1,0 +1,121 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] netfilter: reserve BCM fullcone ports during allocation
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/net/netfilter/nf_nat_masquerade.c
++++ b/net/netfilter/nf_nat_masquerade.c
+@@ -23,6 +23,7 @@
+ 
+ #define MAX_MASQ_WORKER_COUNT	16
+ 
++static DEFINE_SPINLOCK(bcm_nat_lock);
+ static DEFINE_MUTEX(masq_mutex);
+ static unsigned int masq_refcnt __read_mostly;
+ static atomic_t masq_worker_count __read_mostly;
+@@ -55,6 +56,7 @@
+        int dir = CTINFO2DIR(ctinfo);
+        struct nf_conn_help *help = nfct_help(ct);
+        struct nf_conntrack_expect *exp;
++       int ret;
+ 
+        if (dir != IP_CT_DIR_ORIGINAL ||
+            help->expecting[NF_CT_EXPECT_CLASS_DEFAULT])
+@@ -67,7 +69,7 @@
+ 
+        /* Create expect */
+        if ((exp = nf_ct_expect_alloc(ct)) == NULL)
+-               return NF_ACCEPT;
++               return NF_DROP;
+ 
+        nf_ct_expect_init(exp, NF_CT_EXPECT_CLASS_DEFAULT, AF_INET, NULL,
+                          &ct->tuplehash[!dir].tuple.dst.u3, IPPROTO_UDP,
+@@ -79,11 +81,11 @@
+        exp->expectfn = bcm_nat_expect;
+ 
+        /* Setup expect */
+-       nf_ct_expect_related(exp, 0);
++       ret = nf_ct_expect_related(exp, 0);
+        nf_ct_expect_put(exp);
+        pr_debug("bcm_nat: expect setup\n");
+ 
+-       return NF_ACCEPT;
++       return ret ? NF_DROP : NF_ACCEPT;
+ }
+ 
+ /****************************************************************************/
+@@ -124,7 +126,7 @@
+ }
+ 
+ /****************************************************************************/
+-static inline struct nf_conntrack_expect *find_fullcone_exp(struct nf_conn *ct)
++static inline struct nf_conntrack_expect *find_fullcone_exp(struct nf_conn *ct, __be32 ext_ip)
+ {
+        struct nf_conntrack_tuple * tp =
+                &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple;
+@@ -135,7 +137,10 @@
+        rcu_read_lock();
+        for (h = 0; h < nf_ct_expect_hsize; h++) {
+                hlist_for_each_entry_rcu(i, &nf_ct_expect_hash[h], hnode) {
+-                       if (nf_inet_addr_cmp(&i->saved_addr, &tp->src.u3) &&
++                       if (net_eq(nf_ct_net(ct), nf_ct_net(i->master)) &&
++                           nf_ct_zone_equal_any(i->master, nf_ct_zone(ct)) &&
++                           i->tuple.dst.u3.ip == ext_ip &&
++                           nf_inet_addr_cmp(&i->saved_addr, &tp->src.u3) &&
+                            i->saved_proto.all == tp->src.u.all &&
+                            i->tuple.dst.protonum == tp->dst.protonum &&
+                            i->tuple.src.u3.ip == 0 &&
+@@ -201,16 +206,18 @@
+ 
+                pr_debug("bcm_nat: need full cone NAT\n");
+ 
++               /* Serialize selection until the expectation reserves the port. */
++               spin_lock_bh(&bcm_nat_lock);
+                /* Choose port */
+                spin_lock_bh(&nf_conntrack_expect_lock);
+                /* Look for existing expectation */
+-               exp = find_fullcone_exp(ct);
++               exp = find_fullcone_exp(ct, newsrc);
+                if (exp) {
+                        minport = maxport = exp->tuple.dst.u.udp.port;
+                        pr_debug("bcm_nat: existing mapped port = %hu\n",
+                                 ntohs(minport));
+                } else { /* no previous expect */
+-                       u_int16_t newport, tmpport, orgport;
++                       unsigned int newport, tmpport, orgport;
+ 
+                        minport = range->min_proto.all == 0? 
+                                ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.
+@@ -227,6 +234,11 @@
+                                        break;
+                                }
+                        }
++                       if (newport > tmpport) {
++                               spin_unlock_bh(&nf_conntrack_expect_lock);
++                               spin_unlock_bh(&bcm_nat_lock);
++                               return NF_DROP;
++                       }
+                }
+                spin_unlock_bh(&nf_conntrack_expect_lock);
+ 
+@@ -241,15 +253,19 @@
+ 
+                /* Set ct helper */
+                ret = nf_nat_setup_info(ct, &newrange, NF_NAT_MANIP_SRC);
+-               if (ret == NF_ACCEPT) {
++               if (ret == NF_ACCEPT && !exp) {
+                        struct nf_conn_help *help = nfct_help(ct);
+                        if (help == NULL)
+                                help = nf_ct_helper_ext_add(ct, GFP_ATOMIC);
+                        if (help != NULL) {
+                                help->helper = &nf_conntrack_helper_bcm_nat;
+                                pr_debug("bcm_nat: helper set\n");
++                               ret = bcm_nat_help(skb, 0, ct, ctinfo);
++                       } else {
++                               ret = NF_DROP;
+                        }
+                }
++               spin_unlock_bh(&bcm_nat_lock);
+                return ret;
+        }
+ 
