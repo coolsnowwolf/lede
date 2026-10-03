@@ -1,6 +1,14 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] netfilter: connect nft masquerade to Broadcom fullcone
+
+Pass the selector in the NAT range used by the IPv4 masquerade call,
+including both ip and inet tables. Preserve ordinary masquerade and IPv6.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
 --- a/include/uapi/linux/netfilter/nf_tables.h
 +++ b/include/uapi/linux/netfilter/nf_tables.h
-@@ -1485,12 +1485,14 @@ enum nft_tproxy_attributes {
+@@ -1485,12 +1485,14 @@
   * @NFTA_MASQ_FLAGS: NAT flags (see NF_NAT_RANGE_* in linux/netfilter/nf_nat.h) (NLA_U32)
   * @NFTA_MASQ_REG_PROTO_MIN: source register of proto range start (NLA_U32: nft_registers)
   * @NFTA_MASQ_REG_PROTO_MAX: source register of proto range end (NLA_U32: nft_registers)
@@ -17,15 +25,15 @@
  #define NFTA_MASQ_MAX		(__NFTA_MASQ_MAX - 1)
 --- a/net/netfilter/nft_masq.c
 +++ b/net/netfilter/nft_masq.c
-@@ -17,6 +17,7 @@ struct nft_masq {
+@@ -17,6 +17,7 @@
  	u32			flags;
  	u8			sreg_proto_min;
  	u8			sreg_proto_max;
-+	bool		fullcone;
++	bool			fullcone;
  };
  
  static const struct nla_policy nft_masq_policy[NFTA_MASQ_MAX + 1] = {
-@@ -24,6 +25,7 @@ static const struct nla_policy nft_masq_
+@@ -24,6 +25,7 @@
  		NLA_POLICY_MASK(NLA_BE32, NF_NAT_RANGE_MASK),
  	[NFTA_MASQ_REG_PROTO_MIN]	= { .type = NLA_U32 },
  	[NFTA_MASQ_REG_PROTO_MAX]	= { .type = NLA_U32 },
@@ -33,7 +41,7 @@
  };
  
  static int nft_masq_validate(const struct nft_ctx *ctx,
-@@ -50,6 +52,9 @@ static int nft_masq_init(const struct nf
+@@ -50,6 +52,9 @@
  	if (tb[NFTA_MASQ_FLAGS])
  		priv->flags = ntohl(nla_get_be32(tb[NFTA_MASQ_FLAGS]));
  
@@ -43,23 +51,24 @@
  	if (tb[NFTA_MASQ_REG_PROTO_MIN]) {
  		err = nft_parse_register_load(ctx, tb[NFTA_MASQ_REG_PROTO_MIN],
  					      &priv->sreg_proto_min, plen);
-@@ -79,6 +84,9 @@ static int nft_masq_dump(struct sk_buff
+@@ -79,6 +84,10 @@
  	    nla_put_be32(skb, NFTA_MASQ_FLAGS, htonl(priv->flags)))
  		goto nla_put_failure;
  
-+	if (priv->fullcone && nla_put_u8(skb, NFTA_MASQ_REG_FULLCONE, 1))
++	if (priv->fullcone &&
++	    nla_put_u8(skb, NFTA_MASQ_REG_FULLCONE, 1))
 +		goto nla_put_failure;
 +
  	if (priv->sreg_proto_min) {
  		if (nft_dump_register(skb, NFTA_MASQ_REG_PROTO_MIN,
  				      priv->sreg_proto_min) ||
-@@ -111,6 +119,9 @@ static void nft_masq_eval(const struct n
+@@ -111,6 +120,9 @@
  
  	switch (nft_pf(pkt)) {
  	case NFPROTO_IPV4:
-+		if (priv->fullcone) {
-+			range.min_addr.ip = 1;
-+		}
++		if (priv->fullcone)
++			range.min_addr.ip = htonl(1);
++
  		regs->verdict.code = nf_nat_masquerade_ipv4(pkt->skb,
  							    nft_hook(pkt),
  							    &range,
