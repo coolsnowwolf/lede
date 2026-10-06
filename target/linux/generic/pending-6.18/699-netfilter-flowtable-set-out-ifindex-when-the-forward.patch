@@ -1,0 +1,60 @@
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Wed, 2 Sep 2026 22:15:00 +0200
+Subject: [PATCH] netfilter: flowtable: set out ifindex when the forward path
+ is unknown
+
+Since commit b5964aac51e0 ("netfilter: flowtable: consolidate xmit path")
+the FLOW_OFFLOAD_XMIT_NEIGH path does not transmit on the dst device any
+more, it looks the output device up by the interface index stored in the
+flow tuple:
+
+	xmit.outdev = dev_get_by_index_rcu(state->net, tuplehash->tuple.ifidx);
+	if (!xmit.outdev) {
+		flow_offload_teardown(flow);
+		return NF_DROP;
+	}
+
+That index comes from route->tuple[dir].out.ifindex, which is only
+assigned in nft_dev_forward_path() when the forward path could be
+discovered.  nft_default_forward_path() never sets it, so a flow whose
+egress path cannot be resolved is offloaded with an interface index of 0.
+Every packet of such a flow is then dropped while the flow entry is torn
+down, and the flow_offload expression offloads it again right away, so
+the loss repeats instead of settling.
+
+This is easy to hit on a router that bridges Wi-Fi and Ethernet:
+mac80211 returns -EOPNOTSUPP from .ndo_fill_forward_path when the driver
+does not implement .net_fill_forward_path, and dev_fill_forward_path()
+turns any error into a failure of the whole path lookup.  Traffic towards
+Wi-Fi clients then loses a packet per re-offload cycle, which shows up as
+sporadic stalls and lost UDP datagrams rather than as a hard failure.
+
+Fall back to the dst device, which is the device the neighbour is looked
+up on and the device the packet was transmitted on before the two xmit
+paths were merged.
+
+Mainline avoids the situation differently since commit 871df5007eda
+("netfilter: flowtable: bail out if forward path cannot be discovered"),
+which refuses to offload the flow at all.  That change sits on top of the
+forward path discovery rework and does not apply to 6.18.y, and it also
+gives up the offload for flows that were offloaded successfully before,
+so restoring the previous behaviour is the minimal fix here.
+
+Fixes: b5964aac51e0 ("netfilter: flowtable: consolidate xmit path")
+Signed-off-by: Hauke Mehrtens <hauke@hauke-m.de>
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+ net/netfilter/nf_flow_table_path.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/net/netfilter/nf_flow_table_path.c
++++ b/net/netfilter/nf_flow_table_path.c
+@@ -205,6 +205,8 @@ static void nft_dev_forward_path(struct
+ 
+ 	if (info.outdev)
+ 		route->tuple[dir].out.ifindex = info.outdev->ifindex;
++	else
++		route->tuple[dir].out.ifindex = dst->dev->ifindex;
+ 
+ 	if (!info.indev || !nft_flowtable_find_dev(info.indev, ft))
+ 		return;
