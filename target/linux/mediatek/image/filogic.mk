@@ -492,6 +492,23 @@ define Device/cmcc_xr30-nand
 endef
 TARGET_DEVICES += cmcc_xr30-nand
 
+define Device/clx_s20l
+  DEVICE_VENDOR := CLX
+  DEVICE_MODEL := S20L
+  DEVICE_DTS := mt7986a-clx-s20l
+  DEVICE_DTS_DIR := ../dts
+  DEVICE_DTS_LOADADDR := 0x47000000
+  DEVICE_PACKAGES := automount e2fsprogs f2fsck mkf2fs kmod-usb3 \
+	kmod-mt7986-firmware mt7986-wo-firmware
+  IMAGES := sysupgrade.bin
+  KERNEL := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 64k
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += clx_s20l
+
 define Device/cudy_tr3000-256mb-v1
   DEVICE_VENDOR := Cudy
   DEVICE_MODEL := TR3000
