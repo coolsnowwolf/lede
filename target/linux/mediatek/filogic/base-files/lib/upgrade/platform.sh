@@ -16,6 +16,12 @@ platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
+	tplink,tl-7dr7299-v1)
+		[ -e /dev/fit0 ] && fitblk /dev/fit0
+		[ -e /dev/fitrw ] && fitblk /dev/fitrw
+		CI_KERNPART="fit"
+		nand_do_upgrade "$1"
+		;;
 	asus,tuf-ax4200|\
 	asus,tuf-ax6000)
 		CI_UBIPART="UBI_DEV"
@@ -76,6 +82,7 @@ platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	case "$board" in
+	tplink,tl-7dr7299-v1|\
 	bananapi,bpi-r3|\
 	bananapi,bpi-r4|\
 	bananapi,bpi-r4-2g5|\

@@ -1,0 +1,92 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] net: phy: reset before reading ID when requested
+
+Adapted from ImmortalWrt 8bc0f53b13b249792c6a689ff6173996ae2e16fd.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/mdio/fwnode_mdio.c
++++ b/drivers/net/mdio/fwnode_mdio.c
+@@ -7,8 +7,10 @@
+  */
+ 
+ #include <linux/acpi.h>
++#include <linux/delay.h>
+ #include <linux/dev_printk.h>
+ #include <linux/fwnode_mdio.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/of.h>
+ #include <linux/phy.h>
+ #include <linux/pse-pd/pse.h>
+@@ -37,6 +39,36 @@
+ 	return psec;
+ }
+ 
++static int fwnode_mdiobus_reset_phy_before_id_read(struct fwnode_handle *fwnode)
++{
++	struct gpio_desc *reset_gpio;
++	u32 assert_us = 0;
++	u32 deassert_us = 0;
++
++	if (!fwnode_property_read_bool(fwnode, "reset-before-id-read"))
++		return 1;
++
++	reset_gpio = fwnode_gpiod_get_index(fwnode, "reset", 0,
++					    GPIOD_OUT_HIGH, "PHY pre-ID reset");
++	if (IS_ERR(reset_gpio))
++		return PTR_ERR(reset_gpio);
++
++	fwnode_property_read_u32(fwnode, "reset-assert-us", &assert_us);
++	fwnode_property_read_u32(fwnode, "reset-deassert-us", &deassert_us);
++
++	if (assert_us)
++		fsleep(assert_us);
++
++	gpiod_set_value_cansleep(reset_gpio, 0);
++
++	if (deassert_us)
++		fsleep(deassert_us);
++
++	gpiod_put(reset_gpio);
++
++	return 0;
++}
++
+ static struct mii_timestamper *
+ fwnode_find_mii_timestamper(struct fwnode_handle *fwnode)
+ {
+@@ -138,6 +170,10 @@
+ 		goto clean_pse;
+ 	}
+ 
++	rc = fwnode_mdiobus_reset_phy_before_id_read(child);
++	if (rc < 0)
++		goto clean_mii_ts;
++
+ 	is_c45 = fwnode_device_is_compatible(child, "ethernet-phy-ieee802.3-c45");
+ 	if (is_c45 || fwnode_get_phy_id(child, &phy_id))
+ 		phy = get_phy_device(bus, addr, is_c45);
+@@ -147,6 +183,8 @@
+ 		rc = PTR_ERR(phy);
+ 		goto clean_mii_ts;
+ 	}
++	if (rc == 0)
++		phy->mdio.reset_state = 0;
+ 
+ 	if (is_acpi_node(child)) {
+ 		phy->irq = bus->irq[addr];
+--- a/drivers/net/phy/mdio_bus.c
++++ b/drivers/net/phy/mdio_bus.c
+@@ -85,8 +85,10 @@
+ 			return err;
+ 		}
+ 
+-		/* Assert the reset signal */
+-		mdio_device_reset(mdiodev, 1);
++		if (mdiodev->reset_state < 0) {
++			/* Assert the reset signal */
++			mdio_device_reset(mdiodev, 1);
++		}
+ 	}
+ 
+ 	mdiodev->bus->mdio_map[mdiodev->addr] = mdiodev;
