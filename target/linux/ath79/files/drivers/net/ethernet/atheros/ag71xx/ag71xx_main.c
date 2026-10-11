@@ -1779,8 +1779,12 @@ static const struct of_device_id ag71xx_match[] = {
 };
 
 static struct platform_driver ag71xx_driver = {
-	.probe	= ag71xx_probe,
-	.remove	= ag71xx_remove,
+	.probe		= ag71xx_probe,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+	.remove_new	= ag71xx_remove,
+#else
+	.remove		= ag71xx_remove,
+#endif
 	.driver = {
 		.name	= AG71XX_DRV_NAME,
 		.of_match_table = ag71xx_match,

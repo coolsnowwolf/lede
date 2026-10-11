@@ -13,6 +13,7 @@
 
 #include <linux/clk.h>
 #include <linux/of_mdio.h>
+#include <linux/version.h>
 #include "ag71xx.h"
 
 #define AG71XX_MDIO_RETRY	1000
@@ -237,8 +238,12 @@ static const struct of_device_id ag71xx_mdio_match[] = {
 };
 
 static struct platform_driver ag71xx_mdio_driver = {
-	.probe	= ag71xx_mdio_probe,
-	.remove	= ag71xx_mdio_remove,
+	.probe		= ag71xx_mdio_probe,
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
+	.remove_new	= ag71xx_mdio_remove,
+#else
+	.remove		= ag71xx_mdio_remove,
+#endif
 	.driver = {
 		.name	 = "ag71xx-legacy-mdio",
 		.of_match_table = ag71xx_mdio_match,
