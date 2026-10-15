@@ -1,0 +1,266 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] nftset: avoid libnftables overhead for simple address updates
+
+Use acknowledged, generation-guarded netlink transactions for ordinary
+IPv4/IPv6 address sets. For auto-merged interval sets without timeouts,
+query live kernel membership and skip redundant additions. Keep new
+interval boundaries, complex sets and errors on the libnftables path.
+Read only target metadata, never cache membership across ruleset reloads,
+and preserve duplicate/default timeout behavior and DNS reply ordering.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/src/nftset.c
++++ b/src/nftset.c
+@@ -24,6 +24,241 @@
+ #include <string.h>
+ #include <arpa/inet.h>
+ 
++/* Use netlink for ordinary address sets and existing auto-merged intervals.
++   Leave new interval boundaries and complex expressions to libnftables. */
++#include <linux/netfilter.h>
++#include <linux/netfilter/nf_tables.h>
++#include <linux/netfilter/nfnetlink.h>
++#include <libmnl/libmnl.h>
++#include <libnftnl/gen.h>
++#include <libnftnl/set.h>
++#include <libnftnl/udata.h>
++
++static struct mnl_socket *nft_sock;
++static uint32_t nft_seq;
++
++static void nftset_socket_close(void)
++{
++  if (nft_sock)
++    mnl_socket_close(nft_sock);
++  nft_sock = NULL;
++}
++
++static int nftset_socket_open(void)
++{
++  struct timeval timeout = { 0, 100000 };
++  int fd;
++
++  if (nft_sock)
++    return 1;
++
++  if (!(nft_sock = mnl_socket_open(NETLINK_NETFILTER)))
++    return 0;
++
++  fd = mnl_socket_get_fd(nft_sock);
++  if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1 ||
++      setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1 ||
++      setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1 ||
++      mnl_socket_bind(nft_sock, 0, MNL_SOCKET_AUTOPID) == -1)
++    {
++      nftset_socket_close();
++      return 0;
++    }
++
++  return 1;
++}
++
++/* Consume the matching ACK before reusing the socket. On any failure,
++   discard pending replies so they cannot be mistaken for the next request. */
++static int nftset_talk(const void *msg, size_t len, uint32_t seq,
++                       mnl_cb_t cb, void *data)
++{
++  char buf[8192];
++  int ret;
++
++  do {
++    ret = mnl_socket_sendto(nft_sock, msg, len);
++  } while (ret == -1 && errno == EINTR);
++
++  if (ret >= 0)
++    do {
++      do {
++        ret = mnl_socket_recvfrom(nft_sock, buf, sizeof(buf));
++      } while (ret == -1 && errno == EINTR);
++
++      if (ret <= 0)
++        {
++          ret = -1;
++          break;
++        }
++      ret = mnl_cb_run(buf, ret, seq, mnl_socket_get_portid(nft_sock), cb, data);
++    } while (ret > 0);
++
++  if (ret == 0)
++    return 1;
++
++  nftset_socket_close();
++  return 0;
++}
++
++static int nftset_gen_cb(const struct nlmsghdr *nlh, void *data)
++{
++  if (nftnl_gen_nlmsg_parse(nlh, data) < 0)
++    return MNL_CB_ERROR;
++  return MNL_CB_OK;
++}
++
++static int nftset_set_cb(const struct nlmsghdr *nlh, void *data)
++{
++  if (nftnl_set_nlmsg_parse(nlh, data) < 0)
++    return MNL_CB_ERROR;
++  return MNL_CB_OK;
++}
++
++static int nftset_merge_cb(const struct nftnl_udata *attr, void *data)
++{
++  if (nftnl_udata_type(attr) == NFTNL_UDATA_SET_MERGE_ELEMENTS)
++    {
++      if (nftnl_udata_len(attr) != sizeof(uint32_t))
++        return -1;
++      *(int *)data = nftnl_udata_get_u32(attr) != 0;
++    }
++  return 0;
++}
++
++static int nftset_found_cb(const struct nlmsghdr *nlh, void *data)
++{
++  if (nlh->nlmsg_type != ((NFNL_SUBSYS_NFTABLES << 8) | NFT_MSG_NEWSETELEM))
++    return MNL_CB_ERROR;
++  *(int *)data = 1;
++  return MNL_CB_OK;
++}
++
++static int nftset_add_netlink(const char *setname, const union all_addr *addr, int af)
++{
++  char family_name[16], table[256], name[256], extra, buf[4096];
++  struct nftnl_set *request = NULL, *definition = NULL;
++  struct nftnl_set_elem *elem = NULL;
++  struct nftnl_gen *gen = NULL;
++  struct nlmsghdr *nlh;
++  uint32_t family, seq, genid, setflags;
++  size_t len;
++  int ret = 0, addrlen = af == AF_INET ? INADDRSZ : IN6ADDRSZ;
++
++  if (sscanf(setname, "%15s %255s %255s %c", family_name, table, name, &extra) != 3)
++    return 0;
++
++  if (strcmp(family_name, "inet") == 0)
++    family = NFPROTO_INET;
++  else if (strcmp(family_name, "ip") == 0)
++    family = NFPROTO_IPV4;
++  else if (strcmp(family_name, "ip6") == 0)
++    family = NFPROTO_IPV6;
++  else
++    return 0;
++
++  if (!nftset_socket_open() ||
++      !(request = nftnl_set_alloc()) ||
++      !(definition = nftnl_set_alloc()) ||
++      !(gen = nftnl_gen_alloc()))
++    goto out;
++
++  /* Read current metadata, not a process-local cache: firewall reloads can
++     replace a set under the same name with a different type or flags. */
++  seq = ++nft_seq;
++  nlh = nftnl_nlmsg_build_hdr(buf, NFT_MSG_GETGEN, AF_UNSPEC, NLM_F_ACK, seq);
++  if (!nftset_talk(buf, nlh->nlmsg_len, seq, nftset_gen_cb, gen) ||
++      !nftnl_gen_is_set(gen, NFTNL_GEN_ID) ||
++      !(genid = nftnl_gen_get_u32(gen, NFTNL_GEN_ID)))
++    goto out;
++
++  if (nftnl_set_set_str(request, NFTNL_SET_TABLE, table) < 0 ||
++      nftnl_set_set_str(request, NFTNL_SET_NAME, name) < 0)
++    goto out;
++
++  seq = ++nft_seq;
++  nlh = nftnl_nlmsg_build_hdr(buf, NFT_MSG_GETSET, family, NLM_F_ACK, seq);
++  nftnl_set_nlmsg_build_payload(nlh, request);
++  if (!nftset_talk(buf, nlh->nlmsg_len, seq, nftset_set_cb, definition))
++    goto out;
++
++  setflags = nftnl_set_get_u32(definition, NFTNL_SET_FLAGS);
++  /* 7 and 8 are the nftables userspace ABI types ipv4_addr and ipv6_addr.
++     Never treat an equally-sized integer, map key or concatenation as an IP. */
++  if ((setflags & ~(NFT_SET_TIMEOUT | NFT_SET_INTERVAL)) ||
++      nftnl_set_get_u32(definition, NFTNL_SET_KEY_TYPE) != (af == AF_INET ? 7U : 8U) ||
++      nftnl_set_get_u32(definition, NFTNL_SET_KEY_LEN) != (unsigned int)addrlen ||
++      nftnl_set_is_set(definition, NFTNL_SET_EXPR) ||
++      nftnl_set_is_set(definition, NFTNL_SET_EXPRESSIONS))
++    goto out;
++
++  if (!(elem = nftnl_set_elem_alloc()))
++    goto out;
++  if (nftnl_set_elem_set(elem, NFTNL_SET_ELEM_KEY, addr, addrlen) < 0)
++    goto out;
++  nftnl_set_elem_add(request, elem);
++  elem = NULL; /* now owned by request */
++
++  if (setflags & NFT_SET_INTERVAL)
++    {
++      uint32_t udlen;
++      const void *udata;
++      int merge = 0, found = 0;
++
++      /* An auto-merged interval already covering this address needs no
++         change. Query the live kernel, never a local IP cache: flushes and
++         reloads must be visible immediately. Timeout intervals still go
++         through libnftables, including its overlap/expiry handling. */
++      if ((setflags & NFT_SET_TIMEOUT) ||
++          !(udata = nftnl_set_get_data(definition, NFTNL_SET_USERDATA, &udlen)) ||
++          nftnl_udata_parse(udata, udlen, nftset_merge_cb, &merge) < 0 || !merge)
++        goto out;
++
++      seq = ++nft_seq;
++      nlh = nftnl_nlmsg_build_hdr(buf, NFT_MSG_GETSETELEM, family, NLM_F_ACK, seq);
++      nftnl_set_elems_nlmsg_build_payload(nlh, request);
++      if (!nftset_talk(buf, nlh->nlmsg_len, seq, nftset_found_cb, &found) || !found)
++        goto out;
++
++      /* Ensure the membership reply belongs to the definition we checked. */
++      nftnl_gen_unset(gen, NFTNL_GEN_ID);
++      seq = ++nft_seq;
++      nlh = nftnl_nlmsg_build_hdr(buf, NFT_MSG_GETGEN, AF_UNSPEC, NLM_F_ACK, seq);
++      ret = nftset_talk(buf, nlh->nlmsg_len, seq, nftset_gen_cb, gen) &&
++            nftnl_gen_is_set(gen, NFTNL_GEN_ID) &&
++            nftnl_gen_get_u32(gen, NFTNL_GEN_ID) == genid;
++      goto out;
++    }
++
++  /* Guard the metadata-to-write window with the full generation ID. A
++     concurrent ruleset change aborts this transaction and uses the fallback. */
++  seq = ++nft_seq;
++  nlh = nftnl_batch_begin(buf, seq);
++  mnl_attr_put_u32(nlh, NFNL_BATCH_GENID, htonl(genid));
++  len = NLMSG_ALIGN(nlh->nlmsg_len);
++  nlh = nftnl_nlmsg_build_hdr(buf + len, NFT_MSG_NEWSETELEM, family,
++                             NLM_F_CREATE | NLM_F_ACK, seq);
++  nftnl_set_elems_nlmsg_build_payload(nlh, request);
++  len += NLMSG_ALIGN(nlh->nlmsg_len);
++  nlh = nftnl_batch_end(buf + len, seq);
++  len += NLMSG_ALIGN(nlh->nlmsg_len);
++
++  /* No EXCL: duplicates keep the same semantics as "add element". The
++     kernel supplies a set's default timeout. Wait for commit before DNS. */
++  ret = nftset_talk(buf, len, seq, NULL, NULL);
++
++out:
++  if (elem)
++    nftnl_set_elem_free(elem);
++  if (request)
++    nftnl_set_free(request);
++  if (definition)
++    nftnl_set_free(definition);
++  if (gen)
++    nftnl_gen_free(gen);
++  return ret;
++}
++
+ static struct nft_ctx *ctx = NULL;
+ static const char *cmd_add = "add element %s { %s }";
+ static const char *cmd_del = "delete element %s { %s }";
+@@ -61,6 +296,9 @@
+       setname += 2;
+     }
+   
++  if (!remove && nftset_add_netlink(setname, ipaddr, af))
++    return 0;
++
+   if (cmd_buf_sz == 0)
+     new_sz = 150; /* initial allocation */
+   else
