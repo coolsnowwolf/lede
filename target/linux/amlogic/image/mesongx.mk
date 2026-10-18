@@ -15,7 +15,8 @@ define Device/phicomm_n1
   DEVICE_MODEL := N1
   SOC := meson-gxl-s905d
   UBOOT_DEVICE_NAME := phicomm-n1
-  DEVICE_PACKAGES := kmod-brcmfmac brcmfmac-firmware-43455-sdio-phicomm-n1 wpad-openssl
+  DEVICE_PACKAGES := kmod-phy-realtek kmod-brcmfmac \
+	brcmfmac-firmware-43455-sdio-phicomm-n1 wpad-openssl
 endef
 TARGET_DEVICES += phicomm_n1
 
