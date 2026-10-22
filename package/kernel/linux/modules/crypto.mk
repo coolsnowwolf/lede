@@ -565,7 +565,7 @@ endef
 endif
 endif
 
-ifeq ($(KERNEL_PATCHVER),6.12)
+ifneq ($(KERNEL_PATCHVER),6.18)
 # Note that a non-neon fallback implementation is available on arm32 when
 # NEON is not supported, hence all arm targets can utilize lib-chacha20/arm
 define KernelPackage/crypto-lib-chacha20/arm
@@ -630,7 +630,7 @@ endef
 endif
 endif
 
-ifeq ($(KERNEL_PATCHVER),6.12)
+ifneq ($(KERNEL_PATCHVER),6.18)
 define KernelPackage/crypto-lib-curve25519/arm-neon
   KCONFIG+=CONFIG_CRYPTO_CURVE25519_NEON
   FILES+=$(LINUX_DIR)/arch/arm/crypto/curve25519-neon.ko
@@ -668,7 +668,7 @@ endef
 endif
 endif
 
-ifeq ($(KERNEL_PATCHVER),6.12)
+ifneq ($(KERNEL_PATCHVER),6.18)
 define KernelPackage/crypto-lib-poly1305/arm
   KCONFIG+=CONFIG_CRYPTO_POLY1305_ARM
   FILES:=$(LINUX_DIR)/arch/arm/crypto/poly1305-arm.ko
