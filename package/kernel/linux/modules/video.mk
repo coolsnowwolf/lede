@@ -780,7 +780,7 @@ $(eval $(call KernelPackage,drm-lima))
 define KernelPackage/drm-panfrost
   SUBMENU:=$(VIDEO_MENU)
   TITLE:=DRM support for ARM Mali Midgard/Bifrost GPUs
-  DEPENDS:=@(TARGET_rockchip||TARGET_sunxi) +kmod-drm-sched
+  DEPENDS:=@(TARGET_rockchip||TARGET_sunxi) +kmod-drm-sched +kmod-drm-shmem-helper
   KCONFIG:=CONFIG_DRM_PANFROST
   FILES:=$(LINUX_DIR)/drivers/gpu/drm/panfrost/panfrost.ko
   AUTOLOAD:=$(call AutoProbe,panfrost)
