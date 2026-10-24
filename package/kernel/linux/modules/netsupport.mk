@@ -814,6 +814,7 @@ $(eval $(call KernelPackage,sched-act-vlan))
 define KernelPackage/sched-bpf
   SUBMENU:=$(NETWORK_SUPPORT_MENU)
   TITLE:=Traffic shaper support for Berkeley Packet Filter
+  DEPENDS:=@!TARGET_qualcommax
   KCONFIG:= \
 	CONFIG_NET_CLS_BPF \
 	CONFIG_NET_ACT_BPF
