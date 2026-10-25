@@ -27,7 +27,9 @@ define KernelPackage/crypto-hw-airoha-eip93
   TITLE:=Airoha EIP93 crypto accelerator
   CONFLICTS:=kmod-crypto-hw-eip93
   DEPENDS:=@TARGET_airoha_an7581||TARGET_airoha_an7583 +kmod-crypto-authenc +kmod-crypto-des +kmod-crypto-md5 +kmod-crypto-hmac +kmod-crypto-sha1 +kmod-crypto-sha256 +kmod-crypto-cbc +kmod-crypto-ctr +kmod-crypto-gcm +kmod-crypto-user
-  KCONFIG:=CONFIG_CRYPTO_HW=y CONFIG_CRYPTO_DEV_EIP93
+  KCONFIG:=CONFIG_CRYPTO_HW=y CONFIG_CRYPTO_DEV_EIP93 \
+    CONFIG_CRYPTO_DEV_EIP93_GENERIC_SW_MAX_LEN=256 \
+    CONFIG_CRYPTO_DEV_EIP93_AES_128_SW_MAX_LEN=512
   FILES:= \
     $(LINUX_DIR)/drivers/crypto/airoha-eip93/crypto-hw-eip93.ko@lt6.18 \
     $(LINUX_DIR)/drivers/crypto/inside-secure/eip93/crypto-hw-eip93.ko@ge6.18
