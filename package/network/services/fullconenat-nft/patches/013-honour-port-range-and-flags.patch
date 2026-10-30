@@ -1,0 +1,416 @@
+From: milkman-wang <109866905+milkman-wang@users.noreply.github.com>
+Subject: [PATCH] nft_fullcone: honour the port range and the flags
+
+nft_fullcone_init() never read NFTA_FULLCONE_FLAGS or the proto range
+registers, so rules such as "fullcone to :1024-2047" or "fullcone random"
+worked like a plain "fullcone": the external port was chosen from
+1024-65535 whatever the range said. The attribute numbers also differ
+from the ones the libnftnl and nftables fullcone patches send
+(FLAGS = 1, REG_PROTO_MIN = 2, REG_PROTO_MAX = 3), so reading them as
+numbered here would mix them up.
+
+Number the attributes like userspace does, and parse them in
+nft_fullcone_init() the way nft_masq does.
+
+The range from the rule then reaches code that so far only saw
+1024-65535:
+
+- find_appropriate_port{,6}() kept the range size and the loop counter
+  in 16 bits, so ":0-65535" gave a size of 0: a division by zero with
+  random or fully-random, port 0 without. Use 32 bits, and swap a
+  reversed range like nf_nat_l4proto_unique_tuple() does.
+
+- nf_nat_handle_postrouting() reused an active UDP mapping whatever its
+  external port, so after a range change, or with different ranges for
+  different destinations, a new flow could get a port outside the
+  rule's range. The lookups by internal source now take the port range.
+  One socket can then have a mapping per range on the same external
+  address, so nf_nat_fullcone_handle_dying_tuples() also matches the
+  external port of a dying conntrack, to release the mapping it
+  belongs to.
+
+Signed-off-by: milkman-wang <109866905+milkman-wang@users.noreply.github.com>
+
+--- a/src/nf_nat_fullcone.h
++++ b/src/nf_nat_fullcone.h
+@@ -45,15 +45,17 @@ static inline void nf_ct_netns_put(struc
+ /**
+  * enum nft_fullcone_attributes - nf_tables fullcone expression netlink attributes
+  *
++ * @NFTA_FULLCONE_FLAGS: NAT flags (see NF_NAT_RANGE_* in linux/netfilter/nf_nat.h) (NLA_U32)
+  * @NFTA_FULLCONE_REG_PROTO_MIN: source register of proto range start (NLA_U32: nft_registers)
+  * @NFTA_FULLCONE_REG_PROTO_MAX: source register of proto range end (NLA_U32: nft_registers)
+- * @NFTA_FULLCONE_FLAGS: NAT flags (see NF_NAT_RANGE_* in linux/netfilter/nf_nat.h) (NLA_U32)
++ *
++ * The order matches the fullcone patches for libnftnl and nftables.
+  */
+ enum nft_fullcone_attributes {
+ 	NFTA_FULLCONE_UNSPEC,
++	NFTA_FULLCONE_FLAGS,
+ 	NFTA_FULLCONE_REG_PROTO_MIN,
+ 	NFTA_FULLCONE_REG_PROTO_MAX,
+-	NFTA_FULLCONE_FLAGS,
+ 	__NFTA_FULLCONE_MAX
+ };
+ #define NFTA_FULLCONE_MAX		(__NFTA_FULLCONE_MAX - 1)
+--- a/src/nft_ext_fullcone.c
++++ b/src/nft_ext_fullcone.c
+@@ -141,10 +141,61 @@ static int nft_fullcone_validate(const s
+ 	return nft_chain_validate_hooks(ctx->chain, (1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_POST_ROUTING));
+ }
+ 
++/* nft_parse_register_load() came with Linux 5.12 and was backported to
++ * 5.4.244 and 5.10.127. It takes a struct nft_ctx since 6.12, 6.6.120
++ * and 6.1.184. Older kernels parse and validate in two steps. */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)) || \
++    ((LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 120)) && \
++     (LINUX_VERSION_CODE <  KERNEL_VERSION(6, 7, 0))) || \
++    ((LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 184)) && \
++     (LINUX_VERSION_CODE <  KERNEL_VERSION(6, 2, 0)))
++#define nft_fullcone_parse_reg(ctx, attr, reg, len) \
++	nft_parse_register_load(ctx, attr, reg, len)
++#elif (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 12, 0)) || \
++    ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 127)) && \
++     (LINUX_VERSION_CODE <  KERNEL_VERSION(5, 11, 0))) || \
++    ((LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 244)) && \
++     (LINUX_VERSION_CODE <  KERNEL_VERSION(5, 5, 0)))
++#define nft_fullcone_parse_reg(ctx, attr, reg, len) \
++	nft_parse_register_load(attr, reg, len)
++#else
++static int nft_fullcone_parse_reg(const struct nft_ctx *ctx, const struct nlattr *attr,
++				  u8 *reg, u32 len)
++{
++	*reg = nft_parse_register(attr);
++	return nft_validate_register_load(*reg, len);
++}
++#endif
++
+ static int nft_fullcone_init(const struct nft_ctx *ctx, const struct nft_expr *expr, const struct nlattr *const tb[])
+ {
+ 	int err;
+ 	int register_ct_notifier_ret = 0;
++	struct nft_fullcone *priv = nft_expr_priv(expr);
++	u32 plen = sizeof(((struct nf_nat_range *)NULL)->min_proto.all);
++
++	if (tb[NFTA_FULLCONE_FLAGS]) {
++		priv->flags = ntohl(nla_get_be32(tb[NFTA_FULLCONE_FLAGS]));
++		if (priv->flags & ~NF_NAT_RANGE_MASK)
++			return -EINVAL;
++	}
++
++	if (tb[NFTA_FULLCONE_REG_PROTO_MIN]) {
++		err = nft_fullcone_parse_reg(ctx, tb[NFTA_FULLCONE_REG_PROTO_MIN],
++					     &priv->sreg_proto_min, plen);
++		if (err < 0)
++			return err;
++
++		if (tb[NFTA_FULLCONE_REG_PROTO_MAX]) {
++			err = nft_fullcone_parse_reg(ctx, tb[NFTA_FULLCONE_REG_PROTO_MAX],
++						     &priv->sreg_proto_max, plen);
++			if (err < 0)
++				return err;
++		} else {
++			priv->sreg_proto_max = priv->sreg_proto_min;
++		}
++		priv->flags |= NF_NAT_RANGE_PROTO_SPECIFIED;
++	}
+ 
+ 	err = nf_ct_netns_get(ctx->net, ctx->family);
+ 
+--- a/src/nf_nat_fullcone.c
++++ b/src/nf_nat_fullcone.c
+@@ -110,10 +110,11 @@ static void add_original_tuple_to_mappin
+ #if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
+ static struct nat_mapping6 *get_mapping6_by_int_src(const union nf_inet_addr
+ 						    *src_ip, const uint16_t src_port, const union nf_inet_addr
+-						    *ext_ip);
++						    *ext_ip, const uint16_t min_port, const uint16_t max_port);
+ #endif
+ 
+-static struct nat_mapping *get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const __be32 ext_ip);
++static struct nat_mapping *get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const __be32 ext_ip,
++						  const uint16_t min_port, const uint16_t max_port);
+ 
+ #if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
+ static struct nat_mapping6 *get_mapping6_by_int_src_inrange(const union
+@@ -122,11 +123,12 @@ static struct nat_mapping6 *get_mapping6
+ 							    nf_inet_addr
+ 							    *min_ip, const union
+ 							    nf_inet_addr
+-							    *max_ip);
++							    *max_ip, const uint16_t min_port, const uint16_t max_port);
+ #endif
+ static struct nat_mapping *get_mapping_by_int_src_inrange(const __be32 src_ip,
+ 							  const uint16_t
+-							  src_port, const __be32 min_ip, const __be32 max_ip);
++							  src_port, const __be32 min_ip, const __be32 max_ip,
++							  const uint16_t min_port, const uint16_t max_port);
+ 
+ #if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
+ static void kill_mapping6(struct nat_mapping6 *mapping);
+@@ -305,7 +307,7 @@ void nf_nat_fullcone_handle_dying_tuples
+ 	struct nf_conntrack_tuple *ct_tuple;
+ 	struct nat_mapping *mapping;
+ 	__be32 ip, ext_ip;
+-	uint16_t port;
++	uint16_t port, ext_port;
+ 	struct nat_mapping_original_tuple *original_tuple_item;
+ #if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
+ 	struct nat_mapping6 *mapping6;
+@@ -326,13 +328,15 @@ void nf_nat_fullcone_handle_dying_tuples
+ 			ip6 = &(ct_tuple->src).u3;
+ 			port = be16_to_cpu((ct_tuple->src).u.udp.port);
+ 			ext_ip6 = &item->tuple_reply.dst.u3;
+-			mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6);
++			ext_port = be16_to_cpu(item->tuple_reply.dst.u.udp.port);
++			mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6, ext_port, ext_port);
+ 			if (mapping6 == NULL) {
+ 				ext_ip6 = &(ct_tuple->dst).u3;
++				ext_port = be16_to_cpu((ct_tuple->dst).u.udp.port);
+ 				ct_tuple = &(item->tuple_reply);
+ 				ip6 = &(ct_tuple->src).u3;
+ 				port = be16_to_cpu((ct_tuple->src).u.udp.port);
+-				mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6);
++				mapping6 = get_mapping6_by_int_src(ip6, port, ext_ip6, ext_port, ext_port);
+ 				if (mapping6 != NULL) {
+ 					pr_debug
+ 					    ("nf_nat_fullcone_handle_dying_tuples(): INBOUND dying conntrack at ext port %d\n",
+@@ -384,13 +388,15 @@ void nf_nat_fullcone_handle_dying_tuples
+ 		ip = (ct_tuple->src).u3.ip;
+ 		port = be16_to_cpu((ct_tuple->src).u.udp.port);
+ 		ext_ip = item->tuple_reply.dst.u3.ip;
+-		mapping = get_mapping_by_int_src(ip, port, ext_ip);
++		ext_port = be16_to_cpu(item->tuple_reply.dst.u.udp.port);
++		mapping = get_mapping_by_int_src(ip, port, ext_ip, ext_port, ext_port);
+ 		if (mapping == NULL) {
+ 			ext_ip = (ct_tuple->dst).u3.ip;
++			ext_port = be16_to_cpu((ct_tuple->dst).u.udp.port);
+ 			ct_tuple = &(item->tuple_reply);
+ 			ip = (ct_tuple->src).u3.ip;
+ 			port = be16_to_cpu((ct_tuple->src).u.udp.port);
+-			mapping = get_mapping_by_int_src(ip, port, ext_ip);
++			mapping = get_mapping_by_int_src(ip, port, ext_ip, ext_port, ext_port);
+ 			if (mapping != NULL) {
+ 				pr_debug
+ 				    ("nf_nat_fullcone_handle_dying_tuples(): INBOUND dying conntrack at ext port %d\n",
+@@ -540,7 +546,7 @@ static void add_original_tuple_to_mappin
+ #if IS_ENABLED(CONFIG_NF_NAT_IPV6) || (IS_ENABLED(CONFIG_IPV6) && LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0))
+ static struct nat_mapping6 *get_mapping6_by_int_src(const union nf_inet_addr
+ 						    *src_ip, const uint16_t src_port, const union nf_inet_addr
+-						    *ext_ip)
++						    *ext_ip, const uint16_t min_port, const uint16_t max_port)
+ {
+ 	struct nat_mapping6 *p_current;
+ 	u32 hash_src = FULLCONE_HKEY(src_ip, sizeof(union nf_inet_addr), (u32) src_port, HASHTABLE_BUCKET_BITS);
+@@ -548,7 +554,8 @@ static struct nat_mapping6 *get_mapping6
+ 
+ 	hash_for_each_possible(mapping6_table_by_int_src, p_current, node_by_int_src, hash_src) {
+ 		if (nf_inet_addr_cmp(&p_current->int_addr, src_ip)
+-		    && p_current->int_port == src_port && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
++		    && p_current->int_port == src_port && nf_inet_addr_cmp(&p_current->addr, ext_ip)
++		    && p_current->port >= min_port && p_current->port <= max_port) {
+ 			return p_current;
+ 		}
+ 	}
+@@ -557,14 +564,16 @@ static struct nat_mapping6 *get_mapping6
+ }
+ #endif
+ 
+-static struct nat_mapping *get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const __be32 ext_ip)
++static struct nat_mapping *get_mapping_by_int_src(const __be32 src_ip, const uint16_t src_port, const __be32 ext_ip,
++						  const uint16_t min_port, const uint16_t max_port)
+ {
+ 	struct nat_mapping *p_current;
+ 	u32 hash_src = FULLCONE_HKEY(&src_ip, sizeof(__be32), (u32) src_port, HASHTABLE_BUCKET_BITS);
+ 	//u32 hash_src = HASH_2(src_ip, (u32) src_port);
+ 
+ 	hash_for_each_possible(mapping_table_by_int_src, p_current, node_by_int_src, hash_src) {
+-		if (p_current->int_addr == src_ip && p_current->int_port == src_port && p_current->addr == ext_ip) {
++		if (p_current->int_addr == src_ip && p_current->int_port == src_port && p_current->addr == ext_ip
++		    && p_current->port >= min_port && p_current->port <= max_port) {
+ 			return p_current;
+ 		}
+ 	}
+@@ -579,7 +588,7 @@ static struct nat_mapping6 *get_mapping6
+ 							    nf_inet_addr
+ 							    *min_ip, const union
+ 							    nf_inet_addr
+-							    *max_ip)
++							    *max_ip, const uint16_t min_port, const uint16_t max_port)
+ {
+ 	struct nat_mapping6 *p_current;
+ 
+@@ -591,7 +600,8 @@ static struct nat_mapping6 *get_mapping6
+ 		    && p_current->int_port == src_port
+ 		    && memcmp(&p_current->addr, min_ip,
+ 			      sizeof(union nf_inet_addr)) >= 0
+-		    && memcmp(&p_current->addr, max_ip, sizeof(union nf_inet_addr)) <= 0) {
++		    && memcmp(&p_current->addr, max_ip, sizeof(union nf_inet_addr)) <= 0
++		    && p_current->port >= min_port && p_current->port <= max_port) {
+ 			return p_current;
+ 		}
+ 	}
+@@ -601,7 +611,8 @@ static struct nat_mapping6 *get_mapping6
+ #endif
+ static struct nat_mapping *get_mapping_by_int_src_inrange(const __be32 src_ip,
+ 							  const uint16_t
+-							  src_port, const __be32 min_ip, const __be32 max_ip)
++							  src_port, const __be32 min_ip, const __be32 max_ip,
++							  const uint16_t min_port, const uint16_t max_port)
+ {
+ 	struct nat_mapping *p_current;
+ 	u32 hash_src = FULLCONE_HKEY(&src_ip, sizeof(__be32), (u32) src_port, HASHTABLE_BUCKET_BITS);
+@@ -611,7 +622,8 @@ static struct nat_mapping *get_mapping_b
+ 		if (p_current->int_addr == src_ip
+ 		    && p_current->int_port == src_port
+ 		    && memcmp(&p_current->addr, &min_ip, sizeof(__be32)) >= 0
+-		    && memcmp(&p_current->addr, &max_ip, sizeof(__be32)) <= 0) {
++		    && memcmp(&p_current->addr, &max_ip, sizeof(__be32)) <= 0
++		    && p_current->port >= min_port && p_current->port <= max_port) {
+ 			return p_current;
+ 		}
+ 	}
+@@ -844,7 +856,9 @@ static uint16_t find_appropriate_port6(s
+ #endif
+ #endif
+ {
+-	uint16_t min, start, selected, range_size, i;
++	/* 32 bits: the range can hold all 65536 ports */
++	u32 min, max, start, range_size, i;
++	uint16_t selected;
+ 	struct nat_mapping6 *mapping = NULL;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+ 	// nf_nat_range2 specific
+@@ -852,12 +866,15 @@ static uint16_t find_appropriate_port6(s
+ #endif
+ 	if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+ 		min = be16_to_cpu((range->min_proto).udp.port);
+-		range_size = be16_to_cpu((range->max_proto).udp.port) - min + 1;
++		max = be16_to_cpu((range->max_proto).udp.port);
++		if (max < min)
++			swap(min, max);
+ 	} else {
+ 		/* minimum port is 1024. same behavior as default linux NAT. */
+ 		min = 1024;
+-		range_size = 65535 - min + 1;
++		max = 65535;
+ 	}
++	range_size = max - min + 1;
+ 
+ 	if ((range->flags & NF_NAT_RANGE_PROTO_RANDOM)
+ 	    || (range->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+@@ -865,13 +882,13 @@ static uint16_t find_appropriate_port6(s
+ 
+ 		/* select a random starting point */
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+-		start = (uint16_t) (get_random_u32() % (u32) range_size);
++		start = get_random_u32() % range_size;
+ #else
+-		start = (uint16_t) (prandom_u32() % (u32) range_size);
++		start = prandom_u32() % range_size;
+ #endif
+ 	} else {
+ 
+-		if ((original_port >= min && original_port <= min + range_size - 1)
++		if ((original_port >= min && original_port <= max)
+ 		    || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
+ 			/* 1. try to preserve the port if it's available */
+ 			mapping = get_mapping6_by_ext_port(original_port, ext_ip, net, zone);
+@@ -921,7 +938,9 @@ static uint16_t find_appropriate_port(st
+ #endif
+ #endif
+ {
+-	uint16_t min, start, selected, range_size, i;
++	/* 32 bits: the range can hold all 65536 ports */
++	u32 min, max, start, range_size, i;
++	uint16_t selected;
+ 	struct nat_mapping *mapping = NULL;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+ 	// nf_nat_range2 specific
+@@ -929,12 +948,15 @@ static uint16_t find_appropriate_port(st
+ #endif
+ 	if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+ 		min = be16_to_cpu((range->min_proto).udp.port);
+-		range_size = be16_to_cpu((range->max_proto).udp.port) - min + 1;
++		max = be16_to_cpu((range->max_proto).udp.port);
++		if (max < min)
++			swap(min, max);
+ 	} else {
+ 		/* minimum port is 1024. same behavior as default linux NAT. */
+ 		min = 1024;
+-		range_size = 65535 - min + 1;
++		max = 65535;
+ 	}
++	range_size = max - min + 1;
+ 
+ 	if ((range->flags & NF_NAT_RANGE_PROTO_RANDOM)
+ 	    || (range->flags & NF_NAT_RANGE_PROTO_RANDOM_FULLY)) {
+@@ -942,13 +964,13 @@ static uint16_t find_appropriate_port(st
+ 
+ 		/* select a random starting point */
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+-		start = (uint16_t) (get_random_u32() % (u32) range_size);
++		start = get_random_u32() % range_size;
+ #else
+-		start = (uint16_t) (prandom_u32() % (u32) range_size);
++		start = prandom_u32() % range_size;
+ #endif
+ 	} else {
+ 
+-		if ((original_port >= min && original_port <= min + range_size - 1)
++		if ((original_port >= min && original_port <= max)
+ 		    || !(range->flags & NF_NAT_RANGE_PROTO_SPECIFIED)) {
+ 			/* 1. try to preserve the port if it's available */
+ 			mapping = get_mapping_by_ext_port(original_port, ext_ip, net, zone);
+@@ -1275,7 +1297,7 @@ static unsigned int nf_nat_handle_postro
+ 	enum ip_conntrack_info ctinfo;
+ 	struct nf_conn_nat *nat;
+ 	struct nf_conntrack_tuple *ct_tuple, *ct_tuple_origin;
+-	uint16_t port, original_port, want_port;
++	uint16_t port, original_port, want_port, min_port, max_port;
+ 	uint8_t protonum;
+ 	bool is_src_mapping_active;
+ 
+@@ -1359,6 +1381,16 @@ static unsigned int nf_nat_handle_postro
+ 
+ 		original_port = be16_to_cpu((ct_tuple_origin->src).u.udp.port);
+ 
++		/* a mapping made under another range is not reused for this rule */
++		min_port = 0;
++		max_port = 65535;
++		if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
++			min_port = be16_to_cpu((range->min_proto).udp.port);
++			max_port = be16_to_cpu((range->max_proto).udp.port);
++			if (max_port < min_port)
++				swap(min_port, max_port);
++		}
++
+ 		if (nfproto == NFPROTO_IPV4) {
+ 			spin_lock_bh(&fullconenat_lock);
+ 		} else if (nfproto == NFPROTO_IPV6) {
+@@ -1370,17 +1402,21 @@ static unsigned int nf_nat_handle_postro
+ 				src_mapping =
+ 				    get_mapping_by_int_src_inrange(ip,
+ 								   original_port,
+-								   newrange->min_addr.ip, newrange->max_addr.ip);
++								   newrange->min_addr.ip, newrange->max_addr.ip,
++								   min_port, max_port);
+ 			else
+-				src_mapping = get_mapping_by_int_src(ip, original_port, newrange->min_addr.ip);
++				src_mapping = get_mapping_by_int_src(ip, original_port, newrange->min_addr.ip,
++								     min_port, max_port);
+ 		} else if (nfproto == NFPROTO_IPV6) {
+ 			if (!nf_inet_addr_cmp(&newrange->min_addr, &newrange->max_addr))
+ 				src_mapping_6 =
+ 				    get_mapping6_by_int_src_inrange(ip_6,
+ 								    original_port,
+-								    &newrange->min_addr, &newrange->max_addr);
++								    &newrange->min_addr, &newrange->max_addr,
++								    min_port, max_port);
+ 			else
+-				src_mapping_6 = get_mapping6_by_int_src(ip_6, original_port, &newrange->min_addr);
++				src_mapping_6 = get_mapping6_by_int_src(ip_6, original_port, &newrange->min_addr,
++									min_port, max_port);
+ 		}
+ 
+ 		if (nfproto == NFPROTO_IPV4) {
