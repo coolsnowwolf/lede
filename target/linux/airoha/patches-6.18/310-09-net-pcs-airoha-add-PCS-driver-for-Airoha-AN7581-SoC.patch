@@ -1,7 +1,7 @@
-From 5d11640584dd24a1ba23e767c6929314c8ac50cf Mon Sep 17 00:00:00 2001
+From 20260901083001.8044-12-ansuelsmth@gmail.com Mon Sep 17 00:00:00 2001
 From: Christian Marangi <ansuelsmth@gmail.com>
-Date: Fri, 17 Jan 2025 12:40:32 +0100
-Subject: [PATCH 1/2] net: pcs: airoha: add PCS driver for Airoha AN7581 SoC
+Date: Tue,  1 Sep 2026 10:29:26 +0200
+Subject: [PATCH net-next v15 11/12] net: pcs: airoha: add PCS driver for Airoha AN7581 SoC
 
 Add PCS driver for Airoha AN7581 SoC for Ethernet/PON/PCIe/USB SERDES
 and permit usage of external PHY or connected SFP cage. Supported modes
@@ -11,24 +11,12 @@ The driver probe and register the various needed registers and register as
 a PCS provider for fwnode usage.
 
 Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Signed-off-by: lean <chenlin@fnnas.com>
 ---
- drivers/net/pcs/Kconfig                    |    2 +
- drivers/net/pcs/Makefile                   |    2 +
- drivers/net/pcs/airoha/Kconfig             |   12 +
- drivers/net/pcs/airoha/Makefile            |    7 +
- drivers/net/pcs/airoha/pcs-airoha-common.c | 1313 ++++++++++++
- drivers/net/pcs/airoha/pcs-airoha.h        | 1309 ++++++++++++
- drivers/net/pcs/airoha/pcs-an7581.c        | 2093 ++++++++++++++++++++
- 7 files changed, 4738 insertions(+)
- create mode 100644 drivers/net/pcs/airoha/Kconfig
- create mode 100644 drivers/net/pcs/airoha/Makefile
- create mode 100644 drivers/net/pcs/airoha/pcs-airoha-common.c
- create mode 100644 drivers/net/pcs/airoha/pcs-airoha.h
- create mode 100644 drivers/net/pcs/airoha/pcs-an7581.c
 
 --- a/drivers/net/pcs/Kconfig
 +++ b/drivers/net/pcs/Kconfig
-@@ -55,4 +55,6 @@ config PCS_RZN1_MIIC
+@@ -55,4 +55,6 @@
  	  Renesas RZ/N1, RZ/N2H, and RZ/T2H SoCs. This PCS converts MII to
  	  RMII/RGMII, or can be set in pass-through mode for MII.
  
@@ -37,14 +25,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
  endmenu
 --- a/drivers/net/pcs/Makefile
 +++ b/drivers/net/pcs/Makefile
-@@ -10,3 +10,4 @@ obj-$(CONFIG_PCS_LYNX)		+= pcs-lynx.o
+@@ -10,3 +10,5 @@
  obj-$(CONFIG_PCS_MTK_LYNXI)	+= pcs-mtk-lynxi.o
  obj-$(CONFIG_PCS_MTK_USXGMII)	+= pcs-mtk-usxgmii.o
  obj-$(CONFIG_PCS_RZN1_MIIC)	+= pcs-rzn1-miic.o
++
 +obj-$(CONFIG_PCS_AIROHA)	+= airoha/
---- /dev/null
+--- a/drivers/net/pcs/airoha/Kconfig
 +++ b/drivers/net/pcs/airoha/Kconfig
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +
 +config PCS_AIROHA
@@ -53,23 +42,24 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +config PCS_AIROHA_AN7581
 +	tristate "Airoha AN7581 PCS driver"
++	depends on ARCH_AIROHA || COMPILE_TEST
 +	select PCS_AIROHA
 +	help
 +	  This module provides helper to phylink for managing the Airoha
 +	  AN7581 PCS for SoC Ethernet and PON SERDES.
---- /dev/null
+--- a/drivers/net/pcs/airoha/Makefile
 +++ b/drivers/net/pcs/airoha/Makefile
 @@ -0,0 +1,7 @@
 +# SPDX-License-Identifier: GPL-2.0
 +
-+obj-y				:= pcs-airoha.o
++obj-$(CONFIG_PCS_AIROHA)	:= pcs-airoha.o
 +pcs-airoha-objs			:= pcs-airoha-common.o
 +ifdef CONFIG_PCS_AIROHA_AN7581
 +pcs-airoha-objs			+= pcs-an7581.o
 +endif
---- /dev/null
+--- a/drivers/net/pcs/airoha/pcs-airoha-common.c
 +++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
-@@ -0,0 +1,1313 @@
+@@ -0,0 +1,1309 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (c) 2024 AIROHA Inc
@@ -86,7 +76,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +#include <linux/platform_device.h>
 +#include <linux/regmap.h>
 +#include <linux/reset.h>
-+#include <linux/rtnetlink.h>
 +
 +#include "pcs-airoha.h"
 +
@@ -148,6 +137,13 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +{
 +	u32 xsi_sel;
 +
++	/*
++	 * PCIe PCS owns the shared two-lane PMA.  Clear the controller mode
++	 * before selecting XSI, matching the vendor xsgmii_chg() sequence.
++	 */
++	regmap_clear_bits(priv->scu, AIROHA_SCU_PCIC,
++			  AIROHA_SCU_PCIE_CTRL);
++
 +	if (index == 0) {
 +		switch (interface) {
 +		case PHY_INTERFACE_MODE_SGMII:
@@ -203,7 +199,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		break;
 +	}
 +
-+	/* TODO better handle reset from MAC */
 +	ret = reset_control_bulk_assert(ARRAY_SIZE(priv->rsts),
 +					priv->rsts);
 +	if (ret)
@@ -386,11 +381,11 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +}
 +
 +static void airoha_pcs_get_state_sgmii(struct airoha_pcs_priv *priv,
-+				       int index, unsigned int neg_mode,
++				       unsigned int neg_mode, int index,
 +				       struct phylink_link_state *state)
 +{
 +	struct airoha_pcs_maps *maps = &priv->maps[index];
-+	u32 bmsr, lpa;
++	u32 bmsr = 0, lpa = 0;
 +
 +	regmap_read(maps->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_1,
 +		    &bmsr);
@@ -410,7 +405,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +					struct phylink_link_state *state)
 +{
 +	struct airoha_pcs_maps *maps = &priv->maps[index];
-+	u32 bmsr;
++	u32 bmsr = 0;
 +
 +	regmap_read(maps->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_1,
 +		    &bmsr);
@@ -431,7 +426,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +{
 +	const struct airoha_pcs_match_data *data = priv->data;
 +	struct airoha_pcs_maps *maps = &priv->maps[index];
-+	u32 an_done, lpa;
++	u32 an_done = 0, lpa = 0;
 +
 +	/* Trigger HW workaround if needed. If an error is reported,
 +	 * consider link down and test again later.
@@ -460,7 +455,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +					  struct phylink_link_state *state)
 +{
 +	struct airoha_pcs_maps *maps = &priv->maps[index];
-+	u32 status, curr_mode;
++	u32 status = 0, curr_mode = 0;
 +
 +	/* Toggle AN Status */
 +	regmap_set_bits(maps->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_6,
@@ -502,7 +497,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	switch (state->interface) {
 +	case PHY_INTERFACE_MODE_SGMII:
 +	case PHY_INTERFACE_MODE_1000BASEX:
-+		airoha_pcs_get_state_sgmii(priv, port->index, neg_mode, state);
++		airoha_pcs_get_state_sgmii(priv, neg_mode, port->index, state);
 +		break;
 +	case PHY_INTERFACE_MODE_2500BASEX:
 +		airoha_pcs_get_state_hsgmii(priv, port->index, state);
@@ -532,7 +527,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	int ret;
 +
 +	maps = &priv->maps[port->index];
-+	priv->interface = interface;
++	port->interface = interface;
 +	data = priv->data;
 +
 +	/* Apply Analog and Digital configuration for PCS */
@@ -708,7 +703,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		regmap_set_bits(maps->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_1,
 +				AIROHA_PCS_SGMII_SEND_AN_ERR_EN);
 +
-+		regmap_set_bits(maps->hsgmii_pcs, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_FORCE_CL37,
++		regmap_set_bits(maps->hsgmii_an, AIROHA_PCS_HSGMII_AN_SGMII_REG_AN_FORCE_CL37,
 +				AIROHA_PCS_HSGMII_AN_FORCE_AN_DONE);
 +	}
 +
@@ -735,7 +730,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +	maps = &priv->maps[port->index];
 +
-+	switch (priv->interface) {
++	switch (port->interface) {
 +	case PHY_INTERFACE_MODE_SGMII:
 +	case PHY_INTERFACE_MODE_1000BASEX:
 +	case PHY_INTERFACE_MODE_2500BASEX:
@@ -751,6 +746,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		udelay(3);
 +		regmap_clear_bits(maps->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_AN_CONTROL_0,
 +				  AIROHA_PCS_USXGMII_AN_RESTART);
++		break;
 +	default:
 +		return;
 +	}
@@ -810,6 +806,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +				rate_adapt = AIROHA_PCS_HSGMII_RATE_ADPT_FORCE_RATE_ADAPT_MODE_100;
 +				mode = AIROHA_PCS_USXGMII_MODE_100;
 +				break;
++			default:
++				/* Not supported */
++				return;
 +			}
 +
 +			/* Force USXGMII to selected speed */
@@ -842,6 +841,9 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +				force_speed = AIROHA_PCS_HSGMII_PCS_SGMII_SPD_FORCE_10;
 +				rate_adapt = AIROHA_PCS_HSGMII_PCS_FORCE_RATEADAPT_VAL_10;
 +				break;
++			default:
++				/* Not supported */
++				return;
 +			}
 +
 +			regmap_update_bits(maps->hsgmii_pcs, AIROHA_PCS_HSGMII_PCS_CTROL_6,
@@ -873,7 +875,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +				ck_gen_mode = AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_100;
 +				break;
 +			case SPEED_10:
-+				speed_reg = AIROHA_PCS_LINK_MODE_P0_100M;
++				speed_reg = AIROHA_PCS_LINK_MODE_P0_10M;
 +				if_mode = AIROHA_PCS_HSGMII_AN_SPEED_FORCE_MODE_10;
 +				ck_gen_mode = AIROHA_PCS_HSGMII_PCS_FORCE_CUR_SGMII_MODE_10;
 +				break;
@@ -980,12 +982,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +			   AIROHA_PCS_XFI_IPG_NUM,
 +			   FIELD_PREP(AIROHA_PCS_XFI_IPG_NUM, 10));
 +
-+	/* Enable TX/RX flow control */
-+	regmap_set_bits(maps->pcs_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
-+			AIROHA_PCS_XFI_TX_FC_EN);
-+	regmap_set_bits(maps->pcs_mac, AIROHA_PCS_XFI_MAC_XFI_GIB_CFG,
-+			AIROHA_PCS_XFI_RX_FC_EN);
-+
 +	return 0;
 +}
 +
@@ -1009,19 +1005,19 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +static int airoha_pcs_init_named_regmap(struct platform_device *pdev,
 +					const char *name, struct regmap **regmap)
 +{
-+	struct regmap_config regmap_config = { };
-+	void *base;
++	struct regmap_config config = {
++		.reg_bits = 32,
++		.val_bits = 32,
++		.reg_stride = 4,
++	};
++	void __iomem *base;
 +
 +	base = devm_platform_ioremap_resource_byname(pdev, name);
 +	if (IS_ERR(base))
 +		return PTR_ERR(base);
 +
-+	regmap_config.name = name;
-+	regmap_config.reg_bits = 32,
-+	regmap_config.val_bits = 32,
-+	regmap_config.reg_stride = 4,
-+
-+	*regmap = devm_regmap_init_mmio(&pdev->dev, base, &regmap_config);
++	config.name = name;
++	*regmap = devm_regmap_init_mmio(&pdev->dev, base, &config);
 +
 +	return PTR_ERR_OR_ZERO(*regmap);
 +}
@@ -1157,26 +1153,26 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	return airoha_pcs_init_named_regmap(pdev, "pcs_ana", &priv->pcs_ana);
 +}
 +
-+static struct phylink_pcs *airoha_pcs_get(struct fwnode_reference_args *pcsspec,
-+					  void *data)
++static struct phylink_pcs *airoha_pcs_xlate(struct fwnode_reference_args *pcsspec,
++					    void *data)
 +{
 +	struct airoha_pcs_priv *priv = data;
 +	struct device *dev = priv->dev;
-+	int index = 0;
++	u64 index = 0;
 +
 +	switch (priv->data->port_type) {
 +	case AIROHA_PCS_ETH:
 +	case AIROHA_PCS_PON:
 +	case AIROHA_PCS_USB:
 +		if (pcsspec->nargs) {
-+			dev_err(dev, "invalid number of cells in 'pcs' property\n");
++			dev_err(dev, "invalid number of cells in 'pcs-handle' property\n");
 +			return ERR_PTR(-EINVAL);
 +		}
 +
 +		break;
 +	case AIROHA_PCS_PCIE:
 +		if (pcsspec->nargs != 1) {
-+			dev_err(dev, "invalid number of cells in 'pcs' property\n");
++			dev_err(dev, "invalid number of cells in 'pcs-handle' property\n");
 +			return ERR_PTR(-EINVAL);
 +		}
 +
@@ -1186,12 +1182,18 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	if (pcsspec->nargs)
 +		index = pcsspec->args[0];
 +
++	if (index >= priv->data->num_port) {
++		dev_err(dev, "invalid index cell in 'pcs-handle' property\n");
++		return ERR_PTR(-EINVAL);
++	}
++
 +	return &priv->ports[index].pcs;
 +}
 +
 +static int airoha_pcs_probe(struct platform_device *pdev)
 +{
 +	const struct airoha_pcs_match_data *data;
++	struct fwnode_pcs_provider *pcs_provider;
 +	struct device *dev = &pdev->dev;
 +	struct airoha_pcs_priv *priv;
 +	int index, ret;
@@ -1307,27 +1309,12 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +	platform_set_drvdata(pdev, priv);
 +
-+	return fwnode_pcs_add_provider(dev_fwnode(dev), airoha_pcs_get,
-+				       priv);
-+}
++	pcs_provider = devm_fwnode_pcs_add_provider(dev, dev_fwnode(dev),
++						    airoha_pcs_xlate, priv);
++	if (IS_ERR(pcs_provider))
++		return PTR_ERR(pcs_provider);
 +
-+static void airoha_pcs_remove(struct platform_device *pdev)
-+{
-+	struct airoha_pcs_priv *priv = platform_get_drvdata(pdev);
-+	const struct airoha_pcs_match_data *data = priv->data;
-+	int i;
-+
-+	fwnode_pcs_del_provider(dev_fwnode(&pdev->dev));
-+
-+	rtnl_lock();
-+
-+	for (i = 0; i < data->num_port; i++) {
-+		struct airoha_pcs_port *port = &priv->ports[i];
-+
-+		phylink_release_pcs(&port->pcs);
-+	}
-+
-+	rtnl_unlock();
++	return 0;
 +}
 +
 +static const struct airoha_pcs_match_data an7581_pcs_eth = {
@@ -1376,16 +1363,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		.of_match_table = airoha_pcs_of_table,
 +	},
 +	.probe = airoha_pcs_probe,
-+	.remove = airoha_pcs_remove,
 +};
 +module_platform_driver(airoha_pcs_driver);
 +
 +MODULE_LICENSE("GPL");
 +MODULE_DESCRIPTION("Airoha PCS driver");
 +MODULE_AUTHOR("Christian Marangi <ansuelsmth@gmail.com>");
---- /dev/null
+--- a/drivers/net/pcs/airoha/pcs-airoha.h
 +++ b/drivers/net/pcs/airoha/pcs-airoha.h
-@@ -0,0 +1,1309 @@
+@@ -0,0 +1,1313 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +/*
 + * Copyright (c) 2024 AIROHA Inc
@@ -1406,6 +1392,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +#define   AIROHA_SCU_WAN_SEL_SGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x10)
 +#define   AIROHA_SCU_WAN_SEL_HSGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x11)
 +#define   AIROHA_SCU_WAN_SEL_USXGMII		FIELD_PREP_CONST(AIROHA_SCU_WAN_SEL, 0x12)
++#define AIROHA_SCU_PCIC			0x88
++#define   AIROHA_SCU_PCIE_CTRL			GENMASK(7, 0)
 +#define AIROHA_SCU_SSR3				0x94
 +#define   AIROHA_SCU_ETH_XSI_SEL		GENMASK(14, 13)
 +#define   AIROHA_SCU_ETH_XSI_USXGMII		FIELD_PREP_CONST(AIROHA_SCU_ETH_XSI_SEL, 0x1)
@@ -2591,6 +2579,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +#define   AIROHA_PCS_PMA_2L_RX_RATE_CTRL	GENMASK(5, 4)
 +
 +#define AIROHA_PCS_MAX_CALIBRATION_TRY		50
++#define AIROHA_PCS_MAX_RX_SIGDET_TRY		6
++#define AIROHA_PCS_MAX_RX_SIGDET_PRESENCE_CNT	4
 +#define AIROHA_PCS_MAX_NUM_RSTS			2
 +
 +enum xfi_port_type {
@@ -2612,7 +2602,6 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +struct airoha_pcs_priv {
 +	struct device *dev;
 +	const struct airoha_pcs_match_data *data;
-+	phy_interface_t interface;
 +
 +	struct airoha_pcs_port *ports;
 +
@@ -2633,6 +2622,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +struct airoha_pcs_port {
 +	struct airoha_pcs_priv *priv;
++	phy_interface_t interface;
 +	int index;
 +
 +	struct phylink_pcs pcs;
@@ -2651,7 +2641,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +#define to_airoha_pcs_port(n) container_of(n, struct airoha_pcs_port, pcs)
 +
-+#ifdef CONFIG_PCS_AIROHA_AN7581
++#if IS_ENABLED(CONFIG_PCS_AIROHA_AN7581)
 +int an7581_pcs_alloc_regmap_fields(struct airoha_pcs_priv *priv);
 +int an7581_pcs_pcie_alloc_regmap_fields(struct airoha_pcs_priv *priv);
 +int an7581_pcs_bringup(struct airoha_pcs_priv *priv,
@@ -2695,14 +2685,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	return 0;
 +}
 +#endif
---- /dev/null
+--- a/drivers/net/pcs/airoha/pcs-an7581.c
 +++ b/drivers/net/pcs/airoha/pcs-an7581.c
-@@ -0,0 +1,2093 @@
+@@ -0,0 +1,2100 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Copyright (c) 2024 AIROHA Inc
 + * Author: Christian Marangi <ansuelsmth@gmail.com>
 + */
++#include <linux/math.h>
 +#include <linux/phy/phy.h>
 +#include <linux/phylink.h>
 +#include <linux/regmap.h>
@@ -3142,8 +3133,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	[AN7581_PCS_TXPLL_TCL_AMP_GAIN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_SDM_OUT, 24, 26),
 +	[AN7581_PCS_TXPLL_TCL_AMP_VREF] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 0, 4),
 +	[AN7581_PCS_TXPLL_TCL_LPF_BW] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_LPF_BW, 0, 2),
-+	[AN7581_PCS_TXPLL_TCL_LPF_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN, 0, 0),
-+	[AN7581_PCS_TXPLL_TCL_AMP_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 24, 24),
++	[AN7581_PCS_TXPLL_TCL_LPF_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 24, 24),
++	[AN7581_PCS_TXPLL_TCL_AMP_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_SDM_OUT, 16, 16),
 +
 +	[AN7581_PCS_TX_DMEDGEGEN_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TX0_CKLDO_EN, 24, 24),
 +	[AN7581_PCS_TX_CKLDO_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TX0_CKLDO_EN, 0, 0),
@@ -3308,8 +3299,8 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	[AN7581_PCS_TXPLL_TCL_AMP_GAIN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_SDM_OUT, 24, 26),
 +	[AN7581_PCS_TXPLL_TCL_AMP_VREF] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 0, 4),
 +	[AN7581_PCS_TXPLL_TCL_LPF_BW] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_LPF_BW, 0, 2),
-+	[AN7581_PCS_TXPLL_TCL_LPF_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_TXPLL_TCL_LPF_EN, 0, 0),
-+	[AN7581_PCS_TXPLL_TCL_AMP_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 24, 24),
++	[AN7581_PCS_TXPLL_TCL_LPF_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_TCL_AMP_VREF, 24, 24),
++	[AN7581_PCS_TXPLL_TCL_AMP_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TXPLL_SDM_OUT, 16, 16),
 +
 +	[AN7581_PCS_TX_DMEDGEGEN_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TX1_CKLDO_EN, 24, 24),
 +	[AN7581_PCS_TX_CKLDO_EN] = REG_FIELD(AIROHA_PCS_ANA_PXP_2L_TX1_CKLDO_EN, 0, 0),
@@ -3740,8 +3731,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +			   AIROHA_PCS_PMA_FORCE_DA_TX_TERM_SEL,
 +			   AIROHA_PCS_PMA_FORCE_SEL_DA_TX_CKIN_DIVISOR |
 +			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_CKIN_DIVISOR,
-+				      ckin_divisor) |
-+			   FIELD_PREP(AIROHA_PCS_PMA_FORCE_DA_TX_TERM_SEL, 0x0));
++				      ckin_divisor));
 +
 +	if (priv->data->port_type != AIROHA_PCS_PCIE) {
 +		regmap_update_bits(pcs_pma, AIROHA_PCS_PMA_PXP_TX_RATE_CTRL,
@@ -3801,7 +3791,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		sigdet_vth_sel = BIT(2) | BIT(1);
 +		phyck_div = BIT(5) | BIT(3) | BIT(0);
 +		phyck_sel = BIT(0);
-+		xfi_rx_mode = AIROHA_PCS_PMA_XFI_TX_MODE_1G25;
++		xfi_rx_mode = AIROHA_PCS_PMA_XFI_RX_MODE_1G25;
 +		break;
 +	case PHY_INTERFACE_MODE_2500BASEX:
 +		osr = BIT(0); /* 2.5G */
@@ -3943,7 +3933,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +			   FIELD_PREP(AIROHA_PCS_PMA_PLL_LOCK_LOCKTH, 0x1));
 +
 +	/* FIXME: Warn and Ask Airoha about typo in air_eth_xsgmii.c line 1391 */
-+	/* AIROHA_PCS_ANA_REV_1_FE_BUF1_BIAS_CTRL is set 0x0 in SDK but seems a typo */
++	/* FE_BUF1 bias uses 0x1 for the supported analog revision. */
 +	/* Setup REV */
 +	regmap_field_write(pcs_ana_fields[AN7581_PCS_RX_REV_1_FE_BUF1_BIAS_CTRL],
 +			   BIT(2));
@@ -4158,7 +4148,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +						 int index, u32 cdr_pr_idac)
 +{
 +	struct regmap *pcs_pma = priv->pcs_pma[index];
-+	u32 val;
++	u32 val = UINT_MAX;
 +
 +	regmap_update_bits(pcs_pma, AIROHA_PCS_PMA_PXP_CDR_PR_IDAC,
 +			   AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC,
@@ -4198,7 +4188,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, index, cdr_pr_idac_tmp);
 +
 +		/* Use absolute values to find the closest one to target */
-+		fl_out_diff_new = abs(fl_out - target_fl_out);
++		fl_out_diff_new = abs_diff(fl_out, target_fl_out);
 +		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
 +			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
 +		if (fl_out_diff_new < fl_out_diff) {
@@ -4220,7 +4210,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	int prcal_search_bit;
 +
 +	fl_out = an7581_pcs_apply_cdr_pr_idac(priv, index, cdr_pr_idac);
-+	fl_out_diff = abs(fl_out - target_fl_out);
++	fl_out_diff = abs_diff(fl_out, target_fl_out);
 +
 +	/* Deadline search part.
 +	 * We start from top bits to bottom as we progressively decrease the
@@ -4234,7 +4224,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, index, cdr_pr_idac_tmp);
 +
 +		/* Use absolute values to find the closest one to target */
-+		fl_out_diff_new = abs(fl_out - target_fl_out);
++		fl_out_diff_new = abs_diff(fl_out, target_fl_out);
 +		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
 +			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
 +		if (fl_out_diff_new < fl_out_diff) {
@@ -4264,7 +4254,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		fl_out = an7581_pcs_apply_cdr_pr_idac(priv, index, cdr_pr_idac_tmp);
 +
 +		/* Use absolute values to find the closest one to target */
-+		fl_out_diff_new = abs(fl_out - target_fl_out);
++		fl_out_diff_new = abs_diff(fl_out, target_fl_out);
 +		/* Assume we found the deadline when the new absolue signal difference
 +		 * from target is greater than the previous and the difference is at
 +		 * least 10% greater between the old and new value.
@@ -4274,8 +4264,15 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +		 */
 +		dev_dbg(priv->dev, "Tested CDR Pr Idac: %x Fl Out: %x Diff: %u\n",
 +			cdr_pr_idac_tmp, fl_out, fl_out_diff_new);
-+		if (fl_out_diff_new > fl_out_diff &&
-+		    (abs(fl_out_diff_new - fl_out_diff) * 100) / fl_out_diff > 10) {
++
++		/* Exact match, set the bit and exit */
++		if (!fl_out_diff_new) {
++			cdr_pr_idac |= BIT(prcal_search_bit);
++			break;
++		}
++
++		if (fl_out_diff && fl_out_diff_new > fl_out_diff &&
++		    (abs_diff(fl_out_diff_new, fl_out_diff) * 100) / fl_out_diff > 10) {
 +			/* Exit early if we are already at the deadline */
 +			if (prcal_search_bit == 0)
 +				break;
@@ -4408,7 +4405,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +						     target_fl_out, cdr_pr_idac_major);
 +
 +	fl_out = an7581_pcs_apply_cdr_pr_idac(priv, index, cdr_pr_idac);
-+	fl_out_diff = abs(fl_out - target_fl_out);
++	fl_out_diff = abs_diff(fl_out, target_fl_out);
 +	if (fl_out_diff > 100) {
 +		u32 pr_idac_major = FIELD_GET(AIROHA_PCS_PMA_FORCE_CDR_PR_IDAC_MAJOR,
 +					      cdr_pr_idac_major);
@@ -4428,7 +4425,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +
 +			fl_out_tmp = an7581_pcs_apply_cdr_pr_idac(priv, index,
 +								  cdr_pr_idac_tmp);
-+			fl_out_diff_tmp = abs(fl_out_tmp - target_fl_out);
++			fl_out_diff_tmp = abs_diff(fl_out_tmp, target_fl_out);
 +			if (fl_out_diff_tmp < fl_out_diff) {
 +				fl_out = fl_out_tmp;
 +				fl_out_diff = fl_out_diff_tmp;
@@ -4523,7 +4520,7 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +{
 +	struct regmap *pcs_pma = priv->pcs_pma[index];
 +	int calibration_try = 0;
-+	u32 val;
++	u32 val = 0;
 +
 +	an7581_pcs_tx_bringup(priv, index, interface);
 +	an7581_pcs_rx_bringup(priv, index, interface);
@@ -4749,14 +4746,14 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +{
 +	struct regmap *pcs_pma = priv->pcs_pma[index];
 +	unsigned int count = 0;
-+	u32 val;
++	u32 val = 0;
 +	int i;
 +
 +	regmap_write(pcs_pma, AIROHA_PCS_PMA_DIG_RESERVE_0,
 +		     AIROHA_PCS_TRIGGER_RX_SIDGET_SCAN);
 +
-+	/* Scan 5 times for RX sigdet module to detect RX signal */
-+	for (i = 0; i <= 5; i++) {
++	/* Scan 6 times for RX sigdet module to detect RX signal */
++	for (i = 0; i < AIROHA_PCS_MAX_RX_SIGDET_TRY; i++) {
 +		regmap_read(pcs_pma, AIROHA_PCS_PMA_DIG_RO_RESERVE_2,
 +			    &val);
 +		if (val & AIROHA_PCS_RX_SIGDET)
@@ -4764,13 +4761,13 @@ Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
 +	}
 +
 +	/* Consider signal presence if we detect signal at least 4 times */
-+	return count >= 4;
++	return count >= AIROHA_PCS_MAX_RX_SIGDET_PRESENCE_CNT;
 +}
 +
 +int an7581_pcs_rxlock_workaround(struct airoha_pcs_priv *priv, int index)
 +{
 +	struct airoha_pcs_maps *maps = &priv->maps[index];
-+	u32 val;
++	u32 val = 0;
 +
 +	/* Check if PCS is UP or Down */
 +	regmap_read(maps->usxgmii_pcs, AIROHA_PCS_USXGMII_PCS_STUS_1, &val);

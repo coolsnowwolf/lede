@@ -1,0 +1,57 @@
+From e84b89f17a12a7cfc526eb1c18ac02e8777e18c9 Mon Sep 17 00:00:00 2001
+From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Date: Tue, 1 Sep 2026 19:32:54 +0100
+Subject: [PATCH] net: airoha: grow the small RX rings
+
+Raise the RX_DSCP_NUM() fallback from 16 to 32, the vendor SDK default,
+and give ring 4 the 128 descriptors already used for rings 2/11/15.
+
+Ring 4 is the shared "force to CPU" ring that airoha_fe_vip_setup()
+routes BOOTP, PPPoE Discovery, PPP LCP/IPCP/CHAP/PAP/IPv6CP, ISAKMP,
+DHCPv6, SIP and LLDP onto, so it sees the same bursty non-hashed traffic
+as the rings already on 128 while sitting on the smallest allowance.
+Both CDMs forward to it: REG_CDM_FWD_CFG(1) and (2) each set
+CDM_VIP_QSEL_MASK to 4.
+
+The NO_CPU_DSCP fix does not cover this. With it in place, at 16
+descriptors the ring still dies during PPPoE negotiation on a Nokia
+XG-040G-MF: over 6455 devmem samples in 60 s, REG_RX_DMA_IDX advanced
+0x2c -> 0x52 while REG_RX_CPU_IDX stayed at 15, descriptor 15 had DONE
+set on a 60-byte frame, descriptors 0-14 were empty, and q->tail was 0.
+Hw had completed a descriptor the strictly sequential consumer in
+airoha_qdma_rx_process() cannot reach, and negotiation never completes.
+At 16 DHCP still works while PPPoE does not: a dial-up bursts Discovery,
+LCP, IPCP and CHAP where DHCP sends one packet every ~150 s. With this
+series, 508 forced reconnects over 20 h saw no recurrence.
+
+RX_DONE_INT_MASK covers all 32 rings on both QDMA instances, so this
+costs 544 more descriptors per instance, 1088 in total: 2.1 MiB of RX
+buffers at PAGE_SIZE/2 each, plus 34 KiB of coherent descriptor memory.
+
+Ring 4 and the VIP classification feeding it are shared driver-wide, with
+no DT or hardware property distinguishing one variant's ring 4 from
+another's, so this is not scoped to a particular SoC.
+
+Acked-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Link: https://patch.msgid.link/978fe95e4c5ddb05ceb7d8c4d00ea2d2203b79d0.1788286284.git.sochnev.v.74@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.h | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -40,9 +40,10 @@
+ #define TX_DSCP_NUM			1024
+ #define RX_DSCP_NUM(_n)			\
+ 	((_n) ==  2 ? 128 :		\
++	 (_n) ==  4 ? 128 :		\
+ 	 (_n) == 11 ? 128 :		\
+ 	 (_n) == 15 ? 128 :		\
+-	 (_n) ==  0 ? 1024 : 16)
++	 (_n) ==  0 ? 1024 : 32)
+ 
+ #define PSE_RSV_PAGES			128
+ #define PSE_QUEUE_RSV_PAGES		64

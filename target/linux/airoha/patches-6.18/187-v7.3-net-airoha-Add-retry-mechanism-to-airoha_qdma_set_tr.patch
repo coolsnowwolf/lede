@@ -1,0 +1,87 @@
+From 7e170da2edec9fb0717543571cc14b0aabee2b46 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Leto=20Liu=20=28=E5=88=98=E6=B6=9B=29?=
+ <Leto.Liu@airoha.com>
+Date: Wed, 30 Sep 2026 08:58:48 +0200
+Subject: [PATCH 50/50] net: airoha: Add retry mechanism to
+ airoha_qdma_set_trtcm_param()
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+CPU accesses QDMA via the bus. When multiple modules are using the bus
+simultaneously, CPU access to QDMA may encounter bus timeouts and fails,
+resulting in QDMA configuration failures and potentially causing packet
+transmission issues. In order to mitigate the issue, introduce a retry
+mechanism to airoha_qdma_set_trtcm_param routine in order to ensure the
+configuration is correctly applied to the hardware.
+
+It's enough to try a second time for the TRTCM config to be actually
+applied to make sure we are not in the middle of bucket handling as it does
+operate on fixed time slot internally.
+
+Fixes: ef1ca9271313b ("net: airoha: Add sched HTB offload support")
+Signed-off-by: Leto Liu (刘涛) <Leto.Liu@airoha.com>
+[ improve commit description, drop memory block, apply better loop logic]
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+Link: https://patch.msgid.link/20260930065855.46171-1-ansuelsmth@gmail.com
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 32 +++++++++++++++++++-----
+ drivers/net/ethernet/airoha/airoha_eth.h |  2 ++
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -2672,14 +2672,34 @@ static int airoha_qdma_set_trtcm_param(s
+ 		     FIELD_PREP(TRTCM_METER_GROUP_MASK, group) |
+ 		     FIELD_PREP(TRTCM_PARAM_INDEX_MASK, idx) |
+ 		     FIELD_PREP(TRTCM_PARAM_RATE_TYPE_MASK, mode);
++	int i;
+ 
+-	airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
+-	airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
++	/*
++	 * HW might be in the middle of bucket handling and might
++	 * require an additional try to actually apply the new TRTCM
++	 * config.
++	 */
++	for (i = 0; i < TRTCM_CONFIG_RETRY_MAX; i++) {
++		u32 data = 0;
+ 
+-	return read_poll_timeout(airoha_qdma_rr, val,
+-				 val & TRTCM_PARAM_RW_DONE_MASK,
+-				 USEC_PER_MSEC, 10 * USEC_PER_MSEC, true,
+-				 qdma, REG_TRTCM_CFG_PARAM(addr));
++		airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
++		airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
++
++		if (read_poll_timeout(airoha_qdma_rr, data,
++				      data & TRTCM_PARAM_RW_DONE_MASK,
++				      USEC_PER_MSEC, 10 * USEC_PER_MSEC,
++				      true, qdma, REG_TRTCM_CFG_PARAM(addr)))
++			continue;
++
++		if (airoha_qdma_get_trtcm_param(qdma, channel, addr, param,
++						mode, &data, NULL))
++			continue;
++
++		if (data == val)
++			return 0;
++	}
++
++	return -EBUSY;
+ }
+ 
+ static int airoha_qdma_set_trtcm_config(struct airoha_qdma *qdma, int channel,
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -171,6 +171,8 @@ enum trtcm_param {
+ #define TRTCM_TOKEN_RATE_MASK			GENMASK(23, 6)
+ #define TRTCM_TOKEN_RATE_FRACTION_MASK		GENMASK(5, 0)
+ 
++#define TRTCM_CONFIG_RETRY_MAX			2
++
+ struct airoha_queue_entry {
+ 	union {
+ 		void *buf;

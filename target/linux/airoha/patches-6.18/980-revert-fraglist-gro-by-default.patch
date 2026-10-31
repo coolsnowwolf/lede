@@ -1,0 +1,44 @@
+From: ming <297782506+yveming@users.noreply.github.com>
+Subject: [PATCH] net: revert fraglist GRO default-enable
+
+OpenWrt commit b5c53848c3 ("kernel: improve GRO performance") enables
+NETIF_F_GRO_FRAGLIST by default. With fraglist GRO, the UDP receive path
+merges consecutive same-flow datagrams into a single oversized skb
+(skb_is_gso() true, original DF flag kept).
+
+When such a skb is forwarded by the IPv4 multicast router, it is silently
+dropped in ipmr_prepare_xmit(): the check
+
+	if (skb->len+encap > dst4_mtu(&rt->dst) && (ntohs(iph->frag_off) & IP_DF))
+
+evaluates the host-internal GRO batch size and runs before the egress path
+could segment it (ip_finish_output_gso()). Multicast cannot be fragmented
+and cannot receive ICMP errors, so only FragFails increments.
+
+This breaks routed IPTV multicast (e.g. omcproxy): high-bitrate streams
+lose most packets once their datagrams merge above the egress MTU, while
+unicast forwarding is unaffected (it reaches the GSO segmentation path).
+
+Disable fraglist GRO by default again (upstream keeps it opt-in) until the
+kernel handles GSO skbs in the multicast forwarding path.
+
+Links: https://github.com/openwrt/openwrt/issues/25713
+       https://github.com/openwrt/openwrt/issues/18214
+Signed-off-by: ming <297782506+yveming@users.noreply.github.com>
+Signed-off-by: lean <chenlin@fnnas.com>
+
+--- a/include/linux/netdev_features.h
++++ b/include/linux/netdev_features.h
+@@ -237,10 +237,10 @@ static inline int find_next_netdev_featu
+ #define NETIF_F_UPPER_DISABLES	NETIF_F_LRO
+ 
+ /* changeable features with no special hardware requirements */
+-#define NETIF_F_SOFT_FEATURES	(NETIF_F_GSO | NETIF_F_GRO | NETIF_F_GRO_FRAGLIST)
++#define NETIF_F_SOFT_FEATURES	(NETIF_F_GSO | NETIF_F_GRO)
+ 
+ /* Changeable features with no special hardware requirements that defaults to off. */
+-#define NETIF_F_SOFT_FEATURES_OFF	(NETIF_F_GRO_UDP_FWD)
++#define NETIF_F_SOFT_FEATURES_OFF	(NETIF_F_GRO_FRAGLIST | NETIF_F_GRO_UDP_FWD)
+ 
+ #define NETIF_F_VLAN_FEATURES	(NETIF_F_HW_VLAN_CTAG_FILTER | \
+ 				 NETIF_F_HW_VLAN_CTAG_RX | \

@@ -1,0 +1,69 @@
+From 9df92875d6d741f9bff1ad95eeaf40b34943d2c4 Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Fri, 3 Jul 2026 13:02:17 +0200
+Subject: [PATCH 33/50] net: airoha: add preliminary support to configure tx hw
+ QoS queue during flowtable offloading
+
+Add the plumbing to program the AIROHA_FOE_QID field in the PPE FOE
+entry with a per-flow priority value during flowtable offload. This
+allows the hardware to steer offloaded flows to a specific QoS queue
+on the egress QDMA block for traffic forwarded between two interfaces
+via hardware acceleration, bypassing the kernel forwarding path.
+The priority parameter is currently always zero because netfilter does
+not yet provide a mechanism to pass the skb priority field to the
+flowtable offload driver. Once that support is added in the netfilter
+subsystem, the driver will be able to extract the priority from the
+flow rule and map it to the appropriate hardware queue.
+
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Simon Horman <horms@kernel.org>
+Link: https://patch.msgid.link/20260703-airoha-hw-qos-queue-stub-v1-1-ef253ffdd093@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+ drivers/net/ethernet/airoha/airoha_ppe.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -331,7 +331,7 @@ static int airoha_ppe_foe_entry_prepare(
+ 					struct airoha_foe_entry *hwe,
+ 					struct net_device *netdev, int type,
+ 					struct airoha_flow_data *data,
+-					int l4proto)
++					int l4proto, u8 priority)
+ {
+ 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
+ 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
+@@ -386,7 +386,9 @@ static int airoha_ppe_foe_entry_prepare(
+ 			 */
+ 			channel = dsa_port >= 0 ? dsa_port : port->id;
+ 			channel = channel % AIROHA_NUM_QOS_CHANNELS;
+-			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel);
++			priority = priority % AIROHA_NUM_QOS_QUEUES;
++			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
++				 FIELD_PREP(AIROHA_FOE_QID, priority);
+ 
+ 			val |= FIELD_PREP(AIROHA_FOE_IB2_PSE_PORT, pse_port) |
+ 			       AIROHA_FOE_IB2_PSE_QOS;
+@@ -1079,10 +1081,10 @@ static int airoha_ppe_flow_offload_repla
+ 	struct airoha_flow_data data = {};
+ 	struct net_device *odev = NULL;
+ 	struct flow_action_entry *act;
++	u8 l4proto = 0, priority = 0;
+ 	struct airoha_foe_entry hwe;
+ 	int err, i, offload_type;
+ 	u16 addr_type = 0;
+-	u8 l4proto = 0;
+ 
+ 	if (rhashtable_lookup(&eth->flow_table, &f->cookie,
+ 			      airoha_flow_table_params))
+@@ -1177,7 +1179,7 @@ static int airoha_ppe_flow_offload_repla
+ 		return -EINVAL;
+ 
+ 	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
+-					   &data, l4proto);
++					   &data, l4proto, priority);
+ 	if (err)
+ 		return err;
+ 

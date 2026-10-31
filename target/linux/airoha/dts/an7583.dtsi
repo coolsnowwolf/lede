@@ -14,6 +14,11 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	chosen {
+		/* Create Fastmap on first full attach for later UBI map restoration. */
+		bootargs-append = " ubi.fm_autoconvert=1";
+	};
+
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -43,6 +48,31 @@
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
+	};
+
+	efuse: efuse {
+		compatible = "airoha,an7583-efuse";
+
+		nvmem-layout {
+			compatible = "fixed-layout";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			pon_impedance_valid: pon-impedance-valid@4 {
+				reg = <0x4 0x1>;
+				bits = <5 1>;
+			};
+
+			pon_tx_term: pon-tx-term@f {
+				reg = <0xf 0x1>;
+				bits = <5 2>;
+			};
+
+			pon_rx_impedance: pon-rx-impedance@f {
+				reg = <0xf 0x2>;
+				bits = <7 2>;
+			};
+		};
 	};
 
 	cpus {
@@ -289,6 +319,21 @@
 				};
 			};
 		};
+
+		/* Read-only zones; trips stay on the bandgap zone above */
+		gbe_thermal: gbe-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+
+			thermal-sensors = <&thermal 1>;
+		};
+
+		cpu_die_thermal: cpu-die-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+
+			thermal-sensors = <&thermal 2>;
+		};
 	};
 
 	clk25m: oscillator {
@@ -340,7 +385,8 @@
 			thermal: thermal {
 				compatible = "airoha,an7583-thermal";
 
-				#thermal-sensor-cells = <0>;
+				/* Sensor: 0 bandgap, 1 GbE, 2 CPU die */
+				#thermal-sensor-cells = <1>;
 			};
 		};
 
@@ -610,6 +656,31 @@
 			status = "disabled";
 		};
 
+		/*
+		 * AN7583 maps XG-PON/EPON MAC and digital PHY at AN7581-compatible
+		 * register windows, with MAC and PHY on SPI 42 and 34.
+		 * The dedicated AN7583 PCS provider manages PMA initialization.
+		 * This node exposes TC/PLOAM, T-CONT/GEM, and digital PHY resources
+		 * to the xPON MAC driver.
+		 */
+		xpon_mac: ethernet@1fb64000 {
+			compatible = "airoha,an7583-xpon-mac";
+			reg = <0x0 0x1fb64000 0x0 0x3e8>,
+			      <0x0 0x1fb65000 0x0 0xff8>,
+			      <0x0 0x1fb66000 0x0 0x1000>,
+			      <0x0 0x1faf0000 0x0 0x2000>;
+			reg-names = "gpon", "xgpon", "epon", "pon-phy";
+
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,
+			             <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "mac", "phy";
+
+			pcs-handle = <&pon_pcs>;
+			airoha,scu = <&scuclk>;
+
+			status = "disabled";
+		};
+
 		pon_pcs: pcs@1fa08000 {
 			compatible = "airoha,an7583-pcs-pon";
 			reg = <0x0 0x1fa08000 0x0 0x1000>,
@@ -630,6 +701,10 @@
 			reset-names = "mac", "phy", "xfi";
 
 			airoha,scu = <&scuclk>;
+			nvmem-cells = <&pon_impedance_valid>, <&pon_tx_term>,
+				      <&pon_rx_impedance>;
+			nvmem-cell-names = "pon-impedance-valid", "pon-tx-term",
+					   "pon-rx-impedance";
 
 			#pcs-cells = <0>;
 		};

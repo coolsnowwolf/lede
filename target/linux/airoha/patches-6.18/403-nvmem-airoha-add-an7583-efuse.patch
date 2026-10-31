@@ -1,0 +1,137 @@
+From: pbs05 <27010143+pbs05@users.noreply.github.com>
+Subject: [PATCH] nvmem: add Airoha AN7583 eFuse provider
+
+Expose the read-only AN7583 eFuse image through NVMEM. Platform firmware
+copies the image to a non-secure DMA buffer through its eFuse SMC service.
+
+Signed-off-by: pbs05 <27010143+pbs05@users.noreply.github.com>
+
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+--- a/drivers/nvmem/Kconfig
++++ b/drivers/nvmem/Kconfig
+@@ -40,6 +40,17 @@
+ 	  This driver can also be built as a module. If so, the module will
+ 	  be called nvmem-an8855-efuse.
+ 
++config NVMEM_AIROHA_EFUSE
++	tristate "Airoha AN7583 eFuse support"
++	depends on ARCH_AIROHA || COMPILE_TEST
++	depends on HAVE_ARM_SMCCC
++	help
++	  Say yes here to expose the AN7583 eFuse image through the NVMEM
++	  framework. The image is read through the firmware SMC interface.
++
++	  This driver can also be built as a module. If so, the module
++	  will be called nvmem-airoha-efuse.
++
+ config NVMEM_APPLE_EFUSES
+ 	tristate "Apple eFuse support"
+ 	depends on ARCH_APPLE || COMPILE_TEST
+--- a/drivers/nvmem/Makefile
++++ b/drivers/nvmem/Makefile
+@@ -12,6 +12,8 @@
+ # Devices
+ obj-$(CONFIG_NVMEM_AN8855_EFUSE)	+= nvmem-an8855-efuse.o
+ nvmem-an8855-efuse-y 			:= an8855-efuse.o
++obj-$(CONFIG_NVMEM_AIROHA_EFUSE)	+= nvmem-airoha-efuse.o
++nvmem-airoha-efuse-y			:= airoha-efuse.o
+ obj-$(CONFIG_NVMEM_APPLE_EFUSES)	+= nvmem-apple-efuses.o
+ nvmem-apple-efuses-y 			:= apple-efuses.o
+ obj-$(CONFIG_NVMEM_APPLE_SPMI)		+= apple_nvmem_spmi.o
+--- /dev/null
++++ b/drivers/nvmem/airoha-efuse.c
+@@ -0,0 +1,92 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Airoha AN7583 eFuse driver */
++
++#include <linux/arm-smccc.h>
++#include <linux/dma-mapping.h>
++#include <linux/module.h>
++#include <linux/nvmem-provider.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define AN7583_EFUSE_SIZE		256
++#define AN7583_SIP_EFUSE		0x82000001
++#define AN7583_SIP_EFUSE_READ		0x44414552
++
++struct an7583_efuse {
++	u8 data[AN7583_EFUSE_SIZE];
++};
++
++static int an7583_efuse_read(void *context, unsigned int offset, void *val,
++			     size_t bytes)
++{
++	struct an7583_efuse *efuse = context;
++
++	if (offset > AN7583_EFUSE_SIZE || bytes > AN7583_EFUSE_SIZE - offset)
++		return -EINVAL;
++
++	memcpy(val, efuse->data + offset, bytes);
++
++	return 0;
++}
++
++static int an7583_efuse_probe(struct platform_device *pdev)
++{
++	struct nvmem_config config = {
++		.name = "an7583-efuse",
++		.owner = THIS_MODULE,
++		.word_size = 1,
++		.stride = 1,
++		.size = AN7583_EFUSE_SIZE,
++		.reg_read = an7583_efuse_read,
++		.read_only = true,
++		.root_only = true,
++	};
++	struct device *dev = &pdev->dev;
++	struct arm_smccc_res res;
++	struct an7583_efuse *efuse;
++	dma_addr_t dma_addr;
++	void *dma_buf;
++	int ret;
++
++	efuse = devm_kzalloc(dev, sizeof(*efuse), GFP_KERNEL);
++	if (!efuse)
++		return -ENOMEM;
++
++	/* BL31 writes the complete eFuse image to a non-secure DMA buffer. */
++	dma_buf = dma_alloc_coherent(dev, AN7583_EFUSE_SIZE, &dma_addr,
++				     GFP_KERNEL);
++	if (!dma_buf)
++		return -ENOMEM;
++
++	arm_smccc_smc(AN7583_SIP_EFUSE, AN7583_SIP_EFUSE_READ,
++		      dma_addr, AN7583_EFUSE_SIZE, 0, 0, 0, 0, &res);
++	ret = (int)res.a0;
++	if (!ret)
++		memcpy(efuse->data, dma_buf, AN7583_EFUSE_SIZE);
++
++	dma_free_coherent(dev, AN7583_EFUSE_SIZE, dma_buf, dma_addr);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read eFuse\n");
++
++	config.dev = dev;
++	config.priv = efuse;
++
++	return PTR_ERR_OR_ZERO(devm_nvmem_register(dev, &config));
++}
++
++static const struct of_device_id an7583_efuse_of_match[] = {
++	{ .compatible = "airoha,an7583-efuse" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, an7583_efuse_of_match);
++
++static struct platform_driver an7583_efuse_driver = {
++	.probe = an7583_efuse_probe,
++	.driver = {
++		.name = "an7583-efuse",
++		.of_match_table = an7583_efuse_of_match,
++	},
++};
++module_platform_driver(an7583_efuse_driver);
++
++MODULE_DESCRIPTION("Airoha AN7583 eFuse driver");
++MODULE_LICENSE("GPL");

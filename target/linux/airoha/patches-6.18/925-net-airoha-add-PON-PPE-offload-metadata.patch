@@ -1,0 +1,413 @@
+From: pbs05 <27010143+pbs05@users.noreply.github.com>
+Subject: [PATCH] net: airoha: add PON metadata to PPE flows
+
+PON traffic sent through ndo_start_xmit carries the selected GEM Port-ID
+and T-CONT/LLID in the QDMA descriptor. PPE forwarding bypasses
+ndo_start_xmit, so its FOE needs the same metadata or an offloaded upstream
+flow reaches GDM2 without a valid PON bearer selection.
+
+Resolve the configured VLAN/P-bit mapping while the TC flow is installed
+and write its GEM and T-CONT/LLID into the FOE. Keep flows that require a
+dynamic P-bit decision in software because nf_flow_table does not expose
+that PCP in the VLAN push action.
+
+PON mappings can change when OMCI reconfigures a service or the link
+returns to O5. Serialize mapping replacement with TC callbacks and remove
+only FOEs whose egress device uses the changed PON mapping.
+
+Signed-off-by: pbs05 <27010143+pbs05@users.noreply.github.com>
+
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -4161,11 +4161,33 @@ int airoha_eth_pon_xmit_control(
+ }
+ EXPORT_SYMBOL_GPL(airoha_eth_pon_xmit_control);
+ 
++static void
++airoha_eth_pon_commit_config(struct airoha_gdm_dev *dev,
++			     struct airoha_pon_flow_table *table, u32 qdma_tag)
++{
++	struct airoha_pon_flow_table *old;
++
++	/* PPE resolves mappings and builds FOEs under flow_offload_mutex.
++	 * Mapping replacement and FOE removal share one critical section.
++	 * Concurrent FLOW_CLS_REPLACE observes the current bearer metadata.
++	 * synchronize_net() later drains software readers of the old table.
++	 */
++	mutex_lock(&flow_offload_mutex);
++	old = rcu_replace_pointer(dev->pon_flow_table, table,
++				  lockdep_is_held(&flow_offload_mutex));
++	WRITE_ONCE(dev->pon_qdma_tag, qdma_tag);
++	airoha_ppe_remove_egress_flows(dev);
++	mutex_unlock(&flow_offload_mutex);
++
++	synchronize_net();
++	kfree(old);
++}
++
+ int airoha_eth_pon_replace_flows(
+ 	struct net_device *netdev, const struct airoha_pon_flow_config *flows,
+ 	unsigned int count)
+ {
+-	struct airoha_pon_flow_table *table = NULL, *old;
++	struct airoha_pon_flow_table *table = NULL;
+ 	struct airoha_gdm_dev *dev;
+ 	unsigned int i, j;
+ 
+@@ -4211,10 +4233,7 @@ int airoha_eth_pon_replace_flows(
+ 		}
+ 	}
+ 
+-	old = rcu_replace_pointer(dev->pon_flow_table, table, true);
+-	WRITE_ONCE(dev->pon_qdma_tag, 0);
+-	synchronize_net();
+-	kfree(old);
++	airoha_eth_pon_commit_config(dev, table, 0);
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(airoha_eth_pon_replace_flows);
+@@ -4247,12 +4266,11 @@ int airoha_eth_pon_configure_epon(struct net_device *netdev, u8 channel,
+ 		return -EOPNOTSUPP;
+ 	if (valid && channel >= 32)
+ 		return -ERANGE;
+-	airoha_eth_pon_replace_flows(netdev, NULL, 0);
+ 	if (valid)
+ 		value = AIROHA_PON_QDMA_VALID | AIROHA_PON_QDMA_EPON |
+ 			FIELD_PREP(AIROHA_PON_QDMA_TCONT_MASK, channel);
+ 
+-	WRITE_ONCE(dev->pon_qdma_tag, value);
++	airoha_eth_pon_commit_config(dev, NULL, value);
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(airoha_eth_pon_configure_epon);
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -540,6 +540,12 @@ struct airoha_flow_table_entry {
+ 
+ 	struct rhash_head node;
+ 	unsigned long cookie;
++	/* Track the final egress GDM netdev for each flow. PON bearer mappings
++	 * can change after O5 recovery or OMCI reconfiguration, so invalidate
++	 * only FOEs attached to the affected PON egress device.
++	 */
++	struct airoha_gdm_dev *egress_dev;
++	struct list_head gc_node;
+ 
+ 	/* Must be last --ends in a flexible-array member. */
+ 	struct airoha_foe_entry data;
+@@ -816,6 +822,7 @@ airoha_qdma_deref(struct airoha_gdm_dev *dev)
+ 
+ void airoha_ppe_set_xmit_frame_size(struct airoha_gdm_dev *dev);
+ void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
++void airoha_ppe_remove_egress_flows(struct airoha_gdm_dev *dev);
+ bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
+ void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
+ 			  u16 hash, bool rx_wlan);
+--- a/drivers/net/ethernet/airoha/airoha_ppe.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe.c
+@@ -4,6 +4,7 @@
+  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
+  */
+ 
++#include <linux/airoha-eth.h>
+ #include <linux/ip.h>
+ #include <linux/ipv6.h>
+ #include <linux/of_platform.h>
+@@ -338,18 +339,99 @@ static void airoha_ppe_foe_set_bridge_addrs(struct airoha_foe_bridge *br,
+ 	br->src_mac_lo = get_unaligned_be32(eh->h_source + 2);
+ }
+ 
++static u32
++airoha_ppe_pon_lookup_tag(const struct airoha_pon_flow_table *table,
++			  u16 vlan_id, u8 pbit)
++{
++	const struct airoha_pon_flow_entry *fallback = NULL;
++	unsigned int i;
++
++	for (i = 0; i < table->count; i++) {
++		const struct airoha_pon_flow_entry *entry = &table->entries[i];
++
++		if (!(entry->pbit_mask & BIT(pbit)))
++			continue;
++		if (entry->vlan_id == vlan_id)
++			return entry->tag;
++		if (entry->vlan_id == AIROHA_PON_VID_ANY && !fallback)
++			fallback = entry;
++	}
++
++	return fallback ? fallback->tag : 0;
++}
++
++static int airoha_ppe_pon_select_flow(struct airoha_gdm_dev *dev,
++				      const struct airoha_flow_data *data,
++				      u32 *pon_tag)
++{
++	const struct airoha_pon_flow_table *table;
++	u32 tag, first_tag = 0;
++	u16 vlan_id;
++	u8 pbit;
++
++	lockdep_assert_held(&flow_offload_mutex);
++
++	/* EPON uses the fixed LLID channel configured by the line controller. */
++	tag = READ_ONCE(dev->pon_qdma_tag);
++	if (tag & AIROHA_PON_QDMA_VALID) {
++		*pon_tag = tag;
++		return 0;
++	}
++
++	table = rcu_dereference_protected(dev->pon_flow_table,
++					  lockdep_is_held(&flow_offload_mutex));
++	if (!table)
++		return -EOPNOTSUPP;
++
++	/* nf_flow_table orders VLAN_PUSH from upper devices toward hardware.
++	 * The final VLAN is the outer service tag seen by pon0; untagged packets
++	 * use VID_ANY and P-bit 0, matching ndo_start_xmit classification.
++	 */
++	vlan_id = data->vlan.num ?
++		data->vlan.hdr[data->vlan.num - 1].id : AIROHA_PON_VID_ANY;
++	if (!data->vlan.num) {
++		tag = airoha_ppe_pon_lookup_tag(table, vlan_id, 0);
++		if (!(tag & AIROHA_PON_QDMA_VALID))
++			return -EOPNOTSUPP;
++		*pon_tag = tag;
++		return 0;
++	}
++
++	/* nf_flow_table VLAN actions provide VID while dynamic PCP remains in skb.
++	 * Offload is valid when all eight P-bits resolve to one GEM/T-CONT;
++	 * split mappings retain per-packet classification on the software path.
++	 */
++	for (pbit = 0; pbit < 8; pbit++) {
++		tag = airoha_ppe_pon_lookup_tag(table, vlan_id, pbit);
++		if (!(tag & AIROHA_PON_QDMA_VALID))
++			return -EOPNOTSUPP;
++		tag &= AIROHA_PON_QDMA_VALID | AIROHA_PON_QDMA_EPON |
++		       AIROHA_PON_QDMA_TCONT_MASK | AIROHA_PON_QDMA_GEM_MASK;
++		if (!pbit)
++			first_tag = tag;
++		else if (tag != first_tag)
++			return -EOPNOTSUPP;
++	}
++
++	*pon_tag = first_tag;
++	return 0;
++}
++
+ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 					struct airoha_foe_entry *hwe,
+ 					struct net_device *netdev, int type,
+ 					struct airoha_flow_data *data,
+-					int l4proto, u8 dsfield)
++					int l4proto, u8 dsfield,
++					struct airoha_gdm_dev **egress_dev)
+ {
+ 	u32 qdata = FIELD_PREP(AIROHA_FOE_SHAPER_ID, 0x7f), ports_pad, val;
++	u32 pon_tag = 0;
+ 	int wlan_etype = -EINVAL, dsa_port = airoha_get_dsa_port(&netdev);
+ 	struct airoha_foe_mac_info_common *l2;
+ 	u8 smac_id = 0xf;
+ 
+ 	memset(hwe, 0, sizeof(*hwe));
++	*egress_dev = NULL;
+ 
+ 	val = FIELD_PREP(AIROHA_FOE_IB1_BIND_STATE, AIROHA_FOE_STATE_BIND) |
+ 	      FIELD_PREP(AIROHA_FOE_IB1_BIND_PACKET_TYPE, type) |
+@@ -377,10 +459,12 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 		} else {
+ 			struct airoha_gdm_dev *dev = netdev_priv(netdev);
+ 			struct airoha_gdm_port *port;
++			int err;
+ 			u8 pse_port, channel, priority;
+ 
+ 			if (!airoha_is_valid_gdm_dev(eth, dev))
+ 				return -EINVAL;
++			*egress_dev = dev;
+ 
+ 			port = dev->port;
+ 			if (dsa_port >= 0 || airoha_is_lan_gdm_dev(dev))
+@@ -395,8 +479,17 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 			 * channel according to the DSA user port index, rely
+ 			 * on port id otherwise.
+ 			 */
+-			channel = dsa_port >= 0 ? dsa_port : port->id;
+-			channel = channel % AIROHA_NUM_QOS_CHANNELS;
++			if (test_bit(AIROHA_DEV_F_PON, &dev->flags)) {
++				err = airoha_ppe_pon_select_flow(dev, data,
++								 &pon_tag);
++				if (err)
++					return err;
++				channel = FIELD_GET(AIROHA_PON_QDMA_TCONT_MASK,
++						    pon_tag);
++			} else {
++				channel = dsa_port >= 0 ? dsa_port : port->id;
++				channel %= AIROHA_NUM_QOS_CHANNELS;
++			}
+ 			priority = rt_tos2priority(dsfield);
+ 			priority = priority % AIROHA_NUM_QOS_QUEUES;
+ 			qdata |= FIELD_PREP(AIROHA_FOE_CHANNEL, channel) |
+@@ -413,6 +506,9 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 			if (dsa_port >= 0)
+ 				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ,
+ 						  dsa_port);
++			else if (pon_tag & AIROHA_PON_QDMA_VALID)
++				/* PON NBOQ and QDMA CHAN both carry T-CONT or LLID. */
++				val |= FIELD_PREP(AIROHA_FOE_IB2_NBQ, channel);
+ 
+ 			smac_id = port->id;
+ 		}
+@@ -472,6 +568,13 @@ static int airoha_ppe_foe_entry_prepare(struct airoha_eth *eth,
+ 	} else if (dsa_port >= 0) {
+ 		l2->etype = BIT(dsa_port);
+ 		l2->etype |= !data->vlan.num ? BIT(15) : 0;
++	} else if (pon_tag & AIROHA_PON_QDMA_VALID) {
++		/* PON MAC interprets FOE etype as GPON GEM Port-ID. EPON selects LLID
++		 * through channel and leaves special tag zero. IB1_PPPOE and pppoe_id
++		 * carry PPPoE type and session metadata.
++		 */
++		l2->etype = pon_tag & AIROHA_PON_QDMA_EPON ? 0 :
++			FIELD_GET(AIROHA_PON_QDMA_GEM_MASK, pon_tag);
+ 	} else if (data->pppoe.num) {
+ 		l2->etype = ETH_P_PPP_SES;
+ 	}
+@@ -851,6 +954,43 @@ static void airoha_ppe_foe_flow_remove_entry(struct airoha_ppe *ppe,
+ 	spin_unlock_bh(&ppe_lock);
+ }
+ 
++void airoha_ppe_remove_egress_flows(struct airoha_gdm_dev *dev)
++{
++	struct airoha_eth *eth = dev->eth;
++	struct airoha_flow_table_entry *e, *tmp;
++	struct rhashtable_iter iter;
++	LIST_HEAD(remove_list);
++
++	lockdep_assert_held(&flow_offload_mutex);
++
++	/* TC replace and destroy callbacks share flow_offload_mutex with this walk.
++	 * Collect matching objects before removal so rhashtable iteration continues
++	 * through every entry in the current bucket.
++	 */
++	rhashtable_walk_enter(&eth->flow_table, &iter);
++	rhashtable_walk_start(&iter);
++	while ((e = rhashtable_walk_next(&iter))) {
++		if (IS_ERR(e))
++			continue;
++		if (e->egress_dev == dev)
++			list_add_tail(&e->gc_node, &remove_list);
++	}
++	rhashtable_walk_stop(&iter);
++	rhashtable_walk_exit(&iter);
++
++	/* Bearer changes invalidate GEM/T-CONT/LLID metadata in existing FOEs.
++	 * Remove the software index at the same time; netfilter keeps forwarding
++	 * and later connections can offload with the new mapping.
++	 */
++	list_for_each_entry_safe(e, tmp, &remove_list, gc_node) {
++		list_del_init(&e->gc_node);
++		airoha_ppe_foe_flow_remove_entry(eth->ppe, e);
++		rhashtable_remove_fast(&eth->flow_table, &e->node,
++				       airoha_flow_table_params);
++		kfree(e);
++	}
++}
++
+ static int
+ airoha_ppe_foe_commit_subflow_entry(struct airoha_ppe *ppe,
+ 				    struct airoha_flow_table_entry *e,
+@@ -1091,6 +1231,7 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
+ {
+ 	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
+ 	struct airoha_flow_table_entry *e;
++	struct airoha_gdm_dev *egress_dev;
+ 	struct airoha_flow_data data = {};
+ 	struct net_device *odev = NULL;
+ 	struct flow_action_entry *act;
+@@ -1199,9 +1340,15 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
+ 		return -EINVAL;
+ 
+ 	err = airoha_ppe_foe_entry_prepare(eth, &hwe, odev, offload_type,
+-					   &data, l4proto, dsfield);
+-	if (err)
++					   &data, l4proto, dsfield,
++					   &egress_dev);
++	if (err) {
++		if (err == -EOPNOTSUPP && egress_dev &&
++		    test_bit(AIROHA_DEV_F_PON, &egress_dev->flags))
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "PON egress has no unambiguous VLAN/P-bit to GEM mapping");
+ 		return err;
++	}
+ 
+ 	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
+ 		struct flow_match_ports ports;
+@@ -1271,7 +1418,9 @@ static int airoha_ppe_flow_offload_replace(struct airoha_eth *eth,
+ 	if (!e)
+ 		return -ENOMEM;
+ 
++	INIT_LIST_HEAD(&e->gc_node);
+ 	e->cookie = f->cookie;
++	e->egress_dev = egress_dev;
+ 	memcpy(&e->data, &hwe, sizeof(e->data));
+ 
+ 	err = airoha_ppe_foe_flow_commit_entry(eth->ppe, e);
+--- a/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
++++ b/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
+@@ -4,6 +4,7 @@
+  * Author: Lorenzo Bianconi <lorenzo@kernel.org>
+  */
+ 
++#include "airoha_regs.h"
+ #include "airoha_eth.h"
+ 
+ static void airoha_debugfs_ppe_print_tuple(struct seq_file *m,
+@@ -173,9 +174,47 @@ static int airoha_ppe_debugfs_foe_bind_show(struct seq_file *m, void *private)
+ }
+ DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_foe_bind);
+ 
++static int airoha_ppe_debugfs_config_show(struct seq_file *m, void *private)
++{
++	struct airoha_ppe *ppe = m->private;
++	struct airoha_eth *eth = ppe->eth;
++	unsigned int i;
++
++	/* These registers select the CPU/QDMA path for GDM2 PPE misses.
++	 * PPPoE Discovery reaches this path before a FOE exists.
++	 */
++	seq_printf(m, "npu_attached: %u\n",
++		   !!rcu_access_pointer(eth->npu));
++	seq_printf(m, "gdm2_fwd_cfg: %08x\n",
++		   airoha_fe_rr(eth, REG_GDM_FWD_CFG(AIROHA_GDM2_IDX)));
++	seq_printf(m, "fe_wan_port: %08x\n",
++		   airoha_fe_rr(eth, REG_FE_WAN_PORT));
++	seq_printf(m, "fe_vip_port_en: %08x\n",
++		   airoha_fe_rr(eth, REG_FE_VIP_PORT_EN));
++	seq_printf(m, "fe_ifc_port_en: %08x\n",
++		   airoha_fe_rr(eth, REG_FE_IFC_PORT_EN));
++
++	for (i = 0; i < eth->soc->num_ppe; i++) {
++		u32 cport = airoha_fe_rr(
++			eth, REG_PPE_DFT_CPORT(i, AIROHA_GDM2_IDX));
++
++		seq_printf(m, "ppe%u_flow_cfg: %08x\n", i,
++			   airoha_fe_rr(eth, REG_PPE_PPE_FLOW_CFG(i)));
++		seq_printf(m, "ppe%u_table_cfg: %08x\n", i,
++			   airoha_fe_rr(eth, REG_PPE_TB_CFG(i)));
++		seq_printf(m, "ppe%u_gdm2_default_cpu_port: %u\n", i,
++			   FIELD_GET(DFT_CPORT_MASK(AIROHA_GDM2_IDX), cport));
++	}
++
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(airoha_ppe_debugfs_config);
++
+ int airoha_ppe_debugfs_init(struct airoha_ppe *ppe)
+ {
+ 	ppe->debugfs_dir = debugfs_create_dir("ppe", NULL);
++	debugfs_create_file("config", 0444, ppe->debugfs_dir, ppe,
++			    &airoha_ppe_debugfs_config_fops);
+ 	debugfs_create_file("entries", 0444, ppe->debugfs_dir, ppe,
+ 			    &airoha_ppe_debugfs_foe_all_fops);
+ 	debugfs_create_file("bind", 0444, ppe->debugfs_dir, ppe,

@@ -1,0 +1,80 @@
+Subject: [PATCH] Airoha compatibility
+
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+
+--- a/drivers/phy/airoha/phy-airoha-usb.c
++++ b/drivers/phy/airoha/phy-airoha-usb.c
+@@ -9,6 +9,7 @@
+ #include <linux/math.h>
+ #include <linux/module.h>
+ #include <linux/mfd/syscon.h>
++#include <linux/phy.h>
+ #include <linux/phy/phy.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+@@ -19,6 +20,11 @@
+ #define   AIROHA_SCU_SSTR_USB_PCIE_SEL_PCIE	FIELD_PREP_CONST(AIROHA_SCU_SSTR_USB_PCIE_SEL, 0x0)
+ #define   AIROHA_SCU_SSTR_USB_PCIE_SEL_USB	FIELD_PREP_CONST(AIROHA_SCU_SSTR_USB_PCIE_SEL, 0x1)
+ 
++#define AIROHA_SCU_SSR3				0x94
++#define   AIROHA_SCU_SSUSB_HSGMII_SEL		BIT(29)
++#define   AIROHA_SCU_SSUSB_HSGMII_SEL_HSGMII	FIELD_PREP_CONST(AIROHA_SCU_SSUSB_HSGMII_SEL, 0x0)
++#define   AIROHA_SCU_SSUSB_HSGMII_SEL_USB	FIELD_PREP_CONST(AIROHA_SCU_SSUSB_HSGMII_SEL, 0x1)
++
+ /* U2PHY */
+ #define AIROHA_USB_PHY_FMCR0			0x100
+ #define   AIROHA_USB_PHY_MONCLK_SEL		GENMASK(27, 26)
+@@ -414,10 +420,29 @@
+ }
+ 
+ static int airoha_usb_phy_u3_set_mode(struct airoha_usb_phy_priv *priv,
+-				      enum phy_mode mode)
++				      enum phy_mode mode, int submode)
+ {
++	u32 hsgmii_sel;
+ 	u32 sel;
+ 
++	/* USB1 shares its SerDes lane with the HSGMII Ethernet PCS. */
++	if (mode == PHY_MODE_ETHERNET) {
++		if (priv->serdes_port != AIROHA_SCU_SERDES_USB1)
++			return -EINVAL;
++
++		switch (submode) {
++		case PHY_INTERFACE_MODE_SGMII:
++		case PHY_INTERFACE_MODE_1000BASEX:
++		case PHY_INTERFACE_MODE_2500BASEX:
++			hsgmii_sel = AIROHA_SCU_SSUSB_HSGMII_SEL_HSGMII;
++			break;
++		default:
++			return -EOPNOTSUPP;
++		}
++	} else {
++		hsgmii_sel = AIROHA_SCU_SSUSB_HSGMII_SEL_USB;
++	}
++
+ 	/* Only USB2 supports PCIe mode */
+ 	if (mode == PHY_MODE_PCIE &&
+ 	    priv->serdes_port != AIROHA_SCU_SERDES_USB2)
+@@ -431,7 +456,11 @@
+ 	regmap_update_bits(priv->scu, AIROHA_SCU_SSTR,
+ 			   AIROHA_SCU_SSTR_USB_PCIE_SEL, sel);
+ 
+-	return 0;
++	if (priv->serdes_port != AIROHA_SCU_SERDES_USB1)
++		return 0;
++
++	return regmap_update_bits(priv->scu, AIROHA_SCU_SSR3,
++				  AIROHA_SCU_SSUSB_HSGMII_SEL, hsgmii_sel);
+ }
+ 
+ static int airoha_usb_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
+@@ -443,7 +472,7 @@
+ 	case PHY_TYPE_USB2:
+ 		return airoha_usb_phy_u2_set_mode(priv, mode);
+ 	case PHY_TYPE_USB3:
+-		return airoha_usb_phy_u3_set_mode(priv, mode);
++		return airoha_usb_phy_u3_set_mode(priv, mode, submode);
+ 	default:
+ 		return 0;
+ 	}

@@ -1,34 +1,65 @@
-From e928621a0bbd010b75624c77105ce31f2b8d2faf Mon Sep 17 00:00:00 2001
-Message-ID: <e928621a0bbd010b75624c77105ce31f2b8d2faf.1779348625.git.lorenzo@kernel.org>
-In-Reply-To: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
-References: <e15783f7c987e199ecf80b3d858ed5a86d33c508.1779348625.git.lorenzo@kernel.org>
+From 78a35725e533eef0afe83f6f96cffd69be9eaac7 Mon Sep 17 00:00:00 2001
 From: Lorenzo Bianconi <lorenzo@kernel.org>
-Date: Sat, 13 Dec 2025 09:45:09 +0100
-Subject: [PATCH 12/13] net: airoha: Add ethtool priv_flags callbacks
+Date: Sat, 25 Jul 2026 22:41:42 +0200
+Subject: [PATCH 40/50] net: airoha: defer GDM3/GDM4 WAN mode and GDM2 loopback
+ to QoS offload
 
-Introduce ethtool priv_flags callbacks in order to allow the user to
-select if the configured device will be used as hw lan or wan and enable
-or disable gdm2 loopback (used for hw QoS).
+GDM3 and GDM4 ports require GDM2 loopback to be enabled for hardware
+QoS offload to function. Without it, HTB and ETS offload on these ports
+do not work.
+Previously, GDM3/GDM4 ports were automatically configured as WAN with
+GDM2 loopback enabled during ndo_init().
+Add the capability to configure GDM3/GDM4 as WAN/LAN on demand when QoS
+offload is created or destroyed.
+Hook airoha_enable_qos_for_gdm34() into TC_HTB_CREATE so that requesting
+HTB offload on a GDM3/GDM4 LAN port switches it to WAN mode and enables
+GDM2 loopback.
+Introduce the AIROHA_DEV_F_TX_QOS flag to track whether a device has an
+active TX HTB qdisc; set it in airoha_tc_setup_qdisc_htb() on successful
+TC_HTB_CREATE and clear it on TC_HTB_DESTROY. The device keeps its WAN
+role after qdisc teardown so that its configuration is preserved until
+another device explicitly needs the WAN role for QoS offload.
+If another GDM3/GDM4 device already holds the WAN role without an active
+TX qdisc, demote it to LAN before promoting the requesting device. Skip
+the demotion when the requesting device is itself already the WAN device.
+Since airoha_dev_set_qdma() can now be called on a running device to
+migrate between QDMA blocks, make dev->qdma an RCU pointer so the TX path
+can safely dereference it without holding RTNL.
+When migrating between QDMA blocks, stop TX queues, swap the pointer via
+rcu_assign_pointer(), then synchronize_rcu() to ensure no in-flight
+ndo_start_xmit holds the old pointer.
+Serialize netdev_tx_completed_queue() calls via per-TX-queue spinlocks
+txq_lock[] so that both the old and new QDMA NAPI instances can complete
+packets concurrently on the same netdev TX queues without racing on
+dql_completed().
+Hold flow_offload_mutex in airoha_enable_qos_for_gdm34() and
+airoha_disable_qos_for_gdm34() around the dev->flags update,
+airoha_dev_set_qdma() and GDM2 loopback configuration, serializing
+against concurrent airoha_ppe_hw_init() in the TC_SETUP_CLSFLOWER
+offload path.
+Introduce airoha_qdma_deref() helper that wraps rcu_dereference_protected()
+with a lockdep condition accepting either rtnl_lock or flow_offload_mutex,
+and use it across all control-path dereferences of the RCU-protected
+dev->qdma pointer.
+Add airoha_disable_gdm2_loopback() to disable GDM2 hw loopback.
 
-Tested-by: Madhur Agrawal <madhur.agrawal@airoha.com>
+Tested-by: Madhur Agarwal <madhur.agrawal@airoha.com>
+Reviewed-by: Alexander Lobakin <aleksander.lobakin@intel.com>
+Reviewed-by: Simon Horman <horms@kernel.org>
 Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Link: https://patch.msgid.link/20260725-airoha-ethtool-priv_flags-v12-3-5136a30b2157@kernel.org
+Signed-off-by: Paolo Abeni <pabeni@redhat.com>
+Signed-off-by: lean <chenlin@fnnas.com>
 ---
- drivers/net/ethernet/airoha/airoha_eth.c  | 173 ++++++++++++++++++++++
+ drivers/net/ethernet/airoha/airoha_eth.c  | 245 +++++++++++++++++++---
+ drivers/net/ethernet/airoha/airoha_eth.h  |  18 +-
+ drivers/net/ethernet/airoha/airoha_ppe.c  |   9 +-
  drivers/net/ethernet/airoha/airoha_regs.h |   1 +
- 2 files changed, 174 insertions(+)
+ 4 files changed, 243 insertions(+), 30 deletions(-)
 
 --- a/drivers/net/ethernet/airoha/airoha_eth.c
 +++ b/drivers/net/ethernet/airoha/airoha_eth.c
-@@ -533,7 +533,7 @@ static bool airoha_fe_lro_is_enabled(str
- 
- static void airoha_dev_lro_enable(struct airoha_gdm_dev *dev)
- {
--	struct airoha_qdma *qdma = dev->qdma;
-+	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
- 	struct airoha_eth *eth = qdma->eth;
- 	int qdma_id = qdma - &eth->qdma[0];
- 	int i, lro_queue_index = 0;
-@@ -1159,7 +1159,7 @@ static void airoha_qdma_wake_netdev_txqs
+@@ -934,7 +934,7 @@ static void airoha_qdma_wake_netdev_txqs
  			if (!dev)
  				continue;
  
@@ -37,131 +68,59 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  				continue;
  
  			netdev = netdev_from_priv(dev);
-@@ -2055,7 +2055,8 @@ static void airoha_update_netdev_feature
- 			if (!iter_dev || iter_dev == dev)
- 				continue;
+@@ -1038,10 +1038,16 @@ static int airoha_qdma_tx_napi_poll(stru
+ 		q->queued--;
  
--			if (iter_dev->qdma != dev->qdma)
-+			if (rcu_access_pointer(iter_dev->qdma) !=
-+			    rcu_access_pointer(dev->qdma))
- 				continue;
+ 		if (skb) {
++			struct airoha_gdm_dev *dev = netdev_priv(skb->dev);
++			u16 qidx = skb_get_queue_mapping(skb);
+ 			struct netdev_queue *txq;
  
- 			netdev = netdev_from_priv(iter_dev);
-@@ -2067,20 +2068,57 @@ static void airoha_update_netdev_feature
- 	}
- }
+ 			txq = skb_get_tx_queue(skb->dev, skb);
++
++			spin_lock_bh(&dev->txq_lock[qidx]);
+ 			netdev_tx_completed_queue(txq, 1, skb->len);
++			spin_unlock_bh(&dev->txq_lock[qidx]);
++
+ 			dev_kfree_skb_any(skb);
+ 		}
  
-+static void airoha_qdma_start(struct airoha_qdma *qdma)
-+{
-+	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
-+			GLOBAL_CFG_TX_DMA_EN_MASK |
-+			GLOBAL_CFG_RX_DMA_EN_MASK);
-+	qdma->users++;
-+}
-+
-+static void airoha_qdma_stop(struct airoha_qdma *qdma)
-+{
-+	u32 status;
-+
-+	if (--qdma->users)
-+		return;
-+
-+	airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
-+			  GLOBAL_CFG_TX_DMA_EN_MASK |
-+			  GLOBAL_CFG_RX_DMA_EN_MASK);
-+
-+	if (read_poll_timeout(airoha_qdma_rr, status,
-+			      !(status & (GLOBAL_CFG_TX_DMA_BUSY_MASK |
-+					  GLOBAL_CFG_RX_DMA_BUSY_MASK)),
-+			      USEC_PER_MSEC, 50 * USEC_PER_MSEC, true,
-+			      qdma, REG_QDMA_GLOBAL_CFG))
-+		dev_warn(qdma->eth->dev, "QDMA DMA engine busy timeout\n");
-+
-+	for (int i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
-+		if (!qdma->q_tx[i].ndesc)
-+			continue;
-+
-+		airoha_qdma_cleanup_tx_queue(&qdma->q_tx[i]);
-+	}
-+}
-+
- static int airoha_dev_open(struct net_device *netdev)
+@@ -1905,8 +1911,8 @@ static int airoha_dev_open(struct net_de
  {
- 	int err, len = ETH_HLEN + netdev->mtu + ETH_FCS_LEN;
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
  	struct airoha_gdm_port *port = dev->port;
- 	u32 cur_len, pse_port = FE_PSE_PORT_PPE1;
 -	struct airoha_qdma *qdma = dev->qdma;
--	struct airoha_eth *eth = qdma->eth;
--	int qdma_id = qdma - &eth->qdma[0];
-+	struct airoha_eth *eth = dev->eth;
+ 	u32 pse_port = FE_PSE_PORT_PPE1;
 +	struct airoha_qdma *qdma;
-+	int qdma_id;
+ 	int err;
  
- 	/* HW LRO is configured on the QDMA and it is shared between
- 	 * all the devices using it. Refuse to open a second device on
- 	 * the same QDMA if LRO is enabled on any device sharing it.
- 	 */
+ 	netif_tx_start_all_queues(netdev);
+@@ -1914,6 +1920,7 @@ static int airoha_dev_open(struct net_de
+ 	if (err)
+ 		return err;
+ 
 +	qdma = airoha_qdma_deref(dev);
-+	qdma_id = qdma - &eth->qdma[0];
-+
- 	if (qdma->users && airoha_fe_lro_is_enabled(eth, qdma_id)) {
- 		netdev_warn(netdev, "required to disable HW GRO on QDMA%d\n",
- 			    qdma_id);
-@@ -2123,10 +2161,7 @@ static int airoha_dev_open(struct net_de
- 	}
- 	port->users++;
- 
--	airoha_qdma_set(qdma, REG_QDMA_GLOBAL_CFG,
--			GLOBAL_CFG_TX_DMA_EN_MASK |
--			GLOBAL_CFG_RX_DMA_EN_MASK);
--	qdma->users++;
-+	airoha_qdma_start(qdma);
- 
- 	if (!airoha_is_lan_gdm_dev(dev) &&
- 	    airoha_ppe_is_enabled(eth, 1))
-@@ -2170,8 +2205,7 @@ static int airoha_dev_stop(struct net_de
+ 	if (netdev_uses_dsa(netdev))
+ 		airoha_fe_set(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
+ 			      GDM_STAG_EN_MASK);
+@@ -1937,7 +1944,6 @@ static int airoha_dev_stop(struct net_de
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
  	struct airoha_gdm_port *port = dev->port;
 -	struct airoha_qdma *qdma = dev->qdma;
--	struct airoha_eth *eth = qdma->eth;
-+	struct airoha_qdma *qdma;
- 	int i;
  
  	netif_tx_disable(netdev);
-@@ -2179,26 +2213,14 @@ static int airoha_dev_stop(struct net_de
- 	for (i = 0; i < netdev->num_tx_queues; i++)
- 		netdev_tx_reset_subqueue(netdev, i);
- 
-+	qdma = airoha_qdma_deref(dev);
+ 	airoha_set_vip_for_gdm_port(dev, false);
+@@ -1945,7 +1951,7 @@ static int airoha_dev_stop(struct net_de
  	if (--port->users)
--		airoha_set_port_mtu(eth, port);
-+		airoha_set_port_mtu(dev->eth, port);
+ 		airoha_ppe_set_xmit_frame_size(dev);
  	else
--		airoha_set_gdm_port_fwd_cfg(eth,
-+		airoha_set_gdm_port_fwd_cfg(qdma->eth,
+-		airoha_set_gdm_port_fwd_cfg(qdma->eth,
++		airoha_set_gdm_port_fwd_cfg(dev->eth,
  					    REG_GDM_FWD_CFG(port->id),
  					    FE_PSE_PORT_DROP);
--
--	if (!--qdma->users) {
--		airoha_qdma_clear(qdma, REG_QDMA_GLOBAL_CFG,
--				  GLOBAL_CFG_TX_DMA_EN_MASK |
--				  GLOBAL_CFG_RX_DMA_EN_MASK);
--
--		for (i = 0; i < ARRAY_SIZE(qdma->q_tx); i++) {
--			if (!qdma->q_tx[i].ndesc)
--				continue;
--
--			airoha_qdma_cleanup_tx_queue(&qdma->q_tx[i]);
--		}
--	}
--
-+	airoha_qdma_stop(qdma);
- 	airoha_update_netdev_features(dev);
- 
- 	phylink_stop(dev->phylink);
-@@ -2288,6 +2310,53 @@ static int airoha_enable_gdm2_loopback(s
+ 	return 0;
+@@ -2028,6 +2034,53 @@ static int airoha_enable_gdm2_loopback(s
  	return 0;
  }
  
@@ -215,72 +174,48 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  static struct airoha_gdm_dev *
  airoha_get_wan_gdm_dev(struct airoha_eth *eth)
  {
-@@ -2314,15 +2383,30 @@ airoha_get_wan_gdm_dev(struct airoha_eth
+@@ -2054,15 +2107,37 @@ airoha_get_wan_gdm_dev(struct airoha_eth
  static void airoha_dev_set_qdma(struct airoha_gdm_dev *dev)
  {
  	struct net_device *netdev = netdev_from_priv(dev);
 +	struct airoha_qdma *cur_qdma, *qdma;
  	struct airoha_eth *eth = dev->eth;
- 	int ppe_id;
+-	int ppe_id;
++	int i, ppe_id;
  
  	/* QDMA0 is used for lan ports while QDMA1 is used for WAN ports */
 -	dev->qdma = &eth->qdma[!airoha_is_lan_gdm_dev(dev)];
 -	netdev->irq = dev->qdma->irq_banks[0].irq;
 +	qdma = &eth->qdma[!airoha_is_lan_gdm_dev(dev)];
 +	cur_qdma = airoha_qdma_deref(dev);
-+	if (netif_running(netdev))
-+		airoha_qdma_start(qdma);
++
++	if (cur_qdma)
++		netif_tx_stop_all_queues(netdev);
 +
 +	rcu_assign_pointer(dev->qdma, qdma);
 +	netdev->irq = qdma->irq_banks[0].irq;
++	synchronize_rcu();
  
  	ppe_id = !airoha_is_lan_gdm_dev(dev) && airoha_ppe_is_enabled(eth, 1);
  	airoha_ppe_set_cpu_port(dev, ppe_id, airoha_get_fe_port(dev));
 +
-+	if (!cur_qdma)
-+		return;
++	/* Seed qos_stats baselines with the new QDMA block's current
++	 * counter values to avoid a spurious spike on the first stats
++	 * query after init or migration.
++	 */
++	for (i = 0; i < ARRAY_SIZE(dev->qos_stats); i++) {
++		dev->qos_stats[i].cpu_tx_packets =
++			airoha_qdma_rr(qdma, REG_CNTR_VAL(i << 1));
++		dev->qos_stats[i].fwd_tx_packets =
++			airoha_qdma_rr(qdma, REG_CNTR_VAL((i << 1) + 1));
++	}
 +
-+	synchronize_rcu();
-+	netif_tx_wake_all_queues(netdev);
-+
-+	if (netif_running(netdev))
-+		airoha_qdma_stop(cur_qdma);
++	if (cur_qdma)
++		netif_tx_wake_all_queues(netdev);
  }
  
  static int airoha_dev_init(struct net_device *netdev)
-@@ -2477,8 +2561,9 @@ static netdev_features_t airoha_dev_fix_
- 						 netdev_features_t features)
- {
- 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
--	struct airoha_qdma *qdma = dev->qdma;
-+	struct airoha_qdma *qdma;
- 
-+	qdma = airoha_qdma_deref(dev);
- 	if (qdma->users > 1)
- 		features &= ~NETIF_F_GRO_HW;
- 
-@@ -2490,9 +2575,8 @@ static int airoha_dev_set_features(struc
- {
- 	netdev_features_t diff = netdev->features ^ features;
- 	struct airoha_gdm_dev *dev = netdev_priv(netdev);
--	struct airoha_qdma *qdma = dev->qdma;
--	struct airoha_eth *eth = qdma->eth;
--	int qdma_id = qdma - &eth->qdma[0];
-+	struct airoha_qdma *qdma = airoha_qdma_deref(dev);
-+	int qdma_id = qdma - &dev->eth->qdma[0];
- 
- 	if (!(diff & NETIF_F_GRO_HW))
- 		return 0;
-@@ -2500,7 +2584,7 @@ static int airoha_dev_set_features(struc
- 	if (features & NETIF_F_GRO_HW)
- 		airoha_dev_lro_enable(dev);
- 	else
--		airoha_fe_lro_disable(eth, qdma_id);
-+		airoha_fe_lro_disable(dev->eth, qdma_id);
- 
- 	return 0;
- }
-@@ -2509,9 +2593,9 @@ static netdev_tx_t airoha_dev_xmit(struc
+@@ -2217,9 +2292,9 @@ static netdev_tx_t airoha_dev_xmit(struc
  				   struct net_device *netdev)
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -291,7 +226,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	struct netdev_queue *txq;
  	struct airoha_queue *q;
  	LIST_HEAD(tx_list);
-@@ -2520,6 +2604,8 @@ static netdev_tx_t airoha_dev_xmit(struc
+@@ -2228,6 +2303,8 @@ static netdev_tx_t airoha_dev_xmit(struc
  	u16 index;
  	u8 fport;
  
@@ -300,7 +235,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	qid = airoha_qdma_get_txq(qdma, skb_get_queue_mapping(skb));
  	tag = airoha_get_dsa_tag(skb, netdev);
  
-@@ -2566,6 +2652,8 @@ static netdev_tx_t airoha_dev_xmit(struc
+@@ -2277,6 +2354,8 @@ static netdev_tx_t airoha_dev_xmit(struc
  		netif_tx_stop_queue(txq);
  		q->txq_stopped = true;
  		spin_unlock_bh(&q->lock);
@@ -309,7 +244,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  		return NETDEV_TX_BUSY;
  	}
  
-@@ -2628,6 +2716,7 @@ static netdev_tx_t airoha_dev_xmit(struc
+@@ -2342,6 +2421,7 @@ static netdev_tx_t airoha_dev_xmit(struc
  				FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
  
  	spin_unlock_bh(&q->lock);
@@ -317,7 +252,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  
  	return NETDEV_TX_OK;
  
-@@ -2643,6 +2732,7 @@ error_unmap:
+@@ -2354,6 +2434,7 @@ error_unlock:
  error:
  	dev_kfree_skb_any(skb);
  	netdev->stats.tx_dropped++;
@@ -325,7 +260,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  
  	return NETDEV_TX_OK;
  }
-@@ -2740,17 +2830,19 @@ static int airoha_qdma_set_chan_tx_sched
+@@ -2433,17 +2514,19 @@ static int airoha_qdma_set_chan_tx_sched
  					 const u16 *weights, u8 n_weights)
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -347,7 +282,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  			       TWRR_RW_CMD_MASK |
  			       FIELD_PREP(TWRR_CHAN_IDX_MASK, channel) |
  			       FIELD_PREP(TWRR_QUEUE_IDX_MASK, i) |
-@@ -2758,12 +2850,12 @@ static int airoha_qdma_set_chan_tx_sched
+@@ -2451,12 +2534,12 @@ static int airoha_qdma_set_chan_tx_sched
  		err = read_poll_timeout(airoha_qdma_rr, status,
  					status & TWRR_RW_CMD_DONE,
  					USEC_PER_MSEC, 10 * USEC_PER_MSEC,
@@ -362,29 +297,20 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  			CHAN_QOS_MODE_MASK(channel),
  			__field_prep(CHAN_QOS_MODE_MASK(channel), mode));
  
-@@ -2827,13 +2919,15 @@ static int airoha_qdma_get_tx_ets_stats(
+@@ -2520,10 +2603,11 @@ static int airoha_qdma_get_tx_ets_stats(
  					struct tc_ets_qopt_offload *opt)
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
 -	struct airoha_qdma *qdma = dev->qdma;
-+	u64 cpu_tx_packets, fwd_tx_packets, tx_packets;
+ 	u32 cpu_tx_packets, fwd_tx_packets;
 +	struct airoha_qdma *qdma;
+ 	u64 tx_packets;
  
--	u64 cpu_tx_packets = airoha_qdma_rr(qdma, REG_CNTR_VAL(channel << 1));
--	u64 fwd_tx_packets = airoha_qdma_rr(qdma,
--					    REG_CNTR_VAL((channel << 1) + 1));
--	u64 tx_packets = (cpu_tx_packets - dev->cpu_tx_packets) +
--			 (fwd_tx_packets - dev->fwd_tx_packets);
 +	qdma = airoha_qdma_deref(dev);
-+	cpu_tx_packets = airoha_qdma_rr(qdma, REG_CNTR_VAL(channel << 1));
-+	fwd_tx_packets = airoha_qdma_rr(qdma,
-+					REG_CNTR_VAL((channel << 1) + 1));
-+	tx_packets = (cpu_tx_packets - dev->cpu_tx_packets) +
-+		     (fwd_tx_packets - dev->fwd_tx_packets);
- 
- 	_bstats_update(opt->stats.bstats, 0, tx_packets);
- 	dev->cpu_tx_packets = cpu_tx_packets;
-@@ -3092,16 +3186,18 @@ static int airoha_qdma_set_tx_rate_limit
+ 	cpu_tx_packets = airoha_qdma_rr(qdma, REG_CNTR_VAL(channel << 1));
+ 	fwd_tx_packets = airoha_qdma_rr(qdma,
+ 					REG_CNTR_VAL((channel << 1) + 1));
+@@ -2809,16 +2893,18 @@ static int airoha_qdma_set_tx_rate_limit
  					 u32 bucket_size)
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -405,7 +331,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  							 REG_EGRESS_TRTCM_CFG,
  							 i, rate, bucket_size);
  		if (err)
-@@ -3137,11 +3233,12 @@ static int airoha_tc_htb_alloc_leaf_queu
+@@ -2854,11 +2940,12 @@ static int airoha_tc_htb_alloc_leaf_queu
  	u32 channel = TC_H_MIN(opt->classid) % AIROHA_NUM_QOS_CHANNELS;
  	int err, num_tx_queues = AIROHA_NUM_TX_RING + channel + 1;
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
@@ -419,7 +345,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	if (test_and_set_bit(channel, qdma->qos_channel_map)) {
  		NL_SET_ERR_MSG_MOD(opt->extack,
  				   "qdma qos channel already in use");
-@@ -3177,7 +3274,7 @@ static int airoha_qdma_set_rx_meter(stru
+@@ -2894,7 +2981,7 @@ static int airoha_qdma_set_rx_meter(stru
  				    u32 rate, u32 bucket_size,
  				    enum trtcm_unit_type unit_type)
  {
@@ -428,7 +354,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	int i;
  
  	for (i = 0; i < ARRAY_SIZE(qdma->q_rx); i++) {
-@@ -3352,10 +3449,11 @@ static void airoha_tc_remove_htb_queue(s
+@@ -3069,10 +3156,11 @@ static void airoha_tc_remove_htb_queue(s
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
  	int num_tx_queues = AIROHA_NUM_TX_RING;
@@ -441,7 +367,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	clear_bit(queue, qdma->qos_channel_map);
  	clear_bit(queue, dev->qos_sq_bmap);
  
-@@ -3381,6 +3479,95 @@ static int airoha_tc_htb_delete_leaf_que
+@@ -3098,6 +3186,98 @@ static int airoha_tc_htb_delete_leaf_que
  	return 0;
  }
  
@@ -460,10 +386,12 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +		netdev_warn(netdev,
 +			    "failed disabling GDM2 loopback: %d\n", err);
 +
-+	dev->flags &= ~AIROHA_PRIV_F_WAN;
++	clear_bit(AIROHA_DEV_F_WAN, &dev->flags);
 +	airoha_dev_set_qdma(dev);
 +
 +	airoha_set_macaddr(dev, netdev->dev_addr);
++	airoha_ppe_set_xmit_frame_size(dev);
++
 +	if (netif_running(netdev))
 +		airoha_set_gdm_port_fwd_cfg(dev->eth,
 +					    REG_GDM_FWD_CFG(port->id),
@@ -491,7 +419,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +
 +	wan_dev = airoha_get_wan_gdm_dev(eth);
 +	if (wan_dev) {
-+		if ((wan_dev->flags & AIROHA_PRIV_F_QOS) ||
++		if (test_bit(AIROHA_DEV_F_TX_QOS, &wan_dev->flags) ||
 +		    wan_dev->port->id == AIROHA_GDM2_IDX) {
 +			NL_SET_ERR_MSG_MOD(extack,
 +					   "QoS configured for WAN device");
@@ -500,7 +428,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +		airoha_disable_qos_for_gdm34(netdev_from_priv(wan_dev));
 +	}
 +
-+	dev->flags |= AIROHA_PRIV_F_WAN;
++	set_bit(AIROHA_DEV_F_WAN, &dev->flags);
 +	airoha_dev_set_qdma(dev);
 +	err = airoha_enable_gdm2_loopback(dev);
 +	if (err)
@@ -510,6 +438,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +	if (err)
 +		goto error_disable_loopback;
 +
++	airoha_dev_set_xmit_frame_size(netdev);
 +	if (netif_running(netdev)) {
 +		u32 pse_port;
 +
@@ -526,7 +455,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +error_disable_loopback:
 +	airoha_disable_gdm2_loopback(dev);
 +error_disable_wan:
-+	dev->flags &= ~AIROHA_PRIV_F_WAN;
++	clear_bit(AIROHA_DEV_F_WAN, &dev->flags);
 +	airoha_dev_set_qdma(dev);
 +error_unlock:
 +	mutex_unlock(&flow_offload_mutex);
@@ -537,16 +466,16 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  static int airoha_tc_htb_destroy(struct net_device *netdev)
  {
  	struct airoha_gdm_dev *dev = netdev_priv(netdev);
-@@ -3389,6 +3576,8 @@ static int airoha_tc_htb_destroy(struct
+@@ -3106,6 +3286,8 @@ static int airoha_tc_htb_destroy(struct
  	for_each_set_bit(q, dev->qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS)
  		airoha_tc_remove_htb_queue(netdev, q);
  
-+	dev->flags &= ~AIROHA_PRIV_F_QOS;
++	clear_bit(AIROHA_DEV_F_TX_QOS, &dev->flags);
 +
  	return 0;
  }
  
-@@ -3408,24 +3597,33 @@ static int airoha_tc_get_htb_get_leaf_qu
+@@ -3125,24 +3307,33 @@ static int airoha_tc_get_htb_get_leaf_qu
  	return 0;
  }
  
@@ -564,7 +493,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +		if (err)
 +			return err;
 +
-+		dev->flags |= AIROHA_PRIV_F_QOS;
++		set_bit(AIROHA_DEV_F_TX_QOS, &dev->flags);
  		break;
 +	}
  	case TC_HTB_DESTROY:
@@ -587,23 +516,32 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	default:
  		return -EOPNOTSUPP;
  	}
---- a/drivers/net/ethernet/airoha/airoha_regs.h
-+++ b/drivers/net/ethernet/airoha/airoha_regs.h
-@@ -402,6 +402,7 @@
+@@ -3244,8 +3435,8 @@ static int airoha_alloc_gdm_device(struc
+ {
+ 	struct net_device *netdev;
+ 	struct airoha_gdm_dev *dev;
++	int err, i;
+ 	u8 index;
+-	int err;
  
- #define REG_SRC_PORT_FC_MAP6		0x2298
- #define FC_ID_OF_SRC_PORT_MASK(_n)	GENMASK(4 + ((_n) << 3), ((_n) << 3))
-+#define FC_MAP6_DEF_VALUE		0x1b1a1918
- 
- #define REG_CDM5_RX_OQ1_DROP_CNT	0x29d4
- 
+ 	netdev = devm_alloc_etherdev_mqs(eth->dev, sizeof(*dev),
+ 					 AIROHA_NUM_NETDEV_TX_RINGS,
+@@ -3296,6 +3487,8 @@ static int airoha_alloc_gdm_device(struc
+ 	netdev->dev.of_node = of_node_get(np);
+ 	dev = netdev_priv(netdev);
+ 	u64_stats_init(&dev->stats.syncp);
++	for (i = 0; i < ARRAY_SIZE(dev->txq_lock); i++)
++		spin_lock_init(&dev->txq_lock[i]);
+ 	dev->port = port;
+ 	dev->eth = eth;
+ 	dev->nbq = nbq;
 --- a/drivers/net/ethernet/airoha/airoha_eth.h
 +++ b/drivers/net/ethernet/airoha/airoha_eth.h
-@@ -550,11 +550,12 @@ struct airoha_qdma {
+@@ -575,11 +575,12 @@ struct airoha_qdma {
  
- enum airoha_priv_flags {
- 	AIROHA_PRIV_F_WAN = BIT(0),
-+	AIROHA_PRIV_F_QOS = BIT(1),
+ enum airoha_dev_flags {
+ 	AIROHA_DEV_F_WAN,
++	AIROHA_DEV_F_TX_QOS,
  };
  
  struct airoha_gdm_dev {
@@ -613,7 +551,19 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	struct airoha_eth *eth;
  
  	DECLARE_BITMAP(qos_sq_bmap, AIROHA_NUM_QOS_CHANNELS);
-@@ -704,6 +705,16 @@ int airoha_get_fe_port(struct airoha_gdm
+@@ -592,6 +593,11 @@ struct airoha_gdm_dev {
+ 	int nbq;
+ 
+ 	struct airoha_hw_stats stats;
++
++	/* Serialize netdev_tx_completed_queue() calls per TX queue during
++	 * QDMA migration.
++	 */
++	spinlock_t txq_lock[AIROHA_NUM_NETDEV_TX_RINGS];
+ };
+ 
+ struct airoha_gdm_port {
+@@ -715,6 +721,16 @@ int airoha_get_fe_port(struct airoha_gdm
  bool airoha_is_valid_gdm_dev(struct airoha_eth *eth,
  			     struct airoha_gdm_dev *dev);
  
@@ -627,12 +577,12 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
 +					 lockdep_is_held(&flow_offload_mutex));
 +}
 +
+ void airoha_ppe_set_xmit_frame_size(struct airoha_gdm_dev *dev);
  void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport);
  bool airoha_ppe_is_enabled(struct airoha_eth *eth, int index);
- void airoha_ppe_check_skb(struct airoha_ppe_dev *dev, struct sk_buff *skb,
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe.c
-@@ -16,7 +16,10 @@
+@@ -15,7 +15,10 @@
  #include "airoha_regs.h"
  #include "airoha_eth.h"
  
@@ -644,7 +594,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  static DEFINE_SPINLOCK(ppe_lock);
  
  static const struct rhashtable_params airoha_flow_table_params = {
-@@ -87,8 +90,8 @@ static u32 airoha_ppe_get_timestamp(stru
+@@ -86,8 +89,8 @@ static u32 airoha_ppe_get_timestamp(stru
  
  void airoha_ppe_set_cpu_port(struct airoha_gdm_dev *dev, u8 ppe_id, u8 fport)
  {
@@ -655,3 +605,13 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  	u8 qdma_id = qdma - &eth->qdma[0];
  	u32 fe_cpu_port;
  
+--- a/drivers/net/ethernet/airoha/airoha_regs.h
++++ b/drivers/net/ethernet/airoha/airoha_regs.h
+@@ -375,6 +375,7 @@
+ 
+ #define REG_SRC_PORT_FC_MAP6		0x2298
+ #define FC_ID_OF_SRC_PORT_MASK(_n)	GENMASK(4 + ((_n) << 3), ((_n) << 3))
++#define FC_MAP6_DEF_VALUE		0x1b1a1918
+ 
+ #define REG_WAN_MTU0			0x2300
+ #define WAN_MTU1_MASK			GENMASK(29, 16)

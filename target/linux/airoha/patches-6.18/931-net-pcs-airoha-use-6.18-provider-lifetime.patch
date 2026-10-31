@@ -1,0 +1,84 @@
+From: lean <chenlin@fnnas.com>
+Subject: [PATCH] net: airoha: use the 6.18 PCS and phylink APIs
+
+Register through the existing PCS API and use device-managed cleanup to
+unregister the provider and release PCS references before its storage.
+Use the existing phylink parser to populate the available PCS count.
+
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+
+--- a/drivers/net/pcs/airoha/pcs-airoha-common.c
++++ b/drivers/net/pcs/airoha/pcs-airoha-common.c
+@@ -16,6 +16,7 @@
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+ #include <linux/reset.h>
++#include <linux/rtnetlink.h>
+ 
+ #include "pcs-airoha.h"
+ 
+@@ -1478,10 +1479,21 @@
+ 	return 0;
+ }
+ 
++static void airoha_pcs_unregister(void *data)
++{
++	struct airoha_pcs_priv *priv = data;
++	int i;
++
++	fwnode_pcs_del_provider(dev_fwnode(priv->dev));
++	rtnl_lock();
++	for (i = 0; i < priv->data->num_port; i++)
++		phylink_release_pcs(&priv->ports[i].pcs);
++	rtnl_unlock();
++}
++
+ static int airoha_pcs_probe(struct platform_device *pdev)
+ {
+ 	const struct airoha_pcs_match_data *data;
+-	struct fwnode_pcs_provider *pcs_provider;
+ 	struct device *dev = &pdev->dev;
+ 	struct airoha_pcs_priv *priv;
+ 	int index, ret;
+@@ -1615,12 +1627,11 @@
+ 
+ 	platform_set_drvdata(pdev, priv);
+ 
+-	pcs_provider = devm_fwnode_pcs_add_provider(dev, dev_fwnode(dev),
+-						    airoha_pcs_xlate, priv);
+-	if (IS_ERR(pcs_provider))
+-		return PTR_ERR(pcs_provider);
++	ret = fwnode_pcs_add_provider(dev_fwnode(dev), airoha_pcs_xlate, priv);
++	if (ret)
++		return ret;
+ 
+-	return 0;
++	return devm_add_action_or_reset(dev, airoha_pcs_unregister, priv);
+ }
+ 
+ static const struct airoha_pcs_match_data an7581_pcs_eth = {
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -4493,7 +4493,7 @@
+ 	struct device *dev = config->dev;
+ 
+ 	return fwnode_phylink_pcs_parse(dev_fwnode(dev), available_pcs,
+-					num_possible_pcs);
++					&num_possible_pcs);
+ }
+ 
+ static int airoha_setup_phylink(struct net_device *netdev)
+@@ -4531,7 +4531,11 @@
+ 					   MAC_10 | MAC_100 | MAC_1000 |
+ 					   MAC_2500FD | MAC_5000FD | MAC_10000FD;
+ 
+-		config->num_possible_pcs = fwnode_phylink_pcs_count(dev_fwnode(config->dev));
++		err = fwnode_phylink_pcs_parse(dev_fwnode(config->dev), NULL,
++					       &config->num_available_pcs);
++		if (err)
++			return err;
++
+ 		config->fill_available_pcs = airoha_fill_available_pcs;
+ 
+ 		__set_bit(PHY_INTERFACE_MODE_SGMII,

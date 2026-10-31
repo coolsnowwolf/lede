@@ -1,0 +1,203 @@
+From: pbs05 <27010143+pbs05@users.noreply.github.com>
+Subject: [PATCH] mtd: spinand: esmt: disambiguate F50L2G41XA from Micron
+
+ESMT F50L2G41XA and Micron MT29F2G01ABAGD both return 2c:24 for
+READ ID.  Geometry alone cannot distinguish them, while their OOB
+ownership and plane-select requirements are not interchangeable.
+
+Allow a manufacturer table to require a firmware compatible string,
+then describe the ESMT part under its real 2c:24 ID.  Boards which do
+not opt in keep matching the existing Micron entry.
+
+Signed-off-by: pbs05 <27010143+pbs05@users.noreply.github.com>
+
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+
+--- a/Documentation/devicetree/bindings/mtd/spi-nand.yaml
++++ b/Documentation/devicetree/bindings/mtd/spi-nand.yaml
+@@ -15,7 +15,12 @@
+ 
+ properties:
+   compatible:
+-    const: spi-nand
++    oneOf:
++      - const: spi-nand
++      - items:
++          - const: esmt,f50l2g41xa
++          - const: spi-nand
++
+ 
+   reg:
+     description: Encode the chip-select line on the SPI bus
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -348,10 +348,13 @@
+  * @chips: supported SPI NANDs under current manufacturer
+  * @nchips: number of SPI NANDs available in chips array
+  * @ops: manufacturer operations
++ * @compatible: optional firmware compatible required before matching this
++ *              manufacturer table
+  */
+ struct spinand_manufacturer {
+ 	u8 id;
+ 	char *name;
++	const char *compatible;
+ 	const struct spinand_info *chips;
+ 	const size_t nchips;
+ 	const struct spinand_manufacturer_ops *ops;
+@@ -360,6 +363,7 @@
+ /* SPI NAND manufacturers */
+ extern const struct spinand_manufacturer alliancememory_spinand_manufacturer;
+ extern const struct spinand_manufacturer ato_spinand_manufacturer;
++extern const struct spinand_manufacturer esmt_2c_spinand_manufacturer;
+ extern const struct spinand_manufacturer esmt_8c_spinand_manufacturer;
+ extern const struct spinand_manufacturer esmt_c8_spinand_manufacturer;
+ extern const struct spinand_manufacturer etron_spinand_manufacturer;
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/mtd/spinand.h>
+ #include <linux/of.h>
++#include <linux/property.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+ #include <linux/spi/spi.h>
+@@ -1247,6 +1248,7 @@
+ 	&ato_spinand_manufacturer,
+ 	&esmt_8c_spinand_manufacturer,
+ 	&esmt_c8_spinand_manufacturer,
++	&esmt_2c_spinand_manufacturer,
+ 	&etron_spinand_manufacturer,
+ 	&fmsh_spinand_manufacturer,
+ 	&foresee_spinand_manufacturer,
+@@ -1271,6 +1273,10 @@
+ 		const struct spinand_manufacturer *manufacturer =
+ 			spinand_manufacturers[i];
+ 
++		if (manufacturer->compatible &&
++		    !device_is_compatible(&spinand->spimem->spi->dev,
++					  manufacturer->compatible))
++			continue;
+ 		if (id[0] != manufacturer->id)
+ 			continue;
+ 
+--- a/drivers/mtd/nand/spi/esmt.c
++++ b/drivers/mtd/nand/spi/esmt.c
+@@ -13,11 +13,19 @@
+ /* ESMT uses GigaDevice 0xc8 JECDEC ID on some SPI NANDs */
+ #define SPINAND_MFR_ESMT_C8			0xc8
+ #define SPINAND_MFR_ESMT_8C			0x8c
++#define SPINAND_MFR_ESMT_2C			0x2c
+ 
+ #define ESMT_F50L1G41LB_CFG_OTP_PROTECT		BIT(7)
+ #define ESMT_F50L1G41LB_CFG_OTP_LOCK		\
+ 	(CFG_OTP_ENABLE | ESMT_F50L1G41LB_CFG_OTP_PROTECT)
+ 
++#define ESMT_F50L2G41XA_STATUS_ECC_MASK		GENMASK(6, 4)
++#define ESMT_F50L2G41XA_STATUS_ECC_NO_BITFLIPS	(0 << 4)
++#define ESMT_F50L2G41XA_STATUS_ECC_1TO3		(1 << 4)
++#define ESMT_F50L2G41XA_STATUS_ECC_UNCOR		(2 << 4)
++#define ESMT_F50L2G41XA_STATUS_ECC_4TO6		(3 << 4)
++#define ESMT_F50L2G41XA_STATUS_ECC_7TO8		(5 << 4)
++
+ static SPINAND_OP_VARIANTS(read_cache_variants,
+ 			   SPINAND_PAGE_READ_FROM_CACHE_1S_1S_4S_OP(0, 1, NULL, 0, 0),
+ 			   SPINAND_PAGE_READ_FROM_CACHE_1S_1S_2S_OP(0, 1, NULL, 0, 0),
+@@ -108,6 +116,59 @@
+ 	.free = f50l1g41lb_ooblayout_free,
+ };
+ 
++/*
++ * Bytes 0..3 carry bad-block and BMT markers.
++ * Bytes 4..63 carry user metadata.
++ * The internal ECC engine owns bytes 64..127.
++ */
++static int f50l2g41xa_ooblayout_ecc(struct mtd_info *mtd, int section,
++				    struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = mtd->oobsize / 2;
++	region->length = mtd->oobsize / 2;
++
++	return 0;
++}
++
++static int f50l2g41xa_ooblayout_free(struct mtd_info *mtd, int section,
++				     struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 4;
++	region->length = (mtd->oobsize / 2) - 4;
++
++	return 0;
++}
++
++static const struct mtd_ooblayout_ops f50l2g41xa_ooblayout = {
++	.ecc = f50l2g41xa_ooblayout_ecc,
++	.free = f50l2g41xa_ooblayout_free,
++};
++
++static int f50l2g41xa_ecc_get_status(struct spinand_device *spinand,
++				     u8 status)
++{
++	switch (status & ESMT_F50L2G41XA_STATUS_ECC_MASK) {
++	case ESMT_F50L2G41XA_STATUS_ECC_NO_BITFLIPS:
++		return 0;
++	case ESMT_F50L2G41XA_STATUS_ECC_1TO3:
++		return 3;
++	case ESMT_F50L2G41XA_STATUS_ECC_UNCOR:
++		return -EBADMSG;
++	case ESMT_F50L2G41XA_STATUS_ECC_4TO6:
++		return 6;
++	case ESMT_F50L2G41XA_STATUS_ECC_7TO8:
++		return 8;
++	default:
++		return -EINVAL;
++	}
++}
++
+ static int f50l1g41lb_otp_info(struct spinand_device *spinand, size_t len,
+ 			       struct otp_info *buf, size_t *retlen, bool user)
+ {
+@@ -198,6 +259,19 @@
+ 		     SPINAND_ECCINFO(&f50l1g41lb_ooblayout, NULL)),
+ };
+ 
++static const struct spinand_info esmt_2c_spinand_table[] = {
++	SPINAND_INFO("F50L2G41XA",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0x24),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 2, 1, 1),
++		     NAND_ECCREQ(8, 512),
++		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     0,
++		     SPINAND_ECCINFO(&f50l2g41xa_ooblayout,
++				     f50l2g41xa_ecc_get_status)),
++};
++
+ static const struct spinand_info esmt_c8_spinand_table[] = {
+ 	SPINAND_INFO("F50L1G41LB",
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_ADDR, 0x01, 0x7f,
+@@ -238,6 +312,15 @@
+ static const struct spinand_manufacturer_ops esmt_spinand_manuf_ops = {
+ };
+ 
++const struct spinand_manufacturer esmt_2c_spinand_manufacturer = {
++	.id = SPINAND_MFR_ESMT_2C,
++	.name = "ESMT",
++	.compatible = "esmt,f50l2g41xa",
++	.chips = esmt_2c_spinand_table,
++	.nchips = ARRAY_SIZE(esmt_2c_spinand_table),
++	.ops = &esmt_spinand_manuf_ops,
++};
++
+ const struct spinand_manufacturer esmt_8c_spinand_manufacturer = {
+ 	.id = SPINAND_MFR_ESMT_8C,
+ 	.name = "ESMT",

@@ -1,0 +1,175 @@
+From 32f1c2bbb26ae2be476c8b66e3b41789b6b97bfc Mon Sep 17 00:00:00 2001
+From: Lorenzo Bianconi <lorenzo@kernel.org>
+Date: Thu, 25 Jun 2026 11:42:46 +0200
+Subject: [PATCH 31/50] net: airoha: dma map xmit frags with skb_frag_dma_map()
+
+Map xmit skb fragments using skb_frag_dma_map() instead of
+dma_map_single(skb_frag_address()). skb_frag_address() relies on
+page_address() to obtain a kernel virtual address, which is not
+guaranteed to work for all page types (e.g. highmem pages or
+user-pinned pages from MSG_ZEROCOPY).
+skb_frag_dma_map() maps the fragment directly via its struct page and
+offset through dma_map_page(), avoiding the need for a kernel virtual
+address entirely.
+Introduce an enum airoha_dma_map_type to track how each queue entry was
+mapped (single vs page), so that the matching unmap function is called
+on completion and in error paths.
+
+Fixes: 23020f049327 ("net: airoha: Introduce ethernet support for EN7581 SoC")
+Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
+Reviewed-by: Harshitha Ramamurthy <hramamurthy@google.com>
+Link: https://patch.msgid.link/20260625-airoha-eth-skb_frag_dma_map-v1-1-31d9e460aae6@kernel.org
+Signed-off-by: Jakub Kicinski <kuba@kernel.org>
+Signed-off-by: lean <chenlin@fnnas.com>
+---
+ drivers/net/ethernet/airoha/airoha_eth.c | 61 +++++++++++++++---------
+ drivers/net/ethernet/airoha/airoha_eth.h |  7 +++
+ 2 files changed, 45 insertions(+), 23 deletions(-)
+
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -944,6 +944,25 @@ static void airoha_qdma_wake_netdev_txqs
+ 	q->txq_stopped = false;
+ }
+ 
++static void airoha_unmap_xmit_buf(struct airoha_eth *eth,
++				  struct airoha_queue_entry *e)
++{
++	switch (e->dma_type) {
++	case AIROHA_DMA_MAP_PAGE:
++		dma_unmap_page(eth->dev, e->dma_addr, e->dma_len,
++			       DMA_TO_DEVICE);
++		break;
++	case AIROHA_DMA_MAP_SINGLE:
++		dma_unmap_single(eth->dev, e->dma_addr, e->dma_len,
++				 DMA_TO_DEVICE);
++		break;
++	case AIROHA_DMA_UNMAPPED:
++	default:
++		break;
++	}
++	e->dma_type = AIROHA_DMA_UNMAPPED;
++}
++
+ static int airoha_qdma_tx_napi_poll(struct napi_struct *napi, int budget)
+ {
+ 	struct airoha_tx_irq_queue *irq_q;
+@@ -1006,9 +1025,7 @@ static int airoha_qdma_tx_napi_poll(stru
+ 		skb = e->skb;
+ 		e->skb = NULL;
+ 
+-		dma_unmap_single(eth->dev, e->dma_addr, e->dma_len,
+-				 DMA_TO_DEVICE);
+-		e->dma_addr = 0;
++		airoha_unmap_xmit_buf(eth, e);
+ 		list_add_tail(&e->list, &q->tx_list);
+ 
+ 		WRITE_ONCE(desc->msg0, 0);
+@@ -1177,12 +1194,10 @@ static void airoha_qdma_tx_cleanup(struc
+ 			struct airoha_qdma_desc *desc = &q->desc[j];
+ 			struct sk_buff *skb = e->skb;
+ 
+-			if (!e->dma_addr)
++			if (e->dma_type == AIROHA_DMA_UNMAPPED)
+ 				continue;
+ 
+-			dma_unmap_single(qdma->eth->dev, e->dma_addr,
+-					 e->dma_len, DMA_TO_DEVICE);
+-			e->dma_addr = 0;
++			airoha_unmap_xmit_buf(qdma->eth, e);
+ 			list_add_tail(&e->list, &q->tx_list);
+ 
+ 			WRITE_ONCE(desc->ctrl, 0);
+@@ -2193,8 +2208,8 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	struct netdev_queue *txq;
+ 	struct airoha_queue *q;
+ 	LIST_HEAD(tx_list);
++	dma_addr_t addr;
+ 	int i = 0, qid;
+-	void *data;
+ 	u16 index;
+ 	u8 fport;
+ 
+@@ -2250,24 +2265,22 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 		return NETDEV_TX_BUSY;
+ 	}
+ 
+-	len = skb_headlen(skb);
+-	data = skb->data;
+-
+ 	e = list_first_entry(&q->tx_list, struct airoha_queue_entry,
+ 			     list);
++	len = skb_headlen(skb);
++	addr = dma_map_single(netdev->dev.parent, skb->data, len,
++			      DMA_TO_DEVICE);
++	if (unlikely(dma_mapping_error(netdev->dev.parent, addr)))
++		goto error_unlock;
++
++	e->dma_type = AIROHA_DMA_MAP_SINGLE;
+ 	index = e - q->entry;
+ 
+ 	while (true) {
+ 		struct airoha_qdma_desc *desc = &q->desc[index];
+ 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+-		dma_addr_t addr;
+ 		u32 val;
+ 
+-		addr = dma_map_single(netdev->dev.parent, data, len,
+-				      DMA_TO_DEVICE);
+-		if (unlikely(dma_mapping_error(netdev->dev.parent, addr)))
+-			goto error_unmap;
+-
+ 		list_move_tail(&e->list, &tx_list);
+ 		e->skb = i == nr_frags - 1 ? skb : NULL;
+ 		e->dma_addr = addr;
+@@ -2291,8 +2304,13 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 		if (++i == nr_frags)
+ 			break;
+ 
+-		data = skb_frag_address(frag);
+ 		len = skb_frag_size(frag);
++		addr = skb_frag_dma_map(netdev->dev.parent, frag, 0, len,
++					DMA_TO_DEVICE);
++		if (unlikely(dma_mapping_error(netdev->dev.parent, addr)))
++			goto error_unmap;
++
++		e->dma_type = AIROHA_DMA_MAP_PAGE;
+ 	}
+ 	q->queued += i;
+ 
+@@ -2313,11 +2331,8 @@ static netdev_tx_t airoha_dev_xmit(struc
+ 	return NETDEV_TX_OK;
+ 
+ error_unmap:
+-	list_for_each_entry(e, &tx_list, list) {
+-		dma_unmap_single(netdev->dev.parent, e->dma_addr, e->dma_len,
+-				 DMA_TO_DEVICE);
+-		e->dma_addr = 0;
+-	}
++	list_for_each_entry(e, &tx_list, list)
++		airoha_unmap_xmit_buf(dev->eth, e);
+ 	list_splice(&tx_list, &q->tx_list);
+ error_unlock:
+ 	spin_unlock_bh(&q->lock);
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -173,12 +173,19 @@ enum trtcm_param {
+ 
+ #define TRTCM_CONFIG_RETRY_MAX			2
+ 
++enum airoha_dma_map_type {
++	AIROHA_DMA_UNMAPPED,
++	AIROHA_DMA_MAP_SINGLE,
++	AIROHA_DMA_MAP_PAGE,
++};
++
+ struct airoha_queue_entry {
+ 	union {
+ 		void *buf;
+ 		struct {
+ 			struct list_head list;
+ 			struct sk_buff *skb;
++			enum airoha_dma_map_type dma_type;
+ 		};
+ 	};
+ 	dma_addr_t dma_addr;
