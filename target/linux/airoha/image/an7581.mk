@@ -84,13 +84,11 @@ define Device/nokia_xg-040g-md-common
   UBINIZE_OPTS := -E 5
   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
 	kmod-phy-airoha-en8811h kmod-regulator-userspace-consumer \
-	kmod-usb-ledtrig-usbport kmod-usb3
+	kmod-usb-ledtrig-usbport kmod-usb3 kmod-airoha-en7572 \
+	kmod-airoha-xpon airoha-ponctl airoha-pond luci-app-pon
 endef
 
-define Device/nokia_xg-040g-md-ubi
-  $(call Device/nokia_xg-040g-md-common)
-  DEVICE_VARIANT := (UBI)
-  DEVICE_DTS := an7581-nokia_xg-040g-md-ubi
+define Device/nokia_xg-040g-ubi-images
   UBOOTENV_IN_UBI := 1
   KERNEL_IN_UBI := 1
   KERNEL := kernel-bin | gzip
@@ -103,7 +101,25 @@ define Device/nokia_xg-040g-md-ubi
 	append-metadata
   DEVICE_PACKAGES += fitblk
 endef
+
+define Device/nokia_xg-040g-md-ubi
+  $(call Device/nokia_xg-040g-md-common)
+  DEVICE_VARIANT := (UBI)
+  DEVICE_DTS := an7581-nokia_xg-040g-md-ubi
+  $(call Device/nokia_xg-040g-ubi-images)
+endef
 TARGET_DEVICES += nokia_xg-040g-md-ubi
+
+define Device/nokia_xg-040g-tf-ubi
+  $(call Device/nokia_xg-040g-md-common)
+  DEVICE_MODEL := XG-040G-TF
+  DEVICE_VARIANT := (UBI)
+  DEVICE_DTS := an7581-nokia_xg-040g-tf-ubi
+  DEVICE_PACKAGES += -kmod-regulator-userspace-consumer \
+	-kmod-usb-ledtrig-usbport -kmod-usb3
+  $(call Device/nokia_xg-040g-ubi-images)
+endef
+TARGET_DEVICES += nokia_xg-040g-tf-ubi
 
 # HG5585F variants share parallel NAND, PON, MT7916D, and dual USB.
 define Device/fiberhome_hg5585f-common

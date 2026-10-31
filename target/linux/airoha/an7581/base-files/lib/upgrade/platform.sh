@@ -26,7 +26,8 @@ platform_check_image() {
 	case "$(board_name)" in
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu|\
-	nokia,xg-040g-md-ubi)
+	nokia,xg-040g-md-ubi|\
+	nokia,xg-040g-tf-ubi)
 		fit_check_image "$1"
 		return $?
 		;;
@@ -41,7 +42,8 @@ platform_do_upgrade() {
 	fiberhome,hg5585f-cu)
 		airoha_require_ubi_layout factory && fit_do_upgrade "$1"
 		;;
-	nokia,xg-040g-md-ubi)
+	nokia,xg-040g-md-ubi|\
+	nokia,xg-040g-tf-ubi)
 		airoha_require_ubi_layout bosa ri && fit_do_upgrade "$1"
 		;;
 	*)
