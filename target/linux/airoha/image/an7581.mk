@@ -211,3 +211,40 @@ define Device/h3c_hm2004-du
   $(call Device/fiberhome-ubi-images)
 endef
 TARGET_DEVICES += h3c_hm2004-du
+
+
+define Device/znxt_zn50xg-d-common
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := ZNXT
+  DEVICE_VARIANT := (UBI)
+  KERNEL_LOADADDR := 0x8a000000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
+    kmod-phy-airoha-en8811h kmod-airoha-en7572 kmod-airoha-xpon \
+    airoha-ponctl airoha-pond luci-app-pon fitblk nand-utils ubi-utils \
+    kmod-usb3 kmod-usb-ledtrig-usbport
+endef
+
+define Device/znxt_zn515xg-d
+  $(call Device/znxt_zn50xg-d-common)
+  DEVICE_MODEL := ZN515XG-D
+  DEVICE_DTS := an7581-znxt-zn515xg-d
+  DEVICE_PACKAGES += kmod-mt7915e kmod-mt7916-firmware \
+    znxt-zn515-mt7916-eeprom wpad-openssl
+  $(call Device/fiberhome-ubi-images)
+endef
+TARGET_DEVICES += znxt_zn515xg-d
+
+define Device/znxt_zn504xg-d
+  $(call Device/znxt_zn50xg-d-common)
+  DEVICE_MODEL := ZN504XG-D
+  DEVICE_DTS := an7581-znxt-zn504xg-d
+  $(call Device/fiberhome-ubi-images)
+endef
+TARGET_DEVICES += znxt_zn504xg-d

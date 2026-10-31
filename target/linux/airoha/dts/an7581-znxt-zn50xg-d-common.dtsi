@@ -1,0 +1,402 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+/*
+ * ZN504XG-D and ZN515XG-D share EN7581, an EN7572-compatible frontend,
+ * EN8811H, three internal Gigabit PHYs, USB1, panel LEDs, and NAND layout.
+ * Variant DTS files describe the ZN515 radio, USB2, and PON identity offsets.
+ */
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "an7581.dtsi"
+
+/ {
+	aliases {
+		label-mac-device = &gdm1;
+		led-boot = &led_power_green;
+		led-failsafe = &led_power_green;
+		led-running = &led_power_green;
+		led-upgrade = &led_power_green;
+		serial0 = &uart1;
+	};
+
+	chosen {
+		/* fitblk locates the FIT rootfs by volume node while UBI assigns IDs. */
+		rootdisk = <&ubi_fit>;
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	/*
+	 * 512 MiB is the board baseline. U-Boot reads installed capacity from
+	 * BL2 SCREG_WR1 and updates this node before bootm.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			/* The reset key is connected to active-low GPIO0. */
+			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_power_green: led-power {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_POWER;
+			/* The active-low power LED is connected to GPIO17. */
+			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+			panic-indicator;
+		};
+
+		led-pon {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN;
+			/* The active-low PON LED follows xPON registration on GPIO18. */
+			gpios = <&en7581_pinctrl 18 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-registration";
+		};
+
+		led-los {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_WAN;
+			/* The active-low LOS LED is connected to GPIO19. */
+			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-los";
+		};
+
+		led-internet {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN_ONLINE;
+			/* The active-low Internet LED is connected to GPIO20. */
+			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-online";
+		};
+
+		led_usb1: led-usb1 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_USB;
+			function-enumerator = <1>;
+			/* The active-low USB1 storage LED is connected to GPIO35. */
+			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "usbport";
+			trigger-sources = <&usb_port1>;
+		};
+
+		led-phone {
+			label = "green:phone";
+			/* The active-low POTS hook LED is connected to GPIO24. */
+			gpios = <&en7581_pinctrl 24 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	/* The USB PHY 3.3V reference supply is always on. */
+	reg_3p3v: regulator-3p3v {
+		compatible = "regulator-fixed";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-name = "fixed-3.3V";
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	pon_pins: pon-pins {
+		mux {
+			/* Leave GPIO38/TX_DISABLE under optical frontend control. */
+			function = "pon";
+			groups = "pon_tx_disable_gpio";
+		};
+	};
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+	};
+
+	gswp2_led0_pins: gswp2-led0-pins {
+		mux {
+			function = "phy2_led0";
+			pins = "gpio44";
+		};
+	};
+
+	gswp3_led0_pins: gswp3-led0-pins {
+		mux {
+			function = "phy3_led0";
+			pins = "gpio45";
+		};
+	};
+
+	gswp4_led0_pins: gswp4-led0-pins {
+		mux {
+			function = "phy4_led0";
+			pins = "gpio46";
+		};
+	};
+};
+
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	/* The board compatible selects F50L2G41XA semantics for shared ID 2c:24. */
+	compatible = "esmt,f50l2g41xa", "spi-nand";
+	nand-ecc-engine = <&spi_nand>;
+
+	partitions: partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* BootROM loads BL2 from the first block; BL2 locates later UBI firmware. */
+		partition@0 {
+			label = "bl2";
+			reg = <0x00000000 0x00020000>;
+			read-only;
+		};
+
+		partition@20000 {
+			label = "ubi";
+			/* UBI manages every NAND eraseblock after BL2. */
+			reg = <0x00020000 0x00000000>;
+			compatible = "linux,ubi";
+
+			volumes {
+				ubi-volume-fip {
+					volname = "fip";
+				};
+
+				ubi_env: ubi-volume-ubootenv {
+					volname = "ubootenv";
+				};
+
+				ubi_env2: ubi-volume-ubootenv2 {
+					volname = "ubootenv2";
+				};
+
+				factory: ubi-volume-factory {
+					volname = "factory";
+
+					/* factory retains reservearea data at production field offsets. */
+					znxt_proline_layout: nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						/* The base MAC uses 12 hexadecimal ASCII characters. */
+						macaddr_factory: mac-address@141024 {
+							compatible = "mac-base";
+							reg = <0x00141024 0x0000000c>;
+							#nvmem-cell-cells = <1>;
+						};
+
+						/* Optical calibration stores adjacent 256-byte A0 and A2 pages. */
+						pon_calibration: calibration@1c0400 {
+							reg = <0x001c0400 0x00000200>;
+						};
+					};
+				};
+
+				ubi_fit: ubi-volume-fit {
+					volname = "fit";
+				};
+			};
+		};
+	};
+};
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+
+	en7572: optical-front-end@50 {
+		compatible = "airoha,en7572";
+		reg = <0x50>;
+		/* GPIO38 high disables upstream optical transmission. */
+		tx-disable-gpios = <&en7581_pinctrl 38 GPIO_ACTIVE_HIGH>;
+		nvmem-cells = <&pon_calibration>;
+		nvmem-cell-names = "calibration";
+	};
+};
+
+/* This controller provides ZN504 USB1 and ZN515 USB1. */
+&usb0 {
+	status = "okay";
+	vusb33-supply = <&reg_3p3v>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	usb_port1: port@1 {
+		reg = <1>;
+		#trigger-source-cells = <0>;
+	};
+};
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&gdm1 {
+	/* The switch CPU port uses the production base MAC. */
+	nvmem-cells = <&macaddr_factory 0>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+};
+
+&mdio {
+	/* EN8811H uses MDIO address 0x0f for the external 2.5G port. */
+	en8811: ethernet-phy@f {
+		compatible = "ethernet-phy-id03a2.a411";
+		reg = <0xf>;
+		reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <20000>;
+
+		leds {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led-0 {
+				reg = <0>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_LAN;
+				function-enumerator = <1>;
+				default-state = "keep";
+			};
+		};
+	};
+};
+
+&eth_pcs {
+	/* HSGMII carries the EN8811H 2500BASE-X host link. */
+	status = "okay";
+};
+
+&gdm4 {
+	openwrt,netdev-name = "lan1";
+	phy-handle = <&en8811>;
+	phy-mode = "2500base-x";
+	nvmem-cells = <&macaddr_factory 1>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+};
+
+&switch {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+	status = "okay";
+};
+
+/* Internal PHY addresses 0x0a, 0x0b, and 0x0c serve the remaining ports. */
+&gsw_phy2 {
+	interrupts = <2>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp2_led0_pins>;
+	status = "okay";
+};
+
+&gsw_port2 {
+	label = "lan2";
+	status = "okay";
+};
+
+&gsw_phy2_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <2>;
+	active-low;
+	status = "okay";
+};
+
+&gsw_phy3 {
+	interrupts = <3>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp3_led0_pins>;
+	status = "okay";
+};
+
+&gsw_port3 {
+	label = "lan3";
+	status = "okay";
+};
+
+&gsw_phy3_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <3>;
+	active-low;
+	status = "okay";
+};
+
+&gsw_phy4 {
+	interrupts = <4>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp4_led0_pins>;
+	status = "okay";
+};
+
+&gsw_port4 {
+	label = "lan4";
+	status = "okay";
+};
+
+&gsw_phy4_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <4>;
+	active-low;
+	status = "okay";
+};
+
+&pon_pcs {
+	status = "okay";
+};
+
+&xpon_mac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pon_pins>;
+	optical-front-end = <&en7572>;
+	nvmem-cell-names = "pon-serial";
+	data-path = <&gdm2>;
+	status = "okay";
+};
+
+&gdm2 {
+	nvmem-cells = <&macaddr_factory 0>;
+	nvmem-cell-names = "mac-address";
+	airoha,pon-data-path;
+	status = "okay";
+};
