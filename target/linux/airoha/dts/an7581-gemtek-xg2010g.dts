@@ -1,0 +1,345 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/* Firmware reserves the first 2 MiB of DRAM. */
+/memreserve/ 0x80000000 0x200000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/phy/phy.h>
+#include "an7581.dtsi"
+
+/ {
+	model = "Gemtek XG2010G";
+	compatible = "gemtek,xg2010g", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		label-mac-device = &lan_10g_eth;
+		led-boot = &led_status_red;
+		led-failsafe = &led_status_blue;
+		led-running = &led_status_green;
+		led-upgrade = &led_status_blue;
+		serial0 = &uart1;
+	};
+
+	chosen {
+		/* Create fastmap on first attach for boot firmware and Linux reuse. */
+		bootargs = "console=ttyS0,115200 earlycon";
+		rootdisk = <&ubi_fit>;
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		/* The board contains 1 GiB of DRAM. */
+		reg = <0x0 0x80000000 0x0 0x40000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_status_red: led-status-red {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&en7581_pinctrl 43 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+		};
+
+		led_status_green: led-status-green {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&en7581_pinctrl 44 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_blue: led-status-blue {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&en7581_pinctrl 45 GPIO_ACTIVE_LOW>;
+		};
+
+		led-status-white {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&en7581_pinctrl 33 GPIO_ACTIVE_LOW>;
+		};
+
+		led-internet {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN_ONLINE;
+			gpios = <&en7581_pinctrl 14 GPIO_ACTIVE_LOW>;
+		};
+
+
+
+		/* GPIO42 and GPIO46 drive the LAN4 1GbE bicolor indicator. */
+		led-lan-green {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <4>;
+			gpios = <&en7581_pinctrl 46 GPIO_ACTIVE_LOW>;
+		};
+
+		led-lan-yellow {
+			color = <LED_COLOR_ID_YELLOW>;
+			function = LED_FUNCTION_LAN;
+			function-enumerator = <4>;
+			gpios = <&en7581_pinctrl 42 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+	};
+
+};
+
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	/* Winbond W25N04K provides 512 MiB with 2 KiB pages and 128 KiB blocks. */
+	compatible = "winbond,w25n04kv", "spi-nand";
+	nand-ecc-engine = <&spi_nand>;
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bl2";
+			/* BootROM reads the BL2 FIP at offset 0x800 in the first eraseblock. */
+			reg = <0x00000000 0x00020000>;
+			read-only;
+		};
+
+		partition@20000 {
+			label = "ubi";
+			/* A zero size extends the UBI partition to the physical NAND end. */
+			reg = <0x00020000 0x00000000>;
+			compatible = "linux,ubi";
+
+			volumes {
+				ubi_fip: ubi-volume-fip {
+					volname = "fip";
+				};
+
+				ubi_env: ubi-volume-ubootenv {
+					volname = "ubootenv";
+				};
+
+				ubi_env2: ubi-volume-ubootenv2 {
+					volname = "ubootenv2";
+				};
+
+				factory_storage: ubi-volume-factory {
+					volname = "factory";
+
+					nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+
+						wan_mac: mac-address@6c {
+							/* DSD wan_mac uses 17-byte colon-delimited text. */
+							compatible = "mac-base";
+							reg = <0x0000006c 0x00000011>;
+							#nvmem-cell-cells = <1>;
+						};
+
+						lan_mac: mac-address@86 {
+							/* Four LAN netdevs derive sequential addresses from lan_mac. */
+							compatible = "mac-base";
+							reg = <0x00000086 0x00000011>;
+							#nvmem-cell-cells = <1>;
+						};
+
+					};
+				};
+
+				ubi_fit: ubi-volume-fit {
+					/* The fit volume contains the kernel and read-only rootfs. */
+					volname = "fit";
+				};
+			};
+		};
+	};
+};
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+
+	/* GDM3 NBQ4 and NBQ5 connect the PCIe0 and PCIe1 SerDes paths. */
+	gdm3: ethernet@3 {
+		compatible = "airoha,eth-mac";
+		reg = <3>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		lan_10g_pcie1: ethernet-port@5 {
+			compatible = "airoha,eth-port";
+			reg = <5>;
+			managed = "in-band-status";
+			pcs-handle = <&pcie_pcs 1>;
+			phy-handle = <&rtl8261n_8>;
+			phy-mode = "usxgmii";
+			nvmem-cells = <&lan_mac 1>;
+			nvmem-cell-names = "mac-address";
+			openwrt,netdev-name = "lan2";
+			status = "okay";
+		};
+	};
+};
+
+&gdm1 {
+	nvmem-cells = <&lan_mac 3>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+};
+
+
+
+
+&pciephy {
+	/* The dual-port Ethernet PCS manages the shared PMA for PCIe1 RTL8261N. */
+	status = "disabled";
+};
+
+&pcie_pcs {
+	status = "okay";
+};
+
+&usb_pcs {
+	status = "okay";
+};
+
+&eth_pcs {
+	status = "okay";
+};
+
+&gdm4 {
+	/delete-property/ pcs-handle;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* NBQ0 connects the Ethernet SerDes for the first panel 10GbE port. */
+	lan_10g_eth: ethernet-port@0 {
+		compatible = "airoha,eth-port";
+		reg = <0>;
+		managed = "in-band-status";
+		pcs-handle = <&eth_pcs>;
+		phy-handle = <&rtl8261n_5>;
+		phy-mode = "usxgmii";
+		nvmem-cells = <&wan_mac 0>;
+		nvmem-cell-names = "mac-address";
+		openwrt,netdev-name = "lan1";
+		status = "okay";
+	};
+
+	/* NBQ1 connects USB1 SerDes to the EN8811H 2500BASE-X host link. */
+	lan_2p5g: ethernet-port@1 {
+		compatible = "airoha,eth-port";
+		reg = <1>;
+		pcs-handle = <&usb_pcs>;
+		phy-handle = <&en8811>;
+		phy-mode = "2500base-x";
+		nvmem-cells = <&lan_mac 2>;
+		nvmem-cell-names = "mac-address";
+		openwrt,netdev-name = "lan3";
+		status = "okay";
+	};
+};
+
+&switch {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+	status = "okay";
+};
+
+&mdio {
+	/* EN8811H uses MDIO address 0x0f and mode 1 for 2500BASE-X. */
+	en8811: ethernet-phy@f {
+		compatible = "ethernet-phy-id03a2.a411";
+		reg = <0x0f>;
+		/* GPIO31 resets EN8811H before MD32 firmware loading. */
+		reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <1000000>;
+		reset-deassert-us = <100000>;
+	};
+
+	/* GPIO29 and GPIO27 are active-low resets for the two RTL8261N PHYs. */
+	rtl8261n_5: ethernet-phy@5 {
+		compatible = "ethernet-phy-ieee802.3-c45";
+		reg = <5>;
+		reset-gpios = <&en7581_pinctrl 29 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <200000>;
+		reset-deassert-us = <200000>;
+		tx-polarity = <PHY_POL_INVERT>;
+		rx-polarity = <PHY_POL_INVERT>;
+	};
+
+	rtl8261n_8: ethernet-phy@8 {
+		compatible = "ethernet-phy-ieee802.3-c45";
+		reg = <8>;
+		reset-gpios = <&en7581_pinctrl 27 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <200000>;
+		reset-deassert-us = <200000>;
+		tx-polarity = <PHY_POL_INVERT>;
+		rx-polarity = <PHY_POL_INVERT>;
+	};
+};
+
+&gsw_phy4 {
+	/* Switch port 4 connects the 1GbE PHY at MDIO address 0x0c. */
+	interrupts = <4>;
+	status = "okay";
+};
+
+&gsw_port4 {
+	label = "lan4";
+	status = "okay";
+};
+
+&xpon_mac {
+	status = "disabled";
+};

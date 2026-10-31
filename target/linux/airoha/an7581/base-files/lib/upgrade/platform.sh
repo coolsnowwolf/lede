@@ -24,6 +24,8 @@ platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	case "$(board_name)" in
+	gemtek,xg2010g|\
+	gemtek,xr1710g|\
 	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu|\
@@ -42,6 +44,19 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	gemtek,xr1710g)
+		# Legacy vendor/chainloader/BMT layout has no UBI fip volume.
+		local ubidev volume
+		ubidev="$(nand_find_ubi ubi)"
+		for volume in fit factory ubootenv ubootenv2; do
+			[ -n "$(nand_find_volume "$ubidev" "$volume")" ] || {
+				echo "Required UBI volume $volume is missing; repair the layout from U-Boot recovery."
+				return 1
+			}
+		done
+		fit_do_upgrade "$1"
+		;;
+	gemtek,xg2010g|\
 	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu|\

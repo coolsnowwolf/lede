@@ -1,0 +1,401 @@
+From: lean <chenlin@fnnas.com>
+Subject: [PATCH] PCI: mediatek-gen3: fix EN7581 dual-HIF startup
+
+Configure the primary root link and per-lane speeds before releasing
+PERST. Allow the USB3-backed secondary HIF to wait for PCIe0 and avoid
+programming it with PCIe0/1 PHY tuning. Preserve endpoint settling time
+and reset outputs on shutdown and errors.
+
+Signed-off-by: lean <chenlin@fnnas.com>
+
+--- a/drivers/pci/controller/pcie-mediatek-gen3.c
++++ b/drivers/pci/controller/pcie-mediatek-gen3.c
+@@ -34,6 +34,8 @@
+ /* AN7581 SCU register */
+ #define SCU_PCIC			0x88
+ #define SCU_PCIC_PCIE_CTRL		GENMASK(7, 0)
++#define SCU_PCIC_PERSTOUT0		BIT(29)
++#define EN7581_PCIE2_REG_BASE		0x1fc40000
+ 
+ /* PCIe register */
+ #define PCIE_BASE_CFG_REG		0x14
+@@ -141,6 +143,7 @@
+ 
+ /* Time in ms needed to complete PCIe reset on EN7581 SoC */
+ #define PCIE_EN7581_RESET_TIME_MS	100
++#define PCIE_EN7581_EP_READY_TIME_MS	1000
+ 
+ struct mtk_gen3_pcie;
+ 
+@@ -159,6 +162,7 @@
+  * @power_up: pcie power_up callback
+  * @phy_resets: phy reset lines SoC data.
+  * @sys_clk_rdy_time_us: System clock ready time override (microseconds)
++ * @link_up_timeout_ms: Link training timeout override (milliseconds)
+  * @flags: pcie device flags.
+  */
+ struct mtk_gen3_pcie_pdata {
+@@ -168,6 +172,7 @@
+ 		int num_resets;
+ 	} phy_resets;
+ 	u8 sys_clk_rdy_time_us;
++	u16 link_up_timeout_ms;
+ 	u32 flags;
+ };
+ 
+@@ -411,42 +416,56 @@
+ 	writel_relaxed(val, pcie->base + PCIE_INT_ENABLE_REG);
+ }
+ 
+-static int mtk_pcie_startup_port(struct mtk_gen3_pcie *pcie)
++static void mtk_pcie_configure_link_speed(struct mtk_gen3_pcie *pcie,
++					  void __iomem *base)
++{
++	u32 val;
++
++	if (!pcie->max_link_speed)
++		return;
++
++	val = readl_relaxed(base + PCIE_SETTING_REG);
++	val &= ~PCIE_SETTING_GEN_SUPPORT;
++	if (pcie->max_link_speed >= 2)
++		val |= FIELD_PREP(PCIE_SETTING_GEN_SUPPORT,
++				  GENMASK(pcie->max_link_speed - 2, 0));
++	writel_relaxed(val, base + PCIE_SETTING_REG);
++
++	val = readl_relaxed(base + PCIE_CONF_LINK2_CTL_STS);
++	val &= ~PCIE_CONF_LINK2_LCR2_LINK_SPEED;
++	val |= FIELD_PREP(PCIE_CONF_LINK2_LCR2_LINK_SPEED,
++			  pcie->max_link_speed);
++	writel_relaxed(val, base + PCIE_CONF_LINK2_CTL_STS);
++}
++
++static void mtk_pcie_configure_root_link(struct mtk_gen3_pcie *pcie)
+ {
+-	struct resource_entry *entry;
+-	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
+-	unsigned int table_index = 0;
+-	int err;
+ 	u32 val;
+ 
+-	/* Set as RC mode and set controller PCIe Gen speed restriction, if any */
+ 	val = readl_relaxed(pcie->base + PCIE_SETTING_REG);
+ 	val |= PCIE_RC_MODE;
+-	if (pcie->max_link_speed) {
+-		val &= ~PCIE_SETTING_GEN_SUPPORT;
+-
+-		/* Can enable link speed support only from Gen2 onwards */
+-		if (pcie->max_link_speed >= 2)
+-			val |= FIELD_PREP(PCIE_SETTING_GEN_SUPPORT,
+-					  GENMASK(pcie->max_link_speed - 2, 0));
+-	}
+ 	if (pcie->num_lanes) {
+ 		val &= ~PCIE_SETTING_LINK_WIDTH;
+-
+-		/* Zero means one lane, each bit activates x2/x4/x8/x16 */
+ 		if (pcie->num_lanes > 1)
+ 			val |= FIELD_PREP(PCIE_SETTING_LINK_WIDTH,
+ 					  GENMASK(fls(pcie->num_lanes >> 2), 0));
+ 	}
+ 	writel_relaxed(val, pcie->base + PCIE_SETTING_REG);
+ 
+-	/* Set Link Control 2 (LNKCTL2) speed restriction, if any */
+-	if (pcie->max_link_speed) {
+-		val = readl_relaxed(pcie->base + PCIE_CONF_LINK2_CTL_STS);
+-		val &= ~PCIE_CONF_LINK2_LCR2_LINK_SPEED;
+-		val |= FIELD_PREP(PCIE_CONF_LINK2_LCR2_LINK_SPEED, pcie->max_link_speed);
+-		writel_relaxed(val, pcie->base + PCIE_CONF_LINK2_CTL_STS);
+-	}
++	mtk_pcie_configure_link_speed(pcie, pcie->base);
++}
++
++static int mtk_pcie_startup_port(struct mtk_gen3_pcie *pcie)
++{
++	struct resource_entry *entry;
++	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
++	unsigned int link_up_timeout_ms = pcie->soc->link_up_timeout_ms ?:
++					  PCI_PM_D3COLD_WAIT;
++	unsigned int table_index = 0;
++	int err;
++	u32 val;
++
++	mtk_pcie_configure_root_link(pcie);
+ 
+ 	/* If parameter is present, adjust SYS_CLK_RDY_TIME to avoid glitching */
+ 	if (pcie->soc->sys_clk_rdy_time_us) {
+@@ -503,7 +522,7 @@
+ 	/* Check if the link is up or not */
+ 	err = readl_poll_timeout(pcie->base + PCIE_LINK_STATUS_REG, val,
+ 				 !!(val & PCIE_PORT_LINKUP), 20,
+-				 PCI_PM_D3COLD_WAIT * USEC_PER_MSEC);
++				 link_up_timeout_ms * USEC_PER_MSEC);
+ 	if (err) {
+ 		const char *ltssm_state;
+ 		int ltssm_index;
+@@ -959,9 +978,10 @@
+ {
+ 	struct pci_host_bridge *host = pci_host_bridge_from_priv(pcie);
+ 	unsigned int num_lanes = max(1, pcie->num_lanes);
+-	struct regmap *pbus_regmap, *scu;
++	struct regmap *pbus_regmap, *scu = NULL;
+ 	struct device *dev = pcie->dev;
+ 	struct resource_entry *entry;
++	bool is_pcie2, wait_for_pcie0_perst;
+ 	u32 val, args[2], size;
+ 	resource_size_t addr;
+ 	int i, err;
+@@ -969,18 +989,29 @@
+ 	if (num_lanes > 2)
+ 		return dev_err_probe(dev, -EINVAL, "unsupported num-lanes, maximum 2 lanes supported\n");
+ 
+-	if (num_lanes == 2) {
+-		scu = syscon_regmap_lookup_by_phandle(dev->of_node, "airoha,scu");
++	is_pcie2 = pcie->reg_base == EN7581_PCIE2_REG_BASE;
++	wait_for_pcie0_perst = is_pcie2 &&
++		of_property_read_bool(dev->of_node,
++				      "airoha,wait-for-pcie0-perst");
++
++	if (num_lanes == 2 || wait_for_pcie0_perst) {
++		scu = syscon_regmap_lookup_by_phandle(dev->of_node,
++						      "airoha,scu");
+ 		if (IS_ERR(scu))
+-			return dev_err_probe(dev, PTR_ERR(scu), "failed to map SCU regmap\n");
++			return dev_err_probe(dev, PTR_ERR(scu),
++					     "failed to map SCU regmap\n");
+ 	}
+ 
+ 	/*
+ 	 * The controller may have been left out of reset by the bootloader
+ 	 * so make sure that we get a clean start by asserting resets here.
+ 	 */
+-	reset_control_bulk_assert(pcie->soc->phy_resets.num_resets,
+-				  pcie->phy_resets);
++	err = reset_control_bulk_assert(pcie->soc->phy_resets.num_resets,
++					pcie->phy_resets);
++	if (err) {
++		dev_err(dev, "failed to assert PHY resets\n");
++		return err;
++	}
+ 
+ 	/* Wait for the time needed to complete the reset lines assert. */
+ 	msleep(PCIE_EN7581_RESET_TIME_MS);
+@@ -993,12 +1024,16 @@
+ 							   "mediatek,pbus-csr",
+ 							   ARRAY_SIZE(args),
+ 							   args);
+-	if (IS_ERR(pbus_regmap))
+-		return PTR_ERR(pbus_regmap);
++	if (IS_ERR(pbus_regmap)) {
++		err = PTR_ERR(pbus_regmap);
++		return err;
++	}
+ 
+ 	entry = resource_list_first_type(&host->windows, IORESOURCE_MEM);
+-	if (!entry)
+-		return -ENODEV;
++	if (!entry) {
++		err = -ENODEV;
++		return err;
++	}
+ 
+ 	addr = entry->res->start - entry->offset;
+ 	regmap_write(pbus_regmap, args[0], lower_32_bits(addr));
+@@ -1011,7 +1046,6 @@
+ 		return err;
+ 	}
+ 
+-	/* Assert PERSTOUT for all relevant lines */
+ 	err = reset_control_bulk_assert(MAX_NUM_PERSTOUT_RESETS,
+ 					pcie->perstout_resets);
+ 	if (err) {
+@@ -1031,7 +1065,7 @@
+ 	err = phy_init(pcie->phy);
+ 	if (err) {
+ 		dev_err(dev, "failed to initialize PHY\n");
+-		return err;
++		goto err_perstout_asserted;
+ 	}
+ 
+ 	err = phy_power_on(pcie->phy);
+@@ -1071,6 +1105,7 @@
+ 	 * Wait is still needed for refclk to stabilize
+ 	 */
+ 	msleep(PCIE_T_PVPERL_MS);
++	mtk_pcie_configure_root_link(pcie);
+ 
+ 	/* Configure all the lines to the same EQ config */
+ 	for (i = 0; i < num_lanes; i++) {
+@@ -1079,30 +1114,50 @@
+ 		if (i == 1)
+ 			base = pcie->sec_base;
+ 
+-		val = FIELD_PREP(PCIE_VAL_LN0_DOWNSTREAM, 0x47) |
+-			FIELD_PREP(PCIE_VAL_LN1_DOWNSTREAM, 0x47) |
+-			FIELD_PREP(PCIE_VAL_LN0_UPSTREAM, 0x41) |
+-			FIELD_PREP(PCIE_VAL_LN1_UPSTREAM, 0x41);
+-		writel_relaxed(val, base + PCIE_EQ_PRESET_01_REG);
+-
+-		val = PCIE_K_PHYPARAM_QUERY | PCIE_K_QUERY_TIMEOUT |
+-			FIELD_PREP(PCIE_K_PRESET_TO_USE_16G, 0x80) |
+-			FIELD_PREP(PCIE_K_PRESET_TO_USE, 0x2) |
+-			FIELD_PREP(PCIE_K_FINETUNE_MAX, 0xf);
+-		writel_relaxed(val, base + PCIE_PIPE4_PIE8_REG);
++		mtk_pcie_configure_link_speed(pcie, base);
++
++		if (!is_pcie2) {
++			val = FIELD_PREP(PCIE_VAL_LN0_DOWNSTREAM, 0x47) |
++				FIELD_PREP(PCIE_VAL_LN1_DOWNSTREAM, 0x47) |
++				FIELD_PREP(PCIE_VAL_LN0_UPSTREAM, 0x41) |
++				FIELD_PREP(PCIE_VAL_LN1_UPSTREAM, 0x41);
++			writel_relaxed(val, base + PCIE_EQ_PRESET_01_REG);
++
++			val = PCIE_K_PHYPARAM_QUERY | PCIE_K_QUERY_TIMEOUT |
++				FIELD_PREP(PCIE_K_PRESET_TO_USE_16G, 0x80) |
++				FIELD_PREP(PCIE_K_PRESET_TO_USE, 0x2) |
++				FIELD_PREP(PCIE_K_FINETUNE_MAX, 0xf);
++			writel_relaxed(val, base + PCIE_PIPE4_PIE8_REG);
++		}
++	}
++
++	dev_info(dev, "pre-training link configuration: Gen%u x%u\n",
++		 pcie->max_link_speed, pcie->num_lanes ?: 1);
++
++	if (wait_for_pcie0_perst) {
++		err = regmap_read_poll_timeout(scu, SCU_PCIC, val,
++					       val & SCU_PCIC_PERSTOUT0,
++					       1000, 3000000);
++		if (err)
++			dev_warn(dev, "timed out waiting for PCIe0 PERST\n");
++		else
++			dev_info(dev, "PCIe0 PERST released, starting PCIe2\n");
+ 	}
+ 
+-	/* Deassert PERSTOUT for all relevant lines */
+ 	err = reset_control_bulk_deassert(MAX_NUM_PERSTOUT_RESETS,
+-					  pcie->perstout_resets);
++					pcie->perstout_resets);
+ 	if (err) {
+ 		dev_err(dev, "failed to deassert PERSTOUTs\n");
+ 		goto err_perstout_deassert;
+ 	}
+ 
++	msleep(PCIE_EN7581_EP_READY_TIME_MS);
++
+ 	return 0;
+ 
+ err_perstout_deassert:
++	reset_control_bulk_assert(MAX_NUM_PERSTOUT_RESETS,
++				  pcie->perstout_resets);
+ 	clk_bulk_disable_unprepare(pcie->num_clks, pcie->clks);
+ err_clk_prepare_enable:
+ 	pm_runtime_put_sync(dev);
+@@ -1113,6 +1168,9 @@
+ 	phy_power_off(pcie->phy);
+ err_phy_on:
+ 	phy_exit(pcie->phy);
++err_perstout_asserted:
++	reset_control_bulk_assert(MAX_NUM_PERSTOUT_RESETS,
++				  pcie->perstout_resets);
+ 
+ 	return err;
+ }
+@@ -1209,7 +1267,11 @@
+ 
+ static int mtk_pcie_setup(struct mtk_gen3_pcie *pcie)
+ {
+-	int err, max_speed;
++	int err, max_speed, requested_speed;
++
++	requested_speed = of_pci_get_max_link_speed(pcie->dev->of_node);
++	if (requested_speed > 0)
++		pcie->max_link_speed = requested_speed;
+ 
+ 	err = mtk_pcie_parse_port(pcie);
+ 	if (err)
+@@ -1227,17 +1289,15 @@
+ 	if (err)
+ 		return err;
+ 
+-	err = of_pci_get_max_link_speed(pcie->dev->of_node);
+-	if (err) {
++	if (requested_speed > 0) {
+ 		/* Get the maximum speed supported by the controller */
+ 		max_speed = mtk_pcie_get_controller_max_link_speed(pcie);
+ 
+-		/* Set max_link_speed only if the controller supports it */
+-		if (max_speed >= 0 && max_speed <= err) {
+-			pcie->max_link_speed = err;
+-			dev_info(pcie->dev,
+-				 "maximum controller link speed Gen%d, overriding to Gen%u",
+-				 max_speed, pcie->max_link_speed);
++		if (max_speed > 0 && max_speed < requested_speed) {
++			pcie->max_link_speed = max_speed;
++			dev_warn(pcie->dev,
++				 "limiting requested Gen%d link to controller Gen%d\n",
++				 requested_speed, max_speed);
+ 		}
+ 	}
+ 
+@@ -1306,6 +1366,20 @@
+ 	mtk_pcie_power_down(pcie);
+ }
+ 
++static void mtk_pcie_shutdown(struct platform_device *pdev)
++{
++	struct mtk_gen3_pcie *pcie = platform_get_drvdata(pdev);
++
++	if (!device_is_compatible(pcie->dev, "airoha,en7581-pcie"))
++		return;
++
++	if (reset_control_bulk_assert(MAX_NUM_PERSTOUT_RESETS,
++				      pcie->perstout_resets))
++		dev_err(pcie->dev, "failed to assert PERSTOUTs on shutdown\n");
++	else
++		msleep(PCIE_EN7581_RESET_TIME_MS);
++}
++
+ static void mtk_pcie_irq_save(struct mtk_gen3_pcie *pcie)
+ {
+ 	int i;
+@@ -1435,6 +1509,7 @@
+ 		.id[2] = "phy-lane2",
+ 		.num_resets = 3,
+ 	},
++	.link_up_timeout_ms = 1000,
+ 	.flags = SKIP_PCIE_RSTB,
+ };
+ 
+@@ -1449,6 +1524,7 @@
+ static struct platform_driver mtk_pcie_driver = {
+ 	.probe = mtk_pcie_probe,
+ 	.remove = mtk_pcie_remove,
++	.shutdown = mtk_pcie_shutdown,
+ 	.driver = {
+ 		.name = "mtk-pcie-gen3",
+ 		.of_match_table = mtk_pcie_of_match,
+--- a/Documentation/devicetree/bindings/pci/mediatek-pcie-gen3.yaml
++++ b/Documentation/devicetree/bindings/pci/mediatek-pcie-gen3.yaml
+@@ -125,6 +125,13 @@
+       Phandle with two arguments to the syscon node used to detect if
+       a given address is accessible on PCIe controller.
+ 
++  airoha,wait-for-pcie0-perst:
++    type: boolean
++    description:
++      Wait for the EN7581 PCIe0 endpoint reset output to be released before
++      releasing this controller's endpoint reset. This is required for the
++      PCIe2 secondary interface of a dual-HIF endpoint.
++
+   '#interrupt-cells':
+     const: 1
+ 
+@@ -297,6 +304,9 @@
+             - const: phy-lane0
+             - const: phy-lane1
+             - const: phy-lane2
++    else:
++      properties:
++        airoha,wait-for-pcie0-perst: false
+ 
+ unevaluatedProperties: false
+ 

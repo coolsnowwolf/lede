@@ -248,3 +248,46 @@ define Device/znxt_zn504xg-d
   $(call Device/fiberhome-ubi-images)
 endef
 TARGET_DEVICES += znxt_zn504xg-d
+
+
+define Device/gemtek_xg2010g
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := Gemtek
+  DEVICE_MODEL := XG2010G
+  DEVICE_DTS := an7581-gemtek-xg2010g
+  KERNEL_LOADADDR := 0x8a000000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
+    kmod-phy-airoha-en8811h kmod-phy-realtek rtl826x-firmware \
+    fitblk nand-utils ubi-utils
+  $(call Device/fiberhome-ubi-images)
+endef
+TARGET_DEVICES += gemtek_xg2010g
+
+define Device/gemtek_xr1710g
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := Gemtek
+  DEVICE_MODEL := XR1710G
+  DEVICE_DTS := an7581-xr1710g
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
+    kmod-phy-realtek rtl826x-firmware kmod-hwmon-nct7802 \
+    kmod-mt7996-firmware wpad-openssl airoha-en7581-mt7996-npu-firmware \
+    fitblk nand-utils ubi-utils
+  $(call Device/fiberhome-ubi-images)
+endef
+TARGET_DEVICES += gemtek_xr1710g
