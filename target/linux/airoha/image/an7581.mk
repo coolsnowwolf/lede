@@ -188,3 +188,26 @@ define Device/fiberhome_hg5585f-cu
   $(call Device/fiberhome-ubi-images)
 endef
 TARGET_DEVICES += fiberhome_hg5585f-cu
+
+
+define Device/h3c_hm2004-du
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := H3C
+  DEVICE_MODEL := HM2004-DU
+  DEVICE_DTS := an7581-h3c-hm2004-du
+  KERNEL_LOADADDR := 0x8a000000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
+    kmod-usb3 kmod-usb-ledtrig-usbport kmod-phy-airoha-en8811h \
+    kmod-airoha-en7572 kmod-airoha-xpon airoha-ponctl airoha-pond \
+    kmod-mt7915e kmod-mt7916-firmware wpad-openssl luci-app-pon \
+    fitblk nand-utils ubi-utils
+  $(call Device/fiberhome-ubi-images)
+endef
+TARGET_DEVICES += h3c_hm2004-du

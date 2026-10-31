@@ -27,6 +27,7 @@ platform_check_image() {
 	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu|\
+	h3c,hm2004-du|\
 	nokia,xg-040g-md-ubi|\
 	nokia,xg-040g-tf-ubi)
 		fit_check_image "$1"
@@ -41,7 +42,8 @@ platform_do_upgrade() {
 	case "$(board_name)" in
 	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
-	fiberhome,hg5585f-cu)
+	fiberhome,hg5585f-cu|\
+	h3c,hm2004-du)
 		airoha_require_ubi_layout factory && fit_do_upgrade "$1"
 		;;
 	nokia,xg-040g-md-ubi|\

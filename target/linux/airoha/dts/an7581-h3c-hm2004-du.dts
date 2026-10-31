@@ -1,0 +1,578 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/memreserve/ 0x80000000 0x200000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "an7581.dtsi"
+
+/ {
+	model = "H3C HM2004-DU";
+	compatible = "h3c,hm2004-du", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		label-mac-device = &lan_2p5g;
+		led-boot = &led_power;
+		led-failsafe = &led_power;
+		led-running = &led_power;
+		led-upgrade = &led_power;
+
+		serial0 = &uart1;
+	};
+
+	chosen {
+		/* fitblk locates the FIT-embedded read-only rootfs volume. */
+		rootdisk = <&ubi_fit>;
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* Stock U-Boot env sets dram_limit=512M and patches the DTB. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+
+		key-wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&en7581_pinctrl 16 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+
+		key-rfkill {
+			label = "rfkill";
+			linux,code = <KEY_RFKILL>;
+			gpios = <&en7581_pinctrl 3 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_power: led-power {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
+			default-state = "on";
+			panic-indicator;
+		};
+
+		led-pon {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 18 GPIO_ACTIVE_LOW>;
+			/* Registration maps O1-O3 to fast blink, O4 to slow blink, and O5 on. */
+			linux,default-trigger = "pon0-registration";
+		};
+
+		led-los {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-los";
+		};
+
+		led-internet {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WAN_ONLINE;
+			/* TODO(verify): stock env internet_gpio=14 -> 0x14; not measured. */
+			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-online";
+		};
+
+		led-wlan {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WLAN;
+			gpios = <&en7581_pinctrl 15 GPIO_ACTIVE_LOW>;
+		};
+
+		led-usb {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_USB;
+			gpios = <&en7581_pinctrl 34 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "usbport";
+			trigger-sources = <&usb_port2>;
+		};
+	};
+
+	/* The USB PHY 3.3V reference supply is always on. */
+	reg_3p3v: regulator-3p3v {
+		compatible = "regulator-fixed";
+		regulator-always-on;
+		regulator-boot-on;
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-name = "fixed-3.3V";
+	};
+
+	fmcs: fmcs {
+		compatible = "h3c,fmcs";
+		spi-controller = <&snfi>;
+		fpga-spi-int-gpios = <&en7581_pinctrl 23 GPIO_ACTIVE_HIGH>;
+		fpga-clk-gpios = <&en7581_pinctrl 29 GPIO_ACTIVE_HIGH>;
+		fpga-data-gpios = <&en7581_pinctrl 30 GPIO_ACTIVE_HIGH>;
+		nvmem-cell-names = "mac-address";
+		nvmem-cells = <&base_mac 9>;
+		status = "okay";
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	pon_pins: pon-pins {
+		mux {
+			/* Leave GPIO38/TX_DISABLE under optical frontend control. */
+			function = "pon";
+			groups = "pon_tx_disable_gpio";
+		};
+	};
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+	};
+
+	gswp2_led0_pins: gswp2-led0-pins {
+		mux {
+			function = "phy2_led0";
+			pins = "gpio44";
+		};
+	};
+
+	gswp3_led0_pins: gswp3-led0-pins {
+		mux {
+			function = "phy3_led0";
+			pins = "gpio45";
+		};
+	};
+
+	gswp4_led0_pins: gswp4-led0-pins {
+		mux {
+			function = "phy4_led0";
+			pins = "gpio46";
+		};
+	};
+};
+
+/* The stock flash is SPI-NAND accessed through the SNFI (SPI2NFI) engine. */
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	nand-ecc-engine = <&spi_nand>;
+
+	partitions: partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* BootROM reads the BL2 FIP at offset 0x800 in the first eraseblock. */
+		partition@0 {
+			label = "bl2";
+			reg = <0x00000000 0x00020000>;
+			read-only;
+		};
+
+		/* UBI manages every eraseblock after BL2. */
+		partition@20000 {
+			label = "ubi";
+			reg = <0x00020000 0x00000000>;
+			compatible = "linux,ubi";
+
+			volumes {
+				ubi_fip: ubi-volume-fip {
+					/* The second-stage FIP contains BL31 and U-Boot. */
+					volname = "fip";
+				};
+
+				ubi_env: ubi-volume-ubootenv {
+					volname = "ubootenv";
+				};
+
+				ubi_env2: ubi-volume-ubootenv2 {
+					volname = "ubootenv2";
+				};
+
+				factory: ubi-volume-factory {
+					volname = "factory";
+
+					/*
+					 * This board's factory UBI volume is 1 MiB (0x100000),
+					 * so the vendor's "true" offsets (0x140005 / 0x14102c /
+					 * 0x1c0400 / 0x4c000, which live in the 0x240000-byte
+					 * reservearea) are out of range here. Use the compact
+					 * 1 MiB layout defined by the h3c-hm2004du-factory
+					 * editor (github.com/qwe3017/h3c-hm2004du-factory):
+					 *   0x0000  magic "H3C-1MiB" (8 ASCII bytes)
+					 *   0x0010  label / lan1 MAC, six raw bytes
+					 *   0x0020  eth0 MAC, six raw bytes
+					 *   0x0030  pon0 MAC, six raw bytes
+					 *   0x0040  5G radio MAC, six raw bytes
+					 *   0x0050  2.4G radio MAC, six raw bytes
+					 *   0x0060  Device SN, 12-byte ASCII
+					 *   0x1000  Wi-Fi EEPROM, 0x1000 (MT7916 DBDC)
+					 *   0x2000  PON calibration, 0x200 (EN7572)
+					 *
+					 * Every MAC the board needs is read out of this
+					 * volume and nothing else: the four per-interface
+					 * slots are consumed verbatim, and the three GSW
+					 * LAN ports - which the compact format has no slot
+					 * for - are derived from 0x10 by the mac-base cell.
+					 */
+					h3c_hm2004du_layout: nvmem-layout {
+						compatible = "fixed-layout";
+						#address-cells = <1>;
+						#size-cells = <1>;
+
+						factory_magic: magic@0 {
+							reg = <0x00000000 0x00000008>;
+						};
+
+						base_mac: base-mac@10 {
+							compatible = "mac-base";
+							reg = <0x00000010 0x00000006>;
+							#nvmem-cell-cells = <1>;
+						};
+
+						/* Per-interface slots, consumed verbatim. */
+						mac_eth0: mac-eth0@20 {
+							reg = <0x00000020 0x00000006>;
+						};
+
+						mac_pon0: mac-pon0@30 {
+							reg = <0x00000030 0x00000006>;
+						};
+
+						mac_5g: mac-5g@40 {
+							reg = <0x00000040 0x00000006>;
+						};
+
+						mac_24g: mac-24g@50 {
+							reg = <0x00000050 0x00000006>;
+						};
+
+						pon_serial: pon-serial@60 {
+							reg = <0x00000060 0x0000000c>;
+						};
+
+						pon_calibration: calibration@2000 {
+							reg = <0x00002000 0x00000200>;
+						};
+
+						wifi_eeprom: eeprom@1000 {
+							reg = <0x00001000 0x00001000>;
+						};
+					};
+				};
+
+				ubi_fit: ubi-volume-fit {
+					/* The fit volume contains the kernel and read-only rootfs. */
+					volname = "fit";
+				};
+			};
+		};
+	};
+};
+
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	en7572: optical-front-end@50 {
+		compatible = "airoha,en7572";
+		reg = <0x50>;
+		/* GPIO38 high disables upstream optical transmission. */
+		tx-disable-gpios = <&en7581_pinctrl 38 GPIO_ACTIVE_HIGH>;
+		nvmem-cells = <&pon_calibration>;
+		nvmem-cell-names = "calibration";
+	};
+};
+
+
+&usb1 {
+	status = "okay";
+	mediatek,u3p-dis-msk = <0x1>;
+	phys = <&usb1_phy PHY_TYPE_USB2>;
+	vusb33-supply = <&reg_3p3v>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	usb_port2: port@1 { reg = <1>; #trigger-source-cells = <0>; };
+};
+
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&gdm1 {
+	nvmem-cell-names = "mac-address";
+	nvmem-cells = <&mac_eth0>;
+	status = "okay";
+};
+
+&mdio {
+	/* Reserved for the FMCS downlink FPGA (see the fmcs node): the stock
+	 * bus also lists 0x0d/0x0e beside the EN8811H at 0x0f. They are not
+	 * declared - no driver, so they would only probe as phantom PHYs -
+	 * and must not be reused for anything else. */
+
+	en8811: ethernet-phy@f {
+		compatible = "ethernet-phy-id03a2.a411";
+		reg = <0xf>;
+		reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <20000>;
+
+		leds {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led-0 {
+				reg = <0>;
+				color = <LED_COLOR_ID_GREEN>;
+				function = LED_FUNCTION_LAN;
+				function-enumerator = <1>;
+				default-state = "keep";
+			};
+		};
+	};
+};
+
+&eth_pcs {
+	/* HSGMII carries the EN8811H 2500BASE-X host link. */
+	status = "okay";
+};
+
+&usb_pcs {
+	/* USB1 SerDes is wired to the downstream FMCS FPGA. */
+	status = "okay";
+};
+
+&gdm4 {
+	/delete-property/ pcs-handle;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* NBQ0 retains the panel EN8811H port and its label MAC. */
+	lan_2p5g: ethernet-port@0 {
+		compatible = "airoha,eth-port";
+		reg = <0>;
+		pcs-handle = <&eth_pcs>;
+		phy-handle = <&en8811>;
+		phy-mode = "2500base-x";
+		nvmem-cell-names = "mac-address";
+		nvmem-cells = <&base_mac 0>;
+		openwrt,netdev-name = "lan1";
+	};
+
+	/* Stock serdes_usb1=11 / fttr_olt_sel=4 selects USB HSGMII, NBQ1. */
+	ethernet-port@1 {
+		compatible = "airoha,eth-port";
+		reg = <1>;
+		pcs-handle = <&usb_pcs>;
+		phy-mode = "2500base-x";
+		openwrt,netdev-name = "fttr0";
+		nvmem-cell-names = "mac-address";
+		nvmem-cells = <&base_mac 3>;
+
+		fixed-link {
+			speed = <2500>;
+			full-duplex;
+		};
+	};
+};
+
+&switch {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+	status = "okay";
+};
+
+
+&gsw_port2 {
+	label = "lan2";
+	nvmem-cell-names = "mac-address";
+	nvmem-cells = <&base_mac 6>;
+	status = "okay";
+};
+
+&gsw_phy2 {
+	interrupts = <2>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp2_led0_pins>;
+	status = "okay";
+};
+
+&gsw_phy2_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <2>;
+	active-low;
+	status = "okay";
+};
+
+&gsw_port3 {
+	label = "lan3";
+	nvmem-cell-names = "mac-address";
+	nvmem-cells = <&base_mac 7>;
+	status = "okay";
+};
+
+&gsw_phy3 {
+	interrupts = <3>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp3_led0_pins>;
+	status = "okay";
+};
+
+&gsw_phy3_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <3>;
+	active-low;
+	status = "okay";
+};
+
+&gsw_port4 {
+	label = "lan4";
+	nvmem-cell-names = "mac-address";
+	nvmem-cells = <&base_mac 8>;
+	status = "okay";
+};
+
+&gsw_phy4 {
+	interrupts = <4>;
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp4_led0_pins>;
+	status = "okay";
+};
+
+&gsw_phy4_led0 {
+	color = <LED_COLOR_ID_GREEN>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <4>;
+	active-low;
+	status = "okay";
+};
+
+&pon_pcs {
+	status = "okay";
+};
+
+&xpon_mac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pon_pins>;
+	optical-front-end = <&en7572>;
+	nvmem-cells = <&pon_serial>;
+	nvmem-cell-names = "pon-serial";
+	data-path = <&gdm2>;
+	status = "okay";
+};
+
+&gdm2 {
+	/* XG-PON/10G-EPON upstream; GPON mode is selected by ponctl.
+	 * The 0x30 slot of the factory volume, so the two L2 domains
+	 * cannot collide with the LAN side. */
+	nvmem-cell-names = "mac-address";
+	nvmem-cells = <&mac_pon0>;
+	airoha,pon-data-path;
+	status = "okay";
+};
+
+&en7581_pinctrl {
+	pcie0_rst_pins: pcie0-rst-pins {
+		conf {
+			pins = "pcie_reset0";
+			drive-open-drain = <1>;
+		};
+	};
+
+	pcie1_rst_pins: pcie1-rst-pins {
+		conf {
+			pins = "pcie_reset1";
+			drive-open-drain = <1>;
+		};
+	};
+};
+
+&pcie0 {
+	status = "okay";
+	max-link-speed = <2>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie0_rst_pins>;
+
+	pcie@0,0 {
+		reg = <0x0000 0 0 0 0>;
+
+		wifi@0,0 {
+			compatible = "mediatek,mt76";
+			reg = <0x0000 0 0 0 0>;
+		};
+	};
+};
+
+&pcie1 {
+	status = "okay";
+	max-link-speed = <2>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie1_rst_pins>;
+
+	pcie@0,0 {
+		reg = <0x0000 0 0 0 0>;
+
+		wifi@0,0 {
+			compatible = "mediatek,mt76";
+			reg = <0x0000 0 0 0 0>;
+			nvmem-cells = <&wifi_eeprom>;
+			nvmem-cell-names = "eeprom";
+			mediatek,eeprom-merge-otp;
+			airoha,npu = <&npu>;
+			airoha,eth = <&eth>;
+			band@0 {
+				reg = <0>;
+				nvmem-cells = <&mac_24g>;
+				nvmem-cell-names = "mac-address";
+			};
+
+			band@1 {
+				reg = <1>;
+				nvmem-cells = <&mac_5g>;
+				nvmem-cell-names = "mac-address";
+			};
+		};
+	};
+};

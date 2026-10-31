@@ -1,0 +1,144 @@
+From: lean <chenlin@fnnas.com>
+Subject: [PATCH] wifi: mt76: mt7915: merge MT7916 cal-free OTP data
+
+Merge chip calibration into the EEPROM template only when the board opts
+in with mediatek,eeprom-merge-otp. Validate all fields before updating it.
+
+Signed-off-by: lean <chenlin@fnnas.com>
+
+--- a/mt7915/eeprom.c
++++ b/mt7915/eeprom.c
+@@ -2,6 +2,7 @@
+ /* Copyright (C) 2020 MediaTek Inc. */
+ 
+ #include <linux/firmware.h>
++#include <linux/of.h>
+ #include <linux/moduleparam.h>
+ #include "mt7915.h"
+ #include "eeprom.h"
+@@ -120,6 +121,112 @@
+ 	return ret;
+ }
+ 
++static int mt7916_read_otp_byte(struct mt7915_dev *dev, u16 offset, u8 *val)
++{
++	u8 block[MT7915_EEPROM_BLOCK_SIZE];
++	int ret;
++
++	/*
++	 * MCU returns one 16-byte logical eFuse block. An all-0xff block is empty;
++	 * individual 0x00/0xff bytes in a programmed block remain valid.
++	 */
++	ret = mt7915_mcu_get_eeprom(dev, offset, block);
++	if (ret)
++		return ret;
++
++	if (!memchr_inv(block, 0xff, sizeof(block)))
++		return -ENODATA;
++
++	*val = block[offset % MT7915_EEPROM_BLOCK_SIZE];
++	return 0;
++}
++
++static int mt7916_merge_cal_free_otp(struct mt7915_dev *dev)
++{
++	static const u16 common_offsets[] = {
++		0x030, 0x031, 0x034, 0x035, 0x036,
++		0x038, 0x03c, 0x03a, 0x03d, 0x044,
++		0x046, 0x0c8, 0x0c9, 0x0ca, 0x0cb,
++		0x0cc, 0x0cd, 0x0ce, 0x0cf, 0x0e0,
++	};
++	static const u16 adie_v1_offsets[] = {
++		0x24c, 0x24d, 0x24e, 0x24f, 0x250, 0x251,
++		0x253, 0x255, 0x257, 0x259,
++		0x990, 0x991, 0x994, 0x995,
++		0x9a6, 0x9a8, 0x9aa,
++	};
++	struct device_node *np = dev->mt76.dev->of_node;
++	u8 common_data[ARRAY_SIZE(common_offsets)];
++	u8 adie_data[ARRAY_SIZE(adie_v1_offsets)];
++	u8 *eeprom = dev->mt76.eeprom.data;
++	u8 adie_version, value, adie_type;
++	int i, ret;
++
++	if (!is_mt7916(&dev->mt76) || !np ||
++	    !of_property_read_bool(np, "mediatek,eeprom-merge-otp"))
++		return 0;
++
++	/*
++	 * Read and validate every field before updating the template so the
++	 * merge commits as one complete calibration set.
++	 */
++	for (i = 0; i < ARRAY_SIZE(common_offsets); i++) {
++		ret = mt7916_read_otp_byte(dev, common_offsets[i],
++					   &common_data[i]);
++		if (ret)
++			return ret;
++	}
++
++	ret = mt7916_read_otp_byte(dev, 0x9a0, &adie_version);
++	if (ret)
++		return ret;
++
++	/* The field map defines A-Die iCal version 1. */
++	if (adie_version != 1)
++		return -EINVAL;
++
++	for (i = 0; i < ARRAY_SIZE(adie_v1_offsets); i++) {
++		ret = mt7916_read_otp_byte(dev, adie_v1_offsets[i],
++					   &adie_data[i]);
++		if (ret)
++			return ret;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(common_offsets); i++)
++		eeprom[common_offsets[i]] = common_data[i];
++
++	eeprom[0x9a0] = adie_version;
++	for (i = 0; i < ARRAY_SIZE(adie_v1_offsets); i++)
++		eeprom[adie_v1_offsets[i]] = adie_data[i];
++
++	/*
++	 * A-Die v1 folds type bits from 0x9a6[6:3] into 0x9a8.
++	 * Apply this transform after copying the calibration fields.
++	 */
++	value = eeprom[0x9a8] & 0x7f;
++	adie_type = (eeprom[0x9a6] >> 3) & 0xf;
++	if (value <= 0x29) {
++		switch (adie_type) {
++		case 4:
++			value += 19;
++			break;
++		case 8:
++			value += 38;
++			break;
++		case 12:
++			value += 57;
++			break;
++		default:
++			break;
++		}
++		if (adie_type == 4 || adie_type == 8 || adie_type == 12)
++			eeprom[0x9a8] = value | 0x80;
++	}
++
++	dev_info(dev->mt76.dev, "merged MT7916 iCal data from eFuse\n");
++	return 0;
++}
++
+ static int mt7915_eeprom_load(struct mt7915_dev *dev)
+ {
+ 	int ret;
+@@ -279,6 +386,12 @@
+ 			return ret;
+ 	}
+ 
++	ret = mt7916_merge_cal_free_otp(dev);
++	if (ret) {
++		dev_err(dev->mt76.dev, "failed to merge MT7916 iCal: %d\n", ret);
++		return ret;
++	}
++
+ 	mt7915_eeprom_load_precal(dev);
+ 	mt7915_eeprom_parse_hw_cap(dev, &dev->phy);
+ 	memcpy(dev->mphy.macaddr, dev->mt76.eeprom.data + MT_EE_MAC_ADDR,
