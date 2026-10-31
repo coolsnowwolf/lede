@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+/*
+ * FiberHome AN7581 flash layout.
+ *
+ * BootROM loads BL2 from the first 128 KiB eraseblock. A single UBI instance
+ * covers the remaining NAND and stores FIP, redundant environments, factory
+ * data, and the FIT system image.
+ */
+
+&pnand_ecc {
+	status = "okay";
+};
+
+&pnand {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pnand_pins>;
+	status = "okay";
+
+	nand@0 {
+		reg = <0>;
+		nand-bus-width = <8>;
+
+		/*
+		 * NAND ID and ONFI requirements select a supported EN7581 ECC strength
+		 * using 512-byte BCH sectors. Toshiba 0x98:0xda selects ECC8/512B.
+		 */
+		nand-ecc-mode = "hw";
+
+		partitions: partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/*
+			 * BootROM loads BL2 from the FIP in the first eraseblock. Full-block
+			 * updates preserve the initial 0x800-byte BL1 page.
+			 */
+			partition@0 {
+				label = "bl2";
+				reg = <0x00000000 0x00020000>;
+			};
+
+		/* UBI manages every eraseblock after BL2. */
+		partition@20000 {
+			label = "ubi";
+			reg = <0x00020000 0x00000000>;
+			compatible = "linux,ubi";
+
+			volumes {
+				ubi_fip: ubi-volume-fip {
+					/* The second-stage FIP contains BL31 and U-Boot. */
+					volname = "fip";
+				};
+
+				ubi_env: ubi-volume-ubootenv {
+					volname = "ubootenv";
+				};
+
+				ubi_env2: ubi-volume-ubootenv2 {
+					volname = "ubootenv2";
+				};
+
+				ubi_factory: ubi-volume-factory {
+					/*
+						 * factory stores optical calibration, radio EEPROM, MAC addresses,
+						 * PON identity, and per-device production data.
+					 */
+					volname = "factory";
+				};
+
+				ubi_fit: ubi-volume-fit {
+					/* The fit volume contains the kernel and read-only rootfs. */
+					volname = "fit";
+				};
+			};
+		};
+		};
+	};
+};
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_factory {
+	fiberhome_factory_nvmem: nvmem-layout {
+		compatible = "fixed-layout";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* FiberHome BDBOB retains its 2048-byte binary format. */
+		pon_calibration: calibration@0 {
+			reg = <0x0000 0x0800>;
+		};
+
+		/* Convert factory_conf.brmac into the 6-byte MAC consumed by netdevs. */
+		fiberhome_base_mac: mac-address@2000 {
+			compatible = "mac-base";
+			reg = <0x2000 0x0006>;
+			#nvmem-cell-cells = <1>;
+		};
+
+		/* Decode the 16 hexadecimal GponSN characters into an 8-byte ONU SN. */
+		fiberhome_pon_serial: pon-serial@2010 {
+			reg = <0x2010 0x0008>;
+		};
+
+		/* The fixed-length NUL-terminated field stores the product serial. */
+		fiberhome_device_serial: device-serial@2020 {
+			reg = <0x2020 0x0020>;
+		};
+	};
+};

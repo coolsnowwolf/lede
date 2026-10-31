@@ -104,3 +104,50 @@ define Device/nokia_xg-040g-md-ubi
   DEVICE_PACKAGES += fitblk
 endef
 TARGET_DEVICES += nokia_xg-040g-md-ubi
+
+# HG5585F variants share parallel NAND, PON, MT7916D, and dual USB.
+define Device/fiberhome_hg5585f-common
+  $(call Device/FitImageLzma)
+  DEVICE_VENDOR := FiberHome
+  KERNEL_LOADADDR := 0x8a000000
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  # PON and MT7916D read per-device calibration from factory UBI NVMEM cells.
+  DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio kmod-usb3 \
+    kmod-airoha-paged-bosa kmod-airoha-xpon airoha-ponctl airoha-pond \
+	 kmod-mt7915e kmod-mt7916-firmware wpad-openssl \
+	 luci-app-pon fitblk nand-utils ubi-utils kmod-usb-ledtrig-usbport
+endef
+
+# Expand FIT rules after DEVICE_DTS so each variant embeds its own DTB.
+define Device/fiberhome_hg5585f-images
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb with-initrd | pad-to 128k
+  IMAGE/sysupgrade.itb := append-kernel | \
+	fit gzip $$(KDIR)/image-$$(DEVICE_DTS).dtb external-static-with-rootfs | \
+	append-metadata
+endef
+
+define Device/fiberhome_hg5585f-ct
+  $(call Device/fiberhome_hg5585f-common)
+  DEVICE_MODEL := HG5585F
+  DEVICE_VARIANT := CT
+  DEVICE_DTS := an7581-fiberhome-hg5585f-ct
+  DEVICE_PACKAGES += kmod-phy-maxlinear
+  $(call Device/fiberhome_hg5585f-images)
+endef
+TARGET_DEVICES += fiberhome_hg5585f-ct
+
+define Device/fiberhome_hg5585f-cu
+  $(call Device/fiberhome_hg5585f-common)
+  DEVICE_MODEL := HG5585F
+  DEVICE_VARIANT := CU
+  DEVICE_DTS := an7581-fiberhome-hg5585f-cu
+  $(call Device/fiberhome_hg5585f-images)
+endef
+TARGET_DEVICES += fiberhome_hg5585f-cu
