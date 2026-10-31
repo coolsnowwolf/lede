@@ -24,6 +24,7 @@ platform_check_image() {
 	[ "$#" -gt 1 ] && return 1
 
 	case "$(board_name)" in
+	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu|\
 	nokia,xg-040g-md-ubi|\
@@ -38,6 +39,7 @@ platform_check_image() {
 
 platform_do_upgrade() {
 	case "$(board_name)" in
+	fiberhome,hg5382a|\
 	fiberhome,hg5585f-ct|\
 	fiberhome,hg5585f-cu)
 		airoha_require_ubi_layout factory && fit_do_upgrade "$1"

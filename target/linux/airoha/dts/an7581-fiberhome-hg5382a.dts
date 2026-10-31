@@ -1,0 +1,227 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/* Firmware reserves the first 2 MiB of DRAM. */
+/memreserve/ 0x80000000 0x200000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "an7581.dtsi"
+#include "an7581-fiberhome-ubi-parts.dtsi"
+
+/* FiberHome HG5382A board description. */
+
+/ {
+	model = "FiberHome HG5382A";
+	compatible = "fiberhome,hg5382a", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		/* OpenWrt diag state controls the power LED. */
+		led-boot = &led_power_blue;
+		led-failsafe = &led_power_blue;
+		led-running = &led_power_blue;
+		led-upgrade = &led_power_blue;
+
+		serial0 = &uart1;
+	};
+
+	chosen {
+		/* fitblk locates the FIT-embedded read-only rootfs through this volume. */
+		rootdisk = <&ubi_fit>;
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			/* The reset key drives GPIO35 low. */
+			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* The active-low power LED is connected to GPIO13. */
+		led_power_blue: led-0 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&en7581_pinctrl 13 GPIO_ACTIVE_LOW>;
+		};
+
+		/* PON registration maps O1-O3 to fast blink, O4 to slow blink, and O5 on. */
+		led-2 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 14 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-registration";
+		};
+
+		/* The LOS LED follows optical signal loss. */
+		led-3 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 16 GPIO_ACTIVE_LOW>;
+			linux,default-trigger = "pon0-los";
+		};
+	};
+};
+
+&en7581_pinctrl {
+	/* GPIO0 starts at pin 13 on AN7581. */
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	pon_pins: pon-pins {
+		mux {
+			/* Leave GPIO38/TX_DISABLE under optical frontend control. */
+			function = "pon";
+			groups = "pon_tx_disable_gpio";
+		};
+	};
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+	};
+
+	pnand_pins: pnand-pins {
+		mux {
+			/* NAND uses pins 4-7 and 30-42, leaving GPIO35 for reset. */
+			function = "pnand";
+			groups = "pnand";
+		};
+	};
+};
+
+&{/soc} {
+	/* HG5382A uses an 8-bit TSOP48 parallel NAND. */
+	/delete-node/ spi@1fa10000;
+};
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&gdm1 {
+	/* The switch CPU port uses the board base MAC address. */
+	nvmem-cells = <&fiberhome_base_mac 0>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+};
+
+&switch {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+	status = "okay";
+};
+
+&mdio {
+	/* GPY211 uses MDIO address 7 and active-low GPIO34 reset. */
+	gpy211: ethernet-phy@7 {
+		/* Clause 45 fallback retains standard MDIO enumeration. */
+		compatible = "maxlinear,gpy211",
+			     "ethernet-phy-ieee802.3-c45";
+		reg = <7>;
+		reset-gpios = <&en7581_pinctrl 34 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <100000>;
+		reset-deassert-us = <100000>;
+	};
+};
+
+&eth_pcs {
+	/* HSGMII connects the external 2.5G LAN PHY. */
+	status = "okay";
+};
+
+&gdm4 {
+	/* The external 2.5G port and switch CPU port share the factory base MAC. */
+	nvmem-cells = <&fiberhome_base_mac 0>;
+	nvmem-cell-names = "mac-address";
+	status = "okay";
+	phy-handle = <&gpy211>;
+	phy-mode = "2500base-x";
+	openwrt,netdev-name = "lan1";
+};
+
+/* Internal PHY2, PHY3, and PHY4 connect the remaining copper ports. */
+&gsw_port2 {
+	label = "lan2";
+	status = "okay";
+};
+
+&gsw_phy2 {
+	status = "okay";
+};
+
+&gsw_port3 {
+	label = "lan3";
+	status = "okay";
+};
+
+&gsw_phy3 {
+	status = "okay";
+};
+
+&gsw_port4 {
+	label = "lan4";
+	status = "okay";
+};
+
+&gsw_phy4 {
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+
+	/* GPIO38 is the active-high optical TX_DISABLE signal. */
+	hg5382a_bosa: optical-front-end@51 {
+		compatible = "fiberhome,hg5x-bosa", "airoha,paged-bosa";
+		reg = <0x51>;
+		/* BURST_EN_INV zero selects active-high BEN. */
+		fiberhome,ben-active-high;
+		nvmem-cells = <&pon_calibration>;
+		nvmem-cell-names = "calibration";
+		tx-disable-gpios = <&en7581_pinctrl 38 GPIO_ACTIVE_HIGH>;
+		status = "okay";
+	};
+};
+
+&pon_pcs {
+	status = "okay";
+};
+
+&xpon_mac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pon_pins>;
+	optical-front-end = <&hg5382a_bosa>;
+	data-path = <&gdm2>;
+	nvmem-cells = <&fiberhome_pon_serial>;
+	nvmem-cell-names = "pon-serial";
+	status = "okay";
+};
+
+&gdm2 {
+	/* XG-PON activation and service GEM state drive pon0 carrier. */
+	nvmem-cells = <&fiberhome_base_mac 0>;
+	nvmem-cell-names = "mac-address";
+	airoha,pon-data-path;
+	status = "okay";
+};
