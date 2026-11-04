@@ -1,0 +1,576 @@
+Subject: [PATCH] net: zte: add NP host resource management
+
+Provide host resources and synchronization within the NP driver.
+
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-host.c
+@@ -0,0 +1,525 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Existing VID0 SDT9 Host format and shared ZCAM ownership for NPPT. */
++#include <linux/bitmap.h>
++#include <linux/device.h>
++#include <linux/etherdevice.h>
++#include <linux/module.h>
++#include <linux/netdevice.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/spinlock.h>
++#include <linux/workqueue.h>
++#include <linux/zte_nppt_offload.h>
++#include <net/switchdev.h>
++
++#include "zx279133-host.h"
++
++#define ZX279133_ZCAM_BLOCKS	4
++#define ZX279133_ZCAM_CELLS	5
++#define ZX279133_ZCAM_ADDRS	256
++#define ZX279133_ZCAM_SLOTS	(ZX279133_ZCAM_BLOCKS * \
++				 ZX279133_ZCAM_CELLS * ZX279133_ZCAM_ADDRS)
++#define ZX279133_FAST_KEY_SIZE	16
++#define ZX279133_HOST_SELECTOR	0x00
++#define ZX279133_HOST_FLAGS	0xa0000000
++#define ZX279133_HOST_PORT_MIN	59
++#define ZX279133_HOST_PORT_MAX	62
++
++struct zte_nppt_host {
++	struct list_head node;
++	u8 mac[ETH_ALEN];
++	u16 port;
++	u8 zblock;
++	u8 zcell;
++	u8 zaddr;
++	unsigned int users;
++	u8 limit_slot;
++	bool upload_limit;
++	bool download_limit;
++};
++
++struct zx279133_host_manager {
++	struct zte_nppt *np;
++	struct device *dev;
++	/* Protect list lifetime against atomic FDB event readers, never MMIO. */
++	spinlock_t event_lock;
++	struct list_head hosts;
++	u8 policy_watch[32][ETH_ALEN];
++	/* All allocation and hardware operations hold supplier datapath_lock. */
++	DECLARE_BITMAP(zcam_used, ZX279133_ZCAM_SLOTS);
++	struct notifier_block netdev_nb;
++	struct notifier_block fdb_nb;
++	struct notifier_block bridge_nb;
++	struct work_struct sync_work;
++	atomic_t sync_pending;
++	int sync_error;
++	bool stopping;
++	bool updating;
++	bool registered;
++};
++
++static unsigned int zx279133_zcam_slot(u8 zblock, u8 zcell, u8 zaddr)
++{
++	return (zblock * ZX279133_ZCAM_CELLS + zcell) *
++		ZX279133_ZCAM_ADDRS + zaddr;
++}
++
++static u16 zx279133_crc16(u16 poly, const u8 *data, size_t len)
++{
++	u16 crc = 0;
++	int bit;
++
++	while (len--) {
++		crc ^= (u16)data[len] << 8;
++		for (bit = 0; bit < 8; bit++)
++			crc = crc & BIT(15) ? (crc << 1) ^ poly : crc << 1;
++	}
++
++	return crc;
++}
++
++int zx279133_hosts_zcam_alloc(struct zx279133_host_manager *manager,
++			      const u8 *key, u8 selector,
++			      u8 *zblock, u8 *zcell, u8 *zaddr)
++{
++	u8 hash_input[49] = {};
++	unsigned int slot;
++	u16 crc;
++	int block, cell;
++
++	if (atomic_read(&manager->sync_pending))
++		return -EAGAIN;
++	if (READ_ONCE(manager->sync_error))
++		return -EIO;
++	hash_input[0] = selector;
++	memcpy(hash_input + 1, key, ZX279133_FAST_KEY_SIZE);
++	for (block = 0; block < ZX279133_ZCAM_BLOCKS; block++) {
++		crc = zx279133_crc16(block & 1 ? 0x8005 : 0x1021,
++				     hash_input, sizeof(hash_input));
++		for (cell = 0; cell < ZX279133_ZCAM_CELLS; cell++) {
++			*zaddr = crc >> cell;
++			slot = zx279133_zcam_slot(block, cell, *zaddr);
++			if (test_and_set_bit(slot, manager->zcam_used))
++				continue;
++			*zblock = block;
++			*zcell = cell;
++			return 0;
++		}
++	}
++	return -ENOSPC;
++}
++
++int zx279133_hosts_ready(struct zx279133_host_manager *manager)
++{
++	if (atomic_read(&manager->sync_pending))
++		return -EAGAIN;
++	return READ_ONCE(manager->sync_error) ? -EIO : 0;
++}
++
++void zx279133_hosts_zcam_release(struct zx279133_host_manager *manager,
++				 u8 block, u8 cell, u8 addr)
++{
++	if (WARN_ON_ONCE(block >= ZX279133_ZCAM_BLOCKS || cell >= ZX279133_ZCAM_CELLS))
++		return;
++	clear_bit(zx279133_zcam_slot(block, cell, addr), manager->zcam_used);
++}
++
++static void zx279133_host_entry_build(u32 *w, const u8 *mac, u16 port)
++{
++	/* Response: logical port in bits 33:28; VID and rate-limit slot 0. */
++	w[0] = (u32)(port & 0xf) << 28;
++	/* Key: the MAC least-significant byte first, then VID 0. */
++	w[1] = (port >> 4 & 0x3) | (u32)mac[5] << 24;
++	w[2] = mac[4] | mac[3] << 8 | mac[2] << 16 | (u32)mac[1] << 24;
++	w[3] = mac[0] | ZX279133_HOST_FLAGS;
++}
++
++static void zx279133_hosts_queue_sync(struct zx279133_host_manager *manager)
++{
++	if (READ_ONCE(manager->stopping))
++		return;
++	atomic_set(&manager->sync_pending, 1);
++	queue_work(system_long_wq, &manager->sync_work);
++}
++
++struct zte_nppt_host *zx279133_host_get(struct zx279133_host_manager *manager,
++					const u8 *mac, u16 port)
++{
++	struct zte_nppt_host *host;
++	u8 key[ZX279133_FAST_KEY_SIZE] = {};
++	u32 words[4];
++	int i, ret;
++
++	if (!is_valid_ether_addr(mac) || port < ZX279133_HOST_PORT_MIN ||
++	    port > ZX279133_HOST_PORT_MAX)
++		return ERR_PTR(-EOPNOTSUPP);
++	if (atomic_read(&manager->sync_pending))
++		return ERR_PTR(-EAGAIN);
++	if (READ_ONCE(manager->sync_error))
++		return ERR_PTR(-EIO);
++	list_for_each_entry(host, &manager->hosts, node) {
++		if (!ether_addr_equal(host->mac, mac))
++			continue;
++		if (!host->users)
++			return ERR_PTR(-EIO);
++		/* Do not redirect existing users in place when a MAC moves. */
++		if (host->port != port) {
++			zx279133_hosts_queue_sync(manager);
++			return ERR_PTR(-EAGAIN);
++		}
++		host->users++;
++		return host;
++	}
++	host = kzalloc(sizeof(*host), GFP_KERNEL);
++	if (!host)
++		return ERR_PTR(-ENOMEM);
++	for (i = 0; i < ETH_ALEN; i++)
++		key[i] = mac[ETH_ALEN - 1 - i];
++	ret = zx279133_hosts_zcam_alloc(manager, key, ZX279133_HOST_SELECTOR,
++					&host->zblock, &host->zcell, &host->zaddr);
++	if (ret)
++		goto free;
++	zx279133_host_entry_build(words, mac, port);
++	spin_lock_bh(&manager->event_lock);
++	manager->updating = true;
++	spin_unlock_bh(&manager->event_lock);
++	ret = zte_nppt_zcam_write(manager->np, host->zblock, host->zcell,
++				  host->zaddr, words, ARRAY_SIZE(words));
++	if (ret) {
++		spin_lock_bh(&manager->event_lock);
++		manager->updating = false;
++		spin_unlock_bh(&manager->event_lock);
++		zx279133_hosts_zcam_release(manager, host->zblock, host->zcell, host->zaddr);
++		goto free;
++	}
++	ether_addr_copy(host->mac, mac);
++	host->port = port;
++	host->users = 1;
++	__module_get(THIS_MODULE);
++	spin_lock_bh(&manager->event_lock);
++	list_add_tail(&host->node, &manager->hosts);
++	manager->updating = false;
++	spin_unlock_bh(&manager->event_lock);
++	return host;
++free:
++	kfree(host);
++	return ERR_PTR(ret);
++}
++
++static int zx279133_host_remove(struct zx279133_host_manager *manager,
++				struct zte_nppt_host *host)
++{
++	u32 words[4] = {};
++	int ret;
++
++	ret = zte_nppt_zcam_write(manager->np, host->zblock, host->zcell,
++				  host->zaddr, words, ARRAY_SIZE(words));
++	if (ret)
++		return ret;
++	zx279133_hosts_zcam_release(manager, host->zblock, host->zcell, host->zaddr);
++	spin_lock_bh(&manager->event_lock);
++	list_del(&host->node);
++	spin_unlock_bh(&manager->event_lock);
++	kfree(host);
++	module_put(THIS_MODULE);
++	return 0;
++}
++
++int zx279133_host_put(struct zx279133_host_manager *manager, struct zte_nppt_host *host)
++{
++	if (!host)
++		return 0;
++	if (WARN_ON_ONCE(!host->users))
++		return -EINVAL;
++	if (--host->users)
++		return 0;
++	/* Keep a failed-delete row reserved and pin npu until it can be removed. */
++	return zx279133_host_remove(manager, host);
++}
++
++bool zx279133_hosts_active(struct zx279133_host_manager *manager)
++{
++	return !list_empty(&manager->hosts);
++}
++
++int zx279133_hosts_reap(struct zx279133_host_manager *manager, bool ready)
++{
++	struct zte_nppt_host *host, *next;
++	int ret = 0;
++
++	if (!ready)
++		return list_empty(&manager->hosts) ? 0 : -EBUSY;
++	list_for_each_entry_safe(host, next, &manager->hosts, node) {
++		if (host->users) {
++			ret = -EBUSY;
++			continue;
++		}
++		if (zx279133_host_remove(manager, host))
++			ret = -EIO;
++	}
++	return ret;
++}
++
++void zx279133_hosts_reset_result(struct zx279133_host_manager *manager, int ret)
++{
++	WRITE_ONCE(manager->sync_error, ret);
++}
++
++void zx279133_hosts_show(struct zx279133_host_manager *manager, struct seq_file *s)
++{
++	struct zte_nppt_host *host;
++
++	seq_printf(s, "host_sync pending %d error %d zcam_used %u\n",
++		   atomic_read(&manager->sync_pending), READ_ONCE(manager->sync_error),
++		   bitmap_weight(manager->zcam_used, ZX279133_ZCAM_SLOTS));
++	list_for_each_entry(host, &manager->hosts, node)
++		seq_printf(s, "host %pM port %u zcam %u/%u/%u flows %u\n",
++			   host->mac, host->port, host->zblock, host->zcell,
++			   host->zaddr, host->users);
++}
++
++static bool zx279133_host_device_owned(struct zx279133_host_manager *manager,
++				       struct net_device *dev)
++{
++	struct device *parent;
++
++	for (parent = &dev->dev; parent; parent = parent->parent)
++		if (parent == manager->dev)
++			return true;
++	return false;
++}
++
++static int zx279133_host_lower_owned(struct net_device *dev, struct netdev_nested_priv *priv)
++{
++	return zx279133_host_device_owned(priv->data, dev);
++}
++
++static bool zx279133_host_path_owned(struct zx279133_host_manager *manager,
++				     struct net_device *dev)
++{
++	struct netdev_nested_priv priv = { .data = manager };
++	bool owned;
++
++	rcu_read_lock();
++	owned = zx279133_host_device_owned(manager, dev) ||
++		netdev_walk_all_lower_dev_rcu(dev, zx279133_host_lower_owned, &priv);
++	rcu_read_unlock();
++	return owned;
++}
++
++static void zx279133_hosts_sync_work(struct work_struct *work)
++{
++	struct zx279133_host_manager *manager =
++		container_of(work, struct zx279133_host_manager, sync_work);
++	int ret;
++
++	while (atomic_xchg(&manager->sync_pending, 0)) {
++		if (READ_ONCE(manager->stopping))
++			break;
++		ret = zx279133_nppt_topology_reset(manager->np);
++		if (ret && ret != -ENETDOWN && ret != -ENODEV)
++			dev_warn_ratelimited(manager->dev,
++					     "Host topology invalidation failed: %d\n", ret);
++	}
++}
++
++static int zx279133_hosts_netdev_event(struct notifier_block *nb,
++				       unsigned long event, void *ptr)
++{
++	struct zx279133_host_manager *manager =
++		container_of(nb, struct zx279133_host_manager, netdev_nb);
++	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
++
++	switch (event) {
++	case NETDEV_CHANGE:
++	case NETDEV_CHANGEADDR:
++	case NETDEV_CHANGEUPPER:
++	case NETDEV_CHANGEMTU:
++	case NETDEV_DOWN:
++	case NETDEV_UNREGISTER:
++		if (zx279133_host_path_owned(manager, dev))
++			zx279133_hosts_queue_sync(manager);
++		break;
++	default:
++		break;
++	}
++	return NOTIFY_DONE;
++}
++
++static int zx279133_hosts_fdb_event(struct notifier_block *nb,
++				    unsigned long event, void *ptr)
++{
++	struct zx279133_host_manager *manager =
++		container_of(nb, struct zx279133_host_manager, fdb_nb);
++	struct switchdev_notifier_fdb_info *info = ptr;
++	struct zte_nppt_host *host;
++	bool affected = false;
++	unsigned int i;
++
++	if (event != SWITCHDEV_FDB_ADD_TO_DEVICE && event != SWITCHDEV_FDB_DEL_TO_DEVICE)
++		return NOTIFY_DONE;
++	if (!zx279133_host_path_owned(manager, switchdev_notifier_info_to_dev(&info->info)))
++		return NOTIFY_DONE;
++	spin_lock_bh(&manager->event_lock);
++	affected = manager->updating;
++	for (i = 0; i < ARRAY_SIZE(manager->policy_watch); i++)
++		if (ether_addr_equal(manager->policy_watch[i], info->addr)) {
++			affected = true;
++			break;
++		}
++	list_for_each_entry(host, &manager->hosts, node)
++		if (ether_addr_equal(host->mac, info->addr)) {
++			affected = true;
++			break;
++		}
++	spin_unlock_bh(&manager->event_lock);
++	if (affected)
++		zx279133_hosts_queue_sync(manager);
++	/* Observe topology only; never claim full FDB offload or reflect events. */
++	return NOTIFY_DONE;
++}
++
++static int zx279133_hosts_bridge_event(struct notifier_block *nb,
++				       unsigned long event, void *ptr)
++{
++	struct zx279133_host_manager *manager =
++		container_of(nb, struct zx279133_host_manager, bridge_nb);
++	struct switchdev_notifier_info *info = ptr;
++	struct switchdev_notifier_port_attr_info *attr = ptr;
++	struct switchdev_notifier_port_obj_info *obj = ptr;
++	bool affected = false;
++
++	if (event == SWITCHDEV_PORT_ATTR_SET)
++		switch (attr->attr->id) {
++		case SWITCHDEV_ATTR_ID_PORT_STP_STATE:
++		case SWITCHDEV_ATTR_ID_PORT_BRIDGE_FLAGS:
++		case SWITCHDEV_ATTR_ID_BRIDGE_VLAN_FILTERING:
++			affected = true;
++			break;
++		default:
++			break;
++		}
++	else if (event == SWITCHDEV_PORT_OBJ_ADD || event == SWITCHDEV_PORT_OBJ_DEL)
++		affected = obj->obj->id == SWITCHDEV_OBJ_ID_PORT_VLAN;
++	if (affected && zx279133_host_path_owned(manager, switchdev_notifier_info_to_dev(info)))
++		zx279133_hosts_queue_sync(manager);
++	return NOTIFY_DONE;
++}
++
++struct zx279133_host_manager *zx279133_hosts_create(struct zte_nppt *np, struct device *dev)
++{
++	struct zx279133_host_manager *manager;
++
++	manager = kzalloc(sizeof(*manager), GFP_KERNEL);
++	if (!manager)
++		return ERR_PTR(-ENOMEM);
++	manager->np = np;
++	manager->dev = dev;
++	spin_lock_init(&manager->event_lock);
++	INIT_LIST_HEAD(&manager->hosts);
++	INIT_WORK(&manager->sync_work, zx279133_hosts_sync_work);
++	atomic_set(&manager->sync_pending, 0);
++	manager->netdev_nb.notifier_call = zx279133_hosts_netdev_event;
++	manager->fdb_nb.notifier_call = zx279133_hosts_fdb_event;
++	manager->bridge_nb.notifier_call = zx279133_hosts_bridge_event;
++	return manager;
++}
++
++int zx279133_hosts_start(struct zx279133_host_manager *manager)
++{
++	int ret;
++
++	ret = register_netdevice_notifier(&manager->netdev_nb);
++	if (ret)
++		goto free;
++	ret = register_switchdev_notifier(&manager->fdb_nb);
++	if (ret)
++		goto netdev;
++	ret = register_switchdev_blocking_notifier(&manager->bridge_nb);
++	if (ret)
++		goto fdb;
++	manager->registered = true;
++	return 0;
++fdb:
++	unregister_switchdev_notifier(&manager->fdb_nb);
++netdev:
++	unregister_netdevice_notifier(&manager->netdev_nb);
++free:
++	WRITE_ONCE(manager->stopping, true);
++	cancel_work_sync(&manager->sync_work);
++	return ret;
++}
++
++void zx279133_hosts_quiesce(struct zx279133_host_manager *manager)
++{
++	WRITE_ONCE(manager->stopping, true);
++	if (manager->registered) {
++		unregister_switchdev_blocking_notifier(&manager->bridge_nb);
++		unregister_switchdev_notifier(&manager->fdb_nb);
++		unregister_netdevice_notifier(&manager->netdev_nb);
++		manager->registered = false;
++	}
++	cancel_work_sync(&manager->sync_work);
++}
++
++void zx279133_hosts_destroy(struct zx279133_host_manager *manager)
++{
++	if (WARN_ON_ONCE(!list_empty(&manager->hosts)))
++		return;
++	kfree(manager);
++}
++
++struct zte_nppt_host *zx279133_host_lookup_get(struct zx279133_host_manager *manager,
++					       const u8 *mac)
++{
++	struct zte_nppt_host *host;
++
++	if (zx279133_hosts_ready(manager))
++		return ERR_PTR(-EAGAIN);
++	list_for_each_entry(host, &manager->hosts, node)
++		if (ether_addr_equal(host->mac, mac) && host->users) {
++			host->users++;
++			return host;
++		}
++	return ERR_PTR(-ENOENT);
++}
++
++int zx279133_host_limit(struct zx279133_host_manager *manager,
++			struct zte_nppt_host *host, u8 slot,
++			bool upload, bool download)
++{
++	u32 words[4];
++	int ret;
++
++	if (!host || !host->users || slot >= 32)
++		return -EINVAL;
++	zx279133_host_entry_build(words, host->mac, host->port);
++	/* The existing inline SDT9 row maps OEM response port bit 54 to
++	 * row bit 28 (the same 26-bit shift for adjacent action fields).
++	 * OEM mac_table_add: source enable=31, destination=30, index=32..41.
++	 * Preserve the existing port/MAC/VID encoding and modify only this field.
++	 */
++	words[0] |= (u32)slot << 6 | (upload ? BIT(5) : 0) |
++		    (download ? BIT(4) : 0);
++	ret = zte_nppt_zcam_write(manager->np, host->zblock, host->zcell,
++				  host->zaddr, words, ARRAY_SIZE(words));
++	if (!ret) {
++		host->limit_slot = slot;
++		host->upload_limit = upload;
++		host->download_limit = download;
++	}
++	return ret;
++}
++
++void zx279133_host_watch(struct zx279133_host_manager *manager,
++			 u8 slot, const u8 *mac)
++{
++	if (WARN_ON_ONCE(slot >= ARRAY_SIZE(manager->policy_watch)))
++		return;
++	spin_lock_bh(&manager->event_lock);
++	if (mac)
++		ether_addr_copy(manager->policy_watch[slot], mac);
++	else
++		eth_zero_addr(manager->policy_watch[slot]);
++	spin_unlock_bh(&manager->event_lock);
++}
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-host.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_HOST_H
++#define _ZX279133_HOST_H
++
++#include <linux/types.h>
++
++struct device;
++struct seq_file;
++struct zte_nppt;
++struct zte_nppt_host;
++struct zx279133_host_manager;
++
++struct zx279133_host_manager *
++zx279133_hosts_create(struct zte_nppt *np, struct device *dev);
++int zx279133_hosts_start(struct zx279133_host_manager *manager);
++void zx279133_hosts_quiesce(struct zx279133_host_manager *manager);
++void zx279133_hosts_destroy(struct zx279133_host_manager *manager);
++bool zx279133_hosts_active(struct zx279133_host_manager *manager);
++int zx279133_hosts_reap(struct zx279133_host_manager *manager, bool ready);
++void zx279133_hosts_reset_result(struct zx279133_host_manager *manager, int ret);
++int zx279133_hosts_ready(struct zx279133_host_manager *manager);
++int zx279133_hosts_zcam_alloc(struct zx279133_host_manager *manager,
++			      const u8 *key, u8 selector,
++			      u8 *block, u8 *cell, u8 *addr);
++void zx279133_hosts_zcam_release(struct zx279133_host_manager *manager,
++				 u8 block, u8 cell, u8 addr);
++struct zte_nppt_host *zx279133_host_get(struct zx279133_host_manager *manager,
++					const u8 *mac, u16 port);
++int zx279133_host_put(struct zx279133_host_manager *manager,
++		      struct zte_nppt_host *host);
++void zx279133_hosts_show(struct zx279133_host_manager *manager, struct seq_file *s);
++int zx279133_nppt_topology_reset(struct zte_nppt *np);
++
++struct zte_nppt_host *
++zx279133_host_lookup_get(struct zx279133_host_manager *manager, const u8 *mac);
++int zx279133_host_limit(struct zx279133_host_manager *manager,
++			struct zte_nppt_host *host, u8 slot,
++			bool upload, bool download);
++void zx279133_host_watch(struct zx279133_host_manager *manager,
++			 u8 slot, const u8 *mac);
++#endif

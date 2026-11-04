@@ -1,0 +1,83 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# SR1010 body light; independent of the link-only socket LEDs.
+
+LEDS=${SR1010_LED_ROOT:-/sys/class/leds}
+WHITE=$LEDS/sr1010:white
+RED=$LEDS/sr1010:red
+[ -d "$WHITE" ] && [ -d "$RED" ] || exit 0
+
+get() { uci -q get "sr1010-netled.main.$1" || echo "$2"; }
+
+bounded() {
+	local value=$1 fallback=$2 min=$3 max=$4
+	case "$value" in ''|*[!0-9]*|??????*) value=$fallback;; esac
+	if [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]; then
+		echo "$value"
+	else
+		echo "$fallback"
+	fi
+}
+
+show() {
+	if [ "$1" = online ]; then
+		echo 1 > "$WHITE/brightness"
+		echo 0 > "$RED/brightness"
+	else
+		echo 1 > "$RED/brightness"
+		echo 0 > "$WHITE/brightness"
+	fi
+}
+
+online_now() {
+	local name status dev host
+	for name in $IFACES; do
+		status=$(ubus call "network.interface.$name" status 2>/dev/null) || continue
+		[ "$(jsonfilter -s "$status" -e '@.up' 2>/dev/null)" = true ] || continue
+		dev=$(jsonfilter -s "$status" -e '@.l3_device' 2>/dev/null)
+		[ -n "$dev" ] || continue
+		for host in $HOSTS; do
+			case "$host" in ''|-*) continue;; esac
+			ping -q -c 1 -W 2 -I "$dev" "$host" >/dev/null 2>&1 && return 0
+		done
+	done
+	return 1
+}
+
+INTERVAL=$(bounded "$(get interval 5)" 5 5 3600)
+UP_COUNT=$(bounded "$(get up_count 1)" 1 1 20)
+DOWN_COUNT=$(bounded "$(get down_count 3)" 3 1 20)
+IFACES=$(get iface wan)
+HOSTS=$(get host "223.5.5.5 119.29.29.29 1.1.1.1")
+LOOPS=$(bounded "${SR1010_NETLED_LOOPS:-0}" 0 0 10000)
+
+for led in "$WHITE" "$RED"; do
+	echo none > "$led/trigger" 2>/dev/null
+done
+state=offline
+ok=0
+bad=0
+n=0
+show offline
+while :; do
+	if online_now; then
+		ok=$((ok + 1))
+		bad=0
+	else
+		bad=$((bad + 1))
+		ok=0
+	fi
+	if [ "$state" = offline ] && [ "$ok" -ge "$UP_COUNT" ]; then
+		state=online
+		show online
+		logger -t sr1010-netled "WAN is online"
+	elif [ "$state" = online ] && [ "$bad" -ge "$DOWN_COUNT" ]; then
+		state=offline
+		show offline
+		logger -t sr1010-netled "WAN is offline"
+	fi
+	[ -n "$SR1010_NETLED_TRACE" ] && echo "state=$state ok=$ok bad=$bad" >&2
+	n=$((n + 1))
+	[ "$LOOPS" -gt 0 ] && [ "$n" -ge "$LOOPS" ] && break
+	sleep "$INTERVAL"
+done

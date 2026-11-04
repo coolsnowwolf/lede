@@ -1,0 +1,3517 @@
+Subject: [PATCH] net: zte: add the flowtable rule translator
+
+Translate Linux flow rules to NP actions, keeping policy and per-rule
+lifecycle in fnoffload and global hardware resources in npu.
+
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-offload.c
+@@ -0,0 +1,2032 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* ZTE ZX279133 NPPT IPv4/IPv6 flow-table offload. */
++
++#include <linux/bitmap.h>
++#include <linux/hashtable.h>
++#include <linux/jhash.h>
++#include <linux/capability.h>
++#include <linux/etherdevice.h>
++#include <linux/ip.h>
++#include <linux/if_vlan.h>
++#include <linux/if_pppox.h>
++#include <linux/ipv6.h>
++#include <linux/jiffies.h>
++#include <linux/rhashtable.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/tcp.h>
++#include <linux/udp.h>
++#include <linux/uaccess.h>
++#include <linux/unaligned.h>
++#include <linux/xarray.h>
++
++#include <net/flow_offload.h>
++#include <net/pkt_cls.h>
++
++#include <linux/kref.h>
++#include <linux/module.h>
++#include <linux/hex.h>
++#include <linux/zte_nppt_offload.h>
++#include <linux/zte_nppt_native.h>
++#include "zx279133-policy.h"
++
++/* Raw token calibration is an opt-in experiment until packet tests establish
++ * units and color/drop semantics. Calibration stays read-only under live rules.
++ */
++static bool experimental_vlan;
++module_param(experimental_vlan, bool, 0644);
++MODULE_PARM_DESC(experimental_vlan, "Admit experimental single-tag LAN IPv4 rules when NPU VID key is active");
++
++static bool zx279133_vlan_enabled(struct zte_nppt *np)
++{
++	struct zte_nppt_info info;
++
++	zte_nppt_get_info(np, &info);
++	return READ_ONCE(experimental_vlan) &&
++		(info.capabilities & ZTE_NPPT_CAP_LAN_VID_KEY);
++}
++
++static bool experimental_police;
++module_param(experimental_police, bool, 0644);
++MODULE_PARM_DESC(experimental_police, "Allow new experimental byte police rules; delete rules before disabling");
++/* CPU133 board calibration: 344064000 / 62500 * 8 = 44040.192.
++ * Round the quantum up so CIR rounding never raises the requested wire rate.
++ * Verified with 300/600/1200/1400-byte UDP and a separate CIR454 holdout.
++ */
++static unsigned int police_unit_bps = 44041;
++module_param(police_unit_bps, uint, 0444);
++MODULE_PARM_DESC(police_unit_bps, "Wire bits/s per CIR token; CPU133 calibration at time_count=62500");
++static unsigned int police_burst_unit = 1;
++module_param(police_burst_unit, uint, 0444);
++MODULE_PARM_DESC(police_burst_unit, "Experimental bytes per CBS token (hypothesis)");
++
++#define ZX279133_FAST_KEY_SIZE		16
++#define ZX279133_FAST_DATA_SIZE		32
++#define ZX279133_FAST_IKEY_SIZE		16
++#define ZX279133_FAST_IKEY_DEPTH	ZTE_NPPT_FAST_IKEY_DEPTH
++#define ZX279133_ZCAM_ENTRY_SIZE	64
++/* np.ko core_sdt_init() gives SDT14 256 ZCAM entries before DDR overflow. */
++#define ZX279133_FAST_FULL_ZCAM_LIMIT	256
++#define ZX279133_DDR_BUCKET_SHIFT	6
++#define ZX279133_DDR_BUCKET_SIZE		BIT(ZX279133_DDR_BUCKET_SHIFT)
++#define ZX279133_DDR_BUCKETS		(ZTE_NPPT_DDR_BYTES >> \
++					 ZX279133_DDR_BUCKET_SHIFT)
++#define ZX279133_HASH_CRC32_POLY		0x04c11db7
++
++#define ZX279133_FAST_MULTI_SELECTOR	0x01
++#define ZX279133_FAST_MULTI_FOOTER	0xc1
++#define ZX279133_FAST_FULL_SELECTOR	0x00
++#define ZX279133_FAST_FULL_FOOTER	0xe0
++
++struct zx279133_flow_tuple {
++	__be32 src_addr;
++	__be32 dst_addr;
++	__be16 src_port;
++	__be16 dst_port;
++};
++
++struct zx279133_flow_data {
++	struct ethhdr eth;
++	struct zx279133_flow_tuple tuple;
++	struct in6_addr src_v6;
++	struct in6_addr dst_v6;
++	struct zx279133_vlan_plan vlan;
++	struct zte_nppt_plcr_profile police;
++	u32 police_index;
++	bool police_set;
++	u8 meter_bucket;
++	u16 vlan_tci;
++	u8 traffic_class;
++	bool vlan_push;
++	bool traffic_class_set;
++};
++
++/* Parsed rule identity; compare fields, never structure padding. */
++struct zx279133_flow_spec {
++	struct zx279133_flow_data data;
++	struct zx279133_flow_tuple xlate;
++	enum zx279133_flow_port ingress;
++	enum zx279133_flow_port egress;
++	u16 gemport;
++	u16 pppoe_sid;
++	u8 ip_proto;
++	bool ipv6;
++};
++
++struct zx279133_stat_group;
++
++struct zx279133_flow_entry {
++	struct zx279133_stat_group *stat_group;
++	struct zx279133_flow_spec spec;
++	struct zte_nppt_meter *meter;
++	struct zte_nppt_vlan *vlan_in;
++	struct zte_nppt_vlan *vlan_out;
++	/* Reset may retire hardware before flowtable asks for its final delta. */
++	struct flow_stats final_stats;
++	bool retired;
++	struct rhash_head key_node;
++	u8 key[ZX279133_FAST_KEY_SIZE];
++	/* An upstream entry is indexed by the key its reply will have. */
++	struct rhash_head reply_node;
++	u8 reply_key[ZX279133_FAST_KEY_SIZE];
++	u8 zblock;
++	u8 zcell;
++	u8 zaddr;
++	u32 ddr_bucket;
++	u32 age;
++	u16 ikey;
++	u16 stat;
++	u8 wanid;
++	struct zte_nppt_host *host;
++	/* The flowtable the entry came from. */
++	const struct flow_block *fblock;
++	bool flowtable;
++	u64 packets;
++	u64 bytes;
++	unsigned long lastused;
++	bool module_pinned;
++	bool stale;
++	bool has_stat;
++	bool has_age;
++	bool snat;
++	bool pppoe;
++	bool wan_vlan;
++	/* From a LAN port, out by the WAN path; else from the WAN port. */
++	bool upstream;
++	/* Out of a LAN port, a second WAN, rather than the WAN port. */
++	bool lan_routed;
++	/*
++	 * Kept out of the hardware, holding nothing there: only remembers,
++	 * by its reply key, that the other half of the flow comes in PPPoE.
++	 */
++	bool refused;
++	bool reply_indexed;
++	bool full;
++	bool in_ddr;
++};
++
++struct zx279133_flow_offload {
++	struct zte_nppt *np;
++	struct device *dev;
++	struct kref ref;
++	bool detached;
++	/* Serializes software flow state and SE indirect accesses. */
++	struct mutex lock;
++	struct xarray flows;
++	struct rhashtable key_flows;
++	struct rhashtable reply_flows;
++	struct list_head block_cb_list;
++	unsigned long *ddr_used;
++	DECLARE_BITMAP(ikey_used, ZX279133_FAST_IKEY_DEPTH);
++	DECLARE_BITMAP(age_used, ZX279133_FAST_AGE_DEPTH);
++	DECLARE_BITMAP(stat_used, ZX279133_FAST_STAT_DEPTH);
++	DECLARE_HASHTABLE(stat_groups, 8);
++	u32 stat_group_count;
++	u32 ddr_entries;
++	u16 fast_full_zcam_used;
++
++};
++
++static const struct rhashtable_params zx279133_flow_key_ht_params = {
++	.head_offset = offsetof(struct zx279133_flow_entry, key_node),
++	.key_offset = offsetof(struct zx279133_flow_entry, key),
++	.key_len = ZX279133_FAST_KEY_SIZE,
++	.automatic_shrinking = true,
++};
++
++static const struct rhashtable_params zx279133_flow_reply_ht_params = {
++	.head_offset = offsetof(struct zx279133_flow_entry, reply_node),
++	.key_offset = offsetof(struct zx279133_flow_entry, reply_key),
++	.key_len = ZX279133_FAST_KEY_SIZE,
++	.automatic_shrinking = true,
++};
++
++struct zx279133_flow_block {
++	struct zx279133_flow_offload *offload;
++	struct net_device *ndev;
++	/* The flowtable's block; it is shared by all its devices. */
++	struct flow_block *fblock;
++	bool flowtable;
++};
++
++static int zx279133_fast_index_alloc(unsigned long *used,
++				      unsigned int depth, u16 *index)
++{
++	unsigned long bit;
++
++	bit = find_first_zero_bit(used, depth);
++	if (bit == depth)
++		return -ENOSPC;
++	__set_bit(bit, used);
++	*index = bit;
++
++	return 0;
++}
++
++static int
++zx279133_fast_age_alloc(struct zx279133_flow_offload *offload, u32 *index)
++{
++	unsigned long bit;
++
++	bit = find_first_zero_bit(offload->age_used, ZX279133_FAST_AGE_DEPTH);
++	if (bit == ZX279133_FAST_AGE_DEPTH)
++		return -ENOSPC;
++	__set_bit(bit, offload->age_used);
++	*index = bit;
++
++	return 0;
++}
++
++static u32 zx279133_crc32(u32 poly, const u8 *data, size_t len)
++{
++	u32 crc = 0;
++	int bit;
++
++	while (len--) {
++		crc ^= (u32)data[len] << 24;
++		for (bit = 0; bit < 8; bit++)
++			crc = crc & BIT(31) ? (crc << 1) ^ poly : crc << 1;
++	}
++
++	return crc;
++}
++
++static int zx279133_ddr_alloc(struct zx279133_flow_offload *offload,
++			      struct zx279133_flow_entry *entry, u8 selector)
++{
++	u8 hash_input[49] = {};
++	u32 crc;
++
++	hash_input[0] = selector;
++	memcpy(hash_input + 1, entry->key, ZX279133_FAST_KEY_SIZE);
++	crc = zx279133_crc32(ZX279133_HASH_CRC32_POLY, hash_input, sizeof(hash_input));
++	entry->ddr_bucket = crc & (ZX279133_DDR_BUCKETS - 1);
++	if (test_and_set_bit(entry->ddr_bucket, offload->ddr_used))
++		return -ENOSPC;
++	entry->in_ddr = true;
++	if (!offload->ddr_entries)
++		dev_info(offload->dev,
++			 "SDT14 fast-flow overflow entered DDR bulk 0 at bucket %u\n",
++			 entry->ddr_bucket);
++	offload->ddr_entries++;
++
++	return 0;
++}
++
++static int zx279133_flow_slot_alloc(struct zx279133_flow_offload *offload,
++				    struct zx279133_flow_entry *entry,
++				    u8 selector)
++{
++	int ret;
++
++	if (!entry->full ||
++	    offload->fast_full_zcam_used < ZX279133_FAST_FULL_ZCAM_LIMIT) {
++		ret = zte_nppt_zcam_alloc(offload->np, entry->key, selector,
++					  &entry->zblock, &entry->zcell,
++					  &entry->zaddr);
++		if (!ret) {
++			if (entry->full)
++				offload->fast_full_zcam_used++;
++			return 0;
++		}
++		if (!entry->full)
++			return ret;
++	}
++
++	ret = zx279133_ddr_alloc(offload, entry, selector);
++	if (ret != -ENOSPC)
++		return ret;
++
++	/* The external table has one 512-bit slot per CRC32 result.  Resolve a
++	 * collision through the ZCAM's 4 blocks x 5 CRC16 candidates.
++	 */
++	ret = zte_nppt_zcam_alloc(offload->np, entry->key, selector,
++				  &entry->zblock, &entry->zcell, &entry->zaddr);
++	if (!ret)
++		offload->fast_full_zcam_used++;
++
++	return ret;
++}
++
++static void zx279133_flow_slot_release(struct zx279133_flow_offload *offload,
++				       const struct zx279133_flow_entry *entry)
++{
++	if (entry->in_ddr) {
++		__clear_bit(entry->ddr_bucket, offload->ddr_used);
++		offload->ddr_entries--;
++		return;
++	}
++
++	zte_nppt_zcam_release(offload->np, entry->zblock, entry->zcell, entry->zaddr);
++	if (entry->full)
++		offload->fast_full_zcam_used--;
++}
++
++/*
++ * As np.ko's fast_table_write(): a multi entry, whose response starts in the
++ * IKEY table, while the ZCAM and the 4096 IKEYs have room, else a full SDT14
++ * entry, which can overflow into the DDR bulk. The LAN entry program adds a
++ * PPPoE header from either.
++ */
++static int zx279133_flow_storage_alloc(struct zx279133_flow_offload *offload,
++				       struct zx279133_flow_entry *entry)
++{
++	int ret;
++
++	if (!entry->full) {
++		ret = zx279133_flow_slot_alloc(offload, entry,
++					       ZX279133_FAST_MULTI_SELECTOR);
++		if (!ret) {
++			ret = zx279133_fast_index_alloc(offload->ikey_used,
++							ZX279133_FAST_IKEY_DEPTH,
++							&entry->ikey);
++			if (!ret)
++				return 0;
++			zx279133_flow_slot_release(offload, entry);
++		}
++		if (ret != -ENOSPC)
++			return ret;
++		entry->full = true;
++	}
++
++	return zx279133_flow_slot_alloc(offload, entry,
++					ZX279133_FAST_FULL_SELECTOR);
++}
++
++static int zx279133_flow_table_write(struct zx279133_flow_offload *offload,
++				     const struct zx279133_flow_entry *entry,
++				     const u32 *table, unsigned int words)
++{
++	if (entry->in_ddr) {
++		return zte_nppt_ddr_write(offload->np, entry->ddr_bucket, table);
++	}
++
++	return zte_nppt_zcam_write(offload->np, entry->zblock, entry->zcell,
++				    entry->zaddr, table, words);
++}
++
++static void zx279133_put_ipv4(u8 *dst, __be32 addr)
++{
++	put_unaligned(be32_to_cpu(addr), (u32 *)dst);
++}
++
++static void zx279133_fast_key_build(u8 *key,
++				    const struct zx279133_flow_tuple *tuple,
++				    u8 ip_proto)
++{
++	memset(key, 0, ZX279133_FAST_KEY_SIZE);
++	put_unaligned(ntohs(tuple->dst_port), (u16 *)(key + 3));
++	put_unaligned(ntohs(tuple->src_port), (u16 *)(key + 5));
++	zx279133_put_ipv4(key + 7, tuple->dst_addr);
++	zx279133_put_ipv4(key + 11, tuple->src_addr);
++	key[15] = ip_proto;
++}
++
++static u16 zx279133_vlan_egress_vid(const struct zx279133_flow_data *data)
++{
++	if (data->vlan.edit == ZX_VLAN_POP)
++		return 0;
++	if (data->vlan.edit == ZX_VLAN_PUSH || data->vlan.edit == ZX_VLAN_REPLACE)
++		return data->vlan.tci & VLAN_VID_MASK;
++	return data->vlan.tagged ? data->vlan.vid : 0;
++}
++
++static void zx279133_fast_key_vid(u8 *key, u16 vid)
++{
++	/* R16: query tail 00:VIDhi:VIDlo is Linux key VIDlo:VIDhi:00. */
++	put_unaligned_le16(vid, key);
++}
++
++#define ZX279133_IPV6_CRC_POLY		0x04c11db7
++
++static u32 zx279133_ipv6_crc32(u32 crc, const u8 *data, size_t len)
++{
++	int bit;
++
++	while (len--) {
++		crc ^= (u32)*data++ << 24;
++		for (bit = 0; bit < 8; bit++)
++			crc = crc & BIT(31) ?
++				(crc << 1) ^ ZX279133_IPV6_CRC_POLY : crc << 1;
++	}
++
++	return crc;
++}
++
++static void zx279133_fast_key_build_v6(u8 *key,
++				       const struct zx279133_flow_data *data,
++				       u8 ip_proto)
++{
++	u32 crc;
++
++	memset(key, 0, ZX279133_FAST_KEY_SIZE);
++	put_unaligned(ntohs(data->tuple.dst_port), (u16 *)(key + 3));
++	put_unaligned(ntohs(data->tuple.src_port), (u16 *)(key + 5));
++
++	/* SPA full-tuple mode covers destination then source for DIP32 and
++	 * source then destination for SIP32, using big-endian CRC-32.
++	 */
++	crc = zx279133_ipv6_crc32(0, data->dst_v6.s6_addr, sizeof(data->dst_v6));
++	crc = zx279133_ipv6_crc32(crc, data->src_v6.s6_addr, sizeof(data->src_v6));
++	put_unaligned(crc, (u32 *)(key + 7));
++	crc = zx279133_ipv6_crc32(0, data->src_v6.s6_addr, sizeof(data->src_v6));
++	crc = zx279133_ipv6_crc32(crc, data->dst_v6.s6_addr, sizeof(data->dst_v6));
++	put_unaligned(crc, (u32 *)(key + 11));
++	key[15] = ip_proto;
++}
++
++/*
++ * The key the reply of an upstream flow is looked up with: the translated
++ * tuple with source and destination exchanged.
++ */
++static void zx279133_fast_reply_key_build(u8 *key,
++					  const struct zx279133_flow_data *data,
++					  const struct zx279133_flow_tuple *xlate,
++					  u8 ip_proto, bool ipv6)
++{
++	struct zx279133_flow_data reply = {};
++
++	reply.tuple.src_addr = xlate->dst_addr;
++	reply.tuple.dst_addr = xlate->src_addr;
++	reply.tuple.src_port = xlate->dst_port;
++	reply.tuple.dst_port = xlate->src_port;
++	if (ipv6) {
++		reply.src_v6 = data->dst_v6;
++		reply.dst_v6 = data->src_v6;
++		zx279133_fast_key_build_v6(key, &reply, ip_proto);
++	} else {
++		zx279133_fast_key_build(key, &reply.tuple, ip_proto);
++	}
++}
++
++static void zx279133_fast_response_build(u8 *fast,
++					 const struct zx279133_flow_data *data,
++					 const struct zx279133_flow_tuple *xlate,
++					 enum zx279133_flow_port ingress,
++					 enum zx279133_flow_port egress,
++					 u16 gemport, u16 ikey, u16 stat,
++					 bool has_stat, bool pppoe, u8 wanid)
++{
++	int i;
++
++	/* The response stores MAC addresses and IPv4 values least-significant
++	 * byte first, exactly as np.ko's fast_hashinfo_set() emits them.
++	 */
++	memset(fast, 0, ZX279133_FAST_DATA_SIZE);
++	if (pppoe)
++		put_unaligned(4, (u32 *)(fast + 16));
++	put_unaligned(stat, (u16 *)(fast + 2));
++	for (i = 0; i < ETH_ALEN; i++)
++		fast[8 + i] = data->eth.h_dest[ETH_ALEN - 1 - i];
++
++	put_unaligned(gemport, (u16 *)(fast + 20));
++	/* Bits 4:0 select the WANID entry that supplies the source MAC. */
++	fast[23] = wanid;
++	put_unaligned(ikey, (u16 *)(fast + 26));
++	if (has_stat)
++		fast[29] |= BIT(4);
++	fast[30] = BIT(5) | BIT(4) | BIT(3);
++	if (ingress == ZX279133_FLOW_PORT_LAN) {
++		/*
++		 * The LAN entry program has already removed the RTL8372N
++		 * transport tag. In the default response only a PPPoE push changes
++		 * its length (eight bytes, stored halved); a requested user VLAN
++		 * push is applied below.
++		 * wan_mode (bit 1) sends it out the WAN path, where the push
++		 * takes the session from the WANID entry and the frame leaves
++		 * by the port at byte 20, a LAN port too. Without it the egress
++		 * port is cleared and the frame is lost, whichever port it is
++		 * for.
++		 */
++		put_unaligned(pppoe ? 4 : 0, (u32 *)(fast + 16));
++		fast[29] |= BIT(1);
++	}
++	/*
++	 * np.ko fast_hashinfo_set(): action 1 at byte 30 [7:6] inserts an
++	 * 802.1Q tag and byte 24 holds its TCI. Keep the OEM software response's
++	 * abs(delta)/2 field too; its low bits are not part of the packed entry.
++	 */
++	zx279133_vlan_response(fast, &data->vlan);
++	if (data->police_set)
++		zx279133_meter_response(fast, data->meter_bucket);
++
++	/* The OEM response has an eight-bit replacement, not a DSCP mask. */
++	if (data->traffic_class_set) {
++		fast[22] = data->traffic_class;
++		fast[29] |= BIT(6);
++	}
++
++	if (xlate->src_addr != data->tuple.src_addr)
++		fast[29] |= BIT(7);
++	if (xlate->dst_addr != data->tuple.dst_addr) {
++		zx279133_put_ipv4(fast + 4, xlate->dst_addr);
++		fast[30] |= BIT(0);
++	}
++	/*
++	 * The port on the WAN side is always written, as np.ko does. Between
++	 * two LAN ports either side may be translated, when one of them is a
++	 * second WAN.
++	 */
++	if (ingress == ZX279133_FLOW_PORT_LAN ||
++	    xlate->src_port != data->tuple.src_port) {
++		put_unaligned(ntohs(xlate->src_port), (u16 *)fast);
++		fast[30] |= BIT(1);
++	}
++	if (ingress == ZX279133_FLOW_PORT_WAN ||
++	    xlate->dst_port != data->tuple.dst_port) {
++		put_unaligned(ntohs(xlate->dst_port), (u16 *)(fast + 14));
++		fast[30] |= BIT(2);
++	}
++}
++
++static void zx279133_fast_multi_table_build(u32 *table, const u8 *fast,
++					    const u8 *key, u32 age)
++{
++	u8 packed[18] = {};
++	u8 *bytes = (u8 *)table;
++	u32 tail;
++	int i;
++
++	/* fast_table_write() packs response bytes 17..31 around the age index. */
++	for (i = 0; i < 14; i++) {
++		packed[i] |= (fast[17 + i] & 0x3) << 6;
++		packed[i + 1] |= fast[17 + i] >> 2;
++	}
++	tail = (u32)age << 8 | (fast[31] & 0x3) << 6 |
++	       (u32)(fast[31] & ~0x3) << 24;
++	packed[14] |= tail;
++	packed[15] = tail >> 8;
++	packed[16] = tail >> 16;
++	packed[17] = tail >> 24;
++
++	memset(table, 0, ZX279133_ZCAM_ENTRY_SIZE / 2);
++	memcpy(bytes, packed + 3, 15);
++	memcpy(bytes + 15, key, ZX279133_FAST_KEY_SIZE);
++	bytes[31] = ZX279133_FAST_MULTI_FOOTER;
++}
++
++static void zx279133_fast_full_table_build(u32 *table, const u8 *fast,
++					   const u8 *key, u32 age)
++{
++	u32 response[ZX279133_FAST_DATA_SIZE / sizeof(u32)];
++	u8 packed[ZX279133_FAST_DATA_SIZE + 3] = {};
++	u8 *bytes = (u8 *)table;
++	u8 *response_bytes = (u8 *)response;
++	unsigned int i;
++	u32 tail;
++
++	/* fast_table_write() applies this conversion and the 18-bit age prefix
++	 * before its age-enabled SDT14 fallback.
++	 */
++	memcpy(response, fast, sizeof(response));
++	swap(response[0], response[4]);
++	response_bytes[26] = 0;
++	response_bytes[27] &= 0xe0;
++	for (i = 0; i < ZX279133_FAST_DATA_SIZE - 1; i++) {
++		packed[i] |= (response_bytes[i] & 0x3) << 6;
++		packed[i + 1] |= response_bytes[i] >> 2;
++	}
++	tail = (age & GENMASK(17, 0)) << 13 |
++	       (response_bytes[31] & GENMASK(6, 0)) << 6;
++	for (i = 0; i < sizeof(tail); i++)
++		packed[31 + i] += tail >> (8 * i);
++	memset(table, 0, ZX279133_ZCAM_ENTRY_SIZE);
++	memcpy(bytes + 15, packed + 3, ZX279133_FAST_DATA_SIZE);
++	memcpy(bytes + 47, key, ZX279133_FAST_KEY_SIZE);
++	bytes[63] = ZX279133_FAST_FULL_FOOTER;
++}
++
++static void zx279133_flow_mangle_eth(const struct flow_action_entry *act,
++				     struct ethhdr *eth)
++{
++	u8 *dest = (u8 *)eth + act->mangle.offset;
++	const u8 *src = (const u8 *)&act->mangle.val;
++
++	if (act->mangle.offset > 8)
++		return;
++	if (act->mangle.mask == 0xffff) {
++		src += 2;
++		dest += 2;
++	}
++	memcpy(dest, src, act->mangle.mask ? 2 : 4);
++}
++
++static int zx279133_flow_mangle_ports(const struct flow_action_entry *act,
++				      struct zx279133_flow_tuple *tuple)
++{
++	u32 val = ntohl(act->mangle.val);
++
++	switch (act->mangle.offset) {
++	case 0:
++		if (act->mangle.mask == ~htonl(0xffff))
++			tuple->dst_port = cpu_to_be16(val);
++		else
++			tuple->src_port = cpu_to_be16(val >> 16);
++		break;
++	case 2:
++		tuple->dst_port = cpu_to_be16(val);
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	return 0;
++}
++
++static int zx279133_flow_mangle_ipv4(const struct flow_action_entry *act,
++				     struct zx279133_flow_tuple *tuple)
++{
++	__be32 *addr;
++
++	switch (act->mangle.offset) {
++	case offsetof(struct iphdr, saddr):
++		addr = &tuple->src_addr;
++		break;
++	case offsetof(struct iphdr, daddr):
++		addr = &tuple->dst_addr;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++	memcpy(addr, &act->mangle.val, sizeof(*addr));
++
++	return 0;
++}
++
++static int
++zx279133_flow_mangle_class(const struct flow_action_entry *act,
++			   struct zx279133_flow_data *data, bool ipv6,
++			   struct netlink_ext_ack *extack)
++{
++	u32 field = ipv6 ? 0x0ff00000 : 0x00ff0000;
++	u32 val = ntohl(act->mangle.val);
++
++	/* Do not silently clear ECN for a DSCP-only pedit. */
++	if (act->mangle.mask != ~htonl(field) || (val & ~field)) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "NPPT requires a full eight-bit ToS/traffic-class rewrite");
++		return -EOPNOTSUPP;
++	}
++	data->traffic_class = val >> (ipv6 ? 20 : 16);
++	data->traffic_class_set = true;
++	return 0;
++}
++
++static int zx279133_flow_vlan_push(const struct flow_action_entry *act,
++				   struct zx279133_flow_data *data,
++				   struct netlink_ext_ack *extack)
++{
++	if (data->vlan_push || act->vlan.proto != htons(ETH_P_8021Q) ||
++	    act->vlan.vid >= VLAN_VID_MASK || act->vlan.prio > 7) {
++		NL_SET_ERR_MSG_MOD(extack, "NPPT supports one 802.1Q egress tag");
++		return -EOPNOTSUPP;
++	}
++	data->vlan_push = true;
++	data->vlan_tci = act->vlan.vid | (act->vlan.prio << VLAN_PRIO_SHIFT);
++	if (zx279133_vlan_edit(&data->vlan, ZX_VLAN_PUSH, data->vlan_tci,
++			       be16_to_cpu(act->vlan.proto)))
++		return -EOPNOTSUPP;
++	return 0;
++}
++
++static int
++zx279133_flow_parse(struct zx279133_flow_offload *offload,
++		    struct net_device *bind_dev, struct flow_cls_offload *f,
++		    struct zx279133_flow_data *data,
++		    struct zx279133_flow_tuple *xlate,
++		    enum zx279133_flow_port *ingress,
++		    enum zx279133_flow_port *egress, u16 *gemport,
++		    u8 *ip_proto, u16 *pppoe_sid, bool *ipv6)
++{
++	struct flow_rule *rule = flow_cls_offload_flow_rule(f);
++	struct flow_match_ipv4_addrs addrs;
++	struct flow_match_ipv6_addrs addrs6;
++	struct flow_match_control control;
++	struct flow_match_basic basic;
++	struct flow_match_ports ports;
++	struct flow_match_meta meta;
++	struct flow_match_tcp tcp;
++	struct flow_action_entry *act;
++	struct net_device *idev;
++	struct net_device *odev = NULL;
++	bool vlan_inner_ipv4 = false;
++	u16 igemport;
++	int i, ret;
++	const u64 supported_keys = BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_TCP) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_META) |
++		BIT_ULL(FLOW_DISSECTOR_KEY_VLAN);
++
++	/* Normalize exact VID policy first; do not equate SDT0 with a VID key. */
++	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CVLAN)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT stacked VLAN classification is unsupported");
++		return -EOPNOTSUPP;
++	}
++	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_VLAN)) {
++		struct flow_match_vlan vlan;
++
++		flow_rule_match_vlan(rule, &vlan);
++		ret = zx279133_vlan_match(&data->vlan, true, vlan.key->vlan_id,
++					  vlan.mask->vlan_id);
++		if (ret)
++			return ret;
++		if (!zx279133_vlan_enabled(offload->np) || !data->vlan.vid ||
++		    vlan.mask->vlan_priority || vlan.mask->vlan_dei ||
++		    vlan.mask->vlan_tpid != htons(0xffff) ||
++		    vlan.key->vlan_tpid != htons(ETH_P_8021Q) ||
++		    (vlan.mask->vlan_eth_type &&
++		     (vlan.mask->vlan_eth_type != htons(0xffff) ||
++		      vlan.key->vlan_eth_type != htons(ETH_P_IP)))) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++				"NPPT experimental VLAN requires exact nonzero VID, IPv4 and no PCP/DEI match");
++			return -EOPNOTSUPP;
++		}
++		vlan_inner_ipv4 = vlan.mask->vlan_eth_type == htons(0xffff) &&
++				  vlan.key->vlan_eth_type == htons(ETH_P_IP);
++	}
++	if (rule->match.dissector->used_keys & ~supported_keys) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported NPPT match key");
++		return -EOPNOTSUPP;
++	}
++	if (f->common.chain_index) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT supports only chain zero");
++		return -EOPNOTSUPP;
++	}
++	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_TCP)) {
++		flow_rule_match_tcp(rule, &tcp);
++		/* The fast path excludes FIN/RST; it cannot classify TCP flags. */
++		if (tcp.key->flags ||
++		    tcp.mask->flags != cpu_to_be16(be32_to_cpu(TCP_FLAG_RST |
++							    TCP_FLAG_FIN) >> 16)) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported NPPT TCP flag match");
++			return -EOPNOTSUPP;
++		}
++	}
++
++	if (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_CONTROL) ||
++	    !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_BASIC) ||
++	    (!flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV4_ADDRS) &&
++	     !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_IPV6_ADDRS)) ||
++	    !flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_PORTS)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "incomplete IP/transport match");
++		return -EOPNOTSUPP;
++	}
++
++	idev = bind_dev;
++	if (flow_rule_match_key(rule, FLOW_DISSECTOR_KEY_META)) {
++		flow_rule_match_meta(rule, &meta);
++		rcu_read_lock();
++		idev = dev_get_by_index_rcu(dev_net(bind_dev),
++					    meta.key->ingress_ifindex);
++		*ingress = zte_nppt_dev_port(offload->np, idev,
++						  &igemport);
++		rcu_read_unlock();
++	} else {
++		*ingress = zte_nppt_dev_port(offload->np, idev,
++						  &igemport);
++	}
++	if (*ingress == ZX279133_FLOW_PORT_NONE) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported ingress device");
++		return -EOPNOTSUPP;
++	}
++
++	flow_rule_match_control(rule, &control);
++	if (flow_rule_has_control_flags(control.mask->flags, f->common.extack))
++		return -EOPNOTSUPP;
++	switch (control.key->addr_type) {
++	case FLOW_DISSECTOR_KEY_IPV4_ADDRS:
++		*ipv6 = false;
++		break;
++	case FLOW_DISSECTOR_KEY_IPV6_ADDRS:
++		*ipv6 = true;
++		break;
++	default:
++		NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported address family");
++		return -EOPNOTSUPP;
++	}
++
++	flow_rule_match_basic(rule, &basic);
++	if ((basic.key->n_proto != htons(*ipv6 ? ETH_P_IPV6 : ETH_P_IP) &&
++	     !(data->vlan.tagged && vlan_inner_ipv4 && !*ipv6 &&
++	       basic.key->n_proto == htons(ETH_P_8021Q))) ||
++	    basic.mask->n_proto != htons(0xffff) ||
++	    basic.mask->ip_proto != 0xff ||
++	    (basic.key->ip_proto != IPPROTO_TCP &&
++	     basic.key->ip_proto != IPPROTO_UDP)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "only exact IPv4/IPv6 TCP/UDP");
++		return -EOPNOTSUPP;
++	}
++	*ip_proto = basic.key->ip_proto;
++
++	if (*ipv6) {
++		flow_rule_match_ipv6_addrs(rule, &addrs6);
++		if (memchr_inv(&addrs6.mask->src, 0xff,
++			       sizeof(addrs6.mask->src)) ||
++		    memchr_inv(&addrs6.mask->dst, 0xff,
++			       sizeof(addrs6.mask->dst))) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "IPv6 address masks must be exact");
++			return -EOPNOTSUPP;
++		}
++		data->src_v6 = addrs6.key->src;
++		data->dst_v6 = addrs6.key->dst;
++	} else {
++		flow_rule_match_ipv4_addrs(rule, &addrs);
++		if (addrs.mask->src != htonl(~0U) ||
++		    addrs.mask->dst != htonl(~0U)) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "IPv4 address masks must be exact");
++			return -EOPNOTSUPP;
++		}
++		data->tuple.src_addr = addrs.key->src;
++		data->tuple.dst_addr = addrs.key->dst;
++	}
++
++	flow_rule_match_ports(rule, &ports);
++	if (ports.mask->src != htons(0xffff) ||
++	    ports.mask->dst != htons(0xffff)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "transport port masks must be exact");
++		return -EOPNOTSUPP;
++	}
++	data->tuple.src_port = ports.key->src;
++	data->tuple.dst_port = ports.key->dst;
++	*xlate = data->tuple;
++
++	flow_action_for_each(i, act, &rule->action) {
++		switch (act->id) {
++		case FLOW_ACTION_MANGLE:
++			if (act->mangle.htype == FLOW_ACT_MANGLE_HDR_TYPE_ETH)
++				zx279133_flow_mangle_eth(act, &data->eth);
++			break;
++		case FLOW_ACTION_REDIRECT:
++			odev = act->dev;
++			break;
++		case FLOW_ACTION_CSUM:
++			break;
++		case FLOW_ACTION_PPPOE_PUSH:
++			if (*pppoe_sid || !act->pppoe.sid) {
++				NL_SET_ERR_MSG_MOD(f->common.extack, "invalid PPPoE push action");
++				return -EOPNOTSUPP;
++			}
++			*pppoe_sid = act->pppoe.sid;
++			break;
++		case FLOW_ACTION_VLAN_PUSH:
++			ret = zx279133_flow_vlan_push(act, data, f->common.extack);
++			if (ret)
++				return ret;
++			break;
++		case FLOW_ACTION_VLAN_POP:
++			if (!zx279133_vlan_enabled(offload->np))
++				return -EOPNOTSUPP;
++			ret = zx279133_vlan_edit(&data->vlan, ZX_VLAN_POP, 0, 0);
++			if (ret)
++				return ret;
++			break;
++		case FLOW_ACTION_VLAN_MANGLE:
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++				"NPPT VID replacement requires another query-path calibration");
++			return -EOPNOTSUPP;
++		case FLOW_ACTION_POLICE:
++			if (!READ_ONCE(experimental_police)) {
++				NL_SET_ERR_MSG_MOD(f->common.extack,
++						   "NPPT police requires experimental_police and calibrated token units");
++				return -EOPNOTSUPP;
++			}
++			if (data->police_set || act->police.rate_pkt_ps ||
++			    act->police.peakrate_bytes_ps || act->police.avrate ||
++			    act->police.overhead ||
++			    (act->police.mtu && act->police.mtu < U16_MAX) ||
++			    act->police.burst_pkt ||
++			    act->police.exceed.act_id != FLOW_ACTION_DROP ||
++			    act->police.notexceed.act_id != FLOW_ACTION_PIPE) {
++				NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT experimental police supports byte rate drop/pipe only");
++				return -EOPNOTSUPP;
++			}
++			ret = zx279133_police_tokens(act->police.rate_bytes_ps,
++						     act->police.burst, police_unit_bps,
++						     police_burst_unit,
++						     &data->police);
++			if (ret) {
++				NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT police rate/burst cannot be represented");
++				return ret;
++			}
++			data->police_index = act->hw_index;
++			data->police_set = true;
++			break;
++		case FLOW_ACTION_PRIORITY:
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "NPPT egress queue mapping is not implemented");
++			return -EOPNOTSUPP;
++		default:
++			NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported flow action");
++			return -EOPNOTSUPP;
++		}
++	}
++
++	if (!odev || !is_valid_ether_addr(data->eth.h_source) ||
++	    !is_valid_ether_addr(data->eth.h_dest)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "missing redirect or Ethernet rewrite");
++		return -EOPNOTSUPP;
++	}
++	/*
++	 * Besides LAN <-> WAN, a flow may be routed between two LAN ports,
++	 * as when one of them serves as a second WAN.
++	 */
++	*egress = zte_nppt_dev_port(offload->np, odev, gemport);
++	if (*egress == ZX279133_FLOW_PORT_NONE || !*gemport ||
++	    (*ingress == ZX279133_FLOW_PORT_WAN &&
++	     *egress == ZX279133_FLOW_PORT_WAN)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "unsupported egress or WAN-to-WAN path");
++		return -EOPNOTSUPP;
++	}
++	if (*pppoe_sid && *ingress != ZX279133_FLOW_PORT_LAN) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "PPPoE push requires LAN ingress");
++		return -EOPNOTSUPP;
++	}
++	if (data->vlan.tagged &&
++	    (*ipv6 || *ingress != ZX279133_FLOW_PORT_LAN ||
++	     *egress != ZX279133_FLOW_PORT_WAN || *pppoe_sid ||
++	     data->vlan.edit != ZX_VLAN_POP)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack,
++			"NPPT VID key currently covers plain LAN IPv4 to WAN only");
++		return -EOPNOTSUPP;
++	}
++	if (data->vlan_push &&
++	    (!zte_nppt_is_wan(offload->np, odev) ||
++	     *ingress != ZX279133_FLOW_PORT_LAN || *pppoe_sid) &&
++	    !(zx279133_vlan_enabled(offload->np) && !*ipv6 && !*pppoe_sid &&
++	      *ingress == ZX279133_FLOW_PORT_WAN && *egress == ZX279133_FLOW_PORT_LAN &&
++	      (data->vlan_tci & VLAN_VID_MASK))) {
++		NL_SET_ERR_MSG_MOD(f->common.extack,
++				   "NPPT VLAN push requires plain LAN-to-physical-WAN routing");
++		return -EOPNOTSUPP;
++	}
++
++	flow_action_for_each(i, act, &rule->action) {
++		if (act->id != FLOW_ACTION_MANGLE)
++			continue;
++		switch (act->mangle.htype) {
++		case FLOW_ACT_MANGLE_HDR_TYPE_ETH:
++			ret = 0;
++			break;
++		case FLOW_ACT_MANGLE_HDR_TYPE_IP4:
++			if (*ipv6)
++				ret = -EOPNOTSUPP;
++			else if (!act->mangle.offset)
++				ret = zx279133_flow_mangle_class(act, data, false,
++								 f->common.extack);
++			else
++				ret = zx279133_flow_mangle_ipv4(act, xlate);
++			break;
++		case FLOW_ACT_MANGLE_HDR_TYPE_IP6:
++			if (*ipv6 && act->mangle.offset >= 8 &&
++			    act->mangle.offset <= 36 &&
++			    !(act->mangle.offset & 3)) {
++				NL_SET_ERR_MSG_MOD(f->common.extack,
++					"NPPT NAT66 address rewrite needs an extended response backend");
++				return -EOPNOTSUPP;
++			}
++			ret = *ipv6 && !act->mangle.offset ?
++				zx279133_flow_mangle_class(act, data, true,
++							   f->common.extack) :
++				-EOPNOTSUPP;
++			break;
++		case FLOW_ACT_MANGLE_HDR_TYPE_TCP:
++		case FLOW_ACT_MANGLE_HDR_TYPE_UDP:
++			ret = zx279133_flow_mangle_ports(act, xlate);
++			break;
++		default:
++			ret = -EOPNOTSUPP;
++		}
++		if (ret) {
++			NL_SET_ERR_MSG_WEAK_MOD(f->common.extack, "unsupported header rewrite");
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static int zx279133_flow_peer_validate(const struct zx279133_flow_entry *peer,
++				       const struct flow_block *fblock,
++				       bool flowtable,
++				       struct netlink_ext_ack *extack)
++{
++	if (!peer || peer->retired) {
++		NL_SET_ERR_MSG_MOD(extack, "waiting for upstream NPPT peer");
++		return -EAGAIN;
++	}
++	if (peer->stale) {
++		NL_SET_ERR_MSG_MOD(extack, "upstream NPPT peer awaits failed-delete recovery");
++		return -EIO;
++	}
++	/* TC's two ingress qdiscs have different blocks. Preserve that supported
++	 * manual rule path, but never borrow a peer from another flowtable or
++	 * across the TC/flowtable boundary.
++	 */
++	if (peer->refused || peer->flowtable != flowtable ||
++	    (flowtable && peer->fblock != fblock)) {
++		NL_SET_ERR_MSG_MOD(extack, "NPPT peer is refused or belongs to another flow block");
++		return -EOPNOTSUPP;
++	}
++	return 0;
++}
++
++static bool zx279133_flow_key_exists(struct zx279133_flow_offload *offload,
++				     const u8 *key)
++{
++	return rhashtable_lookup_fast(&offload->key_flows, key,
++				      zx279133_flow_key_ht_params);
++}
++
++static bool zx279133_flow_spec_equal(const struct zx279133_flow_spec *a,
++				     const struct zx279133_flow_spec *b)
++{
++	return !memcmp(&a->data.eth, &b->data.eth, sizeof(a->data.eth)) &&
++	       !memcmp(&a->data.tuple, &b->data.tuple, sizeof(a->data.tuple)) &&
++	       !memcmp(&a->data.src_v6, &b->data.src_v6, sizeof(a->data.src_v6)) &&
++	       !memcmp(&a->data.dst_v6, &b->data.dst_v6, sizeof(a->data.dst_v6)) &&
++	       a->data.police_set == b->data.police_set &&
++	       a->data.police_index == b->data.police_index &&
++	       a->data.police.cir == b->data.police.cir &&
++	       a->data.police.cbs == b->data.police.cbs &&
++	       a->data.vlan.vid == b->data.vlan.vid &&
++	       a->data.vlan.tagged == b->data.vlan.tagged &&
++	       a->data.vlan.edit == b->data.vlan.edit &&
++	       a->data.vlan.tci == b->data.vlan.tci &&
++	       a->data.vlan_tci == b->data.vlan_tci &&
++	       a->data.vlan_push == b->data.vlan_push &&
++	       a->data.traffic_class == b->data.traffic_class &&
++	       a->data.traffic_class_set == b->data.traffic_class_set &&
++	       !memcmp(&a->xlate, &b->xlate, sizeof(a->xlate)) &&
++	       a->ingress == b->ingress && a->egress == b->egress &&
++	       a->gemport == b->gemport && a->pppoe_sid == b->pppoe_sid &&
++	       a->ip_proto == b->ip_proto && a->ipv6 == b->ipv6;
++}
++
++/*
++ * A flow counter adds up the frame on the WAN side, from the MAC header
++ * through the FCS, with the PPPoE header of a session: IP + 18, or IP + 26,
++ * measured in both directions. nf_flow_table, like conntrack and the devices
++ * it passes the counts on to, counts the IP packet.
++ */
++static u64 zx279133_flow_ip_bytes(const struct zx279133_flow_entry *entry,
++				  u64 packets, u64 bytes)
++{
++	u64 frame = ETH_HLEN + ETH_FCS_LEN;
++
++	if (entry->pppoe)
++		frame += PPPOE_SES_HLEN;
++	if (entry->wan_vlan)
++		frame += VLAN_HLEN;
++	frame *= packets;
++
++	return bytes > frame ? bytes - frame : 0;
++}
++
++#include "zx279133-shared-stats.h"
++
++/* Baselines advance only after a successful read; also used after invalidation. */
++static int zx279133_flow_counter_collect(struct zx279133_flow_offload *offload,
++					 struct zx279133_flow_entry *entry,
++					 struct flow_stats *stats, bool final)
++{
++	u64 packets = entry->packets, bytes = entry->bytes;
++	int ret;
++
++	if (entry->stat_group)
++		return zx279133_stat_group_collect(offload, entry, stats, final);
++	if (entry->has_stat) {
++		ret = zte_nppt_stats_read(offload->np, entry->stat, &packets, &bytes);
++		if (ret)
++			return ret;
++	}
++	/* A reset must not turn a smaller counter into an unsigned huge delta. */
++	if (packets < entry->packets || bytes < entry->bytes)
++		return -EIO;
++	if (packets != entry->packets || bytes != entry->bytes)
++		entry->lastused = jiffies;
++	flow_stats_update(stats,
++			  zx279133_flow_ip_bytes(entry, packets - entry->packets,
++						 bytes - entry->bytes),
++			  packets - entry->packets, 0, entry->lastused,
++			  FLOW_ACTION_HW_STATS_DELAYED);
++	entry->packets = packets;
++	entry->bytes = bytes;
++	return 0;
++}
++
++static int zx279133_flow_entry_remove(struct zx279133_flow_offload *offload,
++				      struct zx279133_flow_entry *entry,
++				      unsigned long cookie,
++				      struct flow_stats *stats, bool retire);
++
++static int zx279133_flow_entry_hw_clear(struct zx279133_flow_offload *offload,
++					const struct zx279133_flow_entry *entry);
++
++static int zx279133_flow_replace(struct zx279133_flow_offload *offload,
++				 struct zx279133_flow_block *block,
++				 struct flow_cls_offload *f)
++{
++	struct net_device *bind_dev = block->ndev;
++	struct zx279133_wanid_profile profile = {};
++	struct zx279133_flow_tuple xlate;
++	struct zx279133_flow_data data = {};
++	struct zx279133_flow_entry *entry, *peer;
++	enum zx279133_flow_port ingress, egress;
++	u8 fast[ZX279133_FAST_DATA_SIZE];
++	u32 ikey[ZX279133_FAST_IKEY_SIZE / sizeof(u32)];
++	u32 table[ZX279133_ZCAM_ENTRY_SIZE / sizeof(u32)];
++	bool ipv6, pppoe, full, snat;
++	unsigned int table_words;
++	u16 gemport, pppoe_sid = 0;
++	u8 ip_proto;
++	int ret;
++
++	ret = zte_nppt_flow_ready(offload->np);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack,
++				   "NPPT topology synchronization pending or failed");
++		return ret;
++	}
++	ret = zx279133_flow_parse(offload, bind_dev, f, &data, &xlate,
++				  &ingress, &egress, &gemport, &ip_proto,
++				  &pppoe_sid, &ipv6);
++	if (ret) {
++		int remove_ret = 0;
++
++		/* An unsupported update must not leave its previous action active. */
++		mutex_lock(&offload->lock);
++		peer = xa_load(&offload->flows, f->cookie);
++		if (peer)
++			remove_ret = zx279133_flow_entry_remove(offload, peer,
++								f->cookie, &f->stats, false);
++		mutex_unlock(&offload->lock);
++		if (remove_ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "NPPT previous rule could not be removed");
++			return remove_ret;
++		}
++		return ret;
++	}
++
++	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
++	if (!entry) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "cannot allocate NPPT flow state");
++		return -ENOMEM;
++	}
++	if (ipv6)
++		zx279133_fast_key_build_v6(entry->key, &data, ip_proto);
++	else
++		zx279133_fast_key_build(entry->key, &data.tuple, ip_proto);
++	if (data.vlan.tagged)
++		zx279133_fast_key_vid(entry->key, data.vlan.vid);
++	snat = !ipv6 && xlate.src_addr != data.tuple.src_addr;
++	entry->spec = (struct zx279133_flow_spec) {
++		.data = data, .xlate = xlate, .ingress = ingress, .egress = egress,
++		.gemport = gemport, .pppoe_sid = pppoe_sid,
++		.ip_proto = ip_proto, .ipv6 = ipv6,
++	};
++	entry->snat = snat;
++	entry->fblock = block->fblock;
++	entry->flowtable = block->flowtable;
++	entry->upstream = ingress == ZX279133_FLOW_PORT_LAN;
++	entry->lan_routed = ingress == ZX279133_FLOW_PORT_LAN &&
++			    egress == ZX279133_FLOW_PORT_LAN;
++	if (entry->upstream)
++		zx279133_fast_reply_key_build(entry->reply_key, &data, &xlate,
++					      ip_proto, ipv6);
++
++	mutex_lock(&offload->lock);
++	peer = xa_load(&offload->flows, f->cookie);
++	if (peer) {
++		if (!peer->retired && peer->stale) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "NPPT rule awaits failed-delete recovery");
++			ret = -EIO;
++			goto out_free;
++		}
++		if (!peer->retired && peer->fblock == block->fblock &&
++		    zx279133_flow_spec_equal(&peer->spec, &entry->spec)) {
++			if (peer->refused)
++				NL_SET_ERR_MSG_MOD(f->common.extack,
++						   "PPPoE LAN route is unsupported");
++			ret = peer->refused ? -EOPNOTSUPP : 0;
++			goto out_free;
++		}
++		/*
++		 * Break before make: a changed rule is never acknowledged as the
++		 * previous action. On install failure Linux keeps the SW path.
++		 */
++		ret = zx279133_flow_entry_remove(offload, peer, f->cookie, &f->stats, false);
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "NPPT changed rule awaits failed-delete recovery");
++			goto out_free;
++		}
++	}
++	/*
++	 * The hardware adds a PPPoE header only on the way out of the WAN
++	 * port: an entry for a session on a LAN port, a second WAN, is never
++	 * hit. Refuse it, but remember the flow, so that its other half,
++	 * which comes in PPPoE, is refused too.
++	 */
++	if (entry->lan_routed && pppoe_sid) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "PPPoE LAN route is unsupported");
++		entry->refused = true;
++		entry->pppoe = true;
++		ret = xa_err(xa_store(&offload->flows, f->cookie, entry,
++				      GFP_KERNEL));
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "cannot remember refused PPPoE peer");
++			goto out_free;
++		}
++		entry->reply_indexed =
++			!rhashtable_lookup_insert_fast(&offload->reply_flows,
++						       &entry->reply_node,
++						       zx279133_flow_reply_ht_params);
++		entry = NULL;
++		ret = -EOPNOTSUPP;
++		goto out_free;
++	}
++	if (zx279133_flow_key_exists(offload, entry->key)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT tuple owned by another flow");
++		ret = -EEXIST;
++		goto out_free;
++	}
++	if (entry->upstream && data.vlan.tagged &&
++	    rhashtable_lookup_fast(&offload->reply_flows, entry->reply_key,
++				  zx279133_flow_reply_ht_params)) {
++		NL_SET_ERR_MSG_MOD(f->common.extack,
++			"NPPT VLAN flow has an ambiguous reverse tuple");
++		ret = -EEXIST;
++		goto out_free;
++	}
++	if (entry->upstream) {
++		pppoe = pppoe_sid;
++		/*
++		 * The LAN entry program does not take a PPPoE header off
++		 * either: the frames of a PPPoE session on a LAN port miss the
++		 * flow table and reach the CPU. Their rule does not say it, but
++		 * the refused rule of the other half does.
++		 */
++		peer = entry->lan_routed && !pppoe ?
++			rhashtable_lookup_fast(&offload->reply_flows,
++					       entry->key,
++					       zx279133_flow_reply_ht_params) :
++			NULL;
++		if (peer && peer->pppoe) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "peer PPPoE LAN route is unsupported");
++			ret = -EOPNOTSUPP;
++			goto out_free;
++		}
++	} else {
++		/*
++		 * A downstream rule does not say whether its packets arrive
++		 * in PPPoE; the upstream rule of the same connection does,
++		 * by pushing it. Take the answer from that rule, and wait
++		 * while it is not in hardware yet: nf_flow_table offers this
++		 * rule again once its packets take the software path, by
++		 * then after the upstream half. Guessing instead breaks a
++		 * connection opened from the WAN, whose downstream half
++		 * comes first: the hardware matches PPPoE frames by the inner
++		 * tuple and would pass them to the LAN still encapsulated.
++		 */
++		peer = rhashtable_lookup_fast(&offload->reply_flows, entry->key,
++					      zx279133_flow_reply_ht_params);
++		ret = zx279133_flow_peer_validate(peer, block->fblock, block->flowtable,
++						  f->common.extack);
++		if (ret)
++			goto out_free;
++		if ((peer->spec.data.vlan.tagged &&
++		     (data.vlan.edit != ZX_VLAN_PUSH ||
++		      zx279133_vlan_egress_vid(&data) != peer->spec.data.vlan.vid)) ||
++		    (!peer->spec.data.vlan.tagged && data.vlan_push &&
++		     egress == ZX279133_FLOW_PORT_LAN)) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++				"NPPT VLAN reverse action does not match upstream VID");
++			ret = -EOPNOTSUPP;
++			goto out_free;
++		}
++		pppoe = peer->pppoe;
++	}
++	/* PPPoE pop stays out of the finite IKEY table in a full entry. */
++	entry->pppoe = pppoe;
++	entry->wan_vlan = data.vlan_push && egress == ZX279133_FLOW_PORT_WAN;
++	entry->full = pppoe && !entry->upstream;
++	entry->has_age = true;
++	if (data.vlan.tagged) {
++		entry->vlan_in = zte_nppt_vlan_get(offload->np, data.vlan.vid);
++		if (IS_ERR(entry->vlan_in)) {
++			ret = PTR_ERR(entry->vlan_in);
++			entry->vlan_in = NULL;
++			goto out_free;
++		}
++	}
++	if (zx279133_vlan_enabled(offload->np) &&
++	    egress == ZX279133_FLOW_PORT_LAN &&
++	    zx279133_vlan_egress_vid(&data) &&
++	    (!data.vlan.tagged || zx279133_vlan_egress_vid(&data) != data.vlan.vid)) {
++		entry->vlan_out = zte_nppt_vlan_get(offload->np,
++						 zx279133_vlan_egress_vid(&data));
++		if (IS_ERR(entry->vlan_out)) {
++			ret = PTR_ERR(entry->vlan_out);
++			entry->vlan_out = NULL;
++			goto out_free;
++		}
++	}
++	ret = zx279133_flow_storage_alloc(offload, entry);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "cannot allocate NPPT flow/IKEY storage");
++		goto out_free;
++	}
++	full = entry->full;
++	ret = zx279133_fast_age_alloc(offload, &entry->age);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT aging table is full");
++		goto out_release_storage;
++	}
++	if (f->stats_scope.owner && f->stats_scope.get &&
++	    f->stats_scope.put && f->stats_scope.account) {
++		ret = zx279133_stat_group_get(offload, entry, &f->stats_scope);
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++				"NPPT endpoint accounting groups exhausted or unreadable");
++			goto out_release_age;
++		}
++	} else {
++		/* Non-flowtable callers retain upstream optional per-rule counters. */
++		ret = zx279133_fast_index_alloc(offload->stat_used,
++						ZX279133_FAST_STAT_DEPTH, &entry->stat);
++		if (!ret) {
++			entry->has_stat = true;
++			ret = zte_nppt_stats_read(offload->np, entry->stat,
++						 &entry->packets, &entry->bytes);
++			if (ret)
++				goto out_release_stat;
++		} else if (ret != -ENOSPC) {
++			goto out_release_age;
++		}
++	}
++	ether_addr_copy(profile.mac, data.eth.h_source);
++	if (snat)
++		profile.sip = be32_to_cpu(xlate.src_addr);
++	if (pppoe && entry->upstream) {
++		profile.pppoe = ZX279133_WANID_PPPOE_PUSH;
++		profile.sid = pppoe_sid;
++	} else if (pppoe) {
++		profile.pppoe = ZX279133_WANID_PPPOE_POP;
++	}
++	ret = zte_nppt_wanid_get(offload->np, !entry->upstream, &profile,
++				 &entry->wanid);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "cannot allocate NPPT WAN profile");
++		goto out_release_stat;
++	}
++	if (data.police_set) {
++		struct zte_nppt_plcr_timing timing;
++
++		ret = zte_nppt_native_plcr_timing_get(offload->np, &timing);
++		if (ret)
++			goto out_put_wanid;
++		if (timing.time_count != 62500 || timing.packet_length != 8000 ||
++		    timing.packet_offset != 24 || timing.loose_length != 16000) {
++			NL_SET_ERR_MSG_MOD(f->common.extack,
++					   "NPPT policer timing requires recalibration");
++			ret = -EOPNOTSUPP;
++			goto out_put_wanid;
++		}
++		ret = zte_nppt_meter_get(offload->np, &data.police, dev_net(block->ndev),
++					 data.police_index, &entry->meter);
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT policer allocation/programming failed");
++			goto out_put_wanid;
++		}
++		data.meter_bucket = zte_nppt_meter_bucket(entry->meter);
++		entry->spec.data.meter_bucket = data.meter_bucket;
++	}
++	zx279133_fast_response_build(fast, &data, &xlate, ingress, egress,
++				     gemport, entry->ikey, entry->stat,
++				     entry->has_stat, pppoe, entry->wanid);
++	if (full) {
++		zx279133_fast_full_table_build(table, fast, entry->key,
++					       entry->age);
++	} else {
++		memcpy(ikey, fast, sizeof(ikey));
++		zx279133_fast_multi_table_build(table, fast, entry->key, entry->age);
++		ret = zte_nppt_ikey_write(offload->np, entry->ikey, ikey);
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT IKEY programming failed");
++			goto out_put_wanid;
++		}
++	}
++	ret = xa_err(xa_store(&offload->flows, f->cookie, entry, GFP_KERNEL));
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "cannot index NPPT flow cookie");
++		goto out_clear_ikey;
++	}
++	ret = rhashtable_insert_fast(&offload->key_flows, &entry->key_node,
++				     zx279133_flow_key_ht_params);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "cannot index NPPT flow tuple");
++		xa_erase(&offload->flows, f->cookie);
++		goto out_clear_ikey;
++	}
++	if (egress == ZX279133_FLOW_PORT_LAN) {
++		entry->host = zte_nppt_host_get(offload->np, data.eth.h_dest, gemport);
++		if (IS_ERR(entry->host)) {
++			ret = PTR_ERR(entry->host);
++			entry->host = NULL;
++			NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT Host prerequisite unavailable");
++			rhashtable_remove_fast(&offload->key_flows, &entry->key_node,
++					       zx279133_flow_key_ht_params);
++			xa_erase(&offload->flows, f->cookie);
++			goto out_clear_ikey;
++		}
++	}
++	table_words = full ? ARRAY_SIZE(table) : ARRAY_SIZE(ikey) * 2;
++	ret = zx279133_flow_table_write(offload, entry, table, table_words);
++	if (ret) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT rule programming failed");
++		if (zx279133_flow_entry_hw_clear(offload, entry)) {
++			/* Keep cookie, storage and meter pinned until invalidation succeeds. */
++			entry->stale = true;
++			__module_get(THIS_MODULE);
++			entry->module_pinned = true;
++			mutex_unlock(&offload->lock);
++			return ret;
++		}
++		rhashtable_remove_fast(&offload->key_flows, &entry->key_node,
++				       zx279133_flow_key_ht_params);
++		xa_erase(&offload->flows, f->cookie);
++		goto out_clear_ikey;
++	}
++	/* An unindexed entry only keeps its reply in software. */
++	if (entry->upstream) {
++		ret = rhashtable_lookup_insert_fast(&offload->reply_flows,
++						  &entry->reply_node,
++						  zx279133_flow_reply_ht_params);
++		entry->reply_indexed = !ret;
++		if (ret && data.vlan.tagged) {
++			if (zx279133_flow_entry_hw_clear(offload, entry)) {
++				entry->stale = true;
++				__module_get(THIS_MODULE);
++				entry->module_pinned = true;
++				mutex_unlock(&offload->lock);
++				return ret;
++			}
++			rhashtable_remove_fast(&offload->key_flows, &entry->key_node,
++					       zx279133_flow_key_ht_params);
++			xa_erase(&offload->flows, f->cookie);
++			goto out_clear_ikey;
++		}
++	}
++	__module_get(THIS_MODULE);
++	entry->module_pinned = true;
++	mutex_unlock(&offload->lock);
++	return 0;
++
++out_clear_ikey:
++	if (entry->host && zte_nppt_host_put(offload->np, entry->host))
++		dev_warn(offload->dev, "Host cleanup retained a hardware resource\n");
++	if (!full) {
++		memset(ikey, 0, sizeof(ikey));
++		zte_nppt_ikey_write(offload->np, entry->ikey, ikey);
++	}
++out_put_wanid:
++	if (entry->meter) {
++		if (zte_nppt_meter_put(offload->np, entry->meter))
++			zte_nppt_meter_abandon(offload->np, entry->meter);
++		entry->meter = NULL;
++	}
++	zte_nppt_wanid_put(offload->np, entry->wanid, snat);
++out_release_stat:
++	zx279133_stat_put(offload, entry);
++out_release_age:
++	__clear_bit(entry->age, offload->age_used);
++out_release_storage:
++	if (!full)
++		__clear_bit(entry->ikey, offload->ikey_used);
++	zx279133_flow_slot_release(offload, entry);
++out_free:
++	if (entry->vlan_out && zte_nppt_vlan_put(offload->np, entry->vlan_out))
++		zte_nppt_vlan_abandon(offload->np, entry->vlan_out);
++	if (entry->vlan_in && zte_nppt_vlan_put(offload->np, entry->vlan_in))
++		zte_nppt_vlan_abandon(offload->np, entry->vlan_in);
++	mutex_unlock(&offload->lock);
++	kfree(entry);
++	return ret;
++}
++
++static int
++zx279133_flow_entry_hw_clear(struct zx279133_flow_offload *offload,
++			     const struct zx279133_flow_entry *entry)
++{
++	u32 ikey[ZX279133_FAST_IKEY_SIZE / sizeof(u32)] = {};
++	u32 table[ZX279133_ZCAM_ENTRY_SIZE / sizeof(u32)] = {};
++	int ret;
++
++	if (entry->in_ddr) {
++		ret = zte_nppt_ddr_clear(offload->np, entry->ddr_bucket);
++	} else {
++		ret = zte_nppt_zcam_write(offload->np, entry->zblock, entry->zcell,
++					  entry->zaddr, table,
++					  entry->full ? ARRAY_SIZE(table) :
++							 ARRAY_SIZE(ikey) * 2);
++	}
++	if (ret)
++		return ret;
++	if (!entry->full) {
++		ret = zte_nppt_ikey_write(offload->np, entry->ikey, ikey);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
++static void zx279133_flow_entry_unindex(struct zx279133_flow_offload *offload,
++					struct zx279133_flow_entry *entry)
++{
++	if (entry->reply_indexed)
++		rhashtable_remove_fast(&offload->reply_flows,
++				       &entry->reply_node,
++				       zx279133_flow_reply_ht_params);
++}
++
++/* Take one entry out of the hardware and the driver; offload->lock held. */
++static int zx279133_flow_entry_remove(struct zx279133_flow_offload *offload,
++				      struct zx279133_flow_entry *entry,
++				      unsigned long cookie,
++				      struct flow_stats *stats, bool retire)
++{
++	int ret;
++
++	if (entry->retired) {
++		if (stats)
++			zx279133_stat_merge(stats, &entry->final_stats);
++		xa_erase(&offload->flows, cookie);
++		if (entry->module_pinned)
++			module_put(THIS_MODULE);
++		kfree(entry);
++		return 0;
++	}
++	if (entry->refused) {
++		zx279133_flow_entry_unindex(offload, entry);
++		xa_erase(&offload->flows, cookie);
++		kfree(entry);
++		return 0;
++	}
++	ret = zx279133_flow_entry_hw_clear(offload, entry);
++	if (ret) {
++		entry->stale = true;
++		return ret;
++	}
++	/* Invalidate before the final read, retaining its index until settled. */
++	if (stats || retire || entry->stat_group) {
++		ret = zx279133_flow_counter_collect(offload, entry,
++						    &entry->final_stats, true);
++		if (ret) {
++			entry->stale = true;
++			return ret;
++		}
++	}
++	if (entry->vlan_out) {
++		ret = zte_nppt_vlan_put(offload->np, entry->vlan_out);
++		if (ret) {
++			entry->stale = true;
++			return ret;
++		}
++		entry->vlan_out = NULL;
++	}
++	if (entry->vlan_in) {
++		ret = zte_nppt_vlan_put(offload->np, entry->vlan_in);
++		if (ret) {
++			entry->stale = true;
++			return ret;
++		}
++		entry->vlan_in = NULL;
++	}
++	if (entry->meter) {
++		ret = zte_nppt_meter_put(offload->np, entry->meter);
++		if (ret) {
++			entry->stale = true;
++			return ret;
++		}
++		entry->meter = NULL;
++	}
++	rhashtable_remove_fast(&offload->key_flows, &entry->key_node,
++			       zx279133_flow_key_ht_params);
++	zx279133_flow_entry_unindex(offload, entry);
++	if (!retire)
++		xa_erase(&offload->flows, cookie);
++	zx279133_flow_slot_release(offload, entry);
++	if (!entry->full)
++		__clear_bit(entry->ikey, offload->ikey_used);
++	__clear_bit(entry->age, offload->age_used);
++	zx279133_stat_put(offload, entry);
++	if (stats) {
++		zx279133_stat_merge(stats, &entry->final_stats);
++		memset(&entry->final_stats, 0, sizeof(entry->final_stats));
++	}
++	zte_nppt_wanid_put(offload->np, entry->wanid, entry->snat);
++	if (zte_nppt_host_put(offload->np, entry->host))
++		dev_warn(offload->dev, "Host deletion failed; npu retained the slot\n");
++	if (retire) {
++		/* Only cookie, identity and the final delta survive; no HW resources. */
++		entry->host = NULL;
++		entry->reply_indexed = false;
++		entry->has_stat = false;
++		entry->has_age = false;
++		entry->retired = true;
++		entry->stale = false;
++		return 0;
++	}
++	if (entry->module_pinned)
++		module_put(THIS_MODULE);
++	kfree(entry);
++
++	return 0;
++}
++
++static int zx279133_flow_destroy(struct zx279133_flow_offload *offload,
++				 struct flow_cls_offload *f)
++{
++	struct zx279133_flow_entry *entry;
++	int ret;
++
++	mutex_lock(&offload->lock);
++	entry = xa_load(&offload->flows, f->cookie);
++	ret = entry ? zx279133_flow_entry_remove(offload, entry, f->cookie,
++						 &f->stats, false) : -ENOENT;
++	mutex_unlock(&offload->lock);
++	return ret;
++}
++
++/*
++ * Defensive cleanup at the last block unbind. Flowtable normally drains its
++ * rules while callbacks are still bound; keep this for other block users and
++ * quarantined rules whose earlier DESTROY failed.
++ */
++static void zx279133_flow_entries_clear_block(struct zx279133_flow_offload *offload,
++					      const struct flow_block *fblock)
++{
++	struct zx279133_flow_entry *entry;
++	unsigned long index;
++
++	mutex_lock(&offload->lock);
++	xa_for_each(&offload->flows, index, entry)
++		if (entry->fblock == fblock &&
++		    zx279133_flow_entry_remove(offload, entry, index, NULL, false))
++			dev_warn(offload->dev,
++				 "failed to clear hardware flow %lu\n", index);
++	mutex_unlock(&offload->lock);
++}
++
++static int zx279133_flow_stats(struct zx279133_flow_offload *offload,
++			       struct flow_cls_offload *f)
++{
++	struct zx279133_flow_entry *entry;
++	bool used;
++	int ret;
++
++	mutex_lock(&offload->lock);
++	entry = xa_load(&offload->flows, f->cookie);
++	if (entry && entry->retired) {
++		ret = zx279133_flow_entry_remove(offload, entry, f->cookie,
++						 &f->stats, false);
++		if (!ret)
++			ret = -ENOENT;
++		goto out_unlock;
++	}
++	if (!entry || entry->refused) {
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT rule no longer present");
++		ret = -ENOENT;
++		goto out_unlock;
++	}
++	if (entry->stale) {
++		NL_SET_ERR_MSG_MOD(f->common.extack,
++				   "NPPT rule state is uncertain after delete failure");
++		ret = -EIO;
++		goto out_unlock;
++	}
++	if (entry->has_age) {
++		ret = zte_nppt_age_read_clear(offload->np, entry->age, &used);
++		if (ret) {
++			NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT age read failed");
++			goto out_unlock;
++		}
++		if (used)
++			entry->lastused = jiffies;
++	}
++	ret = zx279133_flow_counter_collect(offload, entry, &f->stats, false);
++	if (ret)
++		NL_SET_ERR_MSG_MOD(f->common.extack, "NPPT counter read/reset failed");
++
++out_unlock:
++	mutex_unlock(&offload->lock);
++	return ret;
++}
++
++static int zx279133_flow_command(struct zx279133_flow_offload *offload,
++				  struct zx279133_flow_block *block,
++				  struct flow_cls_offload *f)
++{
++	struct netlink_ext_ack *original_ack = f->common.extack;
++	int ret;
++
++	/* Preserve a rejection reason even for callers that supplied no extack. */
++	switch (f->command) {
++	case FLOW_CLS_REPLACE:
++		ret = zx279133_flow_replace(offload, block, f);
++		break;
++	case FLOW_CLS_DESTROY:
++		ret = zx279133_flow_destroy(offload, f);
++		break;
++	case FLOW_CLS_STATS:
++		ret = zx279133_flow_stats(offload, f);
++		break;
++	case FLOW_CLS_STATS_AGGREGATE:
++		ret = zx279133_stat_groups_collect(offload, f->stats_scope.domain);
++		break;
++	default:
++		ret = -EOPNOTSUPP;
++	}
++	/* cls_api replays -EAGAIN synchronously under RTNL. A missing peer
++	 * can only appear in a later request, so never ask TC to busy-loop.
++	 * Flowtable has its own asynchronous retry and keeps that contract.
++	 */
++	if (ret == -EAGAIN && !block->flowtable)
++		ret = -EBUSY;
++	f->common.extack = original_ack;
++	return ret;
++}
++
++static int zx279133_flow_block_cb(enum tc_setup_type type, void *type_data,
++				  void *cb_priv)
++{
++	struct zx279133_flow_block *block = cb_priv;
++	struct flow_cls_offload *f = type_data;
++	int ret;
++
++	if (type != TC_SETUP_CLSFLOWER)
++		return -EOPNOTSUPP;
++	if (f->command == FLOW_CLS_STATS_AGGREGATE) {
++		if (!block->flowtable)
++			return -EOPNOTSUPP;
++		f->aggregate_stats_supported = true;
++	}
++	ret = zte_nppt_begin(block->offload->np);
++	if (ret)
++		return ret == -EAGAIN && !block->flowtable ? -EBUSY : ret;
++	ret = block->offload->detached ? -ENODEV :
++		zx279133_flow_command(block->offload, block, f);
++	zte_nppt_end(block->offload->np);
++	return ret;
++}
++
++static void zx279133_offload_release(struct kref *ref)
++{
++	struct zx279133_flow_offload *offload =
++		container_of(ref, struct zx279133_flow_offload, ref);
++
++	rhashtable_destroy(&offload->reply_flows);
++	rhashtable_destroy(&offload->key_flows);
++	xa_destroy(&offload->flows);
++	bitmap_free(offload->ddr_used);
++	zte_nppt_put(offload->np);
++	kfree(offload);
++}
++
++static void zx279133_flow_block_release(void *cb_priv)
++{
++	struct zx279133_flow_block *block = cb_priv;
++
++	kref_put(&block->offload->ref, zx279133_offload_release);
++	kfree(block);
++	module_put(THIS_MODULE);
++}
++
++static int
++zx279133_flow_entries_clear(struct zx279133_flow_offload *offload,
++			    bool clear_hardware, bool retire)
++{
++	struct zx279133_flow_entry *entry;
++	unsigned long index;
++	int ret;
++
++	mutex_lock(&offload->lock);
++	xa_for_each(&offload->flows, index, entry) {
++		if (retire && entry->retired)
++			continue;
++		if (!clear_hardware && !entry->refused && !entry->retired)
++			continue;
++		if (zx279133_flow_entry_remove(offload, entry, index, NULL, retire))
++			dev_warn(offload->dev,
++				 "quarantined hardware flow %lu after delete failure\n", index);
++	}
++	ret = 0;
++	xa_for_each(&offload->flows, index, entry)
++		if (!retire || (!entry->retired && !entry->refused)) {
++			ret = -EIO;
++			break;
++		}
++	mutex_unlock(&offload->lock);
++	return ret;
++}
++
++/* Whether a device of this flowtable is still bound to the driver. */
++static bool zx279133_flow_block_bound(struct zx279133_flow_offload *offload,
++				      const struct flow_block *fblock)
++{
++	struct flow_block_cb *block_cb;
++
++	list_for_each_entry(block_cb, &offload->block_cb_list, driver_list) {
++		struct zx279133_flow_block *block = block_cb->cb_priv;
++
++		if (block->fblock == fblock)
++			return true;
++	}
++	return false;
++}
++
++static int zx279133_flow_setup_block(struct zx279133_flow_offload *offload,
++				     struct net_device *ndev,
++				     struct flow_block_offload *f,
++				     bool flowtable)
++{
++	struct zx279133_flow_block *block;
++	struct flow_block_cb *block_cb;
++	flow_setup_cb_t *cb = zx279133_flow_block_cb;
++
++	if (!tc_can_offload(ndev) ||
++	    f->binder_type != FLOW_BLOCK_BINDER_TYPE_CLSACT_INGRESS)
++		return -EOPNOTSUPP;
++	f->driver_block_list = &offload->block_cb_list;
++
++	switch (f->command) {
++	case FLOW_BLOCK_BIND:
++		block_cb = flow_block_cb_lookup(f->block, cb, ndev);
++		if (block_cb) {
++			flow_block_cb_incref(block_cb);
++			return 0;
++		}
++		block = kzalloc(sizeof(*block), GFP_KERNEL);
++		if (!block)
++			return -ENOMEM;
++		block->offload = offload;
++		block->ndev = ndev;
++		block->fblock = f->block;
++		block->flowtable = flowtable;
++		block_cb = flow_block_cb_alloc(cb, ndev, block,
++					       zx279133_flow_block_release);
++		if (IS_ERR(block_cb)) {
++			kfree(block);
++			return PTR_ERR(block_cb);
++		}
++		if (!try_module_get(THIS_MODULE)) {
++			/* No release callback ownership has been transferred yet. */
++			block_cb->release = NULL;
++			flow_block_cb_free(block_cb);
++			kfree(block);
++			return -ENODEV;
++		}
++		kref_get(&offload->ref);
++		flow_block_cb_incref(block_cb);
++		flow_block_cb_add(block_cb, f);
++		list_add_tail(&block_cb->driver_list, &offload->block_cb_list);
++		return 0;
++	case FLOW_BLOCK_UNBIND:
++		block_cb = flow_block_cb_lookup(f->block, cb, ndev);
++		if (!block_cb)
++			return -ENOENT;
++		if (!flow_block_cb_decref(block_cb)) {
++			flow_block_cb_remove(block_cb, f);
++			list_del(&block_cb->driver_list);
++			if (!zx279133_flow_block_bound(offload, f->block))
++				zx279133_flow_entries_clear_block(offload,
++								  f->block);
++		}
++		return 0;
++	default:
++		return -EOPNOTSUPP;
++	}
++}
++
++static void *zx279133_offload_attach(struct zte_nppt *np, struct device *dev)
++{
++	struct zx279133_flow_offload *offload;
++	struct zte_nppt_info info;
++	int ret;
++
++	zte_nppt_get_info(np, &info);
++	if (info.api_version != ZTE_NPPT_API_VERSION ||
++	    info.ikey_depth != ZX279133_FAST_IKEY_DEPTH ||
++	    info.stat_depth != ZX279133_FAST_STAT_DEPTH ||
++	    info.age_depth != ZX279133_FAST_AGE_DEPTH ||
++	    info.ddr_bytes != ZTE_NPPT_DDR_BYTES)
++		return ERR_PTR(-EPROTONOSUPPORT);
++	offload = kzalloc(sizeof(*offload), GFP_KERNEL);
++	if (!offload)
++		return ERR_PTR(-ENOMEM);
++	offload->np = np;
++	offload->dev = dev;
++	kref_init(&offload->ref);
++	offload->ddr_used = bitmap_zalloc(ZX279133_DDR_BUCKETS, GFP_KERNEL);
++	if (!offload->ddr_used) {
++		ret = -ENOMEM;
++		goto free;
++	}
++	mutex_init(&offload->lock);
++	xa_init(&offload->flows);
++	hash_init(offload->stat_groups);
++	ret = rhashtable_init(&offload->key_flows, &zx279133_flow_key_ht_params);
++	if (ret)
++		goto bitmap;
++	ret = rhashtable_init(&offload->reply_flows, &zx279133_flow_reply_ht_params);
++	if (ret)
++		goto keys;
++	INIT_LIST_HEAD(&offload->block_cb_list);
++	zte_nppt_get(np);
++	return offload;
++keys:
++	rhashtable_destroy(&offload->key_flows);
++bitmap:
++	bitmap_free(offload->ddr_used);
++free:
++	kfree(offload);
++	return ERR_PTR(ret);
++}
++
++static bool zx279133_offload_active(void *priv)
++{
++	struct zx279133_flow_offload *offload = priv;
++	struct zx279133_flow_entry *entry;
++	unsigned long index;
++	bool active = false;
++
++	mutex_lock(&offload->lock);
++	xa_for_each(&offload->flows, index, entry)
++		if (!entry->retired && !entry->refused) {
++			active = true;
++			break;
++		}
++	mutex_unlock(&offload->lock);
++	return active;
++}
++
++static int zx279133_offload_reset(void *priv)
++{
++	return zx279133_flow_entries_clear(priv, true, true);
++}
++
++static int zx279133_offload_detach(void *priv)
++{
++	struct zx279133_flow_offload *offload = priv;
++	struct zte_nppt_info info;
++
++	offload->detached = true;
++	/* The supplier holds datapath_lock. No new hardware callbacks can start. */
++	zte_nppt_get_info(offload->np, &info);
++	zx279133_flow_entries_clear(offload, info.ready, false);
++	if (!xa_empty(&offload->flows)) {
++		/* Preserve uncertain hardware allocations and the module references. */
++		dev_err(offload->dev, "uncleared flows quarantined; offload unload blocked\n");
++		return -EIO;
++	}
++	kref_put(&offload->ref, zx279133_offload_release);
++	return 0;
++}
++
++static int zx279133_offload_setup_tc(void *priv, struct net_device *dev,
++				    enum tc_setup_type type, void *data)
++{
++	if (type != TC_SETUP_FT && type != TC_SETUP_BLOCK)
++		return -EOPNOTSUPP;
++	return zx279133_flow_setup_block(priv, dev, data, type == TC_SETUP_FT);
++}
++
++static const struct zte_nppt_client_ops zx279133_offload_ops = {
++	.attach = zx279133_offload_attach,
++	.detach = zx279133_offload_detach,
++	.setup_tc = zx279133_offload_setup_tc,
++	.active = zx279133_offload_active,
++	.reset = zx279133_offload_reset,
++};
++
++static int __init zx279133_fnoffload_init(void)
++{
++	return zte_nppt_register_client(&zx279133_offload_ops);
++}
++
++static void __exit zx279133_fnoffload_exit(void)
++{
++	zte_nppt_unregister_client(&zx279133_offload_ops);
++}
++
++module_init(zx279133_fnoffload_init);
++module_exit(zx279133_fnoffload_exit);
++MODULE_DESCRIPTION("ZTE ZX279133 flowtable hardware rule translator");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-policy.h
+@@ -0,0 +1,126 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_POLICY_H
++#define _ZX279133_POLICY_H
++#include <linux/errno.h>
++#include <linux/math64.h>
++#include <linux/zte_nppt_native.h>
++/* Policy normalization independent of MMIO and Linux object lifetimes. */
++enum zx279133_vlan_edit { ZX_VLAN_KEEP, ZX_VLAN_PUSH, ZX_VLAN_POP, ZX_VLAN_REPLACE };
++
++struct zx279133_vlan_plan {
++	u16 vid;
++	u16 tci;
++	u8 edit;
++	bool tagged;
++};
++
++static inline int zx279133_vlan_match(struct zx279133_vlan_plan *p,
++				      bool tagged, u16 vid, u16 mask)
++{
++	*p = (struct zx279133_vlan_plan) { .tagged = tagged, .vid = vid };
++	if (tagged && (mask != 0xfff || vid >= 4095))
++		return -EOPNOTSUPP;
++	return 0;
++}
++
++/* Untagged is assigned the ingress PVID, not a universal VLAN1.
++ * Keep the wire tagged flag for ingress strip/egress formatting decisions.
++ */
++static inline int zx279133_vlan_domain(const struct zx279133_vlan_plan *p,
++				       u16 pvid, u16 *domain)
++{
++	if (p->tagged && p->vid) {
++		*domain = p->vid;
++		return 0;
++	}
++	/* VID0 is a priority tag: like untagged, it uses the ingress PVID. */
++	if (!pvid || pvid >= 4095)
++		return -EINVAL;
++	*domain = pvid;
++	return 0;
++}
++
++static inline int zx279133_vlan_edit(struct zx279133_vlan_plan *p,
++				     u8 edit, u16 tci, u16 tpid)
++{
++	if (p->edit || edit < ZX_VLAN_PUSH || edit > ZX_VLAN_REPLACE ||
++	    (edit == ZX_VLAN_PUSH && p->tagged) ||
++	    (edit != ZX_VLAN_PUSH && !p->tagged) ||
++	    (edit != ZX_VLAN_POP && (tpid != 0x8100 || (tci & 0xfff) >= 4095)))
++		return -EOPNOTSUPP;
++	p->edit = edit;
++	p->tci = tci;
++	return 0;
++}
++
++/* OEM fast response edit bits. Classification must be checked independently. */
++static inline void zx279133_vlan_response(u8 *fast, const struct zx279133_vlan_plan *p)
++{
++	if (!p->edit)
++		return;
++	fast[30] = (fast[30] & 0x3f) | p->edit << 6;
++	fast[24] = p->tci;
++	fast[25] = p->tci >> 8;
++	/* Native response abs(delta)/2; POP sign is carried by the edit opcode. */
++	fast[16] = p->edit == ZX_VLAN_REPLACE ? 0 : 2;
++	fast[17] = 0;
++	fast[18] = 0;
++	fast[19] = 0;
++}
++
++static inline void zx279133_meter_response(u8 *fast, u8 bucket)
++{
++	fast[19] = (fast[19] & ~0x7c) | (bucket & 31) << 2;
++	fast[29] |= 0x20;
++}
++
++/* Explicit experimental conversion, not an asserted hardware clock contract.
++ * Round the programmed rate down, never silently exceed a Linux request.
++ */
++static inline int zx279133_police_tokens(u64 bytes_ps, u32 burst,
++					 u32 unit_bps, u32 burst_unit,
++					 struct zte_nppt_plcr_profile *p)
++{
++	u64 tokens;
++
++	if (!unit_bps || !burst_unit || !bytes_ps || !burst || bytes_ps > (~0ULL >> 3))
++		return -EINVAL;
++	tokens = div_u64(bytes_ps * 8, unit_bps);
++	if (!tokens || tokens > 0x3ffff || burst % burst_unit ||
++	    burst / burst_unit > 0x7ffffff)
++		return -ERANGE;
++	*p = (struct zte_nppt_plcr_profile) {
++		.cir = tokens, .cbs = burst / burst_unit, .cd_mode = 2,
++	};
++	return 0;
++}
++
++#define ZX279133_MAC_CBS_PER_CIR (64U * 26U)
++#define ZX279133_MAC_CBS_MAX_RAW 0x7ffffffU
++
++static inline int zx279133_mac_police_tokens(u64 bytes_ps, u32 burst_override,
++					     u32 unit_bps, u32 burst_unit,
++					     struct zte_nppt_plcr_profile *p)
++{
++	u64 cbs;
++	int ret;
++
++	/* Keep the calibrated CIR and explicit burst conversion unchanged. The
++	 * placeholder burst is replaced below when zero selects automatic CBS.
++	 */
++	ret = zx279133_police_tokens(bytes_ps,
++				     burst_override ? burst_override : burst_unit,
++				     unit_bps, burst_unit, p);
++	if (ret || burst_override)
++		return ret;
++	/* OEM CPU133, byte mode, time_cnt1=0: CIR=floor(R/64), CBS=26*R.
++	 * Reconstruct the lowest R for this raw CIR instead of treating the
++	 * Linux bytes/s request as the OEM API unit. Saturate as its setter does.
++	 * These are raw CBS tokens, independent of the explicit byte override.
++	 */
++	cbs = (u64)p->cir * ZX279133_MAC_CBS_PER_CIR;
++	p->cbs = cbs > ZX279133_MAC_CBS_MAX_RAW ?
++		ZX279133_MAC_CBS_MAX_RAW : (u32)cbs;
++	return 0;
++}
++#endif
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-rx-hash.h
+@@ -0,0 +1,569 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_RX_HASH_H
++#define _ZX279133_RX_HASH_H
++
++#include <linux/types.h>
++
++/* Calibrated guarded IPv4 programs; firmware CRC32 0xef1d7647. */
++struct zx279133_rx_hash_program {
++	u16 hook;
++	u16 start;
++	u16 count;
++	u16 map_count;
++	struct {
++		u16 offset;
++		u8 bucket;
++		u8 port; /* 0: WAN, 1: LAN */
++	} map[16];
++	u64 inst[288];
++};
++
++static const struct zx279133_rx_hash_program zx279133_rx_hash_programs[] = {
++	{
++		.hook = 1558, .start = 6000, .count = 204,
++		.map_count = 16,
++		.map = {
++			{ 52, 0, 1 },
++			{ 61, 4, 1 },
++			{ 71, 2, 1 },
++			{ 80, 6, 1 },
++			{ 91, 1, 1 },
++			{ 100, 5, 1 },
++			{ 110, 3, 1 },
++			{ 119, 7, 1 },
++			{ 131, 0, 0 },
++			{ 140, 4, 0 },
++			{ 150, 2, 0 },
++			{ 159, 6, 0 },
++			{ 170, 1, 0 },
++			{ 179, 5, 0 },
++			{ 189, 3, 0 },
++			{ 198, 7, 0 },
++		},
++		.inst = {
++			0x01080c1c8bb8a880ULL, /* 6000 */
++			0x01080bb90c1caaa0ULL, /* 6001 */
++			0x01080bb98bba28a0ULL, /* 6002 */
++			0x01080c1c8bba28c0ULL, /* 6003 */
++			0x0700800028180523ULL, /* 6004 */
++			0x0000000000000000ULL, /* 6005 */
++			0x0704000028200523ULL, /* 6006 */
++			0x0000000000000000ULL, /* 6007 */
++			0x06208010100003ffULL, /* 6008 */
++			0x0000000000000000ULL, /* 6009 */
++			0x0704000008000523ULL, /* 6010 */
++			0x0000000000000000ULL, /* 6011 */
++			0x06208010100003ffULL, /* 6012 */
++			0x0000000000000000ULL, /* 6013 */
++			0x0704000028120520ULL, /* 6014 */
++			0x0000000000000000ULL, /* 6015 */
++			0x0504008000008527ULL, /* 6016 */
++			0x0000000000000000ULL, /* 6017 */
++			0x06208010100003ffULL, /* 6018 */
++			0x0000000000000000ULL, /* 6019 */
++			0x050400140000852fULL, /* 6020 */
++			0x0000000000000000ULL, /* 6021 */
++			0x06208010100003ffULL, /* 6022 */
++			0x0000000000000000ULL, /* 6023 */
++			0x0504001200008537ULL, /* 6024 */
++			0x0000000000000000ULL, /* 6025 */
++			0x06208010100003ffULL, /* 6026 */
++			0x0000000000000000ULL, /* 6027 */
++			0x050400110000853bULL, /* 6028 */
++			0x0000000000000000ULL, /* 6029 */
++			0x06208010100003ffULL, /* 6030 */
++			0x0000000000000000ULL, /* 6031 */
++			0x05040010c000853cULL, /* 6032 */
++			0x0000000000000000ULL, /* 6033 */
++			0x06208010100003ffULL, /* 6034 */
++			0x0000000000000000ULL, /* 6035 */
++			0x050400500000053fULL, /* 6036 */
++			0x0000000000000000ULL, /* 6037 */
++			0x0502881000000522ULL, /* 6038 */
++			0x0000000000000000ULL, /* 6039 */
++			0x0502870740000520ULL, /* 6040 */
++			0x0000000000000000ULL, /* 6041 */
++			0x01080bcd8bf52860ULL, /* 6042 */
++			0x01080bce0be1a880ULL, /* 6043 */
++			0x01080bce8bd828a0ULL, /* 6044 */
++			0x01080bcf0bd3a8c0ULL, /* 6045 */
++			0x050280800000053fULL, /* 6046 */
++			0x0000000000000000ULL, /* 6047 */
++			0x010400000000852fULL, /* 6048 */
++			0x0000000000000000ULL, /* 6049 */
++			0x0504210680000523ULL, /* 6050 */
++			0x0000000000000000ULL, /* 6051 */
++			0x0104200000000522ULL, /* 6052 */
++			0x0000000000000000ULL, /* 6053 */
++			0x01080bd3830b8520ULL, /* 6054 */
++			0x050280800000053fULL, /* 6055 */
++			0x0000000000000000ULL, /* 6056 */
++			0x010400000000852fULL, /* 6057 */
++			0x0000000000000000ULL, /* 6058 */
++			0x0504210680000523ULL, /* 6059 */
++			0x0000000000000000ULL, /* 6060 */
++			0x0104200008000522ULL, /* 6061 */
++			0x0000000000000000ULL, /* 6062 */
++			0x01080bd8030b8520ULL, /* 6063 */
++			0x01080bd88bdd28c0ULL, /* 6064 */
++			0x050280800000053fULL, /* 6065 */
++			0x0000000000000000ULL, /* 6066 */
++			0x010400000000852fULL, /* 6067 */
++			0x0000000000000000ULL, /* 6068 */
++			0x0504210680000523ULL, /* 6069 */
++			0x0000000000000000ULL, /* 6070 */
++			0x0104200004000522ULL, /* 6071 */
++			0x0000000000000000ULL, /* 6072 */
++			0x01080bdd030b8520ULL, /* 6073 */
++			0x050280800000053fULL, /* 6074 */
++			0x0000000000000000ULL, /* 6075 */
++			0x010400000000852fULL, /* 6076 */
++			0x0000000000000000ULL, /* 6077 */
++			0x0504210680000523ULL, /* 6078 */
++			0x0000000000000000ULL, /* 6079 */
++			0x010420000c000522ULL, /* 6080 */
++			0x0000000000000000ULL, /* 6081 */
++			0x01080be1830b8520ULL, /* 6082 */
++			0x01080be20beba8a0ULL, /* 6083 */
++			0x01080be28be728c0ULL, /* 6084 */
++			0x050280800000053fULL, /* 6085 */
++			0x0000000000000000ULL, /* 6086 */
++			0x010400000000852fULL, /* 6087 */
++			0x0000000000000000ULL, /* 6088 */
++			0x0504210680000523ULL, /* 6089 */
++			0x0000000000000000ULL, /* 6090 */
++			0x0104200002000522ULL, /* 6091 */
++			0x0000000000000000ULL, /* 6092 */
++			0x01080be7030b8520ULL, /* 6093 */
++			0x050280800000053fULL, /* 6094 */
++			0x0000000000000000ULL, /* 6095 */
++			0x010400000000852fULL, /* 6096 */
++			0x0000000000000000ULL, /* 6097 */
++			0x0504210680000523ULL, /* 6098 */
++			0x0000000000000000ULL, /* 6099 */
++			0x010420000a000522ULL, /* 6100 */
++			0x0000000000000000ULL, /* 6101 */
++			0x01080beb830b8520ULL, /* 6102 */
++			0x01080bec0bf0a8c0ULL, /* 6103 */
++			0x050280800000053fULL, /* 6104 */
++			0x0000000000000000ULL, /* 6105 */
++			0x010400000000852fULL, /* 6106 */
++			0x0000000000000000ULL, /* 6107 */
++			0x0504210680000523ULL, /* 6108 */
++			0x0000000000000000ULL, /* 6109 */
++			0x0104200006000522ULL, /* 6110 */
++			0x0000000000000000ULL, /* 6111 */
++			0x01080bf0830b8520ULL, /* 6112 */
++			0x050280800000053fULL, /* 6113 */
++			0x0000000000000000ULL, /* 6114 */
++			0x010400000000852fULL, /* 6115 */
++			0x0000000000000000ULL, /* 6116 */
++			0x0504210680000523ULL, /* 6117 */
++			0x0000000000000000ULL, /* 6118 */
++			0x010420000e000522ULL, /* 6119 */
++			0x0000000000000000ULL, /* 6120 */
++			0x01080bf5030b8520ULL, /* 6121 */
++			0x01080bf58c092880ULL, /* 6122 */
++			0x01080bf60bffa8a0ULL, /* 6123 */
++			0x01080bf68bfb28c0ULL, /* 6124 */
++			0x050280800000053fULL, /* 6125 */
++			0x0000000000000000ULL, /* 6126 */
++			0x010400000000852fULL, /* 6127 */
++			0x0000000000000000ULL, /* 6128 */
++			0x0504210680000523ULL, /* 6129 */
++			0x0000000000000000ULL, /* 6130 */
++			0x0104200000000522ULL, /* 6131 */
++			0x0000000000000000ULL, /* 6132 */
++			0x01080bfb030b8520ULL, /* 6133 */
++			0x050280800000053fULL, /* 6134 */
++			0x0000000000000000ULL, /* 6135 */
++			0x010400000000852fULL, /* 6136 */
++			0x0000000000000000ULL, /* 6137 */
++			0x0504210680000523ULL, /* 6138 */
++			0x0000000000000000ULL, /* 6139 */
++			0x0104200008000522ULL, /* 6140 */
++			0x0000000000000000ULL, /* 6141 */
++			0x01080bff830b8520ULL, /* 6142 */
++			0x01080c000c04a8c0ULL, /* 6143 */
++			0x050280800000053fULL, /* 6144 */
++			0x0000000000000000ULL, /* 6145 */
++			0x010400000000852fULL, /* 6146 */
++			0x0000000000000000ULL, /* 6147 */
++			0x0504210680000523ULL, /* 6148 */
++			0x0000000000000000ULL, /* 6149 */
++			0x0104200004000522ULL, /* 6150 */
++			0x0000000000000000ULL, /* 6151 */
++			0x01080c04830b8520ULL, /* 6152 */
++			0x050280800000053fULL, /* 6153 */
++			0x0000000000000000ULL, /* 6154 */
++			0x010400000000852fULL, /* 6155 */
++			0x0000000000000000ULL, /* 6156 */
++			0x0504210680000523ULL, /* 6157 */
++			0x0000000000000000ULL, /* 6158 */
++			0x010420000c000522ULL, /* 6159 */
++			0x0000000000000000ULL, /* 6160 */
++			0x01080c09030b8520ULL, /* 6161 */
++			0x01080c098c1328a0ULL, /* 6162 */
++			0x01080c0a0c0ea8c0ULL, /* 6163 */
++			0x050280800000053fULL, /* 6164 */
++			0x0000000000000000ULL, /* 6165 */
++			0x010400000000852fULL, /* 6166 */
++			0x0000000000000000ULL, /* 6167 */
++			0x0504210680000523ULL, /* 6168 */
++			0x0000000000000000ULL, /* 6169 */
++			0x0104200002000522ULL, /* 6170 */
++			0x0000000000000000ULL, /* 6171 */
++			0x01080c0e830b8520ULL, /* 6172 */
++			0x050280800000053fULL, /* 6173 */
++			0x0000000000000000ULL, /* 6174 */
++			0x010400000000852fULL, /* 6175 */
++			0x0000000000000000ULL, /* 6176 */
++			0x0504210680000523ULL, /* 6177 */
++			0x0000000000000000ULL, /* 6178 */
++			0x010420000a000522ULL, /* 6179 */
++			0x0000000000000000ULL, /* 6180 */
++			0x01080c13030b8520ULL, /* 6181 */
++			0x01080c138c1828c0ULL, /* 6182 */
++			0x050280800000053fULL, /* 6183 */
++			0x0000000000000000ULL, /* 6184 */
++			0x010400000000852fULL, /* 6185 */
++			0x0000000000000000ULL, /* 6186 */
++			0x0504210680000523ULL, /* 6187 */
++			0x0000000000000000ULL, /* 6188 */
++			0x0104200006000522ULL, /* 6189 */
++			0x0000000000000000ULL, /* 6190 */
++			0x01080c18030b8520ULL, /* 6191 */
++			0x050280800000053fULL, /* 6192 */
++			0x0000000000000000ULL, /* 6193 */
++			0x010400000000852fULL, /* 6194 */
++			0x0000000000000000ULL, /* 6195 */
++			0x0504210680000523ULL, /* 6196 */
++			0x0000000000000000ULL, /* 6197 */
++			0x010420000e000522ULL, /* 6198 */
++			0x0000000000000000ULL, /* 6199 */
++			0x01080c1c830b8520ULL, /* 6200 */
++			0x0504210680000523ULL, /* 6201 */
++			0x0000000000000000ULL, /* 6202 */
++			0x01080c1e030b8520ULL, /* 6203 */
++		},
++	},
++	{
++		.hook = 1893, .start = 6288, .count = 212,
++		.map_count = 16,
++		.map = {
++			{ 58, 0, 1 },
++			{ 67, 4, 1 },
++			{ 77, 2, 1 },
++			{ 86, 6, 1 },
++			{ 97, 1, 1 },
++			{ 106, 5, 1 },
++			{ 116, 3, 1 },
++			{ 125, 7, 1 },
++			{ 137, 0, 0 },
++			{ 146, 4, 0 },
++			{ 156, 2, 0 },
++			{ 165, 6, 0 },
++			{ 176, 1, 0 },
++			{ 185, 5, 0 },
++			{ 195, 3, 0 },
++			{ 204, 7, 0 },
++		},
++		.inst = {
++			0x01080caf8c48a880ULL, /* 6288 */
++			0x01080c490cafaaa0ULL, /* 6289 */
++			0x01080c498c4a28a0ULL, /* 6290 */
++			0x01080caf8c4a28c0ULL, /* 6291 */
++			0x0601a092148000e7ULL, /* 6292 */
++			0x0000000000000000ULL, /* 6293 */
++			0x06018090148000e7ULL, /* 6294 */
++			0x0000000000000000ULL, /* 6295 */
++			0x0700800028180523ULL, /* 6296 */
++			0x0000000000000000ULL, /* 6297 */
++			0x0704000028200523ULL, /* 6298 */
++			0x0000000000000000ULL, /* 6299 */
++			0x06208010100003ffULL, /* 6300 */
++			0x0000000000000000ULL, /* 6301 */
++			0x0704000008000523ULL, /* 6302 */
++			0x0000000000000000ULL, /* 6303 */
++			0x06208010100003ffULL, /* 6304 */
++			0x0000000000000000ULL, /* 6305 */
++			0x0704000028120520ULL, /* 6306 */
++			0x0000000000000000ULL, /* 6307 */
++			0x0504008000008527ULL, /* 6308 */
++			0x0000000000000000ULL, /* 6309 */
++			0x06208010100003ffULL, /* 6310 */
++			0x0000000000000000ULL, /* 6311 */
++			0x050400140000852fULL, /* 6312 */
++			0x0000000000000000ULL, /* 6313 */
++			0x06208010100003ffULL, /* 6314 */
++			0x0000000000000000ULL, /* 6315 */
++			0x0504001200008537ULL, /* 6316 */
++			0x0000000000000000ULL, /* 6317 */
++			0x06208010100003ffULL, /* 6318 */
++			0x0000000000000000ULL, /* 6319 */
++			0x050400110000853bULL, /* 6320 */
++			0x0000000000000000ULL, /* 6321 */
++			0x06208010100003ffULL, /* 6322 */
++			0x0000000000000000ULL, /* 6323 */
++			0x05040010c000853cULL, /* 6324 */
++			0x0000000000000000ULL, /* 6325 */
++			0x06208010100003ffULL, /* 6326 */
++			0x0000000000000000ULL, /* 6327 */
++			0x050180a400008527ULL, /* 6328 */
++			0x0000000000000000ULL, /* 6329 */
++			0x050400500000053fULL, /* 6330 */
++			0x0000000000000000ULL, /* 6331 */
++			0x0502881000000522ULL, /* 6332 */
++			0x0000000000000000ULL, /* 6333 */
++			0x0502870740000520ULL, /* 6334 */
++			0x0000000000000000ULL, /* 6335 */
++			0x01080c608c882860ULL, /* 6336 */
++			0x01080c610c74a880ULL, /* 6337 */
++			0x01080c618c6b28a0ULL, /* 6338 */
++			0x01080c620c66a8c0ULL, /* 6339 */
++			0x050280800000053fULL, /* 6340 */
++			0x0000000000000000ULL, /* 6341 */
++			0x010400000000852fULL, /* 6342 */
++			0x0000000000000000ULL, /* 6343 */
++			0x0504210680000523ULL, /* 6344 */
++			0x0000000000000000ULL, /* 6345 */
++			0x0104200000000522ULL, /* 6346 */
++			0x0000000000000000ULL, /* 6347 */
++			0x01080c6683b30520ULL, /* 6348 */
++			0x050280800000053fULL, /* 6349 */
++			0x0000000000000000ULL, /* 6350 */
++			0x010400000000852fULL, /* 6351 */
++			0x0000000000000000ULL, /* 6352 */
++			0x0504210680000523ULL, /* 6353 */
++			0x0000000000000000ULL, /* 6354 */
++			0x0104200008000522ULL, /* 6355 */
++			0x0000000000000000ULL, /* 6356 */
++			0x01080c6b03b30520ULL, /* 6357 */
++			0x01080c6b8c7028c0ULL, /* 6358 */
++			0x050280800000053fULL, /* 6359 */
++			0x0000000000000000ULL, /* 6360 */
++			0x010400000000852fULL, /* 6361 */
++			0x0000000000000000ULL, /* 6362 */
++			0x0504210680000523ULL, /* 6363 */
++			0x0000000000000000ULL, /* 6364 */
++			0x0104200004000522ULL, /* 6365 */
++			0x0000000000000000ULL, /* 6366 */
++			0x01080c7003b30520ULL, /* 6367 */
++			0x050280800000053fULL, /* 6368 */
++			0x0000000000000000ULL, /* 6369 */
++			0x010400000000852fULL, /* 6370 */
++			0x0000000000000000ULL, /* 6371 */
++			0x0504210680000523ULL, /* 6372 */
++			0x0000000000000000ULL, /* 6373 */
++			0x010420000c000522ULL, /* 6374 */
++			0x0000000000000000ULL, /* 6375 */
++			0x01080c7483b30520ULL, /* 6376 */
++			0x01080c750c7ea8a0ULL, /* 6377 */
++			0x01080c758c7a28c0ULL, /* 6378 */
++			0x050280800000053fULL, /* 6379 */
++			0x0000000000000000ULL, /* 6380 */
++			0x010400000000852fULL, /* 6381 */
++			0x0000000000000000ULL, /* 6382 */
++			0x0504210680000523ULL, /* 6383 */
++			0x0000000000000000ULL, /* 6384 */
++			0x0104200002000522ULL, /* 6385 */
++			0x0000000000000000ULL, /* 6386 */
++			0x01080c7a03b30520ULL, /* 6387 */
++			0x050280800000053fULL, /* 6388 */
++			0x0000000000000000ULL, /* 6389 */
++			0x010400000000852fULL, /* 6390 */
++			0x0000000000000000ULL, /* 6391 */
++			0x0504210680000523ULL, /* 6392 */
++			0x0000000000000000ULL, /* 6393 */
++			0x010420000a000522ULL, /* 6394 */
++			0x0000000000000000ULL, /* 6395 */
++			0x01080c7e83b30520ULL, /* 6396 */
++			0x01080c7f0c83a8c0ULL, /* 6397 */
++			0x050280800000053fULL, /* 6398 */
++			0x0000000000000000ULL, /* 6399 */
++			0x010400000000852fULL, /* 6400 */
++			0x0000000000000000ULL, /* 6401 */
++			0x0504210680000523ULL, /* 6402 */
++			0x0000000000000000ULL, /* 6403 */
++			0x0104200006000522ULL, /* 6404 */
++			0x0000000000000000ULL, /* 6405 */
++			0x01080c8383b30520ULL, /* 6406 */
++			0x050280800000053fULL, /* 6407 */
++			0x0000000000000000ULL, /* 6408 */
++			0x010400000000852fULL, /* 6409 */
++			0x0000000000000000ULL, /* 6410 */
++			0x0504210680000523ULL, /* 6411 */
++			0x0000000000000000ULL, /* 6412 */
++			0x010420000e000522ULL, /* 6413 */
++			0x0000000000000000ULL, /* 6414 */
++			0x01080c8803b30520ULL, /* 6415 */
++			0x01080c888c9c2880ULL, /* 6416 */
++			0x01080c890c92a8a0ULL, /* 6417 */
++			0x01080c898c8e28c0ULL, /* 6418 */
++			0x050280800000053fULL, /* 6419 */
++			0x0000000000000000ULL, /* 6420 */
++			0x010400000000852fULL, /* 6421 */
++			0x0000000000000000ULL, /* 6422 */
++			0x0504210680000523ULL, /* 6423 */
++			0x0000000000000000ULL, /* 6424 */
++			0x0104200000000522ULL, /* 6425 */
++			0x0000000000000000ULL, /* 6426 */
++			0x01080c8e03b30520ULL, /* 6427 */
++			0x050280800000053fULL, /* 6428 */
++			0x0000000000000000ULL, /* 6429 */
++			0x010400000000852fULL, /* 6430 */
++			0x0000000000000000ULL, /* 6431 */
++			0x0504210680000523ULL, /* 6432 */
++			0x0000000000000000ULL, /* 6433 */
++			0x0104200008000522ULL, /* 6434 */
++			0x0000000000000000ULL, /* 6435 */
++			0x01080c9283b30520ULL, /* 6436 */
++			0x01080c930c97a8c0ULL, /* 6437 */
++			0x050280800000053fULL, /* 6438 */
++			0x0000000000000000ULL, /* 6439 */
++			0x010400000000852fULL, /* 6440 */
++			0x0000000000000000ULL, /* 6441 */
++			0x0504210680000523ULL, /* 6442 */
++			0x0000000000000000ULL, /* 6443 */
++			0x0104200004000522ULL, /* 6444 */
++			0x0000000000000000ULL, /* 6445 */
++			0x01080c9783b30520ULL, /* 6446 */
++			0x050280800000053fULL, /* 6447 */
++			0x0000000000000000ULL, /* 6448 */
++			0x010400000000852fULL, /* 6449 */
++			0x0000000000000000ULL, /* 6450 */
++			0x0504210680000523ULL, /* 6451 */
++			0x0000000000000000ULL, /* 6452 */
++			0x010420000c000522ULL, /* 6453 */
++			0x0000000000000000ULL, /* 6454 */
++			0x01080c9c03b30520ULL, /* 6455 */
++			0x01080c9c8ca628a0ULL, /* 6456 */
++			0x01080c9d0ca1a8c0ULL, /* 6457 */
++			0x050280800000053fULL, /* 6458 */
++			0x0000000000000000ULL, /* 6459 */
++			0x010400000000852fULL, /* 6460 */
++			0x0000000000000000ULL, /* 6461 */
++			0x0504210680000523ULL, /* 6462 */
++			0x0000000000000000ULL, /* 6463 */
++			0x0104200002000522ULL, /* 6464 */
++			0x0000000000000000ULL, /* 6465 */
++			0x01080ca183b30520ULL, /* 6466 */
++			0x050280800000053fULL, /* 6467 */
++			0x0000000000000000ULL, /* 6468 */
++			0x010400000000852fULL, /* 6469 */
++			0x0000000000000000ULL, /* 6470 */
++			0x0504210680000523ULL, /* 6471 */
++			0x0000000000000000ULL, /* 6472 */
++			0x010420000a000522ULL, /* 6473 */
++			0x0000000000000000ULL, /* 6474 */
++			0x01080ca603b30520ULL, /* 6475 */
++			0x01080ca68cab28c0ULL, /* 6476 */
++			0x050280800000053fULL, /* 6477 */
++			0x0000000000000000ULL, /* 6478 */
++			0x010400000000852fULL, /* 6479 */
++			0x0000000000000000ULL, /* 6480 */
++			0x0504210680000523ULL, /* 6481 */
++			0x0000000000000000ULL, /* 6482 */
++			0x0104200006000522ULL, /* 6483 */
++			0x0000000000000000ULL, /* 6484 */
++			0x01080cab03b30520ULL, /* 6485 */
++			0x050280800000053fULL, /* 6486 */
++			0x0000000000000000ULL, /* 6487 */
++			0x010400000000852fULL, /* 6488 */
++			0x0000000000000000ULL, /* 6489 */
++			0x0504210680000523ULL, /* 6490 */
++			0x0000000000000000ULL, /* 6491 */
++			0x010420000e000522ULL, /* 6492 */
++			0x0000000000000000ULL, /* 6493 */
++			0x01080caf83b30520ULL, /* 6494 */
++			0x0504210680000523ULL, /* 6495 */
++			0x0000000000000000ULL, /* 6496 */
++			0x01080cb103b30520ULL, /* 6497 */
++			0x0000000000000000ULL, /* 6498 */
++			0x0000000000000000ULL, /* 6499 */
++		},
++	},
++	{
++		.hook = 2216, .start = 6592, .count = 76,
++		.inst = {
++			0x01080d000ce0a880ULL, /* 6592 */
++			0x01080ce10d002aa0ULL, /* 6593 */
++			0x01080ce18ce228a0ULL, /* 6594 */
++			0x01080d000ce228c0ULL, /* 6595 */
++			0x040000f80000069bULL, /* 6596 */
++			0x0000000000000000ULL, /* 6597 */
++			0x0507c0800000053fULL, /* 6598 */
++			0x0000000000000000ULL, /* 6599 */
++			0x0601a092148000e7ULL, /* 6600 */
++			0x0000000000000000ULL, /* 6601 */
++			0x06018090148000e7ULL, /* 6602 */
++			0x0000000000000000ULL, /* 6603 */
++			0x0700800028180523ULL, /* 6604 */
++			0x0000000000000000ULL, /* 6605 */
++			0x0704000028200523ULL, /* 6606 */
++			0x0000000000000000ULL, /* 6607 */
++			0x06208010100003ffULL, /* 6608 */
++			0x0000000000000000ULL, /* 6609 */
++			0x0704000008000523ULL, /* 6610 */
++			0x0000000000000000ULL, /* 6611 */
++			0x06208010100003ffULL, /* 6612 */
++			0x0000000000000000ULL, /* 6613 */
++			0x0704000028120520ULL, /* 6614 */
++			0x0000000000000000ULL, /* 6615 */
++			0x0504008000008527ULL, /* 6616 */
++			0x0000000000000000ULL, /* 6617 */
++			0x06208010100003ffULL, /* 6618 */
++			0x0000000000000000ULL, /* 6619 */
++			0x050400140000852fULL, /* 6620 */
++			0x0000000000000000ULL, /* 6621 */
++			0x06208010100003ffULL, /* 6622 */
++			0x0000000000000000ULL, /* 6623 */
++			0x0504001200008537ULL, /* 6624 */
++			0x0000000000000000ULL, /* 6625 */
++			0x06208010100003ffULL, /* 6626 */
++			0x0000000000000000ULL, /* 6627 */
++			0x050400110000853bULL, /* 6628 */
++			0x0000000000000000ULL, /* 6629 */
++			0x06208010100003ffULL, /* 6630 */
++			0x0000000000000000ULL, /* 6631 */
++			0x05040010c000853cULL, /* 6632 */
++			0x0000000000000000ULL, /* 6633 */
++			0x06208010100003ffULL, /* 6634 */
++			0x0000000000000000ULL, /* 6635 */
++			0x050400f80000053fULL, /* 6636 */
++			0x0000000000000000ULL, /* 6637 */
++			0x0707c00018680523ULL, /* 6638 */
++			0x0000000000000000ULL, /* 6639 */
++			0x040000100000069bULL, /* 6640 */
++			0x0000000000000000ULL, /* 6641 */
++			0x050080f80000053fULL, /* 6642 */
++			0x0000000000000000ULL, /* 6643 */
++			0x0707c00018600523ULL, /* 6644 */
++			0x0000000000000000ULL, /* 6645 */
++			0x0107fe0002000520ULL, /* 6646 */
++			0x0000000000000000ULL, /* 6647 */
++			0x040000f80000061bULL, /* 6648 */
++			0x0000000000000000ULL, /* 6649 */
++			0x0507c0100000053fULL, /* 6650 */
++			0x0000000000000000ULL, /* 6651 */
++			0x0700800018680523ULL, /* 6652 */
++			0x0000000000000000ULL, /* 6653 */
++			0x01100000088d3180ULL, /* 6654 */
++			0x0018000000000000ULL, /* 6655 */
++			0x050080f80000053fULL, /* 6656 */
++			0x0000000000000000ULL, /* 6657 */
++			0x0707c00018600523ULL, /* 6658 */
++			0x0000000000000000ULL, /* 6659 */
++			0x0107fe0000000520ULL, /* 6660 */
++			0x0000000000000000ULL, /* 6661 */
++			0x040000f80000061bULL, /* 6662 */
++			0x0000000000000000ULL, /* 6663 */
++			0x0507c0100000053fULL, /* 6664 */
++			0x0000000000000000ULL, /* 6665 */
++			0x01100000088d3180ULL, /* 6666 */
++			0x0018000000000000ULL, /* 6667 */
++		},
++	},
++};
++
++#endif
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-rx-hash-ipv6.h
+@@ -0,0 +1,773 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Generated by port/mainline/rss-acceptance/generate-ipv6-rss.py. */
++static const struct zx279133_rx_hash_program zx279133_rx_hash_ipv6_programs[] = {
++	{
++		.hook = 1558, .start = 6000, .count = 268,
++		.map_count = 16,
++		.map = {
++			{ 115, 0, 1 },
++			{ 124, 4, 1 },
++			{ 134, 2, 1 },
++			{ 143, 6, 1 },
++			{ 154, 1, 1 },
++			{ 163, 5, 1 },
++			{ 173, 3, 1 },
++			{ 182, 7, 1 },
++			{ 194, 0, 0 },
++			{ 203, 4, 0 },
++			{ 213, 2, 0 },
++			{ 222, 6, 0 },
++			{ 233, 1, 0 },
++			{ 242, 5, 0 },
++			{ 252, 3, 0 },
++			{ 261, 7, 0 },
++		},
++		.inst = {
++			0x01080bb88bb92880ULL, /* 6000 */
++			0x01080c3c0bb92860ULL, /* 6001 */
++			0x01080bb98c3c2aa0ULL, /* 6002 */
++			0x01080bba0bbaa8a0ULL, /* 6003 */
++			0x01080c3c0bbaa8c0ULL, /* 6004 */
++			0x01080bbb0bcba860ULL, /* 6005 */
++			0x0700800028180523ULL, /* 6006 */
++			0x0000000000000000ULL, /* 6007 */
++			0x0704000028200523ULL, /* 6008 */
++			0x0000000000000000ULL, /* 6009 */
++			0x06208010100003ffULL, /* 6010 */
++			0x0000000000000000ULL, /* 6011 */
++			0x0704000008000523ULL, /* 6012 */
++			0x0000000000000000ULL, /* 6013 */
++			0x06208010100003ffULL, /* 6014 */
++			0x0000000000000000ULL, /* 6015 */
++			0x0704000028120520ULL, /* 6016 */
++			0x0000000000000000ULL, /* 6017 */
++			0x0504008000008527ULL, /* 6018 */
++			0x0000000000000000ULL, /* 6019 */
++			0x06208010100003ffULL, /* 6020 */
++			0x0000000000000000ULL, /* 6021 */
++			0x050400140000852fULL, /* 6022 */
++			0x0000000000000000ULL, /* 6023 */
++			0x06208010100003ffULL, /* 6024 */
++			0x0000000000000000ULL, /* 6025 */
++			0x0504001200008537ULL, /* 6026 */
++			0x0000000000000000ULL, /* 6027 */
++			0x06208010100003ffULL, /* 6028 */
++			0x0000000000000000ULL, /* 6029 */
++			0x050400110000853bULL, /* 6030 */
++			0x0000000000000000ULL, /* 6031 */
++			0x06208010100003ffULL, /* 6032 */
++			0x0000000000000000ULL, /* 6033 */
++			0x05040010c000853cULL, /* 6034 */
++			0x0000000000000000ULL, /* 6035 */
++			0x06208010100003ffULL, /* 6036 */
++			0x0000000000000000ULL, /* 6037 */
++			0x01080bcb8be98520ULL, /* 6038 */
++			0x0700800028100523ULL, /* 6039 */
++			0x0000000000000000ULL, /* 6040 */
++			0x0704000028180523ULL, /* 6041 */
++			0x0000000000000000ULL, /* 6042 */
++			0x06208010100003ffULL, /* 6043 */
++			0x0000000000000000ULL, /* 6044 */
++			0x0704000028200523ULL, /* 6045 */
++			0x0000000000000000ULL, /* 6046 */
++			0x06208010100003ffULL, /* 6047 */
++			0x0000000000000000ULL, /* 6048 */
++			0x0704000028280523ULL, /* 6049 */
++			0x0000000000000000ULL, /* 6050 */
++			0x06208010100003ffULL, /* 6051 */
++			0x0000000000000000ULL, /* 6052 */
++			0x0704000028300523ULL, /* 6053 */
++			0x0000000000000000ULL, /* 6054 */
++			0x06208010100003ffULL, /* 6055 */
++			0x0000000000000000ULL, /* 6056 */
++			0x0704000028380523ULL, /* 6057 */
++			0x0000000000000000ULL, /* 6058 */
++			0x06208010100003ffULL, /* 6059 */
++			0x0000000000000000ULL, /* 6060 */
++			0x0704000028400523ULL, /* 6061 */
++			0x0000000000000000ULL, /* 6062 */
++			0x06208010100003ffULL, /* 6063 */
++			0x0000000000000000ULL, /* 6064 */
++			0x0704000028480523ULL, /* 6065 */
++			0x0000000000000000ULL, /* 6066 */
++			0x06208010100003ffULL, /* 6067 */
++			0x0000000000000000ULL, /* 6068 */
++			0x0704000008000523ULL, /* 6069 */
++			0x0000000000000000ULL, /* 6070 */
++			0x06208010100003ffULL, /* 6071 */
++			0x0000000000000000ULL, /* 6072 */
++			0x01080bde8bdd28a0ULL, /* 6073 */
++			0x010400002200852fULL, /* 6074 */
++			0x0000000000000000ULL, /* 6075 */
++			0x01080bde8bdf8520ULL, /* 6076 */
++			0x010400000c00852fULL, /* 6077 */
++			0x0000000000000000ULL, /* 6078 */
++			0x0504008000008527ULL, /* 6079 */
++			0x0000000000000000ULL, /* 6080 */
++			0x06208010100003ffULL, /* 6081 */
++			0x0000000000000000ULL, /* 6082 */
++			0x050400140000852fULL, /* 6083 */
++			0x0000000000000000ULL, /* 6084 */
++			0x06208010100003ffULL, /* 6085 */
++			0x0000000000000000ULL, /* 6086 */
++			0x0504001200008537ULL, /* 6087 */
++			0x0000000000000000ULL, /* 6088 */
++			0x06208010100003ffULL, /* 6089 */
++			0x0000000000000000ULL, /* 6090 */
++			0x050400110000853bULL, /* 6091 */
++			0x0000000000000000ULL, /* 6092 */
++			0x06208010100003ffULL, /* 6093 */
++			0x0000000000000000ULL, /* 6094 */
++			0x05040010c000853cULL, /* 6095 */
++			0x0000000000000000ULL, /* 6096 */
++			0x06208010100003ffULL, /* 6097 */
++			0x0000000000000000ULL, /* 6098 */
++			0x050400500000053fULL, /* 6099 */
++			0x0000000000000000ULL, /* 6100 */
++			0x0502881000000522ULL, /* 6101 */
++			0x0000000000000000ULL, /* 6102 */
++			0x0502870740000520ULL, /* 6103 */
++			0x0000000000000000ULL, /* 6104 */
++			0x01080bed0c14a860ULL, /* 6105 */
++			0x01080bed8c012880ULL, /* 6106 */
++			0x01080bee0bf7a8a0ULL, /* 6107 */
++			0x01080bee8bf328c0ULL, /* 6108 */
++			0x050280800000053fULL, /* 6109 */
++			0x0000000000000000ULL, /* 6110 */
++			0x010400000000852fULL, /* 6111 */
++			0x0000000000000000ULL, /* 6112 */
++			0x0504210680000523ULL, /* 6113 */
++			0x0000000000000000ULL, /* 6114 */
++			0x0104200000000522ULL, /* 6115 */
++			0x0000000000000000ULL, /* 6116 */
++			0x01080bf3030b8520ULL, /* 6117 */
++			0x050280800000053fULL, /* 6118 */
++			0x0000000000000000ULL, /* 6119 */
++			0x010400000000852fULL, /* 6120 */
++			0x0000000000000000ULL, /* 6121 */
++			0x0504210680000523ULL, /* 6122 */
++			0x0000000000000000ULL, /* 6123 */
++			0x0104200008000522ULL, /* 6124 */
++			0x0000000000000000ULL, /* 6125 */
++			0x01080bf7830b8520ULL, /* 6126 */
++			0x01080bf80bfca8c0ULL, /* 6127 */
++			0x050280800000053fULL, /* 6128 */
++			0x0000000000000000ULL, /* 6129 */
++			0x010400000000852fULL, /* 6130 */
++			0x0000000000000000ULL, /* 6131 */
++			0x0504210680000523ULL, /* 6132 */
++			0x0000000000000000ULL, /* 6133 */
++			0x0104200004000522ULL, /* 6134 */
++			0x0000000000000000ULL, /* 6135 */
++			0x01080bfc830b8520ULL, /* 6136 */
++			0x050280800000053fULL, /* 6137 */
++			0x0000000000000000ULL, /* 6138 */
++			0x010400000000852fULL, /* 6139 */
++			0x0000000000000000ULL, /* 6140 */
++			0x0504210680000523ULL, /* 6141 */
++			0x0000000000000000ULL, /* 6142 */
++			0x010420000c000522ULL, /* 6143 */
++			0x0000000000000000ULL, /* 6144 */
++			0x01080c01030b8520ULL, /* 6145 */
++			0x01080c018c0b28a0ULL, /* 6146 */
++			0x01080c020c06a8c0ULL, /* 6147 */
++			0x050280800000053fULL, /* 6148 */
++			0x0000000000000000ULL, /* 6149 */
++			0x010400000000852fULL, /* 6150 */
++			0x0000000000000000ULL, /* 6151 */
++			0x0504210680000523ULL, /* 6152 */
++			0x0000000000000000ULL, /* 6153 */
++			0x0104200002000522ULL, /* 6154 */
++			0x0000000000000000ULL, /* 6155 */
++			0x01080c06830b8520ULL, /* 6156 */
++			0x050280800000053fULL, /* 6157 */
++			0x0000000000000000ULL, /* 6158 */
++			0x010400000000852fULL, /* 6159 */
++			0x0000000000000000ULL, /* 6160 */
++			0x0504210680000523ULL, /* 6161 */
++			0x0000000000000000ULL, /* 6162 */
++			0x010420000a000522ULL, /* 6163 */
++			0x0000000000000000ULL, /* 6164 */
++			0x01080c0b030b8520ULL, /* 6165 */
++			0x01080c0b8c1028c0ULL, /* 6166 */
++			0x050280800000053fULL, /* 6167 */
++			0x0000000000000000ULL, /* 6168 */
++			0x010400000000852fULL, /* 6169 */
++			0x0000000000000000ULL, /* 6170 */
++			0x0504210680000523ULL, /* 6171 */
++			0x0000000000000000ULL, /* 6172 */
++			0x0104200006000522ULL, /* 6173 */
++			0x0000000000000000ULL, /* 6174 */
++			0x01080c10030b8520ULL, /* 6175 */
++			0x050280800000053fULL, /* 6176 */
++			0x0000000000000000ULL, /* 6177 */
++			0x010400000000852fULL, /* 6178 */
++			0x0000000000000000ULL, /* 6179 */
++			0x0504210680000523ULL, /* 6180 */
++			0x0000000000000000ULL, /* 6181 */
++			0x010420000e000522ULL, /* 6182 */
++			0x0000000000000000ULL, /* 6183 */
++			0x01080c14830b8520ULL, /* 6184 */
++			0x01080c150c28a880ULL, /* 6185 */
++			0x01080c158c1f28a0ULL, /* 6186 */
++			0x01080c160c1aa8c0ULL, /* 6187 */
++			0x050280800000053fULL, /* 6188 */
++			0x0000000000000000ULL, /* 6189 */
++			0x010400000000852fULL, /* 6190 */
++			0x0000000000000000ULL, /* 6191 */
++			0x0504210680000523ULL, /* 6192 */
++			0x0000000000000000ULL, /* 6193 */
++			0x0104200000000522ULL, /* 6194 */
++			0x0000000000000000ULL, /* 6195 */
++			0x01080c1a830b8520ULL, /* 6196 */
++			0x050280800000053fULL, /* 6197 */
++			0x0000000000000000ULL, /* 6198 */
++			0x010400000000852fULL, /* 6199 */
++			0x0000000000000000ULL, /* 6200 */
++			0x0504210680000523ULL, /* 6201 */
++			0x0000000000000000ULL, /* 6202 */
++			0x0104200008000522ULL, /* 6203 */
++			0x0000000000000000ULL, /* 6204 */
++			0x01080c1f030b8520ULL, /* 6205 */
++			0x01080c1f8c2428c0ULL, /* 6206 */
++			0x050280800000053fULL, /* 6207 */
++			0x0000000000000000ULL, /* 6208 */
++			0x010400000000852fULL, /* 6209 */
++			0x0000000000000000ULL, /* 6210 */
++			0x0504210680000523ULL, /* 6211 */
++			0x0000000000000000ULL, /* 6212 */
++			0x0104200004000522ULL, /* 6213 */
++			0x0000000000000000ULL, /* 6214 */
++			0x01080c24030b8520ULL, /* 6215 */
++			0x050280800000053fULL, /* 6216 */
++			0x0000000000000000ULL, /* 6217 */
++			0x010400000000852fULL, /* 6218 */
++			0x0000000000000000ULL, /* 6219 */
++			0x0504210680000523ULL, /* 6220 */
++			0x0000000000000000ULL, /* 6221 */
++			0x010420000c000522ULL, /* 6222 */
++			0x0000000000000000ULL, /* 6223 */
++			0x01080c28830b8520ULL, /* 6224 */
++			0x01080c290c32a8a0ULL, /* 6225 */
++			0x01080c298c2e28c0ULL, /* 6226 */
++			0x050280800000053fULL, /* 6227 */
++			0x0000000000000000ULL, /* 6228 */
++			0x010400000000852fULL, /* 6229 */
++			0x0000000000000000ULL, /* 6230 */
++			0x0504210680000523ULL, /* 6231 */
++			0x0000000000000000ULL, /* 6232 */
++			0x0104200002000522ULL, /* 6233 */
++			0x0000000000000000ULL, /* 6234 */
++			0x01080c2e030b8520ULL, /* 6235 */
++			0x050280800000053fULL, /* 6236 */
++			0x0000000000000000ULL, /* 6237 */
++			0x010400000000852fULL, /* 6238 */
++			0x0000000000000000ULL, /* 6239 */
++			0x0504210680000523ULL, /* 6240 */
++			0x0000000000000000ULL, /* 6241 */
++			0x010420000a000522ULL, /* 6242 */
++			0x0000000000000000ULL, /* 6243 */
++			0x01080c32830b8520ULL, /* 6244 */
++			0x01080c330c37a8c0ULL, /* 6245 */
++			0x050280800000053fULL, /* 6246 */
++			0x0000000000000000ULL, /* 6247 */
++			0x010400000000852fULL, /* 6248 */
++			0x0000000000000000ULL, /* 6249 */
++			0x0504210680000523ULL, /* 6250 */
++			0x0000000000000000ULL, /* 6251 */
++			0x0104200006000522ULL, /* 6252 */
++			0x0000000000000000ULL, /* 6253 */
++			0x01080c37830b8520ULL, /* 6254 */
++			0x050280800000053fULL, /* 6255 */
++			0x0000000000000000ULL, /* 6256 */
++			0x010400000000852fULL, /* 6257 */
++			0x0000000000000000ULL, /* 6258 */
++			0x0504210680000523ULL, /* 6259 */
++			0x0000000000000000ULL, /* 6260 */
++			0x010420000e000522ULL, /* 6261 */
++			0x0000000000000000ULL, /* 6262 */
++			0x01080c3c030b8520ULL, /* 6263 */
++			0x0504210680000523ULL, /* 6264 */
++			0x0000000000000000ULL, /* 6265 */
++			0x01080c3d830b8520ULL, /* 6266 */
++			0x0000000000000000ULL, /* 6267 */
++		},
++	},
++	{
++		.hook = 1893, .start = 6288, .count = 276,
++		.map_count = 16,
++		.map = {
++			{ 121, 0, 1 },
++			{ 130, 4, 1 },
++			{ 140, 2, 1 },
++			{ 149, 6, 1 },
++			{ 160, 1, 1 },
++			{ 169, 5, 1 },
++			{ 179, 3, 1 },
++			{ 188, 7, 1 },
++			{ 200, 0, 0 },
++			{ 209, 4, 0 },
++			{ 219, 2, 0 },
++			{ 228, 6, 0 },
++			{ 239, 1, 0 },
++			{ 248, 5, 0 },
++			{ 258, 3, 0 },
++			{ 267, 7, 0 },
++		},
++		.inst = {
++			0x01080c488c492880ULL, /* 6288 */
++			0x01080ccf0c492860ULL, /* 6289 */
++			0x01080c498ccf2aa0ULL, /* 6290 */
++			0x01080c4a0c4aa8a0ULL, /* 6291 */
++			0x01080ccf0c4aa8c0ULL, /* 6292 */
++			0x0601a092148000e7ULL, /* 6293 */
++			0x0000000000000000ULL, /* 6294 */
++			0x06018090148000e7ULL, /* 6295 */
++			0x0000000000000000ULL, /* 6296 */
++			0x01080c4d0c5da860ULL, /* 6297 */
++			0x0700800028180523ULL, /* 6298 */
++			0x0000000000000000ULL, /* 6299 */
++			0x0704000028200523ULL, /* 6300 */
++			0x0000000000000000ULL, /* 6301 */
++			0x06208010100003ffULL, /* 6302 */
++			0x0000000000000000ULL, /* 6303 */
++			0x0704000008000523ULL, /* 6304 */
++			0x0000000000000000ULL, /* 6305 */
++			0x06208010100003ffULL, /* 6306 */
++			0x0000000000000000ULL, /* 6307 */
++			0x0704000028120520ULL, /* 6308 */
++			0x0000000000000000ULL, /* 6309 */
++			0x0504008000008527ULL, /* 6310 */
++			0x0000000000000000ULL, /* 6311 */
++			0x06208010100003ffULL, /* 6312 */
++			0x0000000000000000ULL, /* 6313 */
++			0x050400140000852fULL, /* 6314 */
++			0x0000000000000000ULL, /* 6315 */
++			0x06208010100003ffULL, /* 6316 */
++			0x0000000000000000ULL, /* 6317 */
++			0x0504001200008537ULL, /* 6318 */
++			0x0000000000000000ULL, /* 6319 */
++			0x06208010100003ffULL, /* 6320 */
++			0x0000000000000000ULL, /* 6321 */
++			0x050400110000853bULL, /* 6322 */
++			0x0000000000000000ULL, /* 6323 */
++			0x06208010100003ffULL, /* 6324 */
++			0x0000000000000000ULL, /* 6325 */
++			0x05040010c000853cULL, /* 6326 */
++			0x0000000000000000ULL, /* 6327 */
++			0x06208010100003ffULL, /* 6328 */
++			0x0000000000000000ULL, /* 6329 */
++			0x01080c5d8c7b8520ULL, /* 6330 */
++			0x0700800028100523ULL, /* 6331 */
++			0x0000000000000000ULL, /* 6332 */
++			0x0704000028180523ULL, /* 6333 */
++			0x0000000000000000ULL, /* 6334 */
++			0x06208010100003ffULL, /* 6335 */
++			0x0000000000000000ULL, /* 6336 */
++			0x0704000028200523ULL, /* 6337 */
++			0x0000000000000000ULL, /* 6338 */
++			0x06208010100003ffULL, /* 6339 */
++			0x0000000000000000ULL, /* 6340 */
++			0x0704000028280523ULL, /* 6341 */
++			0x0000000000000000ULL, /* 6342 */
++			0x06208010100003ffULL, /* 6343 */
++			0x0000000000000000ULL, /* 6344 */
++			0x0704000028300523ULL, /* 6345 */
++			0x0000000000000000ULL, /* 6346 */
++			0x06208010100003ffULL, /* 6347 */
++			0x0000000000000000ULL, /* 6348 */
++			0x0704000028380523ULL, /* 6349 */
++			0x0000000000000000ULL, /* 6350 */
++			0x06208010100003ffULL, /* 6351 */
++			0x0000000000000000ULL, /* 6352 */
++			0x0704000028400523ULL, /* 6353 */
++			0x0000000000000000ULL, /* 6354 */
++			0x06208010100003ffULL, /* 6355 */
++			0x0000000000000000ULL, /* 6356 */
++			0x0704000028480523ULL, /* 6357 */
++			0x0000000000000000ULL, /* 6358 */
++			0x06208010100003ffULL, /* 6359 */
++			0x0000000000000000ULL, /* 6360 */
++			0x0704000008000523ULL, /* 6361 */
++			0x0000000000000000ULL, /* 6362 */
++			0x06208010100003ffULL, /* 6363 */
++			0x0000000000000000ULL, /* 6364 */
++			0x01080c708c6f28a0ULL, /* 6365 */
++			0x010400002200852fULL, /* 6366 */
++			0x0000000000000000ULL, /* 6367 */
++			0x01080c708c718520ULL, /* 6368 */
++			0x010400000c00852fULL, /* 6369 */
++			0x0000000000000000ULL, /* 6370 */
++			0x0504008000008527ULL, /* 6371 */
++			0x0000000000000000ULL, /* 6372 */
++			0x06208010100003ffULL, /* 6373 */
++			0x0000000000000000ULL, /* 6374 */
++			0x050400140000852fULL, /* 6375 */
++			0x0000000000000000ULL, /* 6376 */
++			0x06208010100003ffULL, /* 6377 */
++			0x0000000000000000ULL, /* 6378 */
++			0x0504001200008537ULL, /* 6379 */
++			0x0000000000000000ULL, /* 6380 */
++			0x06208010100003ffULL, /* 6381 */
++			0x0000000000000000ULL, /* 6382 */
++			0x050400110000853bULL, /* 6383 */
++			0x0000000000000000ULL, /* 6384 */
++			0x06208010100003ffULL, /* 6385 */
++			0x0000000000000000ULL, /* 6386 */
++			0x05040010c000853cULL, /* 6387 */
++			0x0000000000000000ULL, /* 6388 */
++			0x06208010100003ffULL, /* 6389 */
++			0x0000000000000000ULL, /* 6390 */
++			0x050180a400008527ULL, /* 6391 */
++			0x0000000000000000ULL, /* 6392 */
++			0x050400500000053fULL, /* 6393 */
++			0x0000000000000000ULL, /* 6394 */
++			0x0502881000000522ULL, /* 6395 */
++			0x0000000000000000ULL, /* 6396 */
++			0x0502870740000520ULL, /* 6397 */
++			0x0000000000000000ULL, /* 6398 */
++			0x01080c800ca7a860ULL, /* 6399 */
++			0x01080c808c942880ULL, /* 6400 */
++			0x01080c810c8aa8a0ULL, /* 6401 */
++			0x01080c818c8628c0ULL, /* 6402 */
++			0x050280800000053fULL, /* 6403 */
++			0x0000000000000000ULL, /* 6404 */
++			0x010400000000852fULL, /* 6405 */
++			0x0000000000000000ULL, /* 6406 */
++			0x0504210680000523ULL, /* 6407 */
++			0x0000000000000000ULL, /* 6408 */
++			0x0104200000000522ULL, /* 6409 */
++			0x0000000000000000ULL, /* 6410 */
++			0x01080c8603b30520ULL, /* 6411 */
++			0x050280800000053fULL, /* 6412 */
++			0x0000000000000000ULL, /* 6413 */
++			0x010400000000852fULL, /* 6414 */
++			0x0000000000000000ULL, /* 6415 */
++			0x0504210680000523ULL, /* 6416 */
++			0x0000000000000000ULL, /* 6417 */
++			0x0104200008000522ULL, /* 6418 */
++			0x0000000000000000ULL, /* 6419 */
++			0x01080c8a83b30520ULL, /* 6420 */
++			0x01080c8b0c8fa8c0ULL, /* 6421 */
++			0x050280800000053fULL, /* 6422 */
++			0x0000000000000000ULL, /* 6423 */
++			0x010400000000852fULL, /* 6424 */
++			0x0000000000000000ULL, /* 6425 */
++			0x0504210680000523ULL, /* 6426 */
++			0x0000000000000000ULL, /* 6427 */
++			0x0104200004000522ULL, /* 6428 */
++			0x0000000000000000ULL, /* 6429 */
++			0x01080c8f83b30520ULL, /* 6430 */
++			0x050280800000053fULL, /* 6431 */
++			0x0000000000000000ULL, /* 6432 */
++			0x010400000000852fULL, /* 6433 */
++			0x0000000000000000ULL, /* 6434 */
++			0x0504210680000523ULL, /* 6435 */
++			0x0000000000000000ULL, /* 6436 */
++			0x010420000c000522ULL, /* 6437 */
++			0x0000000000000000ULL, /* 6438 */
++			0x01080c9403b30520ULL, /* 6439 */
++			0x01080c948c9e28a0ULL, /* 6440 */
++			0x01080c950c99a8c0ULL, /* 6441 */
++			0x050280800000053fULL, /* 6442 */
++			0x0000000000000000ULL, /* 6443 */
++			0x010400000000852fULL, /* 6444 */
++			0x0000000000000000ULL, /* 6445 */
++			0x0504210680000523ULL, /* 6446 */
++			0x0000000000000000ULL, /* 6447 */
++			0x0104200002000522ULL, /* 6448 */
++			0x0000000000000000ULL, /* 6449 */
++			0x01080c9983b30520ULL, /* 6450 */
++			0x050280800000053fULL, /* 6451 */
++			0x0000000000000000ULL, /* 6452 */
++			0x010400000000852fULL, /* 6453 */
++			0x0000000000000000ULL, /* 6454 */
++			0x0504210680000523ULL, /* 6455 */
++			0x0000000000000000ULL, /* 6456 */
++			0x010420000a000522ULL, /* 6457 */
++			0x0000000000000000ULL, /* 6458 */
++			0x01080c9e03b30520ULL, /* 6459 */
++			0x01080c9e8ca328c0ULL, /* 6460 */
++			0x050280800000053fULL, /* 6461 */
++			0x0000000000000000ULL, /* 6462 */
++			0x010400000000852fULL, /* 6463 */
++			0x0000000000000000ULL, /* 6464 */
++			0x0504210680000523ULL, /* 6465 */
++			0x0000000000000000ULL, /* 6466 */
++			0x0104200006000522ULL, /* 6467 */
++			0x0000000000000000ULL, /* 6468 */
++			0x01080ca303b30520ULL, /* 6469 */
++			0x050280800000053fULL, /* 6470 */
++			0x0000000000000000ULL, /* 6471 */
++			0x010400000000852fULL, /* 6472 */
++			0x0000000000000000ULL, /* 6473 */
++			0x0504210680000523ULL, /* 6474 */
++			0x0000000000000000ULL, /* 6475 */
++			0x010420000e000522ULL, /* 6476 */
++			0x0000000000000000ULL, /* 6477 */
++			0x01080ca783b30520ULL, /* 6478 */
++			0x01080ca80cbba880ULL, /* 6479 */
++			0x01080ca88cb228a0ULL, /* 6480 */
++			0x01080ca90cada8c0ULL, /* 6481 */
++			0x050280800000053fULL, /* 6482 */
++			0x0000000000000000ULL, /* 6483 */
++			0x010400000000852fULL, /* 6484 */
++			0x0000000000000000ULL, /* 6485 */
++			0x0504210680000523ULL, /* 6486 */
++			0x0000000000000000ULL, /* 6487 */
++			0x0104200000000522ULL, /* 6488 */
++			0x0000000000000000ULL, /* 6489 */
++			0x01080cad83b30520ULL, /* 6490 */
++			0x050280800000053fULL, /* 6491 */
++			0x0000000000000000ULL, /* 6492 */
++			0x010400000000852fULL, /* 6493 */
++			0x0000000000000000ULL, /* 6494 */
++			0x0504210680000523ULL, /* 6495 */
++			0x0000000000000000ULL, /* 6496 */
++			0x0104200008000522ULL, /* 6497 */
++			0x0000000000000000ULL, /* 6498 */
++			0x01080cb203b30520ULL, /* 6499 */
++			0x01080cb28cb728c0ULL, /* 6500 */
++			0x050280800000053fULL, /* 6501 */
++			0x0000000000000000ULL, /* 6502 */
++			0x010400000000852fULL, /* 6503 */
++			0x0000000000000000ULL, /* 6504 */
++			0x0504210680000523ULL, /* 6505 */
++			0x0000000000000000ULL, /* 6506 */
++			0x0104200004000522ULL, /* 6507 */
++			0x0000000000000000ULL, /* 6508 */
++			0x01080cb703b30520ULL, /* 6509 */
++			0x050280800000053fULL, /* 6510 */
++			0x0000000000000000ULL, /* 6511 */
++			0x010400000000852fULL, /* 6512 */
++			0x0000000000000000ULL, /* 6513 */
++			0x0504210680000523ULL, /* 6514 */
++			0x0000000000000000ULL, /* 6515 */
++			0x010420000c000522ULL, /* 6516 */
++			0x0000000000000000ULL, /* 6517 */
++			0x01080cbb83b30520ULL, /* 6518 */
++			0x01080cbc0cc5a8a0ULL, /* 6519 */
++			0x01080cbc8cc128c0ULL, /* 6520 */
++			0x050280800000053fULL, /* 6521 */
++			0x0000000000000000ULL, /* 6522 */
++			0x010400000000852fULL, /* 6523 */
++			0x0000000000000000ULL, /* 6524 */
++			0x0504210680000523ULL, /* 6525 */
++			0x0000000000000000ULL, /* 6526 */
++			0x0104200002000522ULL, /* 6527 */
++			0x0000000000000000ULL, /* 6528 */
++			0x01080cc103b30520ULL, /* 6529 */
++			0x050280800000053fULL, /* 6530 */
++			0x0000000000000000ULL, /* 6531 */
++			0x010400000000852fULL, /* 6532 */
++			0x0000000000000000ULL, /* 6533 */
++			0x0504210680000523ULL, /* 6534 */
++			0x0000000000000000ULL, /* 6535 */
++			0x010420000a000522ULL, /* 6536 */
++			0x0000000000000000ULL, /* 6537 */
++			0x01080cc583b30520ULL, /* 6538 */
++			0x01080cc60ccaa8c0ULL, /* 6539 */
++			0x050280800000053fULL, /* 6540 */
++			0x0000000000000000ULL, /* 6541 */
++			0x010400000000852fULL, /* 6542 */
++			0x0000000000000000ULL, /* 6543 */
++			0x0504210680000523ULL, /* 6544 */
++			0x0000000000000000ULL, /* 6545 */
++			0x0104200006000522ULL, /* 6546 */
++			0x0000000000000000ULL, /* 6547 */
++			0x01080cca83b30520ULL, /* 6548 */
++			0x050280800000053fULL, /* 6549 */
++			0x0000000000000000ULL, /* 6550 */
++			0x010400000000852fULL, /* 6551 */
++			0x0000000000000000ULL, /* 6552 */
++			0x0504210680000523ULL, /* 6553 */
++			0x0000000000000000ULL, /* 6554 */
++			0x010420000e000522ULL, /* 6555 */
++			0x0000000000000000ULL, /* 6556 */
++			0x01080ccf03b30520ULL, /* 6557 */
++			0x0504210680000523ULL, /* 6558 */
++			0x0000000000000000ULL, /* 6559 */
++			0x01080cd083b30520ULL, /* 6560 */
++			0x0000000000000000ULL, /* 6561 */
++			0x0000000000000000ULL, /* 6562 */
++			0x0000000000000000ULL, /* 6563 */
++		},
++	},
++	{
++		.hook = 2216, .start = 6592, .count = 172,
++		.inst = {
++			0x01080ce08ce12880ULL, /* 6592 */
++			0x01080d2e8ce12860ULL, /* 6593 */
++			0x01080ce18d2eaaa0ULL, /* 6594 */
++			0x01080ce20ce2a8a0ULL, /* 6595 */
++			0x01080d2e8ce2a8c0ULL, /* 6596 */
++			0x040000f80000069bULL, /* 6597 */
++			0x0000000000000000ULL, /* 6598 */
++			0x0507c0800000053fULL, /* 6599 */
++			0x0000000000000000ULL, /* 6600 */
++			0x050080500000053fULL, /* 6601 */
++			0x0000000000000000ULL, /* 6602 */
++			0x050280900000852fULL, /* 6603 */
++			0x0000000000000000ULL, /* 6604 */
++			0x01080ce70ceaa900ULL, /* 6605 */
++			0x01080ce78ceaa920ULL, /* 6606 */
++			0x01080ce80ceaa940ULL, /* 6607 */
++			0x01080ce88ceaa960ULL, /* 6608 */
++			0x01080ce90ceaa980ULL, /* 6609 */
++			0x01080ce98ceaa9a0ULL, /* 6610 */
++			0x01080cea0ceaa9c0ULL, /* 6611 */
++			0x01080cf00ceaa9e0ULL, /* 6612 */
++			0x01080ceb0ceea800ULL, /* 6613 */
++			0x01080ceb8ceea820ULL, /* 6614 */
++			0x01080cec0ceea840ULL, /* 6615 */
++			0x01080cec8ceea860ULL, /* 6616 */
++			0x01080ced0ceea880ULL, /* 6617 */
++			0x01080ced8ceea8a0ULL, /* 6618 */
++			0x01080cee0ceea8c0ULL, /* 6619 */
++			0x01080cf00ceea8e0ULL, /* 6620 */
++			0x050280100000053fULL, /* 6621 */
++			0x0000000000000000ULL, /* 6622 */
++			0x01080cf00cf38520ULL, /* 6623 */
++			0x050280100000053fULL, /* 6624 */
++			0x0000000000000000ULL, /* 6625 */
++			0x050400f80000053fULL, /* 6626 */
++			0x0000000000000000ULL, /* 6627 */
++			0x0707c00018680523ULL, /* 6628 */
++			0x0000000000000000ULL, /* 6629 */
++			0x01080cf38d2e8520ULL, /* 6630 */
++			0x0601a092148000e7ULL, /* 6631 */
++			0x0000000000000000ULL, /* 6632 */
++			0x06018090148000e7ULL, /* 6633 */
++			0x0000000000000000ULL, /* 6634 */
++			0x01080cf60d06a860ULL, /* 6635 */
++			0x0700800028180523ULL, /* 6636 */
++			0x0000000000000000ULL, /* 6637 */
++			0x0704000028200523ULL, /* 6638 */
++			0x0000000000000000ULL, /* 6639 */
++			0x06208010100003ffULL, /* 6640 */
++			0x0000000000000000ULL, /* 6641 */
++			0x0704000008000523ULL, /* 6642 */
++			0x0000000000000000ULL, /* 6643 */
++			0x06208010100003ffULL, /* 6644 */
++			0x0000000000000000ULL, /* 6645 */
++			0x0704000028120520ULL, /* 6646 */
++			0x0000000000000000ULL, /* 6647 */
++			0x0504008000008527ULL, /* 6648 */
++			0x0000000000000000ULL, /* 6649 */
++			0x06208010100003ffULL, /* 6650 */
++			0x0000000000000000ULL, /* 6651 */
++			0x050400140000852fULL, /* 6652 */
++			0x0000000000000000ULL, /* 6653 */
++			0x06208010100003ffULL, /* 6654 */
++			0x0000000000000000ULL, /* 6655 */
++			0x0504001200008537ULL, /* 6656 */
++			0x0000000000000000ULL, /* 6657 */
++			0x06208010100003ffULL, /* 6658 */
++			0x0000000000000000ULL, /* 6659 */
++			0x050400110000853bULL, /* 6660 */
++			0x0000000000000000ULL, /* 6661 */
++			0x06208010100003ffULL, /* 6662 */
++			0x0000000000000000ULL, /* 6663 */
++			0x05040010c000853cULL, /* 6664 */
++			0x0000000000000000ULL, /* 6665 */
++			0x06208010100003ffULL, /* 6666 */
++			0x0000000000000000ULL, /* 6667 */
++			0x01080d068d248520ULL, /* 6668 */
++			0x0700800028100523ULL, /* 6669 */
++			0x0000000000000000ULL, /* 6670 */
++			0x0704000028180523ULL, /* 6671 */
++			0x0000000000000000ULL, /* 6672 */
++			0x06208010100003ffULL, /* 6673 */
++			0x0000000000000000ULL, /* 6674 */
++			0x0704000028200523ULL, /* 6675 */
++			0x0000000000000000ULL, /* 6676 */
++			0x06208010100003ffULL, /* 6677 */
++			0x0000000000000000ULL, /* 6678 */
++			0x0704000028280523ULL, /* 6679 */
++			0x0000000000000000ULL, /* 6680 */
++			0x06208010100003ffULL, /* 6681 */
++			0x0000000000000000ULL, /* 6682 */
++			0x0704000028300523ULL, /* 6683 */
++			0x0000000000000000ULL, /* 6684 */
++			0x06208010100003ffULL, /* 6685 */
++			0x0000000000000000ULL, /* 6686 */
++			0x0704000028380523ULL, /* 6687 */
++			0x0000000000000000ULL, /* 6688 */
++			0x06208010100003ffULL, /* 6689 */
++			0x0000000000000000ULL, /* 6690 */
++			0x0704000028400523ULL, /* 6691 */
++			0x0000000000000000ULL, /* 6692 */
++			0x06208010100003ffULL, /* 6693 */
++			0x0000000000000000ULL, /* 6694 */
++			0x0704000028480523ULL, /* 6695 */
++			0x0000000000000000ULL, /* 6696 */
++			0x06208010100003ffULL, /* 6697 */
++			0x0000000000000000ULL, /* 6698 */
++			0x0704000008000523ULL, /* 6699 */
++			0x0000000000000000ULL, /* 6700 */
++			0x06208010100003ffULL, /* 6701 */
++			0x0000000000000000ULL, /* 6702 */
++			0x01080d198d1828a0ULL, /* 6703 */
++			0x010400002200852fULL, /* 6704 */
++			0x0000000000000000ULL, /* 6705 */
++			0x01080d198d1a8520ULL, /* 6706 */
++			0x010400000c00852fULL, /* 6707 */
++			0x0000000000000000ULL, /* 6708 */
++			0x0504008000008527ULL, /* 6709 */
++			0x0000000000000000ULL, /* 6710 */
++			0x06208010100003ffULL, /* 6711 */
++			0x0000000000000000ULL, /* 6712 */
++			0x050400140000852fULL, /* 6713 */
++			0x0000000000000000ULL, /* 6714 */
++			0x06208010100003ffULL, /* 6715 */
++			0x0000000000000000ULL, /* 6716 */
++			0x0504001200008537ULL, /* 6717 */
++			0x0000000000000000ULL, /* 6718 */
++			0x06208010100003ffULL, /* 6719 */
++			0x0000000000000000ULL, /* 6720 */
++			0x050400110000853bULL, /* 6721 */
++			0x0000000000000000ULL, /* 6722 */
++			0x06208010100003ffULL, /* 6723 */
++			0x0000000000000000ULL, /* 6724 */
++			0x05040010c000853cULL, /* 6725 */
++			0x0000000000000000ULL, /* 6726 */
++			0x06208010100003ffULL, /* 6727 */
++			0x0000000000000000ULL, /* 6728 */
++			0x050400f80000053fULL, /* 6729 */
++			0x0000000000000000ULL, /* 6730 */
++			0x0707c00018680523ULL, /* 6731 */
++			0x0000000000000000ULL, /* 6732 */
++			0x040000100000069bULL, /* 6733 */
++			0x0000000000000000ULL, /* 6734 */
++			0x050080f80000053fULL, /* 6735 */
++			0x0000000000000000ULL, /* 6736 */
++			0x0707c00018600523ULL, /* 6737 */
++			0x0000000000000000ULL, /* 6738 */
++			0x0107fe0002000520ULL, /* 6739 */
++			0x0000000000000000ULL, /* 6740 */
++			0x040000f80000061bULL, /* 6741 */
++			0x0000000000000000ULL, /* 6742 */
++			0x0507c0100000053fULL, /* 6743 */
++			0x0000000000000000ULL, /* 6744 */
++			0x0700800018680523ULL, /* 6745 */
++			0x0000000000000000ULL, /* 6746 */
++			0x01100000088d3180ULL, /* 6747 */
++			0x0018000000000000ULL, /* 6748 */
++			0x050080f80000053fULL, /* 6749 */
++			0x0000000000000000ULL, /* 6750 */
++			0x0707c00018600523ULL, /* 6751 */
++			0x0000000000000000ULL, /* 6752 */
++			0x0107fe0000000520ULL, /* 6753 */
++			0x0000000000000000ULL, /* 6754 */
++			0x040000f80000061bULL, /* 6755 */
++			0x0000000000000000ULL, /* 6756 */
++			0x0507c0100000053fULL, /* 6757 */
++			0x0000000000000000ULL, /* 6758 */
++			0x01100000088d3180ULL, /* 6759 */
++			0x0018000000000000ULL, /* 6760 */
++			0x0000000000000000ULL, /* 6761 */
++			0x0000000000000000ULL, /* 6762 */
++			0x0000000000000000ULL, /* 6763 */
++		},
++	},
++};

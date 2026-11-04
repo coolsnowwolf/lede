@@ -1,0 +1,1318 @@
+Subject: [PATCH] net: zte: add the NP hardware rule API
+
+Implement rule submission, removal, counters and resource coordination
+for the separate flowtable translator.
+
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-offload-api.c
+@@ -0,0 +1,1310 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* NPPT supplier, optional client registration and hardware access boundary. */
++#include <linux/iopoll.h>
++#include <linux/bitmap.h>
++#include <linux/if_vlan.h>
++#include <linux/overflow.h>
++#include <linux/if_bridge.h>
++#include <linux/kref.h>
++#include <linux/ktime.h>
++#include <linux/rwsem.h>
++#include <linux/zte_nppt_offload.h>
++#include <net/dsa.h>
++#include <net/dsa_zx279133_rtl8372n.h>
++#include "zx279133.h"
++#include "zx279133-host.h"
++#include "zx279133-native.h"
++#include "zx279133-meter.h"
++
++#define ZX279133_SE_ALG_WR_DONE 0x50000
++#define ZX279133_SE_ALG_WR_CMD  0x50004
++#define ZX279133_SE_ALG_WR_DATA 0x50008
++#define ZX279133_SE_HASH_AGCLK BIT(2)
++#define ZX279133_DDR_BUCKET_SHIFT 6
++#define ZX279133_DDR_BUCKET_SIZE BIT(ZX279133_DDR_BUCKET_SHIFT)
++
++struct zte_nppt_vlan {
++	struct list_head node;
++	u16 vid;
++	u32 users;
++	bool poisoned;
++	struct zte_nppt_vlan_row original;
++	struct zte_nppt_vlan_row programmed;
++};
++
++struct zte_nppt {
++	struct kref ref;
++	struct list_head list;
++	/* Serializes external transactions against supplier destruction. */
++	struct mutex access;
++	struct rw_semaphore driver_lock;
++	struct zx279133_eth *eth;
++	struct device *dev;
++	const struct zte_nppt_client_ops *ops;
++	void *client;
++	struct zx279133_host_manager *hosts;
++	struct zx279133_meter_pool *meters;
++	struct list_head vlans;
++	/* Configuration admission survives flow retirement and hardware reset. */
++	DECLARE_BITMAP(configured_vlans, VLAN_N_VID);
++	struct zte_nppt_vlan_row *vlan_originals;
++	bool vlan_config_uncertain;
++	u32 vlan_rows, vlan_users, vlan_uncertain;
++	u64 generation;
++};
++
++static DEFINE_MUTEX(zte_nppt_devices_lock);
++static LIST_HEAD(zte_nppt_devices);
++/* Failed hardware invalidation survives supplier unbind/reprobe. */
++static LIST_HEAD(zte_nppt_quarantined);
++static const struct zte_nppt_client_ops *zte_nppt_client;
++
++static void zte_nppt_release(struct kref *ref)
++{
++	struct zte_nppt *np = container_of(ref, struct zte_nppt, ref);
++
++	WARN_ON(!list_empty(&np->vlans));
++	kfree(np->vlan_originals);
++	if (np->hosts)
++		zx279133_hosts_destroy(np->hosts);
++	zx279133_meter_destroy(np->meters);
++	put_device(np->dev);
++	kfree(np);
++}
++
++void zte_nppt_get(struct zte_nppt *np)
++{
++	kref_get(&np->ref);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_get);
++
++void zte_nppt_put(struct zte_nppt *np)
++{
++	kref_put(&np->ref, zte_nppt_release);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_put);
++
++int zte_nppt_begin(struct zte_nppt *np)
++{
++	mutex_lock(&np->access);
++	if (!np->eth) {
++		mutex_unlock(&np->access);
++		return -ENODEV;
++	}
++	mutex_lock(&np->eth->datapath_lock);
++	if (!np->eth->hardware_prepared) {
++		mutex_unlock(&np->eth->datapath_lock);
++		mutex_unlock(&np->access);
++		return -ENETDOWN;
++	}
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_begin);
++
++/* Debugfs removal can run under datapath_lock: never wait on it in show(). */
++int zte_nppt_try_begin(struct zte_nppt *np)
++{
++	if (!mutex_trylock(&np->access))
++		return -EAGAIN;
++	if (!np->eth) {
++		mutex_unlock(&np->access);
++		return -ENODEV;
++	}
++	if (!mutex_trylock(&np->eth->datapath_lock)) {
++		mutex_unlock(&np->access);
++		return -EAGAIN;
++	}
++	if (!np->eth->hardware_prepared) {
++		mutex_unlock(&np->eth->datapath_lock);
++		mutex_unlock(&np->access);
++		return -ENETDOWN;
++	}
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_try_begin);
++
++void zte_nppt_end(struct zte_nppt *np)
++{
++	mutex_unlock(&np->eth->datapath_lock);
++	mutex_unlock(&np->access);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_end);
++
++void zte_nppt_get_info(struct zte_nppt *np, struct zte_nppt_info *info)
++{
++	*info = (struct zte_nppt_info) {
++		.api_version = ZTE_NPPT_API_VERSION,
++		.ikey_depth = ZTE_NPPT_FAST_IKEY_DEPTH,
++		.capabilities = ZTE_NPPT_CAP_ZCAM | ZTE_NPPT_CAP_DDR |
++				ZTE_NPPT_CAP_HOST_VID0 | ZTE_NPPT_CAP_WANID |
++				ZTE_NPPT_CAP_STATS | ZTE_NPPT_CAP_AGE |
++				ZTE_NPPT_CAP_PPU_MCODE |
++				(np->eth && READ_ONCE(np->eth->vid_key_active) ?
++				 ZTE_NPPT_CAP_LAN_VID_KEY : 0),
++		.ppu_version_major = np->eth ? np->eth->ppu_version_major : 0,
++		.ppu_version_minor = np->eth ? np->eth->ppu_version_minor : 0,
++		.ppu_version_valid = np->eth && np->eth->ppu_mcode_prepared &&
++				     np->eth->ppu_version_valid,
++		.stat_depth = ZX279133_FAST_STAT_DEPTH,
++		.age_depth = ZX279133_FAST_AGE_DEPTH,
++		.ddr_bytes = ZTE_NPPT_DDR_BYTES,
++		.generation = np->generation,
++		.ready = np->eth && np->eth->hardware_prepared,
++	};
++}
++EXPORT_SYMBOL_GPL(zte_nppt_get_info);
++
++/* Registry lock held. Callers serialize the supplier datapath, too. */
++static int zte_nppt_attach(struct zte_nppt *np,
++			   const struct zte_nppt_client_ops *ops)
++{
++	void *client;
++
++	down_write(&np->driver_lock);
++	client = ops->attach(np, np->dev);
++	if (!client)
++		client = ERR_PTR(-EINVAL);
++	if (!IS_ERR(client)) {
++		np->client = client;
++		np->ops = ops;
++	}
++	up_write(&np->driver_lock);
++	return PTR_ERR_OR_ZERO(client);
++}
++
++static int zte_nppt_detach(struct zte_nppt *np)
++{
++	int ret = 0;
++	int host_ret;
++
++	down_write(&np->driver_lock);
++	if (np->ops)
++		ret = np->ops->detach(np->client);
++	if (!ret && !list_empty(&np->vlans))
++		ret = -EBUSY;
++	host_ret = zx279133_hosts_reap(np->hosts, np->eth->hardware_prepared);
++	if (!ret)
++		ret = host_ret;
++	if (!ret)
++		ret = !np->eth->hardware_prepared && zx279133_meter_active(np->meters) ?
++			-EBUSY : zx279133_meter_drain(np->meters, np->eth);
++	np->ops = NULL;
++	np->client = NULL;
++	up_write(&np->driver_lock);
++	return ret;
++}
++
++int zte_nppt_register_client(const struct zte_nppt_client_ops *ops)
++{
++	struct zte_nppt *np;
++	int ret = 0;
++
++	if (!ops || !ops->attach || !ops->detach || !ops->setup_tc ||
++	    !ops->reset || !ops->active)
++		return -EINVAL;
++	mutex_lock(&zte_nppt_devices_lock);
++	if (zte_nppt_client) {
++		ret = -EBUSY;
++		goto out;
++	}
++	list_for_each_entry(np, &zte_nppt_devices, list) {
++		mutex_lock(&np->eth->datapath_lock);
++		ret = zte_nppt_attach(np, ops);
++		mutex_unlock(&np->eth->datapath_lock);
++		if (ret)
++			dev_warn(np->dev, "optional flow client attach failed: %d\n", ret);
++	}
++	zte_nppt_client = ops;
++	/* No failed module init after publishing callbacks to another device. */
++	ret = 0;
++out:
++	mutex_unlock(&zte_nppt_devices_lock);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_register_client);
++
++void zte_nppt_unregister_client(const struct zte_nppt_client_ops *ops)
++{
++	struct zte_nppt *np;
++
++	mutex_lock(&zte_nppt_devices_lock);
++	if (zte_nppt_client == ops) {
++		zte_nppt_client = NULL;
++		list_for_each_entry(np, &zte_nppt_devices, list) {
++			mutex_lock(&np->eth->datapath_lock);
++			zte_nppt_detach(np);
++			mutex_unlock(&np->eth->datapath_lock);
++		}
++	}
++	mutex_unlock(&zte_nppt_devices_lock);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_unregister_client);
++
++int zx279133_flow_offload_setup_tc(struct zx279133_eth *eth,
++				   struct net_device *ndev,
++				   enum tc_setup_type type, void *data)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	int ret = -EOPNOTSUPP;
++
++	if (type != TC_SETUP_FT && type != TC_SETUP_BLOCK)
++		return -EOPNOTSUPP;
++	mutex_lock(&eth->datapath_lock);
++	down_read(&np->driver_lock);
++	if (np->ops)
++		ret = np->ops->setup_tc(np->client, ndev, type, data);
++	up_read(&np->driver_lock);
++	mutex_unlock(&eth->datapath_lock);
++	return ret;
++}
++
++/* All hardware events are called with the supplier datapath lock held. */
++bool zx279133_flow_offload_active(struct zx279133_eth *eth)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	bool active = false;
++
++	if (!np)
++		return false;
++	down_read(&np->driver_lock);
++	if (np->ops)
++		active = np->ops->active(np->client);
++	active |= zx279133_hosts_active(np->hosts);
++	up_read(&np->driver_lock);
++	return active;
++}
++
++int zx279133_flow_offload_reset(struct zx279133_eth *eth)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	int ret = 0;
++	int host_ret;
++
++	if (!np)
++		return 0;
++	down_read(&np->driver_lock);
++	if (np->ops) {
++		/* Quarantined entries cannot be touched with supplier clocks off. */
++		if (!eth->hardware_prepared && np->ops->active(np->client))
++			ret = -EBUSY;
++		else
++			ret = np->ops->reset(np->client);
++	}
++	host_ret = zx279133_hosts_reap(np->hosts, eth->hardware_prepared);
++	if (!ret)
++		ret = host_ret;
++	if (!ret)
++		ret = !eth->hardware_prepared && zx279133_meter_active(np->meters) ?
++			-EBUSY : zx279133_meter_drain(np->meters, eth);
++	zx279133_hosts_reset_result(np->hosts, ret);
++	np->generation++;
++	up_read(&np->driver_lock);
++	return ret;
++}
++
++int zx279133_nppt_topology_reset(struct zte_nppt *np)
++{
++	struct zx279133_eth *eth;
++	int ret;
++
++	mutex_lock(&np->access);
++	eth = np->eth;
++	if (!eth) {
++		mutex_unlock(&np->access);
++		return -ENODEV;
++	}
++	mutex_lock(&eth->datapath_lock);
++	ret = zx279133_flow_offload_reset(eth);
++	/* Topology events may recreate MAC policy Hosts only after invalidation,
++	 * reaping and resource drain completed. Never from hardware shutdown.
++	 */
++	if (!ret && eth->hardware_prepared) {
++		down_read(&np->driver_lock);
++		if (np->ops && np->ops->resync)
++			np->ops->resync(np->client);
++		up_read(&np->driver_lock);
++	}
++	mutex_unlock(&eth->datapath_lock);
++	mutex_unlock(&np->access);
++	return ret;
++}
++
++int zte_nppt_flow_ready(struct zte_nppt *np)
++{
++	return zx279133_hosts_ready(np->hosts);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_flow_ready);
++
++int zte_nppt_zcam_alloc(struct zte_nppt *np, const u8 *key, u8 selector,
++			u8 *block, u8 *cell, u8 *addr)
++{
++	return zx279133_hosts_zcam_alloc(np->hosts, key, selector, block, cell, addr);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_zcam_alloc);
++
++void zte_nppt_zcam_release(struct zte_nppt *np, u8 block, u8 cell, u8 addr)
++{
++	zx279133_hosts_zcam_release(np->hosts, block, cell, addr);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_zcam_release);
++
++struct zte_nppt_host *zte_nppt_host_get(struct zte_nppt *np, const u8 *mac, u16 port)
++{
++	return zx279133_host_get(np->hosts, mac, port);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_host_get);
++
++int zte_nppt_host_put(struct zte_nppt *np, struct zte_nppt_host *host)
++{
++	return zx279133_host_put(np->hosts, host);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_host_put);
++
++void zx279133_flow_offload_flush(struct zx279133_eth *eth)
++{
++	/* Invalidate rules while clocks are still on, before releasing resources. */
++	if (zx279133_flow_offload_reset(eth))
++		dev_warn(eth->dev, "flow invalidation incomplete before hardware shutdown\n");
++}
++
++static int zx279133_flow_lan_vid(struct zx279133_eth *eth,
++				 struct net_device *dev, u16 *vid)
++{
++#if IS_REACHABLE(CONFIG_NET_DSA)
++	struct dsa_port *dp = dsa_port_from_netdev(dev);
++
++	if (IS_ERR(dp) || dsa_port_to_conduit(dp) != eth->lan_ndev ||
++	    dp->index < ZX279133_RTL8372N_USER_PORT_MIN ||
++	    dp->index > ZX279133_RTL8372N_USER_PORT_MAX)
++		return -EOPNOTSUPP;
++
++	*vid = ZX279133_RTL8372N_TRANSPORT_VID_BASE + dp->index;
++	return 0;
++#else
++	return -EOPNOTSUPP;
++#endif
++}
++
++/*
++ * Where a device is in the data path, and the port its frames leave by: the
++ * WAN port, or the transport VID of a LAN port. A LAN port switched to
++ * WAN-type, a second WAN, counts as WAN; 0 when a LAN device is not one port.
++ */
++static enum zx279133_flow_port
++zx279133_flow_dev_port(struct zx279133_eth *eth, struct net_device *dev,
++		       u16 *gemport)
++{
++	unsigned long wan_vports = READ_ONCE(eth->lan_wan_vports);
++	u16 vid = 0;
++
++	if (!dev)
++		return ZX279133_FLOW_PORT_NONE;
++	if (dev == eth->ndev) {
++		*gemport = zx279133_tx_port;
++		return ZX279133_FLOW_PORT_WAN;
++	}
++	if (!eth->lan_ndev ||
++	    (dev != eth->lan_ndev &&
++	     dev_get_iflink(dev) != eth->lan_ndev->ifindex))
++		return ZX279133_FLOW_PORT_NONE;
++	if (zx279133_flow_lan_vid(eth, dev, &vid))
++		vid = 0;
++	*gemport = vid;
++	if (vid && wan_vports & BIT(vid - ZX279133_LAN_TRANSPORT_VID_MIN))
++		return ZX279133_FLOW_PORT_WAN;
++	return ZX279133_FLOW_PORT_LAN;
++}
++
++enum zx279133_flow_port zte_nppt_dev_port(struct zte_nppt *np,
++					struct net_device *dev, u16 *port)
++{
++	return zx279133_flow_dev_port(np->eth, dev, port);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_dev_port);
++
++bool zte_nppt_is_wan(struct zte_nppt *np, struct net_device *dev)
++{
++	return dev == np->eth->ndev;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_is_wan);
++
++int zte_nppt_zcam_write(struct zte_nppt *np,
++			       u8 zblock, u8 zcell, u8 zaddr,
++			       const u32 *table, unsigned int words)
++{
++	struct zx279133_eth *eth = np->eth;
++	u32 agclk, cmd, status;
++	int i, ret;
++
++	if (zblock >= 4 || zcell >= 5 || !words || words > 16 || words % 4)
++		return -EINVAL;
++
++	agclk = readl(eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++	if (agclk & ZX279133_SE_HASH_AGCLK)
++		writel(agclk & ~ZX279133_SE_HASH_AGCLK,
++		       eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++
++	ret = readl_poll_timeout_atomic(eth->pps_base + ZX279133_SE_ALG_WR_DONE,
++					status, status & BIT(0), 1, 1000);
++	if (ret)
++		goto out_restore_clock;
++
++	for (i = 0; i < words; i++)
++		writel(table[i], eth->pps_base + ZX279133_SE_ALG_WR_DATA + 4 * i);
++
++	cmd = zaddr | (zblock >> 1) << 12 | (zblock & 1) << 11 |
++		zcell << 8 | ((BIT(words / 4) - 1) & 0xf) << 16;
++	writel(cmd, eth->pps_base + ZX279133_SE_ALG_WR_CMD);
++
++out_restore_clock:
++	if (agclk & ZX279133_SE_HASH_AGCLK)
++		writel(agclk, eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_zcam_write);
++
++int zte_nppt_ddr_write(struct zte_nppt *np, u32 bucket, const u32 *table)
++{
++	u8 ddr_table[ZX279133_DDR_BUCKET_SIZE];
++	u8 __iomem *dst;
++	const u8 *src = (const u8 *)table;
++	unsigned int i;
++
++	if (bucket >= ZTE_NPPT_DDR_BYTES / ZX279133_DDR_BUCKET_SIZE)
++		return -EINVAL;
++	dst = np->eth->se_hash_mem + (bucket << ZX279133_DDR_BUCKET_SHIFT);
++	for (i = 0; i < ARRAY_SIZE(ddr_table); i++)
++		ddr_table[i] = src[ARRAY_SIZE(ddr_table) - 1 - i];
++	ddr_table[0] &= ~BIT(7);
++	memcpy_toio(dst, ddr_table, sizeof(ddr_table));
++	/* Publish the complete body before making the table valid. */
++	wmb();
++	writeb(ddr_table[0] | BIT(7), dst);
++	/* Complete the valid-bit write before reporting the rule in hardware. */
++	wmb();
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ddr_write);
++
++int zte_nppt_ddr_clear(struct zte_nppt *np, u32 bucket)
++{
++	u8 __iomem *dst;
++
++	if (bucket >= ZTE_NPPT_DDR_BYTES / ZX279133_DDR_BUCKET_SIZE)
++		return -EINVAL;
++	dst = np->eth->se_hash_mem + (bucket << ZX279133_DDR_BUCKET_SHIFT);
++	writeb(0, dst);
++	/* Invalidate the table before clearing data that SE may still read. */
++	wmb();
++	memset_io(dst + 1, 0, ZX279133_DDR_BUCKET_SIZE - 1);
++	/* Complete the clear before returning the bucket to the allocator. */
++	wmb();
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ddr_clear);
++
++int zte_nppt_ikey_write(struct zte_nppt *np, u32 index, const u32 *data)
++{
++	return zx279133_fast_ikey_write(np->eth, index, data);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ikey_write);
++
++int zte_nppt_stats_read(struct zte_nppt *np, u16 id, u64 *packets, u64 *bytes)
++{
++	return zx279133_fast_stats_read(np->eth, id, packets, bytes);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_stats_read);
++
++int zte_nppt_age_read_clear(struct zte_nppt *np, u32 id, bool *used)
++{
++	return zx279133_fast_age_read_clear(np->eth, id, used);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_age_read_clear);
++
++int zte_nppt_wanid_get(struct zte_nppt *np, bool downstream,
++		       const struct zx279133_wanid_profile *profile, u8 *id)
++{
++	return zx279133_wanid_get(np->eth, downstream, profile, id);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_wanid_get);
++
++void zte_nppt_wanid_put(struct zte_nppt *np, u8 id, bool snat)
++{
++	zx279133_wanid_put(np->eth, id, snat);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_wanid_put);
++
++/* No registration/init callback uses these experimental policy operations. */
++static int zte_nppt_native_ready(struct zte_nppt *np)
++{
++	struct zx279133_eth *eth = np->eth;
++
++	if (!eth)
++		return -ENODEV;
++	lockdep_assert_held(&eth->datapath_lock);
++	return eth->hardware_prepared ? 0 : -ENETDOWN;
++}
++
++int zte_nppt_native_plcr_profile_get(struct zte_nppt *np,
++				     u8 id, struct zte_nppt_plcr_profile *profile)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_plcr_profile_get(np->eth, id, profile);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_profile_get);
++
++int zte_nppt_native_plcr_profile_set(struct zte_nppt *np,
++				     u8 id, const struct zte_nppt_plcr_profile *profile)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_meter_profile_busy(np->meters, id))
++		return -EBUSY;
++	return zx279133_native_plcr_profile_set(np->eth, id, profile);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_profile_set);
++
++int zte_nppt_native_plcr_binding_get(struct zte_nppt *np,
++				     u16 id, struct zte_nppt_plcr_binding *binding)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_plcr_binding_get(np->eth, id, binding);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_binding_get);
++
++int zte_nppt_native_plcr_binding_set(struct zte_nppt *np,
++				     u16 id, const struct zte_nppt_plcr_binding *binding)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_meter_binding_busy(np->meters, id) ||
++	    (binding && zx279133_meter_profile_busy(np->meters, binding->profile)))
++		return -EBUSY;
++	ret = zx279133_native_plcr_binding_set(np->eth, id, binding);
++	zx279133_meter_inventory_changed(np->meters);
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_binding_set);
++
++int zte_nppt_native_plcr_timing_get(struct zte_nppt *np,
++				    struct zte_nppt_plcr_timing *timing)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_plcr_timing_get(np->eth, timing);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_timing_get);
++
++int zte_nppt_shaper_set(struct zte_nppt *np, struct net_device *dev, u8 queue,
++			u64 owner, const struct zte_nppt_shaper_request *request)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_qos_set(np->eth, dev, queue, owner, request);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_shaper_set);
++
++int zte_nppt_shaper_clear(struct zte_nppt *np, struct net_device *dev, u8 queue,
++			  u64 owner)
++{
++	if (!np->eth)
++		return -ENODEV;
++	lockdep_assert_held(&np->eth->datapath_lock);
++	return zx279133_qos_clear(np->eth, dev, queue, owner);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_shaper_clear);
++
++int zte_nppt_shaper_status(struct zte_nppt *np, struct net_device *dev, u8 queue,
++			   struct zte_nppt_shaper_status *status)
++{
++	if (!np->eth)
++		return -ENODEV;
++	lockdep_assert_held(&np->eth->datapath_lock);
++	return zx279133_qos_status(np->eth, dev, queue, status);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_shaper_status);
++
++void zte_nppt_vlan_status(struct zte_nppt *np, u32 *rows, u32 *users,
++			  u32 *uncertain)
++{
++	/* Cached diagnostics, not an atomic cross-counter snapshot. */
++	*rows = READ_ONCE(np->vlan_rows);
++	*users = READ_ONCE(np->vlan_users);
++	*uncertain = READ_ONCE(np->vlan_uncertain);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_vlan_status);
++
++/* A configured VLAN must admit the first packet before any flow exists. */
++static const struct zte_nppt_vlan_row zx279133_vlan_board = {
++	.words = { 4290772992U, 65535, 4294967295U, 12291 },
++};
++
++static int zx279133_vlan_write_checked(struct zx279133_eth *eth, u16 vid,
++				       const struct zte_nppt_vlan_row *row)
++{
++	struct zte_nppt_vlan_row check;
++	int ret;
++
++	ret = zx279133_native_vlan_set(eth, vid, row);
++	if (ret)
++		return ret;
++	ret = zx279133_native_vlan_get(eth, vid, &check);
++	if (ret)
++		return ret;
++	return memcmp(&check, row, sizeof(check)) ? -EIO : 0;
++}
++
++static int zx279133_vlan_board_check(struct zx279133_eth *eth)
++{
++	struct zte_nppt_vlan_row row;
++	int ret;
++
++	ret = zx279133_native_vlan_get(eth, 0, &row);
++	if (ret)
++		return ret;
++	return memcmp(&row, &zx279133_vlan_board, sizeof(row)) ? -ESTALE : 0;
++}
++
++int zx279133_vlan_config_replay(struct zx279133_eth *eth)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	struct zte_nppt_vlan_row row;
++	unsigned long vid;
++	int ret;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (!np)
++		return 0;
++	if (np->vlan_config_uncertain)
++		return -EUCLEAN;
++	if (bitmap_empty(np->configured_vlans, VLAN_N_VID))
++		return 0;
++	ret = zx279133_vlan_board_check(eth);
++	if (ret)
++		return ret;
++	for_each_set_bit(vid, np->configured_vlans, VLAN_N_VID) {
++		ret = zx279133_native_vlan_get(eth, vid, &row);
++		if (ret)
++			return ret;
++		/* NP prepare cleared SDT0. Do not adopt another owner's row. */
++		if (memchr_inv(&row, 0, sizeof(row)) &&
++		    memcmp(&row, &zx279133_vlan_board, sizeof(row)))
++			return -EBUSY;
++		ret = zx279133_vlan_write_checked(eth, vid, &zx279133_vlan_board);
++		if (ret)
++			return ret;
++		/* An identical owned row can remain after a failed prepare. */
++		if (!memcmp(&row, &zx279133_vlan_board, sizeof(row)))
++			continue;
++		np->vlan_originals[vid] = row;
++	}
++	return 0;
++}
++
++static int zx279133_vlan_config_apply(struct zte_nppt *np,
++				      const unsigned long *vids)
++{
++	struct vlan_change {
++		u16 vid;
++		struct zte_nppt_vlan_row before, after;
++	} *changes;
++	DECLARE_BITMAP(changed, VLAN_N_VID);
++	struct zx279133_eth *eth = np->eth;
++	unsigned int count, n = 0, attempted = 0;
++	unsigned long vid;
++	int ret = 0;
++
++	if (np->vlan_config_uncertain)
++		return -EUCLEAN;
++	if (test_bit(0, vids) || test_bit(4095, vids))
++		return -EINVAL;
++	for (vid = ZX279133_LAN_TRANSPORT_VID_MIN;
++	     vid <= ZX279133_LAN_TRANSPORT_VID_MAX; vid++)
++		if (test_bit(vid, vids))
++			return -EBUSY;
++	bitmap_xor(changed, vids, np->configured_vlans, VLAN_N_VID);
++	count = bitmap_weight(changed, VLAN_N_VID);
++	if (!count)
++		return 0;
++	if (!np->vlan_originals) {
++		np->vlan_originals = kcalloc(VLAN_N_VID,
++					     sizeof(*np->vlan_originals), GFP_KERNEL);
++		if (!np->vlan_originals)
++			return -ENOMEM;
++	}
++	if (!eth->hardware_prepared) {
++		bitmap_copy(np->configured_vlans, vids, VLAN_N_VID);
++		return 0;
++	}
++	ret = zx279133_vlan_board_check(eth);
++	if (ret)
++		return ret;
++	changes = kvcalloc(count, sizeof(*changes), GFP_KERNEL);
++	if (!changes)
++		return -ENOMEM;
++	/* Configuration changes retire flows through their existing owner.
++	 * The admission bitmap itself is independent of those flow leases.
++	 */
++	ret = zx279133_flow_offload_reset(eth);
++	if (ret)
++		goto out;
++	if (!list_empty(&np->vlans)) {
++		ret = -EBUSY;
++		goto resync;
++	}
++	for_each_set_bit(vid, changed, VLAN_N_VID) {
++		struct vlan_change *c = &changes[n++];
++
++		c->vid = vid;
++		ret = zx279133_native_vlan_get(eth, vid, &c->before);
++		if (ret)
++			goto resync;
++		if (test_bit(vid, np->configured_vlans)) {
++			if (memcmp(&c->before, &zx279133_vlan_board, sizeof(c->before))) {
++				ret = -ESTALE;
++				goto resync;
++			}
++			c->after = np->vlan_originals[vid];
++		} else {
++			if (memchr_inv(&c->before, 0, sizeof(c->before))) {
++				ret = -EBUSY;
++				goto resync;
++			}
++			c->after = zx279133_vlan_board;
++		}
++	}
++	for (attempted = 0; attempted < count;) {
++		struct vlan_change *c = &changes[attempted++];
++
++		ret = zx279133_vlan_write_checked(eth, c->vid, &c->after);
++		if (ret)
++			goto restore;
++	}
++	for (n = 0; n < count; n++)
++		if (test_bit(changes[n].vid, vids))
++			np->vlan_originals[changes[n].vid] = changes[n].before;
++	bitmap_copy(np->configured_vlans, vids, VLAN_N_VID);
++	goto resync;
++restore:
++	/* Include the failed write, which may have partially reached hardware. */
++	while (attempted) {
++		struct vlan_change *c = &changes[--attempted];
++
++		if (zx279133_vlan_write_checked(eth, c->vid, &c->before))
++			np->vlan_config_uncertain = true;
++	}
++	if (np->vlan_config_uncertain)
++		ret = -EUCLEAN;
++resync:
++	/* Recreate existing MAC QoS only after the flow invalidation above. */
++	down_read(&np->driver_lock);
++	if (np->ops && np->ops->resync)
++		np->ops->resync(np->client);
++	up_read(&np->driver_lock);
++out:
++	kvfree(changes);
++	return ret;
++}
++
++int zx279133_vlan_config_sync(struct zx279133_eth *eth,
++			      const unsigned long *vids)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	int ret;
++
++	if (!np)
++		return -ENODEV;
++	/* LAN callers must release the switch MDIO lock before this boundary. */
++	mutex_lock(&np->access);
++	mutex_lock(&eth->datapath_lock);
++	ret = zx279133_vlan_config_apply(np, vids);
++	mutex_unlock(&eth->datapath_lock);
++	mutex_unlock(&np->access);
++	return ret;
++}
++
++/* SDT0 leases are supplier-owned. No FFE table or background worker. */
++static struct zte_nppt_vlan *zte_nppt_vlan_find(struct zte_nppt *np, u16 vid)
++{
++	struct zte_nppt_vlan *v;
++
++	list_for_each_entry(v, &np->vlans, node)
++		if (v->vid == vid)
++			return v;
++	return NULL;
++}
++
++struct zte_nppt_vlan *zte_nppt_vlan_get(struct zte_nppt *np, u16 vid)
++{
++	/* Board VID0 words observed and packet-tested in R12/R16. */
++	static const struct zte_nppt_vlan_row board = {
++		.words = { 4290772992U, 65535, 4294967295U, 12291 },
++	};
++	struct zte_nppt_vlan_row base, check;
++	struct zte_nppt_vlan *v;
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ERR_PTR(ret);
++	if (!np->eth->vid_key_active || !vid || vid >= 4095)
++		return ERR_PTR(-EOPNOTSUPP);
++	if (np->vlan_config_uncertain)
++		return ERR_PTR(-EUCLEAN);
++	v = zte_nppt_vlan_find(np, vid);
++	if (v) {
++		if (v->poisoned || v->users == U32_MAX)
++			return ERR_PTR(-EBUSY);
++		v->users++;
++		np->vlan_users++;
++		return v;
++	}
++	v = kzalloc(sizeof(*v), GFP_KERNEL);
++	if (!v)
++		return ERR_PTR(-ENOMEM);
++	v->vid = vid;
++	ret = zx279133_native_vlan_get(np->eth, 0, &base);
++	if (ret)
++		goto fail;
++	if (memcmp(&base, &board, sizeof(base))) {
++		ret = -ESTALE;
++		goto fail;
++	}
++	ret = zx279133_native_vlan_get(np->eth, vid, &v->original);
++	if (ret)
++		goto fail;
++	/* A configured CPU admission row is owned by this same supplier. */
++	if (test_bit(vid, np->configured_vlans)) {
++		if (memcmp(&v->original, &base, sizeof(base))) {
++			ret = -ESTALE;
++			goto fail;
++		}
++		v->original = np->vlan_originals[vid];
++		v->programmed = base;
++		goto acquired;
++	}
++	/* Do not adopt or overwrite a row configured by another consumer. */
++	if (memchr_inv(&v->original, 0, sizeof(v->original))) {
++		ret = -EBUSY;
++		goto fail;
++	}
++	v->programmed = base;
++	ret = zx279133_native_vlan_set(np->eth, vid, &v->programmed);
++	if (!ret) {
++		ret = zx279133_native_vlan_get(np->eth, vid, &check);
++		if (!ret && memcmp(&check, &v->programmed, sizeof(check)))
++			ret = -EIO;
++	}
++	if (ret) {
++		/* A failed write may be partial; quarantine a failed compensation. */
++		if (zx279133_native_vlan_set(np->eth, vid, &v->original) ||
++		    zx279133_native_vlan_get(np->eth, vid, &check) ||
++		    memcmp(&check, &v->original, sizeof(check))) {
++			v->poisoned = true;
++			np->vlan_rows++;
++			np->vlan_uncertain++;
++			list_add_tail(&v->node, &np->vlans);
++			return ERR_PTR(-EIO);
++		}
++		goto fail;
++	}
++acquired:
++	v->users = 1;
++	np->vlan_rows++;
++	np->vlan_users++;
++	list_add_tail(&v->node, &np->vlans);
++	return v;
++fail:
++	kfree(v);
++	return ERR_PTR(ret);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_vlan_get);
++
++int zte_nppt_vlan_put(struct zte_nppt *np, struct zte_nppt_vlan *v)
++{
++	struct zte_nppt_vlan_row check;
++	int ret;
++
++	if (!v)
++		return 0;
++	if (zte_nppt_vlan_find(np, v->vid) != v)
++		return -EINVAL;
++	if (!v->users)
++		return -EIO;
++	if (v->users > 1) {
++		v->users--;
++		np->vlan_users--;
++		return 0;
++	}
++	/* Removing the last flow must not remove the first-packet admission. */
++	if (test_bit(v->vid, np->configured_vlans))
++		goto released;
++	ret = zte_nppt_native_ready(np);
++	if (ret)
++		goto uncertain;
++	ret = zx279133_native_vlan_get(np->eth, v->vid, &check);
++	if (ret)
++		goto uncertain;
++	/* Preserve unknown external changes; never blindly zero a changed row. */
++	if (memcmp(&check, &v->programmed, sizeof(check)) &&
++	    memcmp(&check, &v->original, sizeof(check))) {
++		ret = -ESTALE;
++		goto uncertain;
++	}
++	ret = zx279133_native_vlan_set(np->eth, v->vid, &v->original);
++	if (ret)
++		goto uncertain;
++	ret = zx279133_native_vlan_get(np->eth, v->vid, &check);
++	if (ret || memcmp(&check, &v->original, sizeof(check))) {
++		ret = ret ?: -EIO;
++		goto uncertain;
++	}
++released:
++	if (v->poisoned)
++		np->vlan_uncertain--;
++	list_del(&v->node);
++	np->vlan_rows--;
++	np->vlan_users--;
++	kfree(v);
++	return 0;
++uncertain:
++	/* Do not lend a row again after a failed/partial last-user restore. */
++	if (!v->poisoned) {
++		v->poisoned = true;
++		np->vlan_uncertain++;
++	}
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_vlan_put);
++
++void zte_nppt_vlan_abandon(struct zte_nppt *np, struct zte_nppt_vlan *v)
++{
++	/* Failed install cleanup has no flow cookie; supplier retains ownership. */
++	if (v && zte_nppt_vlan_find(np, v->vid) == v) {
++		np->vlan_users -= v->users;
++		if (!v->poisoned)
++			np->vlan_uncertain++;
++		v->users = 0;
++		v->poisoned = true;
++	}
++}
++EXPORT_SYMBOL_GPL(zte_nppt_vlan_abandon);
++
++static struct zx279133_eth *zx279133_wan_ports_eth(struct device *dev)
++{
++	struct zx279133_lan_service *service = dev_get_drvdata(dev);
++
++	return service ? container_of(service, struct zx279133_eth,
++				      lan_service) : NULL;
++}
++
++/* Cached metadata only; this read performs no register/table accesses. */
++static ssize_t offload_info_show(struct device *dev,
++				 struct device_attribute *attr, char *buf)
++{
++	struct zx279133_eth *eth = zx279133_wan_ports_eth(dev);
++	struct zte_nppt_info info;
++	struct zte_nppt *np;
++
++	if (!eth || !eth->flow_offload)
++		return -ENODEV;
++	np = eth->flow_offload;
++	mutex_lock(&np->access);
++	mutex_lock(&eth->datapath_lock);
++	zte_nppt_get_info(np, &info);
++	mutex_unlock(&eth->datapath_lock);
++	mutex_unlock(&np->access);
++	return sysfs_emit(buf,
++			  "api=%u ready=%u generation=%llu capabilities=%#llx ikey_depth=%u stat_depth=%u age_depth=%u ddr_bytes=%u ppu_version_valid=%u ppu_version=%#x.%#x hardware_revision_valid=%u write_completion_verified=%u\n",
++			  info.api_version, info.ready, info.generation, info.capabilities,
++			  info.ikey_depth, info.stat_depth, info.age_depth, info.ddr_bytes,
++			  info.ppu_version_valid, info.ppu_version_major,
++			  info.ppu_version_minor, info.hardware_revision_valid,
++			  info.write_completion_verified);
++}
++static DEVICE_ATTR_RO(offload_info);
++
++/*
++ * wan_ports: the LAN ports switched to WAN-type, by name. Writing
++ * "<port> 1" switches one, "<port> 0" switches it back; userspace does it
++ * for the ports its firewall puts in a WAN zone.
++ */
++static ssize_t wan_ports_show(struct device *dev,
++			      struct device_attribute *attr, char *buf)
++{
++	struct zx279133_eth *eth = zx279133_wan_ports_eth(dev);
++	unsigned long wan_vports;
++	struct net_device *ndev;
++	int n = 0;
++	u16 vid;
++
++	if (!eth)
++		return -ENODEV;
++	wan_vports = READ_ONCE(eth->lan_wan_vports);
++	rcu_read_lock();
++	for_each_netdev_rcu(&init_net, ndev)
++		if (!zx279133_flow_lan_vid(eth, ndev, &vid) &&
++		    wan_vports & BIT(vid - ZX279133_LAN_TRANSPORT_VID_MIN))
++			n += sysfs_emit_at(buf, n, "%s ", ndev->name);
++	rcu_read_unlock();
++	n += sysfs_emit_at(buf, n, "\n");
++
++	return n;
++}
++
++static ssize_t wan_ports_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t count)
++{
++	struct zx279133_eth *eth = zx279133_wan_ports_eth(dev);
++	struct net_device *ndev;
++	char name[IFNAMSIZ];
++	unsigned int wan;
++	int ret;
++	u16 vid;
++
++	if (!eth)
++		return -ENODEV;
++	if (sscanf(buf, "%15s %u", name, &wan) != 2 || wan > 1)
++		return -EINVAL;
++	ndev = dev_get_by_name(&init_net, name);
++	if (!ndev)
++		return -ENODEV;
++	ret = zx279133_flow_lan_vid(eth, ndev, &vid);
++	/* A bridged port is a LAN port. */
++	if (!ret && wan && netif_is_bridge_port(ndev))
++		ret = -EBUSY;
++	dev_put(ndev);
++	if (ret)
++		return ret == -EBUSY ? ret : -EINVAL;
++	ret = zx279133_lan_vport_wan_set(eth, vid, wan);
++
++	return ret ? ret : count;
++}
++static DEVICE_ATTR_RW(wan_ports);
++
++static struct attribute *zx279133_wan_ports_attrs[] = {
++	&dev_attr_wan_ports.attr,
++	&dev_attr_offload_info.attr,
++	NULL
++};
++
++static const struct attribute_group zx279133_wan_ports_group = {
++	.attrs = zx279133_wan_ports_attrs,
++};
++
++static void zx279133_nppt_endpoint_cleanup(void *data)
++{
++	struct zte_nppt *np = data;
++	struct zx279133_eth *eth = np->eth;
++	int ret;
++
++	/* Remove before access/datapath locks; open fds hold their own NP ref. */
++	/* Stop event producers before taking locks needed by the event worker. */
++	zx279133_hosts_quiesce(np->hosts);
++	mutex_lock(&zte_nppt_devices_lock);
++	list_del(&np->list);
++	mutex_lock(&np->access);
++	mutex_lock(&eth->datapath_lock);
++	ret = zte_nppt_detach(np);
++	np->eth = NULL;
++	eth->flow_offload = NULL;
++	mutex_unlock(&eth->datapath_lock);
++	mutex_unlock(&np->access);
++	if (ret)
++		list_add_tail(&np->list, &zte_nppt_quarantined);
++	mutex_unlock(&zte_nppt_devices_lock);
++	if (!ret)
++		zte_nppt_put(np);
++}
++
++int zx279133_flow_offload_init(struct zx279133_eth *eth)
++{
++	struct zte_nppt *np;
++	struct zte_nppt *quarantined;
++	int ret = 0;
++
++	np = kzalloc(sizeof(*np), GFP_KERNEL);
++	if (!np)
++		return -ENOMEM;
++	kref_init(&np->ref);
++	INIT_LIST_HEAD(&np->vlans);
++	mutex_init(&np->access);
++	init_rwsem(&np->driver_lock);
++	np->eth = eth;
++	np->dev = get_device(eth->dev);
++	eth->flow_offload = np;
++	np->hosts = zx279133_hosts_create(np, eth->dev);
++	if (IS_ERR(np->hosts)) {
++		ret = PTR_ERR(np->hosts);
++		np->hosts = NULL;
++		goto fail;
++	}
++	ret = zx279133_hosts_start(np->hosts);
++	if (ret)
++		goto fail;
++	mutex_lock(&zte_nppt_devices_lock);
++	list_for_each_entry(quarantined, &zte_nppt_quarantined, list) {
++		if (dev_fwnode(quarantined->dev) == dev_fwnode(eth->dev)) {
++			dev_err(eth->dev, "NP requires hardware recovery after failed invalidation\n");
++			ret = -EBUSY;
++			goto out_unlock;
++		}
++	}
++	if (zte_nppt_client) {
++		mutex_lock(&eth->datapath_lock);
++		ret = zte_nppt_attach(np, zte_nppt_client);
++		mutex_unlock(&eth->datapath_lock);
++		if (ret) {
++			dev_warn(eth->dev, "optional flow client attach failed: %d\n", ret);
++			ret = 0;
++		}
++	}
++	if (!ret)
++		list_add_tail(&np->list, &zte_nppt_devices);
++out_unlock:
++	mutex_unlock(&zte_nppt_devices_lock);
++	if (ret) {
++		zx279133_hosts_quiesce(np->hosts);
++		goto fail;
++	}
++	/* Registered before devm_register_netdev: netdevs unbind first. */
++	ret = devm_add_action_or_reset(eth->dev,
++				       zx279133_nppt_endpoint_cleanup, np);
++	if (ret)
++		return ret;
++	return devm_device_add_group(eth->dev, &zx279133_wan_ports_group);
++fail:
++	eth->flow_offload = NULL;
++	zte_nppt_put(np);
++	return ret;
++}
++
++int zte_nppt_meter_get(struct zte_nppt *np,
++		       const struct zte_nppt_plcr_profile *profile,
++		       const void *scope, u32 action_index,
++		       struct zte_nppt_meter **meter)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!meter)
++		return -EINVAL;
++	return zx279133_meter_get(&np->meters, np->eth, profile, scope, action_index, meter);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_meter_get);
++
++int zte_nppt_meter_put(struct zte_nppt *np, struct zte_nppt_meter *meter)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_meter_put(np->meters, np->eth, meter);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_meter_put);
++
++void zte_nppt_meter_abandon(struct zte_nppt *np, struct zte_nppt_meter *meter)
++{
++	zx279133_meter_abandon(np->meters, meter);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_meter_abandon);
++
++/* OEM MAC policers use independent source/destination binding ranges. */
++int zte_nppt_meter_mac_get(struct zte_nppt *np,
++			   const struct zte_nppt_plcr_profile *profile,
++			   u8 slot, bool download, struct zte_nppt_meter **out)
++{
++	return zx279133_meter_mac_get(&np->meters, np->eth, profile,
++				      slot, download, out);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_meter_mac_get);
++
++int zte_nppt_mac_global_get(struct zte_nppt *np, bool *enabled)
++{
++	u32 w[4];
++	int ret = zx279133_native_sdt128_io(np->eth, 1, 0, w, false);
++
++	if (!ret)
++		*enabled = !!(w[3] & BIT(26));
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_mac_global_get);
++
++int zte_nppt_mac_global_set(struct zte_nppt *np, bool enabled)
++{
++	u32 w[4], actual[4];
++	int ret = zx279133_native_sdt128_io(np->eth, 1, 0, w, false);
++
++	if (ret)
++		return ret;
++	w[3] = (w[3] & ~BIT(26)) | (enabled ? BIT(26) : 0);
++	ret = zx279133_native_sdt128_io(np->eth, 1, 0, w, true);
++	if (!ret)
++		ret = zx279133_native_sdt128_io(np->eth, 1, 0, actual, false);
++	if (!ret && memcmp(w, actual, sizeof(w)))
++		ret = -EIO;
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_mac_global_set);
++
++struct zte_nppt_host *zte_nppt_host_lookup_get(struct zte_nppt *np, const u8 *mac)
++{
++	struct zte_nppt_host *host = zx279133_host_lookup_get(np->hosts, mac);
++	struct net_device *bridge, *port;
++	u16 logical = 0, candidate;
++
++	if (!IS_ERR(host) || PTR_ERR(host) != -ENOENT || !np->eth->lan_ndev)
++		return host;
++	/* A MAC policy must also exist for clients whose connections never
++	 * qualify for a fast flow. Resolve the authoritative VID0 bridge FDB,
++	 * restricted to this supplier's live LAN ports; never guess a port.
++	 */
++	rcu_read_lock();
++	for_each_netdev_rcu(dev_net(np->eth->lan_ndev), bridge) {
++		if (!netif_is_bridge_master(bridge))
++			continue;
++		port = br_fdb_find_port(bridge, mac, 0);
++		if (!port || !netif_running(port) || !netif_carrier_ok(port))
++			continue;
++		if (zte_nppt_dev_port(np, port, &candidate) != ZX279133_FLOW_PORT_LAN ||
++		    candidate < 59 || candidate > 62)
++			continue;
++		if (logical && logical != candidate) {
++			logical = 0;
++			break;
++		}
++		logical = candidate;
++	}
++	rcu_read_unlock();
++	return logical ? zx279133_host_get(np->hosts, mac, logical) : host;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_host_lookup_get);
++
++int zte_nppt_host_limit(struct zte_nppt *np, struct zte_nppt_host *host,
++			u8 slot, bool upload, bool download)
++{
++	return zx279133_host_limit(np->hosts, host, slot, upload, download);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_host_limit);
++
++void zte_nppt_host_watch(struct zte_nppt *np, u8 slot, const u8 *mac)
++{
++	zx279133_host_watch(np->hosts, slot, mac);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_host_watch);

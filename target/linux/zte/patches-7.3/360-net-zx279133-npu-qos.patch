@@ -1,0 +1,501 @@
+Subject: [PATCH] net: zte: add NP QoS resource management
+
+Add the existing policer, queue and shaping resource interfaces.
+This patch does not enable an additional policy or userspace service.
+
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-qos.c
+@@ -0,0 +1,456 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Managed SSCH policy, separate from flow learning and per-packet processing.
++ * OEM units/mapping evidence: project docs/SQM-NPU-MANAGED-R2.md.
++ */
++#include <linux/capability.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/slab.h>
++#include <linux/sysfs.h>
++
++#include "zx279133.h"
++#include "zx279133-native.h"
++
++static bool experimental_sqm;
++module_param(experimental_sqm, bool, 0600);
++MODULE_PARM_DESC(experimental_sqm,
++		 "Allow explicit managed SSCH policies; no automatic policy or full SQM offload");
++
++/* OEM ingress getPort(5/4) -> NP 6/5, but egress getSschPort(5/4)
++ * -> SSCH 5/4. NP metadata port numbers are NOT SSCH indices.
++ */
++static const u8 zx279133_qos_ports[] = { 5, 4 };
++
++static int zx279133_qos_slot(struct zx279133_eth *eth, struct net_device *dev)
++{
++	if (!dev)
++		return -EOPNOTSUPP;
++	if (dev == eth->ndev)
++		return 0;
++	if (dev == eth->lan_ndev)
++		return 1;
++	/* DSA transport VIDs are not independent physical SSCH outputs. */
++	return -EOPNOTSUPP;
++}
++
++static u32 zx279133_qos_cap(u32 fill)
++{
++	static const u32 table[][2] = {
++		{ 128, 16000 }, { 256, 32000 }, { 512, 64000 },
++		{ 1024, 128000 }, { 2048, 200000 },
++	};
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(table); i++)
++		if (fill <= table[i][0])
++			return table[i][1];
++	return clamp_t(u32, fill >> 8, 200000, GENMASK(20, 0));
++}
++
++static int zx279133_qos_plan(struct zx279133_eth *eth,
++			     const struct zte_nppt_shaper_request *request,
++			    struct zte_nppt_shaper_status *status)
++{
++	struct zte_nppt_ssch_global global;
++	u64 clock = 0, interval, fill;
++	unsigned int i;
++	int ret;
++
++	if (!request || !request->rate_kbps || request->rate_kbps > 10000000 ||
++	    request->cap_raw > GENMASK(20, 0))
++		return -EINVAL;
++	/* tm-aclk is an AXI bus clock. SSCH uses the NPPT working-clock path
++	 * exposed under the vendor name woe1-wclk; never use CPU/AXI frequency.
++	 */
++	for (i = 0; i < ARRAY_SIZE(eth->clocks); i++)
++		if (!strcmp(eth->clocks[i].id, "woe1-wclk"))
++			clock = clk_get_rate(eth->clocks[i].clk);
++	if (!clock || clock > U32_MAX)
++		return -ERANGE;
++	ret = zx279133_native_ssch_global_get(eth, &global);
++	if (ret)
++		return ret;
++	/* Do not enable or retime a shared scheduler on behalf of one policy. */
++	if (!global.shaping)
++		return -EOPNOTSUPP;
++	interval = 32000ULL * (global.fill_time + 1);
++	fill = div64_u64(interval * request->rate_kbps, clock);
++	if (!fill || fill > GENMASK(28, 0))
++		return -ERANGE;
++	status->clock_hz = clock;
++	status->rate_kbps = request->rate_kbps;
++	status->nominal_kbps = div64_u64(fill * clock, interval);
++	status->fill_time = global.fill_time;
++	status->hardware = (struct zte_nppt_ssch_shaper) {
++		.fill = fill,
++		.cap = request->cap_raw ?: zx279133_qos_cap(fill),
++		.enabled = true,
++	};
++	return 0;
++}
++
++static int zx279133_qos_read(struct zx279133_eth *eth, u8 port, u8 queue,
++			     struct zte_nppt_ssch_shaper *value)
++{
++	if (queue == ZTE_NPPT_SHAPER_PORT)
++		return zx279133_native_ssch_port_get(eth, port, value);
++	return zx279133_native_ssch_queue_get(eth, port, queue, value);
++}
++
++static bool zx279133_qos_equal(const struct zte_nppt_ssch_shaper *a,
++			       const struct zte_nppt_ssch_shaper *b)
++{
++	return a->fill == b->fill && a->cap == b->cap && a->enabled == b->enabled;
++}
++
++static int zx279133_qos_write(struct zx279133_eth *eth, u8 port, u8 queue,
++			      const struct zte_nppt_ssch_shaper *value)
++{
++	struct zte_nppt_ssch_shaper actual;
++	int ret;
++
++	ret = zx279133_native_ssch_exact_set(eth, port, queue, value);
++	if (!ret)
++		ret = zx279133_qos_read(eth, port, queue, &actual);
++	if (!ret && !zx279133_qos_equal(value, &actual))
++		ret = -EIO;
++	return ret;
++}
++
++static int zx279133_qos_apply(struct zx279133_eth *eth,
++			      struct zx279133_shaper_policy *policy,
++			      const struct zte_nppt_shaper_request *request,
++			      u64 owner, u8 port, u8 queue)
++{
++	struct zte_nppt_shaper_status next = { .owner = owner, .port = port,
++		.queue = queue, .configured = true, .applied = true };
++	struct zte_nppt_ssch_shaper before;
++	int ret;
++
++	ret = zx279133_qos_plan(eth, request, &next);
++	if (ret)
++		return ret;
++	ret = zx279133_qos_read(eth, port, queue, &before);
++	if (ret)
++		return ret;
++	if (policy->status.applied &&
++	    !zx279133_qos_equal(&before, &policy->status.hardware)) {
++		policy->status.uncertain = true;
++		return -ESTALE;
++	}
++	/* Preserve undefined upper bits from the exact hardware snapshot. */
++	next.hardware.fill |= before.fill & ~GENMASK(28, 0);
++	next.hardware.cap |= before.cap & ~GENMASK(20, 0);
++	if (!zx279133_qos_equal(&before, &next.hardware)) {
++		ret = zx279133_qos_write(eth, port, queue, &next.hardware);
++		if (ret && zx279133_qos_write(eth, port, queue, &before)) {
++			if (!policy->status.configured) {
++				policy->status = next;
++				policy->original = before;
++				policy->request = *request;
++			}
++			policy->status.uncertain = true;
++			return -EUCLEAN;
++		}
++		if (ret)
++			return ret;
++	}
++	/* A new hardware lifetime gets a fresh pre-policy baseline. Replacing
++	 * an applied policy must retain its first baseline for final release.
++	 */
++	if (!policy->status.applied)
++		policy->original = before;
++	policy->request = *request;
++	policy->status = next;
++	return 0;
++}
++
++bool zx279133_qos_conflicts(struct zx279133_eth *eth, int port)
++{
++	unsigned int p, q;
++
++	for (p = 0; p < ARRAY_SIZE(eth->qos.policy); p++)
++		if (port < 0 || port == zx279133_qos_ports[p])
++			for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++)
++				if (eth->qos.policy[p][q].status.configured)
++					return true;
++	return false;
++}
++
++bool zx279133_qos_uncertain(struct zx279133_eth *eth)
++{
++	unsigned int p, q;
++
++	for (p = 0; p < ARRAY_SIZE(eth->qos.policy); p++)
++		for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++)
++			if (eth->qos.policy[p][q].status.uncertain)
++				return true;
++	return false;
++}
++
++int zx279133_qos_set(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++		     u64 owner, const struct zte_nppt_shaper_request *request)
++{
++	struct zx279133_shaper_policy *policy;
++	int slot = zx279133_qos_slot(eth, dev);
++	unsigned int q;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (slot < 0)
++		return slot;
++	if (!owner || queue > ZTE_NPPT_SHAPER_PORT)
++		return -EINVAL;
++	if (!READ_ONCE(experimental_sqm))
++		return -EOPNOTSUPP;
++	if (!eth->hardware_prepared)
++		return -ENETDOWN;
++	for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++) {
++		policy = &eth->qos.policy[slot][q];
++		if (policy->status.configured && policy->status.owner != owner)
++			return -EBUSY;
++		if (policy->status.uncertain)
++			return -EUCLEAN;
++	}
++	return zx279133_qos_apply(eth, &eth->qos.policy[slot][queue], request,
++				 owner, zx279133_qos_ports[slot], queue);
++}
++
++int zx279133_qos_clear(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++		       u64 owner)
++{
++	struct zx279133_shaper_policy *policy;
++	int ret, slot = zx279133_qos_slot(eth, dev);
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (slot < 0)
++		return slot;
++	if (!owner || queue > ZTE_NPPT_SHAPER_PORT)
++		return -EINVAL;
++	policy = &eth->qos.policy[slot][queue];
++	if (!policy->status.configured)
++		return 0;
++	if (policy->status.owner != owner)
++		return -EBUSY;
++	if (policy->status.applied || policy->status.uncertain) {
++		if (!eth->hardware_prepared)
++			return -ENETDOWN;
++		ret = zx279133_qos_write(eth, zx279133_qos_ports[slot], queue,
++					 &policy->original);
++		if (ret) {
++			policy->status.uncertain = true;
++			return -EUCLEAN;
++		}
++	}
++	memset(policy, 0, sizeof(*policy));
++	return 0;
++}
++
++int zx279133_qos_status(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++			struct zte_nppt_shaper_status *status)
++{
++	int slot = zx279133_qos_slot(eth, dev);
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (slot < 0)
++		return slot;
++	if (!status || queue > ZTE_NPPT_SHAPER_PORT)
++		return -EINVAL;
++	*status = eth->qos.policy[slot][queue].status;
++	status->port = zx279133_qos_ports[slot];
++	status->queue = queue;
++	return 0;
++}
++
++void zx279133_qos_forget_dev(struct zx279133_eth *eth, struct net_device *dev)
++{
++	struct zx279133_shaper_policy *policy;
++	int slot = zx279133_qos_slot(eth, dev);
++	unsigned int q;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (slot < 0)
++		return;
++	for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++) {
++		policy = &eth->qos.policy[slot][q];
++		if (!policy->status.configured)
++			continue;
++		if (zx279133_qos_clear(eth, dev, q, policy->status.owner)) {
++			policy->status.uncertain = true;
++			if (eth->hardware_prepared)
++				zx279133_native_ssch_disable(eth, zx279133_qos_ports[slot], q);
++			dev_err(eth->dev, "SSCH %u/%u detached with unverified restoration\n",
++				zx279133_qos_ports[slot], q);
++		}
++	}
++}
++
++void zx279133_qos_stop(struct zx279133_eth *eth)
++{
++	struct zx279133_shaper_policy *policy;
++	unsigned int p, q;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	for (p = 0; p < ARRAY_SIZE(eth->qos.policy); p++) {
++		for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++) {
++			policy = &eth->qos.policy[p][q];
++			if (!policy->status.applied && !policy->status.uncertain)
++				continue;
++			if (zx279133_qos_write(eth, zx279133_qos_ports[p], q,
++					       &policy->original)) {
++				policy->status.uncertain = true;
++				/* Unknown fill/cap must not remain enabled after unbind. */
++				zx279133_native_ssch_disable(eth, zx279133_qos_ports[p], q);
++				dev_err(eth->dev, "SSCH %u/%u restore unverified\n",
++					zx279133_qos_ports[p], q);
++			} else {
++				policy->status.uncertain = false;
++			}
++			policy->status.applied = false;
++		}
++	}
++}
++
++int zx279133_qos_resume(struct zx279133_eth *eth)
++{
++	struct zx279133_shaper_policy *policy;
++	unsigned int p, q;
++	int ret;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (zx279133_qos_uncertain(eth))
++		return -EUCLEAN;
++	for (p = 0; p < ARRAY_SIZE(eth->qos.policy); p++)
++		for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++) {
++			policy = &eth->qos.policy[p][q];
++			if (!policy->status.configured || policy->status.applied)
++				continue;
++			ret = zx279133_qos_apply(eth, policy, &policy->request,
++						 policy->status.owner, zx279133_qos_ports[p], q);
++			if (ret) {
++				zx279133_qos_stop(eth);
++				return ret;
++			}
++		}
++	return 0;
++}
++
++static struct zx279133_eth *zx279133_qos_device(struct device *dev)
++{
++	struct zx279133_lan_service *service = dev_get_drvdata(dev);
++
++	return container_of(service, struct zx279133_eth, lan_service);
++}
++
++static ssize_t npu_qos_show(struct device *dev, struct device_attribute *attr,
++			    char *buf)
++{
++	struct zx279133_eth *eth = zx279133_qos_device(dev);
++	struct zte_nppt_shaper_status *s;
++	struct net_device *ndev;
++	unsigned int p, q;
++	ssize_t len;
++
++	mutex_lock(&eth->datapath_lock);
++	len = sysfs_emit(buf, "version=1 enabled=%u rate_unit=kbps cap_unit=raw full_sqm=0\n",
++			 READ_ONCE(experimental_sqm));
++	for (p = 0; p < ARRAY_SIZE(eth->qos.policy); p++) {
++		ndev = p ? eth->lan_ndev : eth->ndev;
++		for (q = 0; q <= ZTE_NPPT_SHAPER_PORT; q++) {
++			s = &eth->qos.policy[p][q].status;
++			if (!s->configured)
++				continue;
++			len += sysfs_emit_at(buf, len,
++				"if=%s ssch_port=%u queue=%u owner=%llu rate_kbps=%u nominal_kbps=%u clock_hz=%llu fill_time=%u fill=%u cap_raw=%u applied=%u uncertain=%u\n",
++				ndev ? ndev->name : "detached", s->port, s->queue,
++				s->owner, s->rate_kbps, s->nominal_kbps, s->clock_hz,
++				s->fill_time, (u32)(s->hardware.fill & GENMASK(28, 0)),
++				(u32)(s->hardware.cap & GENMASK(20, 0)), s->applied, s->uncertain);
++		}
++	}
++	mutex_unlock(&eth->datapath_lock);
++	return len;
++}
++
++static ssize_t npu_qos_store(struct device *dev, struct device_attribute *attr,
++			     const char *buf, size_t count)
++{
++	struct zx279133_eth *eth = zx279133_qos_device(dev);
++	struct zte_nppt_shaper_request request = {};
++	struct net_device *ndev;
++	char *text, *next, *arg, *argv[5];
++	unsigned int argc = 0;
++	u8 queue;
++	int ret;
++
++	if (!capable(CAP_NET_ADMIN))
++		return -EPERM;
++	if (!count || count > 160 || memchr(buf, '\0', count))
++		return -EINVAL;
++	text = kmemdup_nul(buf, count, GFP_KERNEL);
++	if (!text)
++		return -ENOMEM;
++	next = text;
++	while ((arg = strsep(&next, " \t\r\n"))) {
++		if (!*arg)
++			continue;
++		if (argc == ARRAY_SIZE(argv)) {
++			ret = -E2BIG;
++			goto free;
++		}
++		argv[argc++] = arg;
++	}
++	if (!((argc == 5 && !strcmp(argv[0], "set")) ||
++	      (argc == 3 && !strcmp(argv[0], "clear")))) {
++		ret = -EINVAL;
++		goto free;
++	}
++	if (!strcmp(argv[2], "port")) {
++		queue = ZTE_NPPT_SHAPER_PORT;
++	} else {
++		ret = kstrtou8(argv[2], 0, &queue);
++		if (ret || queue >= ZTE_NPPT_SHAPER_PORT) {
++			ret = -EINVAL;
++			goto free;
++		}
++	}
++	if (argc == 5) {
++		ret = kstrtou32(argv[3], 0, &request.rate_kbps);
++		if (!ret)
++			ret = kstrtou32(argv[4], 0, &request.cap_raw);
++		if (ret)
++			goto free;
++	}
++	ndev = dev_get_by_name(dev_net(eth->ndev), argv[1]);
++	if (!ndev) {
++		ret = -ENODEV;
++		goto free;
++	}
++	mutex_lock(&eth->datapath_lock);
++	if (argc == 5)
++		ret = zx279133_qos_set(eth, ndev, queue,
++				       ZTE_NPPT_SHAPER_CONTROL_OWNER, &request);
++	else
++		ret = zx279133_qos_clear(eth, ndev, queue, ZTE_NPPT_SHAPER_CONTROL_OWNER);
++	mutex_unlock(&eth->datapath_lock);
++	dev_put(ndev);
++free:
++	kfree(text);
++	if (ret)
++		return ret;
++	return count;
++}
++static DEVICE_ATTR_RW(npu_qos);
++
++static struct attribute *zx279133_qos_attrs[] = {
++	&dev_attr_npu_qos.attr,
++	NULL,
++};
++
++static const struct attribute_group zx279133_qos_group = {
++	.attrs = zx279133_qos_attrs,
++};
++
++const struct attribute_group *zx279133_qos_groups[] = {
++	&zx279133_qos_group,
++	NULL,
++};
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-qos.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_QOS_H
++#define _ZX279133_QOS_H
++
++#include <linux/zte_nppt_native.h>
++
++struct zx279133_eth;
++struct attribute_group;
++
++struct zx279133_shaper_policy {
++	struct zte_nppt_shaper_status status;
++	struct zte_nppt_ssch_shaper original;
++	struct zte_nppt_shaper_request request;
++};
++
++/* Two physical outputs, each with eight child queues plus a port shaper. */
++struct zx279133_qos {
++	struct zx279133_shaper_policy policy[2][9];
++};
++
++int zx279133_qos_set(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++		     u64 owner, const struct zte_nppt_shaper_request *request);
++int zx279133_qos_clear(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++		       u64 owner);
++int zx279133_qos_status(struct zx279133_eth *eth, struct net_device *dev, u8 queue,
++			struct zte_nppt_shaper_status *status);
++bool zx279133_qos_conflicts(struct zx279133_eth *eth, int port);
++bool zx279133_qos_uncertain(struct zx279133_eth *eth);
++int zx279133_qos_resume(struct zx279133_eth *eth);
++void zx279133_qos_stop(struct zx279133_eth *eth);
++void zx279133_qos_forget_dev(struct zx279133_eth *eth, struct net_device *dev);
++
++extern const struct attribute_group *zx279133_qos_groups[];
++#endif

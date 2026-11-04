@@ -1,0 +1,403 @@
+Subject: [PATCH] net: zte: register the NP and companion modules
+
+Wire the NP provider, fnoffload translator, conduit and switch into
+Kconfig/Kbuild after their source and shared interfaces are present.
+Describe the NP and shared hardware resources in device-tree bindings.
+
+--- a/drivers/net/ethernet/zte/Kconfig
++++ b/drivers/net/ethernet/zte/Kconfig
+@@ -17,4 +17,54 @@
+ 
+ source "drivers/net/ethernet/zte/dinghai/Kconfig"
+ 
++config ZTE_ZX279133_ETH
++	tristate "ZTE ZX279133 NPPT Ethernet support"
++	depends on OF && HAS_IOMEM && HAS_DMA
++	depends on COMMON_CLK_ZX279133
++	depends on PHY_ZX279133_PON_SERDES
++	depends on PCS_XPCS
++	select PAGE_POOL
++	select CRC32
++	help
++	  Enable support for the NPPT Ethernet controller and IDM packet DMA
++	  engine in the ZTE ZX279133 SoC. The driver provides phylink MAC/PCS
++	  integration, TX completion, page-pool RX, and the SR1010 WAN path.
++	  It also owns the shared packet-processing resources used by LAN.
++
++config ZTE_ZX279133_FNOFFLOAD
++	tristate "ZTE ZX279133 flowtable hardware offload"
++	depends on ZTE_ZX279133_ETH
++	depends on NF_FLOW_TABLE
++	default ZTE_ZX279133_ETH
++	help
++	  Optional rule translator for the NPPT npu driver. Without it the
++	  Ethernet driver continues to provide normal software networking.
++	  Reload nftables hardware flowtables after loading this module late.
++	  Software flowtables can operate independently of this module.
++
++config ZTE_ZX279133_LAN_CONDUIT
++	tristate "ZTE ZX279133 XMAC0 LAN conduit"
++	depends on ZTE_ZX279133_ETH
++	default y
++	help
++	  Build the XMAC0 LAN conduit netdev as a child of the ZX279133
++	  NPPT controller. The conduit is used as a DSA CPU-facing netdev.
++	  Shared DMA and datapath ownership remains in the parent driver,
++	  which coordinates WAN and LAN lifecycle and queue accounting.
++
++config ZTE_ZX279133_RTL8372N
++	tristate "ZTE ZX279133 RTL8372N DSA switch driver"
++	depends on ZTE_ZX279133_ETH
++	select ZTE_ZX279133_LAN_CONDUIT
++	depends on PHY_ZX279133_UNI_SERDES
++	depends on PCS_XPCS
++	depends on NET_DSA
++	select NET_DSA_TAG_ZX279133_RTL8372N
++	help
++	  Build the RTL8372N DSA switch driver for the SR1010 LAN path. The
++	  driver owns the external switch reset, XMAC0/XPCS0/Uni-SerDes link,
++	  physical ports 4 through 7, and CPU port 8. It registers four DSA
++	  user ports through the dedicated ZX279133 LAN conduit.
++
++
+ endif # NET_VENDOR_ZTE
+--- a/drivers/net/ethernet/zte/Makefile
++++ b/drivers/net/ethernet/zte/Makefile
+@@ -4,3 +4,18 @@
+ #
+ 
+ obj-$(CONFIG_DINGHAI) += dinghai/
++
++# SPDX-License-Identifier: GPL-2.0
++
++obj-$(CONFIG_ZTE_ZX279133_ETH) += npu.o
++npu-y := zx279133-main.o zx279133-tm.o zx279133-np.o zx279133-idm.o \
++	       zx279133-mac.o zx279133-netdev.o zx279133-offload-api.o \
++	       zx279133-ptp.o
++
++npu-y += zx279133-host.o zx279133-native.o zx279133-meter.o zx279133-qos.o
++
++obj-$(CONFIG_ZTE_ZX279133_LAN_CONDUIT) += zx279133-lan-conduit.o
++obj-$(CONFIG_ZTE_ZX279133_RTL8372N) += zx279133-rtl8372n.o
++
++obj-$(CONFIG_ZTE_ZX279133_FNOFFLOAD) += fnoffload.o
++fnoffload-y := zx279133-offload.o
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/zte,zx279133-nppt.yaml
+@@ -0,0 +1,232 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/net/zte,zx279133-nppt.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 NPPT Ethernet controller
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description:
++  The ZX279133 NPPT Ethernet controller contains the XMAC control path and IDM
++  packet DMA engine. PCS, SerDes, and external PHY resources are represented by
++  their respective subsystem nodes rather than additional NPPT register ranges.
++
++allOf:
++  - $ref: ethernet-controller.yaml#
++  - if:
++      required:
++        - switch
++    then:
++      properties:
++        phys:
++          minItems: 2
++        phy-names:
++          minItems: 2
++      required:
++        - ethernet-lan-cpu
++        - zte,lan-pcs-handle
++
++properties:
++  $nodename:
++    pattern: "^ethernet@[0-9a-f]+$"
++
++  compatible:
++    const: zte,zx279133-nppt
++
++  reg:
++    items:
++      - description: NPPT traffic manager, MAC control, and IDM registers
++      - description: PPS search-engine and packet-processing registers
++
++  reg-names:
++    items:
++      - const: nppt
++      - const: pps
++
++  interrupts:
++    items:
++      - description: NPPT aggregate interrupt
++      - description: IDM CPU receive interrupt
++      - description: IDM companion-path interrupt
++      - description: IDM buffer-release interrupt
++      - description: IDM local-test interrupt
++
++  interrupt-names:
++    items:
++      - const: nppt
++      - const: rx
++      - const: idm
++      - const: buffer-release
++      - const: local-test
++
++  clocks:
++    items:
++      - description: IDM AXI clock
++      - description: Traffic-manager AXI clock
++      - description: NPPT APB clock
++      - description: SMAC working clock
++      - description: WOE1 working clock
++      - description: XMAC working clock
++
++  clock-names:
++    items:
++      - const: idm-aclk
++      - const: tm-aclk
++      - const: pclk
++      - const: smac-wclk
++      - const: woe1-wclk
++      - const: mac-wclk
++
++  memory-region:
++    items:
++      - description: Reserved packet-buffer memory owned by the BMU
++      - description: Reserved DDR hash-table memory owned by the search engine
++      - description: Reserved descriptor memory owned by the IDM
++
++  memory-region-names:
++    items:
++      - const: bmu
++      - const: se-hash
++      - const: idm
++
++  pcs-handle:
++    maxItems: 1
++
++  phys:
++    minItems: 1
++    maxItems: 2
++
++  phy-names:
++    minItems: 1
++    items:
++      - const: serdes
++      - const: lan-serdes
++
++  zte,lan-pcs-handle:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: XPCS0 handle for the optional XMAC0 LAN conduit
++
++  zte,pon-route:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Syscon containing the PON SerDes to XMAC1 route control
++
++  zte,idm-cci:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Syscon containing the two IDM CCI access-control words
++
++  ethernet-lan-cpu:
++    type: object
++    description: Dedicated DSA conduit netdev for the XMAC0 LAN path
++    properties:
++      compatible:
++        const: zte,zx279133-lan-conduit
++      nvmem-cells:
++        maxItems: 1
++      nvmem-cell-names:
++        const: mac-address
++    required:
++      - compatible
++    additionalProperties: false
++
++  switch:
++    $ref: /schemas/net/dsa/zte,zx279133-rtl8372n.yaml
++    description: RTL8372N switch attached to the XMAC0 LAN path
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - interrupts
++  - interrupt-names
++  - clocks
++  - clock-names
++  - memory-region
++  - memory-region-names
++  - pcs-handle
++  - phys
++  - phy-names
++  - zte,pon-route
++  - zte,idm-cci
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/clock/zte,zx279133-topcrm.h>
++    #include <dt-bindings/interrupt-controller/arm-gic.h>
++
++    xpcs1: ethernet-pcs@1b000000 {
++        compatible = "snps,dw-xpcs";
++        reg = <0x1b000000 0x800000>;
++    };
++
++    pon_route: syscon@17000080 {
++        compatible = "zte,zx279133-pon-route", "syscon";
++        reg = <0x17000080 0x4>;
++    };
++
++    idm_cci: syscon@10e00078 {
++        compatible = "zte,zx279133-idm-cci", "syscon";
++        reg = <0x10e00078 0x8>;
++    };
++
++    pon_serdes: phy {
++        #phy-cells = <0>;
++    };
++
++    reserved-memory {
++        #address-cells = <1>;
++        #size-cells = <1>;
++        ranges;
++
++        se_hash_reserved: buffer@9e100000 {
++            reg = <0x9e100000 0x1000000>;
++            no-map;
++        };
++
++        idm_reserved: buffer@9d700000 {
++            reg = <0x9d700000 0xa00000>;
++            no-map;
++        };
++
++        bmu_reserved: buffer@9f100000 {
++            reg = <0x9f100000 0xf00000>;
++            no-map;
++        };
++    };
++
++    ethernet@19000000 {
++        compatible = "zte,zx279133-nppt";
++        reg = <0x19000000 0x1000000>,
++              <0x18000000 0x1000000>;
++        reg-names = "nppt", "pps";
++        interrupts = <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>,
++                     <GIC_SPI 1 IRQ_TYPE_LEVEL_HIGH>,
++                     <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>,
++                     <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>,
++                     <GIC_SPI 4 IRQ_TYPE_LEVEL_HIGH>;
++        interrupt-names = "nppt", "rx", "idm", "buffer-release",
++                          "local-test";
++        clocks = <&topcrm ZX279133_TOPCRM_CLK_PON_IDM_ACLK>,
++                 <&topcrm ZX279133_TOPCRM_CLK_PON_TM_ACLK>,
++                 <&topcrm ZX279133_TOPCRM_CLK_PON_PCLK>,
++                 <&topcrm ZX279133_TOPCRM_CLK_PON_SMAC_WCLK>,
++                 <&topcrm ZX279133_TOPCRM_CLK_PON_WOE1_WCLK>,
++                 <&topcrm ZX279133_TOPCRM_CLK_PON_MAC_WCLK>;
++        clock-names = "idm-aclk", "tm-aclk", "pclk", "smac-wclk",
++                      "woe1-wclk", "mac-wclk";
++        memory-region = <&bmu_reserved>, <&se_hash_reserved>, <&idm_reserved>;
++        memory-region-names = "bmu", "se-hash", "idm";
++        pcs-handle = <&xpcs1>;
++        phys = <&pon_serdes>;
++        phy-names = "serdes";
++        zte,pon-route = <&pon_route>;
++        zte,idm-cci = <&idm_cci>;
++        phy-mode = "2500base-x";
++        status = "disabled";
++    };
++
++...
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/zte/zte,zx279133-idm-cci.yaml
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/soc/zte/zte,zx279133-idm-cci.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 IDM CCI access control
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description:
++  Two system-control words configure the IDM interfaces used by the network
++  DMA engine. The Ethernet driver snapshots them before enabling the vendor
++  Linux value and restores them after the IDM path is stopped.
++
++properties:
++  compatible:
++    items:
++      - const: zte,zx279133-idm-cci
++      - const: syscon
++
++  reg:
++    maxItems: 1
++
++required:
++  - compatible
++  - reg
++
++additionalProperties: false
++
++examples:
++  - |
++    syscon@10e00078 {
++        compatible = "zte,zx279133-idm-cci", "syscon";
++        reg = <0x10e00078 0x8>;
++    };
++
++...
+--- /dev/null
++++ b/Documentation/devicetree/bindings/soc/zte/zte,zx279133-pon-route.yaml
+@@ -0,0 +1,39 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/soc/zte/zte,zx279133-pon-route.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 PON SerDes route control
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description:
++  The route control selects whether the PON SerDes is connected to XMAC1.
++  It is separate from the PON protocol register block and is consumed by the
++  NPPT Ethernet controller for the direct WAN path.
++
++properties:
++  compatible:
++    items:
++      - const: zte,zx279133-pon-route
++      - const: syscon
++
++  reg:
++    maxItems: 1
++
++required:
++  - compatible
++  - reg
++
++additionalProperties: false
++
++examples:
++  - |
++    syscon@17000080 {
++        compatible = "zte,zx279133-pon-route", "syscon";
++        reg = <0x17000080 0x4>;
++    };
++
++...

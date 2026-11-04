@@ -1,0 +1,385 @@
+--- a/libfstools/mtd.c
++++ b/libfstools/mtd.c
+@@ -21,6 +21,7 @@
+ #include <stdlib.h>
+ #include <mtd/mtd-user.h>
+ 
++#include <string.h>
+ #include "libfstools.h"
+ 
+ #include "volume.h"
+@@ -225,6 +226,29 @@
+ 		return FS_JFFS2;
+ 	}
+ 
++	/*
++	 * A jffs2 populated by another firmware may start with an empty (0xff)
++	 * erase block, so the first word is not the jffs2 magic. Look further
++	 * so the volume is mounted and never reformatted.
++	 */
++	if (fs_shared_overlay() && v->name && !strcmp(v->name, fs_shared_volume())) {
++		static char scan[65536];
++		off_t off;
++
++		for (off = 0; off < 0x100000; off += sizeof(scan)) {
++			ssize_t n, i;
++
++			if (lseek(p->fd, off, SEEK_SET) < 0)
++				break;
++			n = read(p->fd, scan, sizeof(scan));
++			if (n < 2)
++				break;
++			for (i = 0; i + 1 < n; i++)
++				if (scan[i] == (char)0x85 && scan[i + 1] == (char)0x19)
++					return FS_JFFS2;
++		}
++	}
++
+ 	return FS_NONE;
+ }
+ 
+--- a/libfstools/mount.c
++++ b/libfstools/mount.c
+@@ -105,6 +105,55 @@
+ }
+ 
+ /**
++ * fs_shared_volume - the volume that other firmware shares, or NULL
++ *
++ * Enabled per device by shipping /etc/fstools-shared-overlay, whose content
++ * is the name of that volume (empty: rootfs_data). The overlay then lives in
++ * a sub-directory of it and the volume root is never touched.
++ */
++const char *fs_shared_volume(void)
++{
++	static char name[32];
++	static bool done;
++	FILE *fp;
++
++	if (!done) {
++		done = true;
++		fp = fopen("/etc/fstools-shared-overlay", "r");
++		if (fp) {
++			if (!fgets(name, sizeof(name), fp))
++				name[0] = '\0';
++			name[strcspn(name, "\r\n")] = '\0';
++			if (!name[0])
++				snprintf(name, sizeof(name), "rootfs_data");
++			fclose(fp);
++		}
++	}
++
++	return name[0] ? name : NULL;
++}
++
++bool fs_shared_overlay(void)
++{
++	return fs_shared_volume() != NULL;
++}
++
++/**
++ * fs_overlay_dir - directory under @mp holding the overlay state and trees
++ */
++const char *fs_overlay_dir(const char *mp, char *buf, size_t len)
++{
++	if (!fs_shared_overlay()) {
++		snprintf(buf, len, "%s", mp);
++		return buf;
++	}
++
++	snprintf(buf, len, "%s/.lede", mp);
++	mkdir(buf, 0755);
++	return buf;
++}
++
++/**
+  * fopivot - switch to overlay using passed dir as upper one
+  *
+  * @rw_root: writable directory that will be used as upper dir
+@@ -114,6 +163,7 @@
+ fopivot(char *rw_root, char *ro_root)
+ {
+ 	char overlay[64], mount_options[64], upperdir[64], workdir[64], upgrade[64], upgrade_dest[64];
++	char rwsub[64];
+ 	struct stat st;
+ 
+ 	if (find_filesystem("overlay")) {
+@@ -121,6 +171,9 @@
+ 		return -1;
+ 	}
+ 
++	if (!strcmp(rw_root, "/overlay"))
++		rw_root = (char *)fs_overlay_dir(rw_root, rwsub, sizeof(rwsub));
++
+ 	snprintf(overlay, sizeof(overlay), "overlayfs:%s", rw_root);
+ 	snprintf(upperdir, sizeof(upperdir), "%s/upper", rw_root);
+ 	snprintf(workdir, sizeof(workdir), "%s/work", rw_root);
+--- a/libfstools/overlay.c
++++ b/libfstools/overlay.c
+@@ -203,7 +203,9 @@
+ 		return -1;
+ 	}
+ 
+-	if (system("cp -a /tmp/root/* /rom/overlay")) {
++	if (system(fs_shared_overlay() ?
++		   "mkdir -p /rom/overlay/.lede && cp -a /tmp/root/* /rom/overlay/.lede/" :
++		   "cp -a /tmp/root/* /rom/overlay")) {
+ 		ULOG_ERR("failed - cp -a /tmp/root/* /rom/overlay: %m\n");
+ 		return -1;
+ 	}
+@@ -361,7 +363,12 @@
+ 	}
+ 
+ 	sync();
+-	fs_state_set("/overlay", FS_STATE_READY);
++	{
++		char dir[64];
++
++		fs_overlay_dir("/overlay", dir, sizeof(dir));
++		fs_state_set(dir, FS_STATE_READY);
++	}
+ 	return 0;
+ }
+ 
+@@ -437,10 +444,118 @@
+ }
+ 
+ 
++#define ROM_ID_LEN	96
++
++/*
++ * Identify the running root filesystem by the head of its squashfs
++ * superblock, which holds the build time. Fails when there is no such volume.
++ */
++static int read_rom_id(unsigned char *id)
++{
++	char line[128], blk[32];
++	ssize_t n;
++	FILE *fp;
++	int idx, fd;
++
++	fp = fopen("/proc/mtd", "r");
++	if (!fp)
++		return -1;
++
++	blk[0] = '\0';
++	while (fgets(line, sizeof(line), fp)) {
++		if (sscanf(line, "mtd%d:", &idx) == 1 && strstr(line, "\"rootfs\"")) {
++			snprintf(blk, sizeof(blk), "/dev/mtdblock%d", idx);
++			break;
++		}
++	}
++	fclose(fp);
++	if (!blk[0])
++		return -1;
++
++	fd = open(blk, O_RDONLY);
++	if (fd < 0)
++		return -1;
++
++	n = read(fd, id, ROM_ID_LEN);
++	close(fd);
++
++	return n == ROM_ID_LEN ? 0 : -1;
++}
++
++static int load_rom_id(const char *dir, unsigned char *id)
++{
++	char path[96];
++	ssize_t n = -1;
++	int fd;
++
++	snprintf(path, sizeof(path), "%s/.rom_id", dir);
++	fd = open(path, O_RDONLY);
++	if (fd >= 0) {
++		n = read(fd, id, ROM_ID_LEN);
++		close(fd);
++	}
++
++	return n == ROM_ID_LEN ? 0 : -1;
++}
++
++/*
++ * The overlay may have been written for a different root filesystem, for
++ * example after the firmware was replaced by another system sharing the volume.
++ * Its files would shadow the new root filesystem, so keep only the settings.
++ * Returns false when that failed and the id must not be recorded.
++ */
++static bool shared_rom_check(const char *dir, const unsigned char *cur)
++{
++	unsigned char old[ROM_ID_LEN];
++	char path[96], cmd[160];
++	struct stat st;
++
++	if (load_rom_id(dir, old) || !memcmp(old, cur, ROM_ID_LEN))
++		return true;
++
++	/* A settings backup from sysupgrade is already waiting to be restored. */
++	snprintf(path, sizeof(path), "%s/sysupgrade.tgz", dir);
++	if (!stat(path, &st))
++		return true;
++
++	ULOG_INFO("root filesystem changed, keeping only the settings\n");
++	snprintf(cmd, sizeof(cmd), "/usr/libexec/zte-overlay-rescue %s", dir);
++	if (system(cmd)) {
++		ULOG_ERR("could not reset the overlay, stale files may remain\n");
++		return false;
++	}
++
++	return true;
++}
++
++static void shared_rom_record(const char *dir, const unsigned char *cur)
++{
++	unsigned char old[ROM_ID_LEN];
++	char path[96];
++	int fd;
++
++	if (!load_rom_id(dir, old) && !memcmp(old, cur, ROM_ID_LEN))
++		return;
++
++	snprintf(path, sizeof(path), "%s/.rom_id", dir);
++	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
++	if (fd < 0) {
++		ULOG_ERR("cannot record the root filesystem id: %m\n");
++		return;
++	}
++
++	if (write(fd, cur, ROM_ID_LEN) != ROM_ID_LEN)
++		ULOG_ERR("cannot record the root filesystem id: %m\n");
++	close(fd);
++}
++
+ int mount_overlay(struct volume *v)
+ {
+ 	const char *overlay_mp = "/tmp/overlay";
+ 	char *mp, *fs_name;
++	char ovl_data[64];
++	unsigned char rom_id[ROM_ID_LEN];
++	bool record = false;
+ 	int err;
+ 
+ 	if (!v)
+@@ -456,6 +571,9 @@
+ 	if (err)
+ 		return err;
+ 
++	/* The state and upper/work trees live here (a sub-directory if shared). */
++	fs_overlay_dir(overlay_mp, ovl_data, sizeof(ovl_data));
++
+ 	/*
+ 	 * Check for extroot config in overlay (rootfs_data) and if present then
+ 	 * prefer it over rootfs_data.
+@@ -465,21 +583,29 @@
+ 		return 0;
+ 	}
+ 
+-	switch (fs_state_get(overlay_mp)) {
++	/* Settings only: drop an overlay that belongs to another root filesystem. */
++	if (fs_shared_overlay() && !read_rom_id(rom_id))
++		record = shared_rom_check(ovl_data, rom_id);
++
++	switch (fs_state_get(ovl_data)) {
+ 	case FS_STATE_UNKNOWN:
+-		fs_state_set(overlay_mp, FS_STATE_PENDING);
+-		if (fs_state_get(overlay_mp) != FS_STATE_PENDING) {
++		fs_state_set(ovl_data, FS_STATE_PENDING);
++		if (fs_state_get(ovl_data) != FS_STATE_PENDING) {
+ 			ULOG_ERR("unable to set filesystem state\n");
+ 			break;
+ 		}
+ 	case FS_STATE_PENDING:
+ 		ULOG_INFO("overlay filesystem has not been fully initialized yet\n");
+-		overlay_delete(overlay_mp, true);
++		overlay_delete(ovl_data, true);
+ 		break;
+ 	case FS_STATE_READY:
+ 		break;
+ 	}
+ 
++	/* After the state handling above, which clears everything but the backup. */
++	if (record)
++		shared_rom_record(ovl_data, rom_id);
++
+ 	fs_name = overlay_fs_name(volume_identify(v));
+ 	ULOG_INFO("switching to %s overlay\n", fs_name);
+ 	if (mount_move("/tmp", "", "/overlay") || fopivot("/overlay", "/rom")) {
+--- a/libfstools/libfstools.h
++++ b/libfstools/libfstools.h
+@@ -52,6 +52,10 @@
+ 
+ enum fs_state fs_state_get(const char *dir);
+ int fs_state_set(const char *dir, enum fs_state state);
++
++bool fs_shared_overlay(void);
++const char *fs_shared_volume(void);
++const char *fs_overlay_dir(const char *mp, char *buf, size_t len);
+ void selinux_restorecon(char *overlaydir);
+ 
+ #endif
+--- a/libfstools/volume.c
++++ b/libfstools/volume.c
+@@ -15,6 +15,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
++#include <string.h>
+ #include "libfstools.h"
+ #include "volume.h"
+ 
+@@ -40,6 +41,10 @@
+ 	struct volume *v;
+ 	struct driver *d;
+ 
++	/* A volume shared with other firmware keeps its own name (SR1010: Plugin). */
++	if (!strcmp(name, "rootfs_data") && fs_shared_overlay())
++		name = (char *)fs_shared_volume();
++
+ 	list_for_each_entry(d, &drivers, list) {
+ 		if (d->find) {
+ 			v = d->find(name);
+--- a/factoryreset.c
++++ b/factoryreset.c
+@@ -49,9 +49,12 @@
+ 
+ 	mp = find_mount_point(v->blk, 1);
+ 	if (mp) {
++		char dir[64];
++
++		fs_overlay_dir(mp, dir, sizeof(dir));
+ 		ULOG_INFO("%s is mounted as %s, only erasing files\n", v->blk, mp);
+-		fs_state_set("/overlay", FS_STATE_PENDING);
+-		overlay_delete(mp, keep);
++		fs_state_set(dir, FS_STATE_PENDING);
++		overlay_delete(dir, keep);
+ 		mount(mp, "/", NULL, MS_REMOUNT, 0);
+ 	} else {
+ 		ULOG_INFO("%s is not mounted\n", v->blk);
+@@ -71,6 +74,11 @@
+ 
+ static int jffs2_mark(struct volume *v)
+ {
++	if (fs_shared_overlay()) {
++		ULOG_ERR("%s is shared with other firmware, refusing to mark it for erase\n", v->blk);
++		return -1;
++	}
++
+ 	__u32 deadc0de = __cpu_to_be32(0xdeadc0de);
+ 	size_t sz;
+ 	int fd;
+--- a/mount_root.c
++++ b/mount_root.c
+@@ -129,7 +129,12 @@
+ 	case FS_F2FS:
+ 	case FS_JFFS2:
+ 	case FS_UBIFS:
+-		fs_state_set("/overlay", FS_STATE_READY);
++		{
++			char dir[64];
++
++			fs_overlay_dir("/overlay", dir, sizeof(dir));
++			fs_state_set(dir, FS_STATE_READY);
++		}
+ 		break;
+ 	}
+ 

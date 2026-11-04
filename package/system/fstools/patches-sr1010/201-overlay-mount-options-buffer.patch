@@ -1,0 +1,40 @@
+From: Claude <noreply@anthropic.com>
+Subject: libfstools: make room for the mount options of a shared overlay
+
+The options of an overlay kept in a sub-directory of a shared volume are
+"lowerdir=/,upperdir=/overlay/.lede/upper,workdir=/overlay/.lede/work", which
+is 68 bytes. The buffer held 63, so the string was cut inside the work
+directory, which became the parent of the upper directory. The kernel refused
+that ("workdir and upperdir must be separate subtrees") and mount_root fell
+back to an overlay in RAM, so nothing was ever stored on the flash.
+
+Enlarge the buffer, and fail with a message when the options do not fit
+instead of mounting a truncated string.
+
+--- a/libfstools/mount.c
++++ b/libfstools/mount.c
+@@ -162,7 +162,9 @@
+ int
+ fopivot(char *rw_root, char *ro_root)
+ {
+-	char overlay[64], mount_options[64], upperdir[64], workdir[64], upgrade[64], upgrade_dest[64];
++	/* The options of a shared volume need 68 bytes:
++	 * lowerdir=/,upperdir=/overlay/.lede/upper,workdir=/overlay/.lede/work */
++	char overlay[64], mount_options[128], upperdir[64], workdir[64], upgrade[64], upgrade_dest[64];
+ 	char rwsub[64];
+ 	struct stat st;
+ 
+@@ -179,8 +181,11 @@
+ 	snprintf(workdir, sizeof(workdir), "%s/work", rw_root);
+ 	snprintf(upgrade, sizeof(upgrade), "%s/sysupgrade.tgz", rw_root);
+ 	snprintf(upgrade_dest, sizeof(upgrade_dest), "%s/sysupgrade.tgz", upperdir);
+-	snprintf(mount_options, sizeof(mount_options), "lowerdir=/,upperdir=%s,workdir=%s",
+-		 upperdir, workdir);
++	if (snprintf(mount_options, sizeof(mount_options), "lowerdir=/,upperdir=%s,workdir=%s",
++		     upperdir, workdir) >= (int)sizeof(mount_options)) {
++		ULOG_ERR("overlay mount options are too long\n");
++		return -1;
++	}
+ 
+ 	/*
+ 	 * Initialize SELinux security label on newly created overlay
