@@ -1,0 +1,622 @@
+Subject: [PATCH] spi: add ZX279133 flash controller
+
+Add the SPI flash controller and its device-tree binding.
+
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -1320,6 +1320,17 @@
+ 	  16 bit words in SPI mode 0, automatically asserting CS on transfer
+ 	  start and deasserting on end.
+ 
++config SPI_ZX279133_SFC
++	tristate "ZTE ZX279133 SPI flash controller"
++	depends on (ARM64 && OF) || COMPILE_TEST
++	depends on SPI_MEM
++	select MFD_SYSCON
++	help
++	  Enable the SPI-MEM controller used by the ZTE ZX279133 SR1010
++	  SPI-NAND. The controller is driven through its 64-byte FIFO in PIO
++	  mode and supports single-, dual-, and quad-lane address and data
++	  phases. The external chip-select route is configured through syscon.
++
+ config SPI_ZYNQ_QSPI
+ 	tristate "Xilinx Zynq QSPI controller"
+ 	depends on ARCH_ZYNQ || COMPILE_TEST
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -170,6 +170,7 @@
+ obj-$(CONFIG_SPI_XILINX)		+= spi-xilinx.o
+ obj-$(CONFIG_SPI_XLP)			+= spi-xlp.o
+ obj-$(CONFIG_SPI_XTENSA_XTFPGA)		+= spi-xtensa-xtfpga.o
++obj-$(CONFIG_SPI_ZX279133_SFC)		+= spi-zx279133-sfc.o
+ obj-$(CONFIG_SPI_ZYNQ_QSPI)		+= spi-zynq-qspi.o
+ obj-$(CONFIG_SPI_ZYNQMP_GQSPI)		+= spi-zynqmp-gqspi.o
+ obj-$(CONFIG_SPI_AMD)			+= spi-amd.o spi-amd-pci.o
+--- /dev/null
++++ b/drivers/spi/spi-zx279133-sfc.c
+@@ -0,0 +1,490 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/bitfield.h>
++#include <linux/bitops.h>
++#include <linux/clk.h>
++#include <linux/completion.h>
++#include <linux/io.h>
++#include <linux/interrupt.h>
++#include <linux/iopoll.h>
++#include <linux/jiffies.h>
++#include <linux/kernel.h>
++#include <linux/mfd/syscon.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/reset.h>
++#include <linux/spi/spi.h>
++#include <linux/spi/spi-mem.h>
++#include <linux/string.h>
++
++/* The controller exposes a 64-byte FIFO as sixteen 32-bit words. */
++#define ZX_SFC_CTRL			0x04
++#define ZX_SFC_TRIGGER			0x08
++#define ZX_SFC_CFG			0x0c
++#define ZX_SFC_MODE			0x10
++#define ZX_SFC_FORMAT			0x14
++#define ZX_SFC_LENGTH			0x18
++#define ZX_SFC_ADDRESS			0x1c
++#define ZX_SFC_COMMAND			0x20
++#define ZX_SFC_IRQ_ENABLE		0x28
++#define ZX_SFC_STATUS			0x2c
++#define ZX_SFC_IRQ_STATUS		0x30
++#define ZX_SFC_FIFO_STATUS		0x34
++#define ZX_SFC_FIFO			0x38
++
++#define ZX_SFC_CTRL_START		BIT(0)
++#define ZX_SFC_MODE_DATA_OUT		BIT(0)
++#define ZX_SFC_MODE_DATA_IN		BIT(1)
++#define ZX_SFC_MODE_DUMMY		BIT(2)
++#define ZX_SFC_MODE_ADDRESS		BIT(4)
++#define ZX_SFC_STATUS_ERROR		0x36
++#define ZX_SFC_FIFO_RX_COUNT		GENMASK(12, 8)
++#define ZX_SFC_FIFO_TX_SPACE		GENMASK(20, 16)
++#define ZX_SFC_IRQ_ALL			0x37
++
++#define ZX_SFC_CFG_DEFAULT		0x0001c440
++#define ZX_SFC_TIMEOUT_US		100000
++#define ZX_SFC_DONE_TIMEOUT_MS		1000
++
++struct zx279133_sfc {
++	struct device *dev;
++	void __iomem *base;
++	struct clk *pclk;
++	struct clk *clk;
++	struct reset_control *reset;
++	struct regmap *chipselect_map;
++	u32 chipselect_offset;
++	u32 chipselect_mask;
++	int irq;
++	struct completion done;
++	struct mutex lock; /* Serialize commands and the shared FIFO. */
++	u32 irq_status;
++};
++
++static inline u32 zx_sfc_read(struct zx279133_sfc *sfc, unsigned int reg)
++{
++	return readl(sfc->base + reg);
++}
++
++static inline void zx_sfc_write(struct zx279133_sfc *sfc, unsigned int reg,
++				u32 value)
++{
++	writel(value, sfc->base + reg);
++}
++
++static int zx_sfc_wait_idle(struct zx279133_sfc *sfc)
++{
++	u32 value;
++
++	return readl_poll_timeout(sfc->base + ZX_SFC_CTRL, value,
++				  !(value & ZX_SFC_CTRL_START), 1,
++				  ZX_SFC_TIMEOUT_US);
++}
++
++static void zx_sfc_collect_irq_status(struct zx279133_sfc *sfc)
++{
++	u32 status = zx_sfc_read(sfc, ZX_SFC_IRQ_STATUS);
++
++	if (!status)
++		return;
++
++	sfc->irq_status |= status;
++	zx_sfc_write(sfc, ZX_SFC_IRQ_STATUS, status);
++}
++
++static int zx_sfc_stop(struct zx279133_sfc *sfc)
++{
++	int ret;
++
++	/* Quiesce the handler before touching the shared IRQ cause accumulator. */
++	zx_sfc_write(sfc, ZX_SFC_IRQ_ENABLE, 0);
++	synchronize_irq(sfc->irq);
++	zx_sfc_collect_irq_status(sfc);
++	zx_sfc_write(sfc, ZX_SFC_TRIGGER, 0);
++	zx_sfc_collect_irq_status(sfc);
++
++	ret = zx_sfc_wait_idle(sfc);
++	zx_sfc_collect_irq_status(sfc);
++	if (ret && sfc->reset) {
++		int reset_ret;
++
++		reset_ret = reset_control_reset(sfc->reset);
++		if (reset_ret) {
++			dev_err_ratelimited(sfc->dev,
++					    "failed to recover controller: %d\n",
++					    reset_ret);
++		} else {
++			/* Verify reset recovery, but preserve the abort timeout. */
++			zx_sfc_write(sfc, ZX_SFC_IRQ_ENABLE, 0);
++			zx_sfc_write(sfc, ZX_SFC_TRIGGER, 0);
++			zx_sfc_collect_irq_status(sfc);
++			if (zx_sfc_wait_idle(sfc))
++				dev_err_ratelimited(sfc->dev,
++						    "controller remains busy after reset\n");
++		}
++	}
++
++	return ret;
++}
++
++static int zx_sfc_select_chip(struct zx279133_sfc *sfc,
++			      unsigned int chip_select)
++{
++	u32 max_select;
++
++	max_select = sfc->chipselect_mask >> __ffs(sfc->chipselect_mask);
++	if (chip_select > max_select || chip_select)
++		return -EINVAL;
++
++	return regmap_update_bits(sfc->chipselect_map, sfc->chipselect_offset,
++				  sfc->chipselect_mask,
++				  chip_select << __ffs(sfc->chipselect_mask));
++}
++
++static int zx_sfc_status_error(struct zx279133_sfc *sfc)
++{
++	if (zx_sfc_read(sfc, ZX_SFC_STATUS) & ZX_SFC_STATUS_ERROR)
++		return -EIO;
++
++	return 0;
++}
++
++static int zx_sfc_wait_fifo(struct zx279133_sfc *sfc, u32 mask)
++{
++	u32 value;
++	int ret;
++
++	ret = readl_poll_timeout(sfc->base + ZX_SFC_FIFO_STATUS, value,
++				 (value & mask) ||
++				 (zx_sfc_read(sfc, ZX_SFC_STATUS) &
++				  ZX_SFC_STATUS_ERROR), 1, ZX_SFC_TIMEOUT_US);
++	if (ret)
++		return ret;
++
++	return zx_sfc_status_error(sfc);
++}
++
++static int zx_sfc_tx_pio(struct zx279133_sfc *sfc,
++			 const u8 *buf, unsigned int len)
++{
++	while (len) {
++		u32 words;
++		int ret;
++
++		ret = zx_sfc_wait_fifo(sfc, ZX_SFC_FIFO_TX_SPACE);
++		if (ret)
++			return ret;
++
++		words = FIELD_GET(ZX_SFC_FIFO_TX_SPACE,
++				  zx_sfc_read(sfc, ZX_SFC_FIFO_STATUS));
++		while (words-- && len) {
++			u32 value = 0;
++			unsigned int count = min_t(unsigned int, len,
++						   sizeof(value));
++
++			memcpy(&value, buf, count);
++			zx_sfc_write(sfc, ZX_SFC_FIFO, value);
++			buf += count;
++			len -= count;
++		}
++	}
++
++	return 0;
++}
++
++static int zx_sfc_rx_pio(struct zx279133_sfc *sfc,
++			 u8 *buf, unsigned int len)
++{
++	while (len) {
++		u32 words;
++		int ret;
++
++		ret = zx_sfc_wait_fifo(sfc, ZX_SFC_FIFO_RX_COUNT);
++		if (ret)
++			return ret;
++
++		words = FIELD_GET(ZX_SFC_FIFO_RX_COUNT,
++				  zx_sfc_read(sfc, ZX_SFC_FIFO_STATUS));
++		while (words-- && len) {
++			u32 value = zx_sfc_read(sfc, ZX_SFC_FIFO);
++			unsigned int count = min_t(unsigned int, len,
++						   sizeof(value));
++
++			memcpy(buf, &value, count);
++			buf += count;
++			len -= count;
++		}
++	}
++
++	return 0;
++}
++
++static bool zx_sfc_supports_op(struct spi_mem *mem,
++			       const struct spi_mem_op *op)
++{
++	if (!spi_mem_default_supports_op(mem, op))
++		return false;
++
++	/* The command phase is always one-bit on this controller. */
++	if (op->cmd.nbytes != 1 || op->cmd.buswidth != 1 || op->cmd.dtr)
++		return false;
++	if (op->addr.nbytes > 4 || op->addr.dtr || op->dummy.dtr || op->data.dtr)
++		return false;
++	if (op->addr.buswidth != 0 && op->addr.buswidth != 1 &&
++	    op->addr.buswidth != 2 && op->addr.buswidth != 4)
++		return false;
++	if (op->dummy.buswidth != 0 && op->dummy.buswidth != 1 &&
++	    op->dummy.buswidth != 2 && op->dummy.buswidth != 4)
++		return false;
++	if (op->data.buswidth != 0 && op->data.buswidth != 1 &&
++	    op->data.buswidth != 2 && op->data.buswidth != 4)
++		return false;
++	if (op->dummy.nbytes && op->dummy.buswidth > 1 &&
++	    op->dummy.nbytes >= op->dummy.buswidth)
++		return false;
++
++	return true;
++}
++
++static int zx_sfc_adjust_op_size(struct spi_mem *mem,
++				 struct spi_mem_op *op)
++{
++	/* PIO streams the FIFO while the command is active, so no size cap. */
++	return 0;
++}
++
++static int zx_sfc_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
++{
++	struct zx279133_sfc *sfc = spi_controller_get_devdata(mem->spi->controller);
++	u32 format = 0;
++	u32 mode = 0;
++	unsigned int data_len = op->data.nbytes;
++	int stop_ret;
++	int ret;
++
++	if (!zx_sfc_supports_op(mem, op))
++		return -EOPNOTSUPP;
++
++	mutex_lock(&sfc->lock);
++	ret = zx_sfc_wait_idle(sfc);
++	if (ret) {
++		int stop_ret = zx_sfc_stop(sfc);
++
++		if (stop_ret)
++			ret = stop_ret;
++		goto out_unlock;
++	}
++	ret = zx_sfc_select_chip(sfc, spi_get_chipselect(mem->spi, 0));
++	if (ret)
++		goto out_unlock;
++
++	if (op->addr.nbytes) {
++		format |= (op->addr.nbytes - 1) << 5;
++		mode |= ZX_SFC_MODE_ADDRESS;
++		if (op->addr.buswidth >= 2)
++			format |= BIT(4);
++	}
++
++	if (op->dummy.nbytes) {
++		unsigned int width = op->dummy.buswidth ?: 1;
++		unsigned int whole = op->dummy.nbytes / width;
++		unsigned int remainder = op->dummy.nbytes - whole;
++
++		/* Split-byte dummy encoding reconstructed from the vendor ELF. */
++		mode |= ZX_SFC_MODE_DUMMY;
++		format |= (whole << 12) |
++			  (((remainder << 3) / width) << 8);
++	}
++
++	if (op->data.buswidth == 2)
++		format |= 4;
++	else if (op->data.buswidth == 4)
++		format |= 5;
++
++	if (op->data.dir == SPI_MEM_DATA_IN)
++		mode |= ZX_SFC_MODE_DATA_IN;
++	else if (op->data.dir == SPI_MEM_DATA_OUT)
++		mode |= ZX_SFC_MODE_DATA_OUT;
++
++	reinit_completion(&sfc->done);
++	sfc->irq_status = 0;
++	zx_sfc_write(sfc, ZX_SFC_TRIGGER, 1);
++	zx_sfc_write(sfc, ZX_SFC_COMMAND, op->cmd.opcode);
++	zx_sfc_write(sfc, ZX_SFC_CFG, ZX_SFC_CFG_DEFAULT);
++	zx_sfc_write(sfc, ZX_SFC_MODE, mode);
++	zx_sfc_write(sfc, ZX_SFC_FORMAT, format);
++	zx_sfc_write(sfc, ZX_SFC_ADDRESS, op->addr.val);
++	zx_sfc_write(sfc, ZX_SFC_LENGTH, data_len ? data_len - 1 : 0);
++	zx_sfc_write(sfc, ZX_SFC_IRQ_STATUS, 0xff);
++	zx_sfc_write(sfc, ZX_SFC_IRQ_ENABLE, ZX_SFC_IRQ_ALL);
++	zx_sfc_write(sfc, ZX_SFC_CTRL, ZX_SFC_CTRL_START);
++
++	if (op->data.dir == SPI_MEM_DATA_OUT && data_len)
++		ret = zx_sfc_tx_pio(sfc, op->data.buf.out, data_len);
++	else if (op->data.dir == SPI_MEM_DATA_IN && data_len)
++		ret = zx_sfc_rx_pio(sfc, op->data.buf.in, data_len);
++	if (ret)
++		goto stop;
++
++	if (!wait_for_completion_timeout(&sfc->done,
++					 msecs_to_jiffies(ZX_SFC_DONE_TIMEOUT_MS))) {
++		ret = -ETIMEDOUT;
++		goto stop;
++	}
++
++stop:
++	stop_ret = zx_sfc_stop(sfc);
++	if (stop_ret)
++		ret = stop_ret;
++	else if (!ret && (sfc->irq_status & ZX_SFC_STATUS_ERROR))
++		ret = -EIO;
++	else if (!ret)
++		ret = zx_sfc_status_error(sfc);
++
++out_unlock:
++	mutex_unlock(&sfc->lock);
++	return ret;
++}
++
++static const struct spi_controller_mem_ops zx_sfc_mem_ops = {
++	.adjust_op_size = zx_sfc_adjust_op_size,
++	.supports_op = zx_sfc_supports_op,
++	.exec_op = zx_sfc_exec_op,
++};
++
++static irqreturn_t zx_sfc_irq(int irq, void *data)
++{
++	struct zx279133_sfc *sfc = data;
++	u32 status = zx_sfc_read(sfc, ZX_SFC_IRQ_STATUS);
++
++	if (!status)
++		return IRQ_NONE;
++
++	sfc->irq_status |= status;
++	zx_sfc_write(sfc, ZX_SFC_IRQ_STATUS, status);
++	complete(&sfc->done);
++	return IRQ_HANDLED;
++}
++
++static int zx_sfc_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct spi_controller *ctlr;
++	struct zx279133_sfc *sfc;
++	unsigned int chipselect_args[2];
++	unsigned long actual_rate;
++	u32 max_freq;
++	int irq;
++	int ret;
++
++	ctlr = devm_spi_alloc_host(dev, sizeof(*sfc));
++	if (!ctlr)
++		return -ENOMEM;
++
++	sfc = spi_controller_get_devdata(ctlr);
++	sfc->dev = dev;
++	mutex_init(&sfc->lock);
++	init_completion(&sfc->done);
++
++	sfc->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(sfc->base))
++		return PTR_ERR(sfc->base);
++
++	sfc->chipselect_map =
++		syscon_regmap_lookup_by_phandle_args(dev->of_node,
++						     "zte,spi-chipselect",
++						     ARRAY_SIZE(chipselect_args),
++						     chipselect_args);
++	if (IS_ERR(sfc->chipselect_map))
++		return dev_err_probe(dev, PTR_ERR(sfc->chipselect_map),
++				     "failed to get chip-select syscon\n");
++	sfc->chipselect_offset = chipselect_args[0];
++	sfc->chipselect_mask = chipselect_args[1];
++	if (!sfc->chipselect_mask ||
++	    hweight32(sfc->chipselect_mask) != 1 ||
++	    sfc->chipselect_offset & 3)
++		return dev_err_probe(dev, -EINVAL,
++				     "invalid chip-select register tuple\n");
++
++	sfc->pclk = devm_clk_get_enabled(dev, "pclk");
++	if (IS_ERR(sfc->pclk))
++		return dev_err_probe(dev, PTR_ERR(sfc->pclk),
++				     "failed to enable bus clock\n");
++
++	sfc->clk = devm_clk_get_enabled(dev, "wclk");
++	if (IS_ERR(sfc->clk))
++		return dev_err_probe(dev, PTR_ERR(sfc->clk),
++				     "failed to enable clock\n");
++
++	sfc->reset = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(sfc->reset))
++		return dev_err_probe(dev, PTR_ERR(sfc->reset),
++				     "failed to get reset\n");
++	ret = reset_control_reset(sfc->reset);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to reset controller\n");
++
++	ret = device_property_read_u32(dev, "spi-max-frequency", &max_freq);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "missing spi-max-frequency\n");
++	if (!max_freq)
++		return dev_err_probe(dev, -EINVAL,
++				     "invalid spi-max-frequency\n");
++	ret = clk_set_rate(sfc->clk, max_freq);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to set clock to %u Hz\n", max_freq);
++	actual_rate = clk_get_rate(sfc->clk);
++	if (!actual_rate || actual_rate > max_freq)
++		return dev_err_probe(dev, actual_rate ? -ERANGE : -EINVAL,
++				     "clock rate %lu exceeds requested %u Hz\n",
++				     actual_rate, max_freq);
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++	sfc->irq = irq;
++	ret = devm_request_irq(dev, irq, zx_sfc_irq, 0, dev_name(dev), sfc);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to request IRQ\n");
++
++	ctlr->mem_ops = &zx_sfc_mem_ops;
++	ctlr->num_chipselect = 1;
++	ctlr->max_speed_hz = actual_rate;
++	ctlr->mode_bits = SPI_RX_DUAL | SPI_TX_DUAL |
++			  SPI_RX_QUAD | SPI_TX_QUAD;
++	ctlr->bits_per_word_mask = SPI_BPW_MASK(8);
++	ctlr->dev.of_node = dev->of_node;
++
++	platform_set_drvdata(pdev, ctlr);
++	ret = devm_spi_register_controller(dev, ctlr);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to register controller\n");
++
++	dev_info(dev, "SPI flash controller at %lu Hz (PIO)\n",
++		 clk_get_rate(sfc->clk));
++	return 0;
++}
++
++static const struct of_device_id zx_sfc_of_match[] = {
++	{ .compatible = "zte,zx279133-sfc" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx_sfc_of_match);
++
++static struct platform_driver zx_sfc_driver = {
++	.probe = zx_sfc_probe,
++	.driver = {
++		.name = "zx279133-sfc",
++		.of_match_table = zx_sfc_of_match,
++	},
++};
++module_platform_driver(zx_sfc_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 SPI flash controller");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/spi/zte,zx279133-sfc.yaml
+@@ -0,0 +1,92 @@
++# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/spi/zte,zx279133-sfc.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 SPI flash controller
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description: |
++  The ZX279133 serial flash controller is a single-chip-select SPI-MEM
++  controller used by the board's SPI-NAND. The controller has a 64-byte FIFO
++  and supports single-bit command phases with single, dual, or quad address
++  and data phases.
++
++allOf:
++  - $ref: spi-controller.yaml#
++
++properties:
++  compatible:
++    const: zte,zx279133-sfc
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++  clocks:
++    minItems: 2
++    maxItems: 2
++
++  clock-names:
++    items:
++      - const: pclk
++      - const: wclk
++
++  resets:
++    maxItems: 1
++
++  zte,spi-chipselect:
++    description:
++      Phandle to the LSP syscon, register offset, and mask used to select the
++      controller chip-select. The single board device uses bit 29 of offset
++      0x2c and selects chip-select zero.
++    $ref: /schemas/types.yaml#/definitions/phandle-array
++    items:
++      - items:
++          - description: phandle to the LSP syscon
++          - description: chip-select register offset
++          - description: chip-select mask
++
++  spi-max-frequency:
++    description: Maximum SPI clocking speed of the controller in Hz.
++    $ref: /schemas/types.yaml#/definitions/uint32
++
++required:
++  - compatible
++  - reg
++  - interrupts
++  - clocks
++  - clock-names
++  - resets
++  - zte,spi-chipselect
++  - spi-max-frequency
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    spi@10d0f000 {
++        compatible = "zte,zx279133-sfc";
++        reg = <0x10d0f000 0x1000>;
++        interrupts = <33>;
++        clocks = <&sfc_clk 0>, <&sfc_clk 1>;
++        clock-names = "pclk", "wclk";
++        resets = <&sfc_clk 0>;
++        zte,spi-chipselect = <&sfc_clk 0x2c 0x20000000>;
++        spi-max-frequency = <100000000>;
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        flash@0 {
++            compatible = "spi-nand";
++            reg = <0>;
++            spi-max-frequency = <100000000>;
++        };
++    };
++
++...

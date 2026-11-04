@@ -1,0 +1,38 @@
+From: Claude <noreply@anthropic.com>
+Subject: libfstools: look for the jffs2 of a shared volume in the whole volume
+
+The shared overlay volume was taken for a jffs2 only if a jffs2 node was found in
+its first 1 MiB. After the vendor firmware used the partition, its erase blocks at
+the start were empty (the vendor firmware erased and reused them), no node was
+found, the volume was taken for blank and mount_root used an overlay in RAM. The
+jffs2 was mounted only at the end of the boot, about 40 s later than usual. The
+code that switches to it copies the files of the RAM overlay into .lede over
+files of the same name, which could replace settings by those of a first boot; on
+the device that was not seen, the settings were intact.
+
+Scan the whole volume, stop at the first node.
+
+--- a/libfstools/mtd.c
++++ b/libfstools/mtd.c
+@@ -228,14 +228,17 @@
+ 
+ 	/*
+ 	 * A jffs2 populated by another firmware may start with an empty (0xff)
+-	 * erase block, so the first word is not the jffs2 magic. Look further
+-	 * so the volume is mounted and never reformatted.
++	 * erase block, so the first word is not the jffs2 magic. Look through
++	 * the whole volume, because the erase blocks at its start can be empty
++	 * after the other firmware or the garbage collection reused them. A
++	 * volume that is taken for empty gets the files of the overlay in RAM,
++	 * the settings of the first boot among them, copied over its own.
+ 	 */
+ 	if (fs_shared_overlay() && v->name && !strcmp(v->name, fs_shared_volume())) {
+ 		static char scan[65536];
+-		off_t off;
++		off_t off, end = v->size ? (off_t)v->size : 0x100000;
+ 
+-		for (off = 0; off < 0x100000; off += sizeof(scan)) {
++		for (off = 0; off < end; off += sizeof(scan)) {
+ 			ssize_t n, i;
+ 
+ 			if (lseek(p->fd, off, SEEK_SET) < 0)

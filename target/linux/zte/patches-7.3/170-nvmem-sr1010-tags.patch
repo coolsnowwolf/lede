@@ -1,0 +1,241 @@
+Subject: [PATCH] nvmem: add SR1010 vendor tag layout
+
+Decode the board tag layout through the nvmem layout subsystem.
+
+--- a/drivers/nvmem/layouts/Kconfig
++++ b/drivers/nvmem/layouts/Kconfig
+@@ -7,6 +7,13 @@
+ if NVMEM_LAYOUTS
+ 
+ menu "Layout Types"
++
++config NVMEM_LAYOUT_ZTE_TAGS
++	tristate "ZTE SR1010 factory tags layout"
++	select CRC32
++	help
++	  Validate the factory tags table and expose its WAN and LAN MAC
++	  addresses as read-only NVMEM cells.
+ 
+ config NVMEM_LAYOUT_SL28_VPD
+ 	tristate "Kontron sl28 VPD layout support"
+--- a/drivers/nvmem/layouts/Makefile
++++ b/drivers/nvmem/layouts/Makefile
+@@ -8,3 +8,4 @@
+ obj-$(CONFIG_NVMEM_LAYOUT_ONIE_TLV) += onie-tlv.o
+ obj-$(CONFIG_NVMEM_LAYOUT_U_BOOT_ENV) += u-boot-env.o
+ obj-$(CONFIG_NVMEM_LAYOUT_ASCII_ENV) += ascii-env.o
++obj-$(CONFIG_NVMEM_LAYOUT_ZTE_TAGS) += zte-tags.o
+--- /dev/null
++++ b/drivers/nvmem/layouts/zte-tags.c
+@@ -0,0 +1,97 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* ZTE factory tags: CRC-protected variable-length key/value records. */
++
++#include <linux/module.h>
++#include <linux/nvmem-consumer.h>
++#include <linux/nvmem-provider.h>
++#include <linux/of.h>
++#include <linux/sizes.h>
++
++#include "zte-tags.h"
++
++static int zte_tags_add_cells(struct nvmem_layout *layout)
++{
++	static const char * const names[] = { "mac-address", "mac-address-lan" };
++	struct nvmem_device *nvmem = layout->nvmem;
++	struct nvmem_cell_info cell = { .bytes = ETH_ALEN };
++	struct device_node *np;
++	u8 header[ZTE_TAGS_HEADER_SIZE];
++	size_t size;
++	u32 len;
++	u8 *table;
++	int offsets[ARRAY_SIZE(names)];
++	int i, ret;
++
++	ret = nvmem_device_read(nvmem, 0, sizeof(header), header);
++	if (ret != sizeof(header))
++		return ret < 0 ? ret : -EIO;
++	if (get_unaligned_le32(header) != 0x33333333)
++		return -EINVAL;
++	len = get_unaligned_le32(header + 4);
++	/* SR1010 has a 1 MiB tags partition; never allocate from unchecked data. */
++	if (len > SZ_1M - sizeof(header))
++		return -EINVAL;
++	size = sizeof(header) + len;
++	if (size > nvmem_dev_size(nvmem))
++		return -EINVAL;
++	table = kmalloc(size, GFP_KERNEL);
++	if (!table)
++		return -ENOMEM;
++	ret = nvmem_device_read(nvmem, 0, size, table);
++	if (ret != size) {
++		ret = ret < 0 ? ret : -EIO;
++		goto out;
++	}
++	/* Validate both configured addresses before publishing either cell. */
++	for (i = 0; i < ARRAY_SIZE(names); i++) {
++		ret = zte_tags_mac_offset(table, size, 0x0100 + i);
++		if (ret < 0)
++			goto out;
++		offsets[i] = ret;
++	}
++	np = of_nvmem_layout_get_container(nvmem);
++	for (i = 0; i < ARRAY_SIZE(names); i++) {
++		cell.name = names[i];
++		cell.offset = offsets[i];
++		cell.np = of_get_child_by_name(np, cell.name);
++		ret = nvmem_add_one_cell(nvmem, &cell);
++		if (ret) {
++			of_node_put(cell.np);
++			break;
++		}
++	}
++	of_node_put(np);
++out:
++	kfree(table);
++	return ret;
++}
++
++static int zte_tags_probe(struct nvmem_layout *layout)
++{
++	layout->add_cells = zte_tags_add_cells;
++	return nvmem_layout_register(layout);
++}
++
++static void zte_tags_remove(struct nvmem_layout *layout)
++{
++	nvmem_layout_unregister(layout);
++}
++
++static const struct of_device_id zte_tags_of_match[] = {
++	{ .compatible = "zte,sr1010-tags" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zte_tags_of_match);
++
++static struct nvmem_layout_driver zte_tags_driver = {
++	.driver = {
++		.name = "zte-tags",
++		.of_match_table = zte_tags_of_match,
++	},
++	.probe = zte_tags_probe,
++	.remove = zte_tags_remove,
++};
++module_nvmem_layout_driver(zte_tags_driver);
++
++MODULE_DESCRIPTION("ZTE SR1010 factory tags NVMEM layout");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/nvmem/layouts/zte-tags.h
+@@ -0,0 +1,50 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZTE_TAGS_H
++#define _ZTE_TAGS_H
++
++#include <linux/crc32.h>
++#include <linux/etherdevice.h>
++#include <linux/unaligned.h>
++
++#define ZTE_TAGS_HEADER_SIZE 12
++
++/* Return the requested MAC's offset only after validating the whole table. */
++static inline int zte_tags_mac_offset(const u8 *table, size_t size, u16 tag)
++{
++	size_t pos = ZTE_TAGS_HEADER_SIZE;
++	u32 len, key_len, value_len;
++	int mac_offset = -ENOENT;
++
++	if (size < ZTE_TAGS_HEADER_SIZE ||
++	    get_unaligned_le32(table) != 0x33333333)
++		return -EINVAL;
++	len = get_unaligned_le32(table + 4);
++	if (len != size - ZTE_TAGS_HEADER_SIZE)
++		return -EINVAL;
++	if ((crc32_le(~0U, table + ZTE_TAGS_HEADER_SIZE, len) ^ ~0U) !=
++	    get_unaligned_le32(table + 8))
++		return -EBADMSG;
++
++	while (pos < size) {
++		if (size - pos < 16)
++			return -EINVAL;
++		key_len = get_unaligned_le32(table + pos);
++		value_len = get_unaligned_le32(table + pos + 4);
++		pos += 16;
++		if (!key_len || key_len > size - pos)
++			return -EINVAL;
++		if (value_len > size - pos - key_len)
++			return -EINVAL;
++		if (key_len == 2 && get_unaligned_le16(table + pos) == tag) {
++			if (mac_offset >= 0 || value_len != ETH_ALEN ||
++			    !is_valid_ether_addr(table + pos + key_len))
++				return -EINVAL;
++			mac_offset = pos + key_len;
++		}
++		pos += key_len + value_len;
++	}
++
++	return mac_offset;
++}
++
++#endif
+--- a/Documentation/devicetree/bindings/nvmem/layouts/nvmem-layout.yaml
++++ b/Documentation/devicetree/bindings/nvmem/layouts/nvmem-layout.yaml
+@@ -22,6 +22,7 @@
+   - $ref: kontron,sl28-vpd.yaml
+   - $ref: onie,tlv-layout.yaml
+   - $ref: u-boot,env.yaml
++  - $ref: zte,sr1010-tags.yaml
+ 
+ properties:
+   compatible: true
+--- /dev/null
++++ b/Documentation/devicetree/bindings/nvmem/layouts/zte,sr1010-tags.yaml
+@@ -0,0 +1,48 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/nvmem/layouts/zte,sr1010-tags.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE SR1010 factory tags
++
++maintainers:
++  - Linux ARM Kernel Mailing List <linux-arm-kernel@lists.infradead.org>
++
++description: |
++  The tags partition contains a little-endian header with magic 0x33333333,
++  payload length and IEEE CRC32 of the payload. Each payload record contains
++  four little-endian 32-bit words (key length, value length, two reserved
++  words), followed by the key and value without alignment padding. The
++  two-byte keys 0x0100 and 0x0101 identify six-byte Ethernet MAC addresses.
++  The MAC offset is discovered by parsing records, rather than fixed in DT.
++
++select: false
++
++properties:
++  compatible:
++    const: zte,sr1010-tags
++
++  mac-address:
++    type: object
++    description: MAC from tag 0x0100, assigned to WAN on SR1010.
++    additionalProperties: false
++
++  mac-address-lan:
++    type: object
++    description: MAC from tag 0x0101, assigned to LAN on SR1010.
++    additionalProperties: false
++
++required:
++  - compatible
++
++additionalProperties: false
++
++examples:
++  - |
++    nvmem-layout {
++        compatible = "zte,sr1010-tags";
++
++        mac-address {
++        };
++    };

@@ -1,0 +1,1024 @@
+Subject: [PATCH] net: phy: add ZX279051 PHY support
+
+Add the board WAN PHY implementation and status-mask definitions.
+
+--- a/drivers/net/phy/Kconfig
++++ b/drivers/net/phy/Kconfig
+@@ -558,6 +558,15 @@
+ 	help
+ 	  Currently supports the vsc8244
+ 
++config ZX279051_PHY
++	tristate "ZTE ZX279051 PHY"
++	help
++	  Support the ZTE ZX279051 multi-gigabit Ethernet PHY. The device is
++	  enumerated through a firmware-provided PHY ID while its vendor and
++	  IEEE MMD registers are accessed through direct Clause 45 transactions.
++	  The driver restores the post-reset hardware state and supports
++	  10/100/1000/2500BASE-T operation.
++
+ config XILINX_GMII2RGMII
+ 	tristate "Xilinx GMII2RGMII converter driver"
+ 	help
+--- a/drivers/net/phy/Makefile
++++ b/drivers/net/phy/Makefile
+@@ -117,3 +117,4 @@
+ obj-$(CONFIG_TERANETICS_PHY)	+= teranetics.o
+ obj-$(CONFIG_VITESSE_PHY)	+= vitesse.o
+ obj-$(CONFIG_XILINX_GMII2RGMII) += xilinx_gmii2rgmii.o
++obj-$(CONFIG_ZX279051_PHY)	+= zx279051.o
+--- /dev/null
++++ b/drivers/net/phy/zx279051.c
+@@ -0,0 +1,857 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/bitfield.h>
++#include <linux/delay.h>
++#include <linux/iopoll.h>
++#include <linux/jiffies.h>
++#include <linux/mdio.h>
++#include <linux/mii.h>
++#include <linux/module.h>
++#include <linux/phy.h>
++#include <linux/slab.h>
++
++#define ZX279051_PHY_ID		0x000084b9
++#define ZX279051_ID_DEVAD	MDIO_MMD_AN
++#define ZX279051_ID_REG		MDIO_DEVID1
++#define ZX279051_GE_STATUS	26
++#define ZX279051_GE_LINK		BIT(6)
++#define ZX279051_GE_SPEED	GENMASK(9, 7)
++
++#define ZX279051_TEMP_STATUS_REG	0xb626
++#define ZX279051_TEMP_VALID		5
++#define ZX279051_TEMP_VALUE_REG		0x002e
++#define ZX279051_CFCTRL_REG		0x805a
++#define ZX279051_CFCTRL_FIELD		GENMASK(9, 3)
++#define ZX279051_CFCTRL_APPLY_REG	0xb616
++#define ZX279051_ANALOG_GATE_REG	0xb60f
++#define ZX279051_TEMP_TRIGGER_REG	0xb62a
++
++#define ZX279051_INIT_C22	0
++#define ZX279051_INIT_C45	1
++
++struct zx279051_init_write {
++	u8 access;
++	u8 devad;
++	u16 reg;
++	u16 val;
++};
++
++#include "zx279051-fullmask.h"
++
++static_assert(ARRAY_SIZE(zx279051_fullmask_writes) == 117);
++
++struct zx279051_priv {
++	phy_interface_t host_interface;
++	unsigned int host_speed_code;
++	bool nbaset_retry_done;
++};
++
++static int zx279051_read_mmd(struct phy_device *phydev, int devad, u16 regnum)
++{
++	return mdiobus_c45_read(phydev->mdio.bus, phydev->mdio.addr,
++				 devad, regnum);
++}
++
++static int zx279051_write_mmd(struct phy_device *phydev, int devad,
++			      u16 regnum, u16 val)
++{
++	return mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				  devad, regnum, val);
++}
++
++static int zx279051_write_c22(struct phy_device *phydev, u16 regnum, u16 val)
++{
++	return mdiobus_write(phydev->mdio.bus, phydev->mdio.addr, regnum, val);
++}
++
++static int zx279051_fullmask_write(struct phy_device *phydev,
++				   const struct zx279051_init_write *write)
++{
++	if (write->access == ZX279051_INIT_C22)
++		return zx279051_write_c22(phydev, write->reg, write->val);
++
++	return zx279051_write_mmd(phydev, write->devad, write->reg,
++				   write->val);
++}
++
++static int zx279051_fullmask_temperature_adjust(struct phy_device *phydev)
++{
++	unsigned int cfctrl;
++	int status, temp;
++	int ret;
++
++	ret = zx279051_write_mmd(phydev, MDIO_MMD_VEND1,
++				 ZX279051_TEMP_TRIGGER_REG, 0);
++	if (ret)
++		return ret;
++	ret = zx279051_write_c22(phydev, MII_BMCR, 0);
++	if (ret)
++		return ret;
++	ret = zx279051_write_mmd(phydev, MDIO_MMD_VEND1,
++				 ZX279051_ANALOG_GATE_REG, 1);
++	if (ret)
++		return ret;
++	ret = zx279051_write_mmd(phydev, MDIO_MMD_VEND1,
++				 ZX279051_TEMP_TRIGGER_REG, 1);
++	if (ret)
++		return ret;
++
++	msleep(30);
++	status = zx279051_read_mmd(phydev, MDIO_MMD_VEND1,
++				   ZX279051_TEMP_STATUS_REG);
++	if (status < 0)
++		return status;
++	/* The vendor sequence only clears the analog gate for a valid sample. */
++	if (status != ZX279051_TEMP_VALID)
++		return 0;
++
++	temp = zx279051_read_mmd(phydev, MDIO_MMD_VEND2,
++				 ZX279051_TEMP_VALUE_REG);
++	if (temp < 0)
++		return temp;
++	ret = zx279051_read_mmd(phydev, MDIO_MMD_VEND2,
++				ZX279051_CFCTRL_REG);
++	if (ret < 0)
++		return ret;
++
++	cfctrl = FIELD_GET(ZX279051_CFCTRL_FIELD, ret);
++	if (temp <= 0x6699)
++		cfctrl += 6;
++	else if (temp <= 0x6f0a)
++		cfctrl += 3;
++	else if (temp > 0x7350)
++		cfctrl--;
++
++	ret = zx279051_write_mmd(phydev, MDIO_MMD_VEND1,
++				 ZX279051_CFCTRL_APPLY_REG, cfctrl);
++	if (ret)
++		return ret;
++
++	return zx279051_write_mmd(phydev, MDIO_MMD_VEND1,
++				  ZX279051_ANALOG_GATE_REG, 0);
++}
++
++static int zx279051_fullmask_init(struct phy_device *phydev)
++{
++	int bmcr, an_adv;
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < ARRAY_SIZE(zx279051_fullmask_writes); i++) {
++		ret = zx279051_fullmask_write(phydev,
++					      &zx279051_fullmask_writes[i]);
++		if (ret) {
++			phydev_err(phydev,
++				   "post-reset initialization failed at step %u: %pe\n",
++				   i + 1, ERR_PTR(ret));
++			return ret;
++		}
++	}
++
++	/* Vendor power/temperature-calibration sequence; delays are required. */
++	msleep(200);
++	ret = zx279051_write_c22(phydev, MII_BMCR, 0);
++	if (ret)
++		return ret;
++	msleep(100);
++	ret = zx279051_write_c22(phydev, MII_BMCR, BMCR_PDOWN);
++	if (ret)
++		return ret;
++	msleep(20);
++
++	ret = zx279051_fullmask_temperature_adjust(phydev);
++	if (ret)
++		return ret;
++
++	an_adv = zx279051_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_ADVERTISE);
++	if (an_adv < 0)
++		return an_adv;
++	ret = zx279051_write_mmd(phydev, MDIO_MMD_AN, MDIO_AN_ADVERTISE,
++				 an_adv | 0x0c00);
++	if (ret)
++		return ret;
++
++	ret = zx279051_write_c22(phydev, MII_BMCR, BMCR_PDOWN);
++	if (ret)
++		return ret;
++	ret = zx279051_write_c22(phydev, 21, 12);
++	if (ret)
++		return ret;
++	msleep(20);
++	ret = zx279051_write_c22(phydev, MII_BMCR, 0);
++	if (ret)
++		return ret;
++
++	bmcr = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr, MII_BMCR);
++	if (bmcr < 0)
++		return bmcr;
++	ret = zx279051_write_c22(phydev, MII_BMCR, bmcr | BMCR_PDOWN);
++	if (ret)
++		return ret;
++
++	phydev_dbg(phydev, "vendor post-reset initialization complete\n");
++	return 0;
++}
++
++static int zx279051_probe(struct phy_device *phydev)
++{
++	struct zx279051_priv *priv;
++	int id_first, id_second;
++	int status;
++
++	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
++	if (!priv)
++		return -ENOMEM;
++	priv->host_interface = PHY_INTERFACE_MODE_NA;
++	priv->host_speed_code = ~0U;
++	phydev->priv = priv;
++
++	id_first = zx279051_read_mmd(phydev, ZX279051_ID_DEVAD,
++				     ZX279051_ID_REG);
++	if (id_first < 0)
++		return id_first;
++
++	id_second = zx279051_read_mmd(phydev, ZX279051_ID_DEVAD,
++				      ZX279051_ID_REG);
++	if (id_second < 0)
++		return id_second;
++
++	if (id_first != ZX279051_PHY_ID || id_second != ZX279051_PHY_ID)
++		return -ENODEV;
++
++	status = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++			      ZX279051_GE_STATUS);
++	if (status < 0)
++		return status;
++
++	phydev_info(phydev, "identified at address %u, GE status %#x\n",
++		    phydev->mdio.addr, status);
++
++	return 0;
++}
++
++static int zx279051_config_init(struct phy_device *phydev)
++{
++	struct zx279051_priv *priv = phydev->priv;
++	int ret;
++
++	/*
++	 * Rebuild the complete vendor post-reset state before PHYLIB clears
++	 * BMCR_PDOWN in phy_resume().  The external reset loses both the line
++	 * PHY calibration and the Uni-side profile.
++	 */
++	ret = zx279051_fullmask_init(phydev);
++	if (ret)
++		return ret;
++
++	/*
++	 * fullmask intentionally ends in BMCR_PDOWN.  Wake here rather than
++	 * relying on a caller-specific phy_resume() so every phy_init_hw() path
++	 * returns a usable PHY and reports a failed final MDIO write.
++	 */
++	ret = genphy_resume(phydev);
++	if (ret)
++		return ret;
++
++	priv->host_interface = PHY_INTERFACE_MODE_NA;
++	priv->host_speed_code = ~0U;
++	__set_bit(PHY_INTERFACE_MODE_SGMII, phydev->possible_interfaces);
++	__set_bit(PHY_INTERFACE_MODE_2500BASEX,
++		  phydev->possible_interfaces);
++
++	return 0;
++}
++
++static int zx279051_get_features(struct phy_device *phydev)
++{
++	/* GE status speed codes 0-6 already decode 10/100/1000/2500. */
++	linkmode_set_bit(ETHTOOL_LINK_MODE_TP_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_Autoneg_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_Pause_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_Asym_Pause_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Half_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT, phydev->supported);
++	linkmode_set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT, phydev->supported);
++
++	return genphy_c45_read_eee_abilities(phydev);
++}
++
++/*
++ * Vendor-Linux ZX279051 host-side management, recovered from zx279051.ko.
++ * The PHY's Uni-side SerDes runs its own profile; phy_zxic_051_serdes_mode_set()
++ * programs it through an indirect APB window on C45 devad 31:
++ * address words at 31.18/31.17, data at 31.20/31.19, trigger at 31.21
++ * (1 = write, 0 = read; read data at 31.23/31.22). Registers 0..192 form the
++ * 49-word profile, register 84 gates the programming (1024 start, 1025
++ * commit), and register 204 reports stability in bit 2.
++ */
++#define ZX279051_APB_DEVAD		MDIO_MMD_VEND2
++#define ZX279051_APB_ADDR_HI		18
++#define ZX279051_APB_ADDR_LO		17
++#define ZX279051_APB_DATA_HI		20
++#define ZX279051_APB_DATA_LO		19
++#define ZX279051_APB_TRIGGER		21
++#define ZX279051_APB_READ_HI		23
++#define ZX279051_APB_READ_LO		22
++#define ZX279051_APB_PROFILE_GATE	84
++#define ZX279051_APB_PROFILE_START	1024
++#define ZX279051_APB_PROFILE_COMMIT	1025
++#define ZX279051_APB_STABLE_STATUS	204
++#define ZX279051_APB_STABLE		BIT(2)
++#define ZX279051_APB_XPCS_POWER		0x400c
++#define ZX279051_APB_XPCS_POWER_ON	0x0440
++#define ZX279051_APB_XPCS_POWER_OFF	0x0c40
++#define ZX279051_STABLE_RETRIES		20
++#define ZX279051_STABLE_DELAY_US	4295
++#define ZX279051_REG_801E		0x801e
++#define ZX279051_REG_801E_1G		180
++#define ZX279051_REG_801E_2P5G		0
++#define ZX279051_REG_80CC		0x80cc
++#define ZX279051_REG_80CC_1G		127
++#define ZX279051_REG_80CC_2P5G		70
++
++struct zx279051_serdes_word {
++	u32 addr;
++	u32 value;
++};
++
++static int zx279051_apb_write(struct phy_device *phydev, u32 addr, u32 value)
++{
++	int ret;
++
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_ADDR_HI,
++				addr >> 16);
++	if (ret)
++		return ret;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_ADDR_LO,
++				addr & 0xffff);
++	if (ret)
++		return ret;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_DATA_HI,
++				value >> 16);
++	if (ret)
++		return ret;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_DATA_LO,
++				value & 0xffff);
++	if (ret)
++		return ret;
++
++	return mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_TRIGGER, 1);
++}
++
++static int zx279051_apb_read(struct phy_device *phydev, u32 addr, u32 *value)
++{
++	int hi, lo;
++	int ret;
++
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_ADDR_HI,
++				addr >> 16);
++	if (ret)
++		return ret;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_ADDR_LO,
++				addr & 0xffff);
++	if (ret)
++		return ret;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_APB_TRIGGER, 0);
++	if (ret)
++		return ret;
++
++	hi = mdiobus_c45_read(phydev->mdio.bus, phydev->mdio.addr,
++			      ZX279051_APB_DEVAD, ZX279051_APB_READ_HI);
++	if (hi < 0)
++		return hi;
++	lo = mdiobus_c45_read(phydev->mdio.bus, phydev->mdio.addr,
++			      ZX279051_APB_DEVAD, ZX279051_APB_READ_LO);
++	if (lo < 0)
++		return lo;
++
++	*value = (hi << 16) | lo;
++	return 0;
++}
++
++/*
++ * 051 mode_eth_1gbase_x_cfg: the PHY's internal Uni-side SerDes 1G profile,
++ * identical to the SoC CPU129 1GBASE-X profile.
++ */
++static const struct zx279051_serdes_word zx279051_serdes_1g_profile[] = {
++	{ 0x00, 0x00000004 }, { 0x04, 0x000040a0 }, { 0x08, 0x00008003 },
++	{ 0x0c, 0x0c900000 }, { 0x10, 0x00000004 }, { 0x14, 0x00150000 },
++	{ 0x18, 0x00000000 }, { 0x1c, 0x00000220 }, { 0x20, 0x80000000 },
++	{ 0x24, 0x00050000 }, { 0x28, 0x00000010 }, { 0x2c, 0x00000421 },
++	{ 0x30, 0x00000000 }, { 0x34, 0x00000000 }, { 0x38, 0x00000000 },
++	{ 0x3c, 0x00000000 }, { 0x40, 0x05a8d100 }, { 0x44, 0x00000000 },
++	{ 0x48, 0x0104db2a }, { 0x4c, 0x60002200 }, { 0x50, 0x00000603 },
++	{ 0x54, 0x00000400 }, { 0x58, 0x00000080 }, { 0x5c, 0x00000000 },
++	{ 0x60, 0x200554a8 }, { 0x64, 0x3de49092 }, { 0x68, 0x01000000 },
++	{ 0x6c, 0xc0003700 }, { 0x70, 0xa9004000 }, { 0x74, 0x10108000 },
++	{ 0x78, 0x000000da }, { 0x7c, 0xf20000c8 }, { 0x80, 0x10371037 },
++	{ 0x84, 0x01000200 }, { 0x88, 0x00020001 }, { 0x8c, 0x10000000 },
++	{ 0x90, 0x0000201c }, { 0x94, 0x00000000 }, { 0x98, 0x000000ff },
++	{ 0x9c, 0x55555500 }, { 0xa0, 0x55555555 }, { 0xa4, 0x00555555 },
++	{ 0xa8, 0x22000818 }, { 0xac, 0x0000201c }, { 0xb0, 0x0000000c },
++	{ 0xb4, 0x01000000 }, { 0xb8, 0x00000080 }, { 0xbc, 0x00010000 },
++	{ 0xc0, 0x00000000 },
++};
++
++/*
++ * 051 mode_eth_2p5gbase_x_cfg: the PHY's 2.5G Uni-side SerDes profile; only
++ * nine words differ from the 1G profile (offsets 8, 12, 20, 72, 76, 80,
++ * 156, 160, and 164).
++ */
++static const struct zx279051_serdes_word zx279051_serdes_2p5g_profile[] = {
++	{ 0x00, 0x00000004 }, { 0x04, 0x000040a0 }, { 0x08, 0x00008009 },
++	{ 0x0c, 0x1f500000 }, { 0x10, 0x00000004 }, { 0x14, 0x00194000 },
++	{ 0x18, 0x00000000 }, { 0x1c, 0x00000220 }, { 0x20, 0x80000000 },
++	{ 0x24, 0x00050000 }, { 0x28, 0x00000010 }, { 0x2c, 0x00000421 },
++	{ 0x30, 0x00000000 }, { 0x34, 0x00000000 }, { 0x38, 0x00000000 },
++	{ 0x3c, 0x00000000 }, { 0x40, 0x05a8d100 }, { 0x44, 0x00000000 },
++	{ 0x48, 0x0404db2a }, { 0x4c, 0x80002200 }, { 0x50, 0x00000604 },
++	{ 0x54, 0x00000400 }, { 0x58, 0x00000080 }, { 0x5c, 0x00000000 },
++	{ 0x60, 0x200554a8 }, { 0x64, 0x3de49092 }, { 0x68, 0x01000000 },
++	{ 0x6c, 0xc0003700 }, { 0x70, 0xa9004000 }, { 0x74, 0x10108000 },
++	{ 0x78, 0x000000da }, { 0x7c, 0xf20000c8 }, { 0x80, 0x10371037 },
++	{ 0x84, 0x01000200 }, { 0x88, 0x00020001 }, { 0x8c, 0x10000000 },
++	{ 0x90, 0x0000201c }, { 0x94, 0x00000000 }, { 0x98, 0x000000ff },
++	{ 0x9c, 0x33333300 }, { 0xa0, 0x33333333 }, { 0xa4, 0x00333333 },
++	{ 0xa8, 0x22000818 }, { 0xac, 0x0000201c }, { 0xb0, 0x0000000c },
++	{ 0xb4, 0x01000000 }, { 0xb8, 0x00000080 }, { 0xbc, 0x00010000 },
++	{ 0xc0, 0x00000000 },
++};
++
++static int zx279051_serdes_mode_set(struct phy_device *phydev,
++				    const struct zx279051_serdes_word *profile,
++				    size_t count)
++{
++	unsigned int i;
++	int ret;
++
++	ret = zx279051_apb_write(phydev, ZX279051_APB_PROFILE_GATE,
++				 ZX279051_APB_PROFILE_START);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < count; i++) {
++		ret = zx279051_apb_write(phydev, profile[i].addr,
++					 profile[i].value);
++		if (ret)
++			return ret;
++	}
++
++	return zx279051_apb_write(phydev, ZX279051_APB_PROFILE_GATE,
++				ZX279051_APB_PROFILE_COMMIT);
++}
++
++static int zx279051_serdes_wait_stable(struct phy_device *phydev)
++{
++	unsigned int i;
++	u32 value;
++	int ret;
++
++	for (i = 0; i < ZX279051_STABLE_RETRIES; i++) {
++		ret = zx279051_apb_read(phydev, ZX279051_APB_STABLE_STATUS,
++					&value);
++		if (ret)
++			return ret;
++		if (value & ZX279051_APB_STABLE)
++			return 0;
++		usleep_range(ZX279051_STABLE_DELAY_US,
++			     ZX279051_STABLE_DELAY_US + 100);
++	}
++
++	return -ETIMEDOUT;
++}
++
++/*
++ * phy_zxic_051_uniserdes_mode_check() maps GE status[9:7] to a Uni speed
++ * byte (0=10, 1=100, 2=1000, 3=2500) and a SerDes mode. Modes 2/5/6 all
++ * program mode_eth_1gbase_x_cfg; modes 3/4 program mode_eth_2p5gbase_x_cfg;
++ * modes 0/1 write nothing. Live 10/100/1000 therefore share the 1G profile
++ * (mode 6). There is no separate 10/100 Uni SerDes table in zx279051.ko.
++ */
++static int zx279051_host_bringup(struct phy_device *phydev)
++{
++	struct zx279051_priv *priv = phydev->priv;
++	const struct zx279051_serdes_word *profile;
++	size_t count;
++	unsigned int speed_code;
++	phy_interface_t interface;
++	u16 reg_801e;
++	u16 reg_80cc;
++	u32 stable;
++	int status;
++	int ret;
++
++	/*
++	 * The line link is firmware-resolved before PHYLIB runs; derive the
++	 * Uni-side mode from the GE status register exactly like
++	 * phy_zxic_051_uniserdes_mode_check() (codes 4/5 = 1G, 6 = 2.5G).
++	 */
++	status = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++			      ZX279051_GE_STATUS);
++	if (status < 0)
++		return status;
++	if (!(status & ZX279051_GE_LINK))
++		return 0;
++
++	speed_code = FIELD_GET(ZX279051_GE_SPEED, status);
++	if (speed_code > 6)
++		return -EINVAL;
++
++	if (speed_code == 6) {
++		interface = PHY_INTERFACE_MODE_2500BASEX;
++		profile = zx279051_serdes_2p5g_profile;
++		count = ARRAY_SIZE(zx279051_serdes_2p5g_profile);
++	} else {
++		interface = PHY_INTERFACE_MODE_SGMII;
++		profile = zx279051_serdes_1g_profile;
++		count = ARRAY_SIZE(zx279051_serdes_1g_profile);
++	}
++
++	if (priv->host_interface == interface &&
++	    priv->host_speed_code == speed_code)
++		return 0;
++
++	ret = zx279051_serdes_mode_set(phydev, profile, count);
++	if (ret)
++		return ret;
++
++	ret = zx279051_serdes_wait_stable(phydev);
++	if (ret) {
++		/* phy_051_xpcs_power_ctrl(): power-cycle the internal XPCS. */
++		ret = zx279051_apb_write(phydev, ZX279051_APB_XPCS_POWER,
++					 ZX279051_APB_XPCS_POWER_OFF);
++		if (ret)
++			return ret;
++		usleep_range(ZX279051_STABLE_DELAY_US,
++			     ZX279051_STABLE_DELAY_US + 100);
++		ret = zx279051_apb_write(phydev, ZX279051_APB_XPCS_POWER,
++					 ZX279051_APB_XPCS_POWER_ON);
++		if (ret)
++			return ret;
++		ret = zx279051_serdes_wait_stable(phydev);
++		if (ret)
++			return ret;
++	}
++
++	ret = zx279051_apb_read(phydev, ZX279051_APB_STABLE_STATUS, &stable);
++	if (ret)
++		return ret;
++	phydev_info(phydev, "Uni SerDes stable, status %#x\n", stable);
++
++	/* Vendor link-up flags differ between the 1G and 2.5G host modes. */
++	if (speed_code == 6) {
++		reg_801e = ZX279051_REG_801E_2P5G;
++		reg_80cc = ZX279051_REG_80CC_2P5G;
++	} else {
++		reg_801e = ZX279051_REG_801E_1G;
++		reg_80cc = ZX279051_REG_80CC_1G;
++	}
++
++	phydev_info(phydev, "host mode speed code %u, link flags %u/%u\n",
++		    speed_code, reg_801e, reg_80cc);
++
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				MDIO_MMD_PMAPMD, ZX279051_REG_801E,
++				reg_801e);
++	if (ret)
++		return ret;
++
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				ZX279051_APB_DEVAD, ZX279051_REG_80CC,
++				reg_80cc);
++	if (!ret) {
++		priv->host_interface = interface;
++		priv->host_speed_code = speed_code;
++	}
++
++	return ret;
++}
++
++/*
++ * Vendor phy_zxic_051_set_linkmode() selects the highest line speed in
++ * PMA/PMD control 1, selects duplex in BMCR, then restarts AN through MMD7.
++ * The PHY also consumes the standard 10/100, 1000 and NBASE-T advertisement
++ * registers, so keep those synchronized with PHYLIB's advertising bitmap.
++ */
++#define ZX279051_AN_ADV_VENDOR	0x1001
++#define ZX279051_AN_CTRL_RESTART	0x3200
++#define ZX279051_AN_10G_BASE	0x2001
++#define ZX279051_PMA_SPEED_MASK	GENMASK(13, 2)
++
++static int zx279051_c45_an_write(struct phy_device *phydev, u16 reg, u16 val)
++{
++	return mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				 MDIO_MMD_AN, reg, val);
++}
++
++static int zx279051_c45_an_read(struct phy_device *phydev, u16 reg)
++{
++	return mdiobus_c45_read(phydev->mdio.bus, phydev->mdio.addr,
++				MDIO_MMD_AN, reg);
++}
++
++static u16 zx279051_an_adv_from_linkmode(const unsigned long *adv)
++{
++	u16 reg = ZX279051_AN_ADV_VENDOR;
++
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT, adv))
++		reg |= ADVERTISE_10HALF;
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT, adv))
++		reg |= ADVERTISE_10FULL;
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT, adv))
++		reg |= ADVERTISE_100HALF;
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT, adv))
++		reg |= ADVERTISE_100FULL;
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_Pause_BIT, adv))
++		reg |= ADVERTISE_PAUSE_CAP;
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_Asym_Pause_BIT, adv))
++		reg |= ADVERTISE_PAUSE_ASYM;
++	return reg;
++}
++
++static int zx279051_set_target_mode(struct phy_device *phydev)
++{
++	u16 speed;
++	bool full;
++	int reg;
++	int ret;
++
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++			      phydev->advertising)) {
++		speed = MDIO_CTRL1_SPEED2_5G;
++		full = true;
++	} else if (linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
++				     phydev->advertising) ||
++		   linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Half_BIT,
++				     phydev->advertising)) {
++		speed = BMCR_SPEED1000;
++		full = linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
++					 phydev->advertising);
++	} else if (linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
++				     phydev->advertising) ||
++		   linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT,
++				     phydev->advertising)) {
++		speed = BMCR_SPEED100;
++		full = linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
++					 phydev->advertising);
++	} else if (linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT,
++				     phydev->advertising) ||
++		   linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT,
++				     phydev->advertising)) {
++		speed = 0;
++		full = linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT,
++					 phydev->advertising);
++	} else {
++		return -EINVAL;
++	}
++
++	reg = mdiobus_c45_read(phydev->mdio.bus, phydev->mdio.addr,
++			       MDIO_MMD_PMAPMD, MDIO_CTRL1);
++	if (reg < 0)
++		return reg;
++	reg &= ~ZX279051_PMA_SPEED_MASK;
++	reg |= speed;
++	ret = mdiobus_c45_write(phydev->mdio.bus, phydev->mdio.addr,
++				MDIO_MMD_PMAPMD, MDIO_CTRL1, reg);
++	if (ret)
++		return ret;
++
++	reg = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr, MII_BMCR);
++	if (reg < 0)
++		return reg;
++	if (full)
++		reg |= BMCR_FULLDPLX;
++	else
++		reg &= ~BMCR_FULLDPLX;
++
++	return mdiobus_write(phydev->mdio.bus, phydev->mdio.addr, MII_BMCR,
++			     reg);
++}
++
++static int zx279051_set_linkmode(struct phy_device *phydev)
++{
++	u16 an_10g = ZX279051_AN_10G_BASE;
++	u16 ctrl1000;
++	u16 adv;
++	int ret;
++
++	if (phydev->autoneg == AUTONEG_DISABLE)
++		return -EOPNOTSUPP;
++
++	adv = zx279051_an_adv_from_linkmode(phydev->advertising);
++	ctrl1000 = linkmode_adv_to_mii_ctrl1000_t(phydev->advertising);
++	if (linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++			      phydev->advertising))
++		an_10g |= MDIO_AN_10GBT_CTRL_ADV2_5G;
++
++	ret = zx279051_set_target_mode(phydev);
++	if (ret)
++		return ret;
++	ret = zx279051_c45_an_write(phydev, MDIO_AN_10GBT_CTRL, an_10g);
++	if (ret)
++		return ret;
++	ret = mdiobus_write(phydev->mdio.bus, phydev->mdio.addr,
++			    MII_CTRL1000, ctrl1000);
++	if (ret)
++		return ret;
++	ret = zx279051_c45_an_write(phydev, MDIO_AN_ADVERTISE, adv);
++	if (ret)
++		return ret;
++	ret = zx279051_c45_an_write(phydev, MDIO_CTRL1,
++				    ZX279051_AN_CTRL_RESTART);
++	if (ret)
++		return ret;
++
++	return 0;
++}
++
++static int zx279051_config_aneg(struct phy_device *phydev)
++{
++	struct zx279051_priv *priv = phydev->priv;
++	int ret;
++
++	priv->nbaset_retry_done = false;
++	ret = zx279051_set_linkmode(phydev);
++	if (ret)
++		return ret;
++	return zx279051_host_bringup(phydev);
++}
++
++static int zx279051_read_lpa(struct phy_device *phydev)
++{
++	int lpa, stat1000, stat;
++
++	linkmode_zero(phydev->lp_advertising);
++	lpa = zx279051_c45_an_read(phydev, MDIO_AN_LPA);
++	if (lpa < 0)
++		return lpa;
++	mii_lpa_mod_linkmode_lpa_t(phydev->lp_advertising, lpa);
++
++	stat1000 = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++				MII_STAT1000);
++	if (stat1000 < 0)
++		return stat1000;
++	mii_stat1000_mod_linkmode_lpa_t(phydev->lp_advertising, stat1000);
++
++	stat = zx279051_c45_an_read(phydev, MDIO_AN_10GBT_STAT);
++	if (stat < 0)
++		return stat;
++	if (stat & MDIO_AN_10GBT_STAT_LP2_5G)
++		linkmode_set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++				 phydev->lp_advertising);
++
++	return 0;
++}
++
++static int zx279051_read_status(struct phy_device *phydev)
++{
++	struct zx279051_priv *priv = phydev->priv;
++	unsigned int speed_code;
++	phy_interface_t interface;
++	int status;
++	int ret;
++
++	status = mdiobus_read(phydev->mdio.bus, phydev->mdio.addr,
++			      ZX279051_GE_STATUS);
++	if (status < 0)
++		return status;
++
++	phydev->link = !!(status & ZX279051_GE_LINK);
++	phydev->autoneg_complete = phydev->link;
++	phydev->speed = SPEED_UNKNOWN;
++	phydev->duplex = DUPLEX_UNKNOWN;
++	phydev->pause = 0;
++	phydev->asym_pause = 0;
++	linkmode_zero(phydev->lp_advertising);
++
++	if (!phydev->link)
++		return 0;
++
++	speed_code = FIELD_GET(ZX279051_GE_SPEED, status);
++	if (speed_code > 6)
++		return -EINVAL;
++
++	interface = speed_code == 6 ? PHY_INTERFACE_MODE_2500BASEX :
++					    PHY_INTERFACE_MODE_SGMII;
++	if (priv->host_interface != interface ||
++	    priv->host_speed_code != speed_code) {
++		ret = zx279051_host_bringup(phydev);
++		if (ret)
++			return ret;
++	}
++	phydev->interface = interface;
++
++	switch (speed_code) {
++	case 0:
++	case 1:
++		phydev->speed = SPEED_10;
++		break;
++	case 2:
++	case 3:
++		phydev->speed = SPEED_100;
++		break;
++	case 4:
++	case 5:
++		phydev->speed = SPEED_1000;
++		break;
++	case 6:
++		phydev->speed = SPEED_2500;
++		break;
++	}
++
++	phydev->duplex = speed_code & 1 || speed_code == 6 ?
++			     DUPLEX_FULL : DUPLEX_HALF;
++
++	if (phydev->autoneg == AUTONEG_ENABLE) {
++		ret = zx279051_read_lpa(phydev);
++		if (ret)
++			return ret;
++		/* The first fallback may omit the partner's 2.5G ability bit. */
++		if (speed_code != 6 && !priv->nbaset_retry_done &&
++		    linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++				      phydev->advertising)) {
++			priv->nbaset_retry_done = true;
++			return zx279051_set_linkmode(phydev);
++		}
++		phy_resolve_aneg_pause(phydev);
++	}
++
++	return 0;
++}
++
++/* Use phylib's default one-second polling cadence, as in the original driver. */
++static struct phy_driver zx279051_driver[] = {
++	{
++		PHY_ID_MATCH_EXACT(ZX279051_PHY_ID),
++		.name		= "ZTE ZX279051",
++		.probe		= zx279051_probe,
++		.config_init	= zx279051_config_init,
++		.get_features	= zx279051_get_features,
++		.config_aneg	= zx279051_config_aneg,
++		.read_status	= zx279051_read_status,
++		.suspend	= genphy_suspend,
++		.resume		= genphy_resume,
++	},
++};
++module_phy_driver(zx279051_driver);
++
++static const struct mdio_device_id __maybe_unused zx279051_tbl[] = {
++	{ PHY_ID_MATCH_EXACT(ZX279051_PHY_ID) },
++	{ }
++};
++MODULE_DEVICE_TABLE(mdio, zx279051_tbl);
++
++MODULE_DESCRIPTION("ZTE ZX279051 Ethernet PHY driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/net/phy/zx279051-fullmask.h
+@@ -0,0 +1,132 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __ZX279051_FULLMASK_H
++#define __ZX279051_FULLMASK_H
++
++/*
++ * Fixed portion of phy_zxic_051_phy_init_fullmask(), recovered instruction by
++ * instruction from the board vendor's zx279051.ko (SHA-256
++ * 324e5de9e6ba0eb45d9ffe2fb68948de92d3f4a1a5be820550165e53159e0615).
++ * Keep the order: several registers are command or indirect-access windows
++ * rather than ordinary persistent configuration.
++ */
++static const struct zx279051_init_write zx279051_fullmask_writes[] = {
++	{ ZX279051_INIT_C22, 0x00, 0x0000, 0x0800 }, /*   1 */
++	{ ZX279051_INIT_C45, 0x1f, 0x001a, 0x0019 }, /*   2 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8050, 0x007c }, /*   3 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb636, 0x00c1 }, /*   4 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb631, 0x0030 }, /*   5 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb636, 0x00d1 }, /*   6 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb633, 0x0010 }, /*   7 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8055, 0xcccd }, /*   8 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8054, 0x87f9 }, /*   9 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8053, 0x2b00 }, /*  10 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8051, 0x1294 }, /*  11 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb60f, 0x0000 }, /*  12 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb616, 0x0020 }, /*  13 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb60d, 0x003f }, /*  14 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb60e, 0x000f }, /*  15 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb610, 0x0007 }, /*  16 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb6d1, 0x0002 }, /*  17 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb6d0, 0x0003 }, /*  18 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb6ce, 0x0002 }, /*  19 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb6c9, 0x0007 }, /*  20 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0030, 0x0420 }, /*  21 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0031, 0x0188 }, /*  22 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8059, 0xe300 }, /*  23 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb644, 0x0001 }, /*  24 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb64c, 0x0001 }, /*  25 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb6cd, 0x0000 }, /*  26 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb407, 0x0032 }, /*  27 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb409, 0x0006 }, /*  28 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb408, 0x0006 }, /*  29 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb404, 0x0020 }, /*  30 */
++	{ ZX279051_INIT_C45, 0x1e, 0x9c00, 0x003f }, /*  31 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb20e, 0x0000 }, /*  32 */
++	{ ZX279051_INIT_C45, 0x1e, 0xb20a, 0x0000 }, /*  33 */
++	{ ZX279051_INIT_C45, 0x1e, 0xba1b, 0x0000 }, /*  34 */
++	{ ZX279051_INIT_C45, 0x07, 0x003e, 0x0000 }, /*  35 */
++	{ ZX279051_INIT_C45, 0x07, 0x003c, 0x0000 }, /*  36 */
++	{ ZX279051_INIT_C45, 0x07, 0x0020, 0x2081 }, /*  37 */
++	{ ZX279051_INIT_C45, 0x07, 0x0018, 0x8000 }, /*  38 */
++	{ ZX279051_INIT_C45, 0x07, 0x0010, 0x1de1 }, /*  39 */
++	{ ZX279051_INIT_C22, 0x00, 0x0017, 0x2448 }, /*  40 */
++	{ ZX279051_INIT_C22, 0x00, 0x0015, 0x0000 }, /*  41 */
++	{ ZX279051_INIT_C45, 0x01, 0x8023, 0x012c }, /*  42 */
++	{ ZX279051_INIT_C45, 0x01, 0x8003, 0x270f }, /*  43 */
++	{ ZX279051_INIT_C45, 0x01, 0x800f, 0x0001 }, /*  44 */
++	{ ZX279051_INIT_C45, 0x01, 0x8019, 0x1a0e }, /*  45 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80ae, 0x0145 }, /*  46 */
++	{ ZX279051_INIT_C45, 0x01, 0x8029, 0x07d0 }, /*  47 */
++	{ ZX279051_INIT_C45, 0x01, 0x801e, 0x00b4 }, /*  48 */
++	{ ZX279051_INIT_C45, 0x01, 0x8025, 0xafc8 }, /*  49 */
++	{ ZX279051_INIT_C45, 0x01, 0x8026, 0x0030 }, /*  50 */
++	{ ZX279051_INIT_C45, 0x01, 0x802a, 0xafc8 }, /*  51 */
++	{ ZX279051_INIT_C45, 0x01, 0x8024, 0x008c }, /*  52 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80b0, 0x0042 }, /*  53 */
++	{ ZX279051_INIT_C45, 0x1f, 0x808c, 0x0049 }, /*  54 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80b1, 0x0040 }, /*  55 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80cc, 0x007f }, /*  56 */
++	{ ZX279051_INIT_C45, 0x1e, 0xc002, 0x0000 }, /*  57 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8018, 0x0004 }, /*  58 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8007, 0x0001 }, /*  59 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8027, 0x0002 }, /*  60 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8028, 0x0002 }, /*  61 */
++	{ ZX279051_INIT_C45, 0x1f, 0x802a, 0x0005 }, /*  62 */
++	{ ZX279051_INIT_C45, 0x1f, 0x802b, 0x0005 }, /*  63 */
++	{ ZX279051_INIT_C45, 0x1f, 0x802f, 0x0006 }, /*  64 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8030, 0x0008 }, /*  65 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8031, 0x0006 }, /*  66 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8032, 0x0006 }, /*  67 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8033, 0x0006 }, /*  68 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8034, 0x0008 }, /*  69 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8035, 0x0006 }, /*  70 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8036, 0x0006 }, /*  71 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8038, 0x0007 }, /*  72 */
++	{ ZX279051_INIT_C45, 0x1f, 0x803a, 0x0008 }, /*  73 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8040, 0x00af }, /*  74 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8084, 0x00af }, /*  75 */
++	{ ZX279051_INIT_C45, 0x1f, 0x808d, 0x0096 }, /*  76 */
++	{ ZX279051_INIT_C45, 0x1f, 0x808e, 0x008c }, /*  77 */
++	{ ZX279051_INIT_C45, 0x1f, 0x808f, 0x0082 }, /*  78 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8090, 0x0070 }, /*  79 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8091, 0x0064 }, /*  80 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8092, 0x0058 }, /*  81 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8093, 0x0052 }, /*  82 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8094, 0x004c }, /*  83 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8095, 0x0046 }, /*  84 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8096, 0x0040 }, /*  85 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8097, 0x003b }, /*  86 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8098, 0x0036 }, /*  87 */
++	{ ZX279051_INIT_C45, 0x1f, 0x8099, 0x0032 }, /*  88 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809a, 0x002e }, /*  89 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809b, 0x002b }, /*  90 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809c, 0x0028 }, /*  91 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809d, 0x0024 }, /*  92 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809e, 0x0020 }, /*  93 */
++	{ ZX279051_INIT_C45, 0x1f, 0x809f, 0x001c }, /*  94 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a0, 0x0019 }, /*  95 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a1, 0x0016 }, /*  96 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a2, 0x0013 }, /*  97 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a3, 0x0010 }, /*  98 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a4, 0x000d }, /*  99 */
++	{ ZX279051_INIT_C45, 0x1f, 0x80a5, 0x000a }, /* 100 */
++	{ ZX279051_INIT_C45, 0x03, 0x8042, 0x0004 }, /* 101 */
++	{ ZX279051_INIT_C45, 0x03, 0x8046, 0x0002 }, /* 102 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0011, 0x00ec }, /* 103 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0012, 0x400c }, /* 104 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0013, 0x6002 }, /* 105 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0014, 0x0000 }, /* 106 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0015, 0x0001 }, /* 107 */
++	{ ZX279051_INIT_C45, 0x1f, 0xd032, 0x0000 }, /* 108 */
++	{ ZX279051_INIT_C45, 0x1f, 0xd034, 0x0000 }, /* 109 */
++	{ ZX279051_INIT_C45, 0x1f, 0xd036, 0x0000 }, /* 110 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0029, 0x0001 }, /* 111 */
++	{ ZX279051_INIT_C45, 0x1f, 0x001c, 0x0000 }, /* 112 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0011, 0x0054 }, /* 113 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0012, 0x0000 }, /* 114 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0013, 0x0400 }, /* 115 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0014, 0x0000 }, /* 116 */
++	{ ZX279051_INIT_C45, 0x1f, 0x0015, 0x0001 }, /* 117 */
++};
++
++#endif /* __ZX279051_FULLMASK_H */

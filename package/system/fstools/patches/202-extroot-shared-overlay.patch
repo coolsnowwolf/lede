@@ -1,0 +1,139 @@
+From: Claude <noreply@anthropic.com>
+Subject: fstools: let extroot find its configuration in a shared overlay
+
+extroot reads the configuration of the internal overlay from
+<overlay>/upper: /etc/config/fstab in block, and lib, sbin/block and the kernel
+modules in libfstools. When the overlay is kept in the .lede directory of a
+shared volume, all of these are in <overlay>/.lede/upper, so a configured
+extroot was never seen.
+
+Look there instead. fs_overlay_path() builds the path without creating the
+directory, because these are lookups that must not change a volume. The two
+32-byte buffers in mount_extroot() were also too short for the longer paths
+and are enlarged.
+
+The extroot file system itself is used the same way as the internal one: its
+overlay is in the .lede directory too, so copying the whole /overlay to the new
+partition, as the documentation says, works.
+
+--- a/block.c
++++ b/block.c
+@@ -47,6 +47,10 @@
+ #include "libfstools/fstype.h"
+ #include "libfstools/volume.h"
+ 
++/* From libfstools. Its own header cannot be included here: it declares
++ * find_mount_point() and mount_extroot() with other types than this file. */
++const char *fs_overlay_path(const char *mp, char *buf, size_t len);
++
+ #include "probe.h"
+ 
+ #define AUTOFS_MOUNT_PATH       "/tmp/run/blockd/"
+@@ -442,16 +446,19 @@
+ 	struct uci_context *ctx = uci_alloc_context();
+ 	struct uci_package *pkg = NULL;
+ 	struct uci_element *e;
+-	char path[64];
++	char path[96], base[48];
+ 
+ 	vlist_init(&mounts, avl_strcmp, mounts_update);
+ 
+ 	if (cfg) {
+-		snprintf(path, sizeof(path), "%s/upper/etc/config/fstab", cfg);
++		/* the overlay of a shared volume lives in a sub-directory of it */
++		fs_overlay_path(cfg, base, sizeof(base));
++
++		snprintf(path, sizeof(path), "%s/upper/etc/config/fstab", base);
+ 		pkg = config_try_load(ctx, path);
+ 
+ 		if (!pkg) {
+-			snprintf(path, sizeof(path), "%s/etc/config/fstab", cfg);
++			snprintf(path, sizeof(path), "%s/etc/config/fstab", base);
+ 			pkg = config_try_load(ctx, path);
+ 		}
+ 	}
+--- a/libfstools/libfstools.h
++++ b/libfstools/libfstools.h
+@@ -56,6 +56,7 @@
+ bool fs_shared_overlay(void);
+ const char *fs_shared_volume(void);
+ const char *fs_overlay_dir(const char *mp, char *buf, size_t len);
++const char *fs_overlay_path(const char *mp, char *buf, size_t len);
+ void selinux_restorecon(char *overlaydir);
+ 
+ #endif
+--- a/libfstools/mount.c
++++ b/libfstools/mount.c
+@@ -139,17 +139,28 @@
+ }
+ 
+ /**
+- * fs_overlay_dir - directory under @mp holding the overlay state and trees
++ * fs_overlay_path - where the overlay state and trees are under @mp
++ *
++ * Only builds the path, for looking at a volume without changing it. An empty
++ * @mp stays empty: it stands for the root file system.
+  */
+-const char *fs_overlay_dir(const char *mp, char *buf, size_t len)
++const char *fs_overlay_path(const char *mp, char *buf, size_t len)
+ {
+-	if (!fs_shared_overlay()) {
++	if (fs_shared_overlay() && mp[0])
++		snprintf(buf, len, "%s/.lede", mp);
++	else
+ 		snprintf(buf, len, "%s", mp);
+-		return buf;
+-	}
++	return buf;
++}
+ 
+-	snprintf(buf, len, "%s/.lede", mp);
+-	mkdir(buf, 0755);
++/**
++ * fs_overlay_dir - directory under @mp holding the overlay state and trees
++ */
++const char *fs_overlay_dir(const char *mp, char *buf, size_t len)
++{
++	fs_overlay_path(mp, buf, len);
++	if (fs_shared_overlay())
++		mkdir(buf, 0755);
+ 	return buf;
+ }
+ 
+--- a/libfstools/extroot.c
++++ b/libfstools/extroot.c
+@@ -29,23 +29,27 @@
+  */
+ int mount_extroot(char const *extroot_prefix)
+ {
+-	char ldlib_path[32];
+-	char block_path[32];
+-	char kmod_loader[64];
++	char ldlib_path[64];
++	char block_path[64];
++	char kmod_loader[96];
++	char base[48];
+ 	struct stat s;
+ 	pid_t pid;
+ 
++	/* the overlay of a shared volume lives in a sub-directory of it */
++	fs_overlay_path(extroot_prefix, base, sizeof(base));
++
+ 	/* try finding the library directory */
+-	snprintf(ldlib_path, sizeof(ldlib_path), "%s/upper/lib", extroot_prefix);
++	snprintf(ldlib_path, sizeof(ldlib_path), "%s/upper/lib", base);
+ 
+ 	if (stat(ldlib_path, &s) || !S_ISDIR(s.st_mode))
+-		snprintf(ldlib_path, sizeof(ldlib_path), "%s/lib", extroot_prefix);
++		snprintf(ldlib_path, sizeof(ldlib_path), "%s/lib", base);
+ 
+ 	/* try finding the block executable */
+-	snprintf(block_path, sizeof(block_path), "%s/upper/sbin/block", extroot_prefix);
++	snprintf(block_path, sizeof(block_path), "%s/upper/sbin/block", base);
+ 
+ 	if (stat(block_path, &s) || !S_ISREG(s.st_mode))
+-		snprintf(block_path, sizeof(block_path), "%s/sbin/block", extroot_prefix);
++		snprintf(block_path, sizeof(block_path), "%s/sbin/block", base);
+ 
+ 	if (stat(block_path, &s) || !S_ISREG(s.st_mode))
+ 		snprintf(block_path, sizeof(block_path), "/sbin/block");

@@ -1,0 +1,577 @@
+Subject: [PATCH] pinctrl: add ZX279133 pin controller
+
+Add pin multiplexing and pin configuration support for the ZX279133.
+
+--- a/drivers/pinctrl/Kconfig
++++ b/drivers/pinctrl/Kconfig
+@@ -653,6 +653,17 @@
+ 	select GENERIC_PINCONF
+ 	help
+ 	  This selects the pinctrl driver for Xilinx Zynq.
++
++config PINCTRL_ZX279133
++	bool "ZTE ZX279133 pin controller support"
++	depends on ARM64 || COMPILE_TEST
++	select GENERIC_PINCONF
++	select PINMUX
++	help
++	  Say yes here to support GPIO muxing for the 70 pins in the ZTE
++	  ZX279133 SoC. Existing firmware-selected peripheral muxes are left
++	  unchanged until a pin is requested for GPIO use. The driver also
++	  provides the pin group used by the SPI flash controller.
+ 
+ config PINCTRL_ZYNQMP
+ 	tristate "Pinctrl driver for Xilinx ZynqMP"
+--- a/drivers/pinctrl/Makefile
++++ b/drivers/pinctrl/Makefile
+@@ -63,6 +63,7 @@
+ obj-$(CONFIG_PINCTRL_TPS6594)	+= pinctrl-tps6594.o
+ obj-$(CONFIG_PINCTRL_TH1520)	+= pinctrl-th1520.o
+ obj-$(CONFIG_PINCTRL_UPBOARD)	+= pinctrl-upboard.o
++obj-$(CONFIG_PINCTRL_ZX279133)	+= pinctrl-zx279133.o
+ obj-$(CONFIG_PINCTRL_ZYNQMP)	+= pinctrl-zynqmp.o
+ obj-$(CONFIG_PINCTRL_ZYNQ)	+= pinctrl-zynq.o
+ 
+--- /dev/null
++++ b/drivers/pinctrl/pinctrl-zx279133.c
+@@ -0,0 +1,378 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/bitops.h>
++#include <linux/io.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/pinctrl/pinconf-generic.h>
++#include <linux/pinctrl/pinctrl.h>
++#include <linux/pinctrl/pinmux.h>
++#include <linux/platform_device.h>
++#include <linux/spinlock.h>
++
++#include "pinctrl-utils.h"
++
++#define ZX279133_NUM_PINS	70
++
++struct zx279133_pin_data {
++	u8 offset;
++	u8 shift;
++	u8 width;
++};
++
++struct zx279133_mux_range {
++	u8 count;
++	u8 width;
++};
++
++struct zx279133_gpio_mux_range {
++	u8 start;
++	u8 count;
++	u8 value;
++};
++
++struct zx279133_pinctrl {
++	struct pinctrl_dev *pctldev;
++	struct pinctrl_desc desc;
++	struct pinctrl_pin_desc pins[ZX279133_NUM_PINS];
++	struct zx279133_pin_data pin_data[ZX279133_NUM_PINS];
++	u8 gpio_mux[ZX279133_NUM_PINS];
++	void __iomem *base;
++	spinlock_t lock; /* Protects mux register updates. */
++};
++
++static const char * const zx279133_group_names[] = {
++	"p0-0", "p0-1", "p0-2", "p0-3", "p0-4",
++	"p0-5", "p0-6", "p0-7", "p0-8", "p0-9",
++	"p0-10", "p0-11", "p0-12", "p0-13", "p0-14",
++	"p1-0", "p1-1", "p1-2", "p1-3", "p1-4",
++	"p1-5", "p1-6", "p1-7", "p1-8", "p1-9",
++	"p2-0", "p2-1", "p2-2", "p2-3", "p2-4", "p2-5",
++	"p2-6", "p2-7", "p2-8", "p2-9", "p2-10", "p2-11",
++	"p2-12", "p2-13", "p2-14", "p2-15", "p2-16", "p2-17",
++	"p3-0", "p3-1", "p3-2", "p3-3", "p3-4", "p3-5",
++	"p3-6", "p3-7", "p3-8", "p3-9", "p3-10", "p3-11",
++	"p3-12",
++	"p4-0", "p4-1", "p4-2", "p4-3", "p4-4",
++	"p4-5", "p4-6", "p4-7", "p4-8", "p4-9",
++	"p5-0", "p5-1", "p5-2", "p5-3",
++};
++
++static const char * const zx279133_spifc_groups[] = {
++	"p3-9", "p3-10", "p3-11", "p3-12", "p4-0", "p4-1",
++};
++
++static const char * const zx279133_pwm_groups[] = {
++	"p0-8", "p0-9", "p0-12", "p0-13",
++};
++
++enum zx279133_mux_function {
++	ZX279133_MUX_GPIO,
++	ZX279133_MUX_SPIFC,
++	ZX279133_MUX_PWM,
++};
++
++static const struct pinfunction zx279133_functions[] = {
++	PINCTRL_GPIO_PINFUNCTION("gpio", zx279133_group_names,
++				 ARRAY_SIZE(zx279133_group_names)),
++	PINCTRL_PINFUNCTION("spifc", zx279133_spifc_groups,
++			    ARRAY_SIZE(zx279133_spifc_groups)),
++	PINCTRL_PINFUNCTION("pwm", zx279133_pwm_groups,
++			    ARRAY_SIZE(zx279133_pwm_groups)),
++};
++
++static const struct zx279133_mux_range zx279133_mux_ranges[][6] = {
++	{ { 5, 3 }, { 1, 2 }, { 2, 1 }, { 2, 2 }, { 2, 1 }, { 3, 2 } },
++	{ { 2, 3 }, { 3, 2 }, { 3, 3 }, { 2, 2 } },
++	{ { 2, 2 }, { 7, 1 }, { 2, 2 }, { 1, 3 }, { 6, 1 } },
++	{ { 6, 3 }, { 7, 2 } },
++	{ { 2, 2 }, { 8, 1 } },
++	{ { 4, 2 } },
++};
++
++static const u8 zx279133_mux_range_counts[] = { 6, 4, 5, 2, 2, 1 };
++static const u8 zx279133_bank_pins[] = { 15, 10, 18, 13, 10, 4 };
++
++static const struct zx279133_gpio_mux_range zx279133_gpio_mux_ranges[] = {
++	{ 0, 5, 3 }, { 5, 3, 1 }, { 8, 2, 3 }, { 10, 2, 1 },
++	{ 12, 2, 3 }, { 14, 1, 1 }, { 15, 2, 3 }, { 17, 2, 1 },
++	{ 19, 4, 3 }, { 23, 1, 1 }, { 24, 1, 2 }, { 25, 2, 3 },
++	{ 27, 7, 1 }, { 34, 2, 2 }, { 36, 1, 3 }, { 37, 6, 1 },
++	{ 43, 6, 3 }, { 49, 2, 2 }, { 51, 1, 1 }, { 52, 4, 2 },
++	{ 56, 2, 2 }, { 58, 8, 1 }, { 66, 1, 3 }, { 67, 1, 2 },
++	{ 68, 2, 3 },
++};
++
++static int zx279133_get_groups_count(struct pinctrl_dev *pctldev)
++{
++	return ARRAY_SIZE(zx279133_group_names);
++}
++
++static const char *zx279133_get_group_name(struct pinctrl_dev *pctldev,
++					   unsigned int selector)
++{
++	if (selector >= ARRAY_SIZE(zx279133_group_names))
++		return NULL;
++
++	return zx279133_group_names[selector];
++}
++
++static int zx279133_get_group_pins(struct pinctrl_dev *pctldev,
++				   unsigned int selector,
++				   const unsigned int **pins,
++				   unsigned int *num_pins)
++{
++	struct zx279133_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
++
++	if (selector >= ARRAY_SIZE(zx279133_group_names))
++		return -EINVAL;
++
++	*pins = &pinctrl->pins[selector].number;
++	*num_pins = 1;
++
++	return 0;
++}
++
++static const struct pinctrl_ops zx279133_pinctrl_ops = {
++	.get_groups_count = zx279133_get_groups_count,
++	.get_group_name = zx279133_get_group_name,
++	.get_group_pins = zx279133_get_group_pins,
++	.dt_node_to_map = pinconf_generic_dt_node_to_map_pin,
++	.dt_free_map = pinctrl_utils_free_map,
++};
++
++static int zx279133_get_functions_count(struct pinctrl_dev *pctldev)
++{
++	return ARRAY_SIZE(zx279133_functions);
++}
++
++static const char *zx279133_get_function_name(struct pinctrl_dev *pctldev,
++					      unsigned int selector)
++{
++	if (selector >= ARRAY_SIZE(zx279133_functions))
++		return NULL;
++
++	return zx279133_functions[selector].name;
++}
++
++static bool zx279133_function_is_gpio(struct pinctrl_dev *pctldev,
++				      unsigned int selector)
++{
++	if (selector >= ARRAY_SIZE(zx279133_functions))
++		return false;
++
++	return zx279133_functions[selector].flags & PINFUNCTION_FLAG_GPIO;
++}
++
++static int zx279133_get_function_groups(struct pinctrl_dev *pctldev,
++					unsigned int selector,
++					const char * const **groups,
++					unsigned int *num_groups)
++{
++	if (selector >= ARRAY_SIZE(zx279133_functions))
++		return -EINVAL;
++
++	*groups = zx279133_functions[selector].groups;
++	*num_groups = zx279133_functions[selector].ngroups;
++
++	return 0;
++}
++
++static int zx279133_set_pin_mux(struct pinctrl_dev *pctldev,
++				unsigned int pin, u8 mux)
++{
++	struct zx279133_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
++	const struct zx279133_pin_data *data;
++	unsigned long flags;
++	u32 mask, value;
++
++	if (pin >= ZX279133_NUM_PINS)
++		return -EINVAL;
++
++	data = &pinctrl->pin_data[pin];
++	if (mux >= BIT(data->width))
++		return -EINVAL;
++	mask = GENMASK(data->shift + data->width - 1, data->shift);
++
++	spin_lock_irqsave(&pinctrl->lock, flags);
++	value = readl(pinctrl->base + data->offset);
++	value &= ~mask;
++	value |= (u32)mux << data->shift;
++	writel(value, pinctrl->base + data->offset);
++	spin_unlock_irqrestore(&pinctrl->lock, flags);
++
++	return 0;
++}
++
++static int zx279133_set_mux(struct pinctrl_dev *pctldev,
++			    unsigned int function, unsigned int group)
++{
++	struct zx279133_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
++
++	if (function >= ARRAY_SIZE(zx279133_functions) ||
++	    group >= ZX279133_NUM_PINS)
++		return -EINVAL;
++
++	switch (function) {
++	case ZX279133_MUX_GPIO:
++		return zx279133_set_pin_mux(pctldev, group,
++					     pinctrl->gpio_mux[group]);
++	case ZX279133_MUX_SPIFC:
++		if (group < 52 || group > 57)
++			return -EINVAL;
++		return zx279133_set_pin_mux(pctldev, group, 1);
++	case ZX279133_MUX_PWM:
++		if (group == 8 || group == 9)
++			return zx279133_set_pin_mux(pctldev, group, 1);
++		if (group == 12 || group == 13)
++			return zx279133_set_pin_mux(pctldev, group, 2);
++		return -EINVAL;
++	default:
++		return -EINVAL;
++	}
++}
++
++static int zx279133_gpio_request_enable(struct pinctrl_dev *pctldev,
++					struct pinctrl_gpio_range *range,
++					unsigned int pin)
++{
++	struct zx279133_pinctrl *pinctrl = pinctrl_dev_get_drvdata(pctldev);
++
++	if (pin >= ZX279133_NUM_PINS)
++		return -EINVAL;
++
++	return zx279133_set_pin_mux(pctldev, pin, pinctrl->gpio_mux[pin]);
++}
++
++static const struct pinmux_ops zx279133_pinmux_ops = {
++	.get_functions_count = zx279133_get_functions_count,
++	.get_function_name = zx279133_get_function_name,
++	.get_function_groups = zx279133_get_function_groups,
++	.function_is_gpio = zx279133_function_is_gpio,
++	.set_mux = zx279133_set_mux,
++	.gpio_request_enable = zx279133_gpio_request_enable,
++	.strict = true,
++};
++
++static const struct pinctrl_desc zx279133_pinctrl_desc = {
++	.name = "zx279133-pinctrl",
++	.owner = THIS_MODULE,
++	.pctlops = &zx279133_pinctrl_ops,
++	.pmxops = &zx279133_pinmux_ops,
++};
++
++static int zx279133_build_pin_data(struct zx279133_pinctrl *pinctrl)
++{
++	unsigned int bank, index = 0, range_index;
++
++	for (range_index = 0;
++	     range_index < ARRAY_SIZE(zx279133_gpio_mux_ranges);
++	     range_index++) {
++		const struct zx279133_gpio_mux_range *range;
++		unsigned int pin;
++
++		range = &zx279133_gpio_mux_ranges[range_index];
++		if (range->start + range->count > ZX279133_NUM_PINS)
++			return -EINVAL;
++		for (pin = range->start; pin < range->start + range->count; pin++) {
++			if (pinctrl->gpio_mux[pin])
++				return -EINVAL;
++			pinctrl->gpio_mux[pin] = range->value;
++		}
++	}
++
++	for (bank = 0; bank < ARRAY_SIZE(zx279133_bank_pins); bank++) {
++		unsigned int pin = 0, shift = 0;
++
++		for (range_index = 0;
++		     range_index < zx279133_mux_range_counts[bank];
++		     range_index++) {
++			const struct zx279133_mux_range *range;
++			unsigned int entry;
++
++			range = &zx279133_mux_ranges[bank][range_index];
++			for (entry = 0; entry < range->count; entry++, pin++, index++) {
++				if (index >= ZX279133_NUM_PINS)
++					return -EINVAL;
++				pinctrl->pin_data[index].offset = bank * sizeof(u32);
++				pinctrl->pin_data[index].shift = shift + entry * range->width;
++				pinctrl->pin_data[index].width = range->width;
++			}
++			shift += range->count * range->width;
++		}
++		if (pin != zx279133_bank_pins[bank] || shift > 32)
++			return -EINVAL;
++	}
++
++	if (index != ZX279133_NUM_PINS)
++		return -EINVAL;
++
++	for (index = 0; index < ZX279133_NUM_PINS; index++) {
++		if (!pinctrl->gpio_mux[index] ||
++		    pinctrl->gpio_mux[index] >= BIT(pinctrl->pin_data[index].width))
++			return -EINVAL;
++	}
++
++	return 0;
++}
++
++static int zx279133_pinctrl_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct zx279133_pinctrl *pinctrl;
++	unsigned int pin;
++	int ret;
++
++	pinctrl = devm_kzalloc(dev, sizeof(*pinctrl), GFP_KERNEL);
++	if (!pinctrl)
++		return -ENOMEM;
++
++	pinctrl->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(pinctrl->base))
++		return PTR_ERR(pinctrl->base);
++
++	spin_lock_init(&pinctrl->lock);
++	ret = zx279133_build_pin_data(pinctrl);
++	if (ret)
++		return dev_err_probe(dev, ret, "invalid pin mux description\n");
++	for (pin = 0; pin < ZX279133_NUM_PINS; pin++) {
++		pinctrl->pins[pin].number = pin;
++		pinctrl->pins[pin].name = zx279133_group_names[pin];
++	}
++	pinctrl->desc = zx279133_pinctrl_desc;
++	pinctrl->desc.pins = pinctrl->pins;
++	pinctrl->desc.npins = ARRAY_SIZE(pinctrl->pins);
++
++	ret = devm_pinctrl_register_and_init(dev, &pinctrl->desc,
++					     pinctrl, &pinctrl->pctldev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to register pin controller\n");
++
++	ret = pinctrl_enable(pinctrl->pctldev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to enable pin controller\n");
++
++	dev_info(dev, "registered %u pins\n", ZX279133_NUM_PINS);
++
++	return 0;
++}
++
++static const struct of_device_id zx279133_pinctrl_of_match[] = {
++	{ .compatible = "zte,zx279133-pinctrl" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_pinctrl_of_match);
++
++static struct platform_driver zx279133_pinctrl_driver = {
++	.probe = zx279133_pinctrl_probe,
++	.driver = {
++		.name = "zx279133-pinctrl",
++		.of_match_table = zx279133_pinctrl_of_match,
++	},
++};
++module_platform_driver(zx279133_pinctrl_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 pin controller driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/pinctrl/zte,zx279133-pinctrl.yaml
+@@ -0,0 +1,159 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/pinctrl/zte,zx279133-pinctrl.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 pin controller
++
++maintainers:
++  - ZTE Linux Team <zte.linux@gmail.com>
++
++description: |
++  The ZX279133 pin controller contains 70 pins in six physical pin banks.
++  This binding describes GPIO muxing, the SPI flash controller pins, and the
++  PWM outputs. Other peripheral mux selections established by firmware remain
++  unchanged.
++
++properties:
++  compatible:
++    const: zte,zx279133-pinctrl
++
++  reg:
++    maxItems: 1
++
++patternProperties:
++  '-pins$':
++    type: object
++    $ref: pinmux-node.yaml#
++    additionalProperties: false
++
++    properties:
++      function:
++        enum: [gpio, pwm, spifc]
++
++      pins:
++        minItems: 1
++        maxItems: 70
++        items:
++          enum:
++            - p0-0
++            - p0-1
++            - p0-2
++            - p0-3
++            - p0-4
++            - p0-5
++            - p0-6
++            - p0-7
++            - p0-8
++            - p0-9
++            - p0-10
++            - p0-11
++            - p0-12
++            - p0-13
++            - p0-14
++            - p1-0
++            - p1-1
++            - p1-2
++            - p1-3
++            - p1-4
++            - p1-5
++            - p1-6
++            - p1-7
++            - p1-8
++            - p1-9
++            - p2-0
++            - p2-1
++            - p2-2
++            - p2-3
++            - p2-4
++            - p2-5
++            - p2-6
++            - p2-7
++            - p2-8
++            - p2-9
++            - p2-10
++            - p2-11
++            - p2-12
++            - p2-13
++            - p2-14
++            - p2-15
++            - p2-16
++            - p2-17
++            - p3-0
++            - p3-1
++            - p3-2
++            - p3-3
++            - p3-4
++            - p3-5
++            - p3-6
++            - p3-7
++            - p3-8
++            - p3-9
++            - p3-10
++            - p3-11
++            - p3-12
++            - p4-0
++            - p4-1
++            - p4-2
++            - p4-3
++            - p4-4
++            - p4-5
++            - p4-6
++            - p4-7
++            - p4-8
++            - p4-9
++            - p5-0
++            - p5-1
++            - p5-2
++            - p5-3
++
++    allOf:
++      - if:
++          properties:
++            function:
++              const: spifc
++        then:
++          properties:
++            pins:
++              items:
++                enum: [p3-9, p3-10, p3-11, p3-12, p4-0, p4-1]
++      - if:
++          properties:
++            function:
++              const: pwm
++        then:
++          properties:
++            pins:
++              items:
++                enum: [p0-8, p0-9, p0-12, p0-13]
++
++    required:
++      - function
++      - pins
++
++required:
++  - compatible
++  - reg
++
++allOf:
++  - $ref: pinctrl.yaml#
++
++additionalProperties: false
++
++examples:
++  - |
++    pinctrl@10e20000 {
++        compatible = "zte,zx279133-pinctrl";
++        reg = <0x10e20000 0x1000>;
++
++        example-pins {
++            function = "spifc";
++            pins = "p3-9", "p3-10", "p3-11", "p3-12", "p4-0", "p4-1";
++        };
++
++        pwm-pins {
++            function = "pwm";
++            pins = "p0-9";
++        };
++    };

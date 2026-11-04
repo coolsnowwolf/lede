@@ -1,0 +1,484 @@
+Subject: [PATCH] net: zte: add the LAN conduit module
+
+Provide the child LAN netdev and its typed shared-resource service.
+
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-lan-conduit.c
+@@ -0,0 +1,229 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ZTE ZX279133 XMAC0 LAN conduit netdev.
++ *
++ * The NPPT driver owns the shared datapath; this child owns the conduit
++ * netdev and forwards its operations through the typed parent service.
++ */
++
++#include <linux/etherdevice.h>
++#include <linux/ethtool.h>
++#include <linux/module.h>
++#include <linux/netdevice.h>
++#include <linux/of.h>
++#include <linux/of_net.h>
++#include <linux/platform_device.h>
++
++#include "zx279133-lan.h"
++
++#define zx279133_lan_conduit_priv zx279133_lan_netdev_priv
++
++static int zx279133_lan_conduit_open(struct net_device *ndev)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return zx279133_lan_service_netdev_open(priv->service, ndev);
++}
++
++static int zx279133_lan_conduit_stop(struct net_device *ndev)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return zx279133_lan_service_netdev_stop(priv->service, ndev);
++}
++
++static netdev_tx_t zx279133_lan_conduit_xmit(struct sk_buff *skb,
++					     struct net_device *ndev)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return zx279133_lan_service_netdev_xmit(priv->service, skb, ndev);
++}
++
++static void zx279133_lan_conduit_tx_timeout(struct net_device *ndev,
++					    unsigned int txqueue)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	zx279133_lan_service_netdev_tx_timeout(priv->service, ndev, txqueue);
++}
++
++static void
++zx279133_lan_conduit_get_stats64(struct net_device *ndev,
++				 struct rtnl_link_stats64 *stats)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	zx279133_lan_service_netdev_get_stats64(priv->service, ndev, stats);
++}
++
++static int zx279133_lan_conduit_change_mtu(struct net_device *ndev,
++					   int new_mtu)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return zx279133_lan_service_netdev_change_mtu(priv->service, ndev,
++						      new_mtu);
++}
++
++static int zx279133_lan_conduit_setup_tc(struct net_device *ndev,
++					 enum tc_setup_type type,
++					 void *type_data)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return zx279133_lan_service_netdev_setup_tc(priv->service, ndev, type,
++						   type_data);
++}
++
++static const struct net_device_ops zx279133_lan_conduit_netdev_ops = {
++	.ndo_open = zx279133_lan_conduit_open,
++	.ndo_stop = zx279133_lan_conduit_stop,
++	.ndo_start_xmit = zx279133_lan_conduit_xmit,
++	.ndo_tx_timeout = zx279133_lan_conduit_tx_timeout,
++	.ndo_get_stats64 = zx279133_lan_conduit_get_stats64,
++	.ndo_change_mtu = zx279133_lan_conduit_change_mtu,
++	.ndo_setup_tc = zx279133_lan_conduit_setup_tc,
++	.ndo_set_mac_address = eth_mac_addr,
++	.ndo_validate_addr = eth_validate_addr,
++};
++
++static void zx279133_lan_conduit_get_channels(struct net_device *ndev,
++					      struct ethtool_channels *channels)
++{
++	channels->max_rx = ZX279133_CPU_RX_QUEUES;
++	channels->max_tx = ZX279133_CPU_TX_QUEUES;
++	channels->rx_count = ndev->real_num_rx_queues;
++	channels->tx_count = ndev->real_num_tx_queues;
++}
++
++static u32 zx279133_lan_conduit_get_rxfh_indir_size(struct net_device *ndev)
++{
++	return 8;
++}
++
++static int zx279133_lan_conduit_get_rxfh(struct net_device *ndev,
++					 struct ethtool_rxfh_param *rxfh)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return priv->service->ops->get_rxfh(priv->service, rxfh);
++}
++
++static int zx279133_lan_conduit_set_rxfh(struct net_device *ndev,
++					 struct ethtool_rxfh_param *rxfh,
++					 struct netlink_ext_ack *extack)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return priv->service->ops->set_rxfh(priv->service, rxfh, extack);
++}
++
++static int zx279133_lan_conduit_get_rxfh_fields(struct net_device *ndev,
++						struct ethtool_rxfh_fields *fields)
++{
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	return priv->service->ops->get_rxfh_fields(priv->service, fields);
++}
++
++static int zx279133_lan_conduit_get_rxnfc(struct net_device *ndev,
++					  struct ethtool_rxnfc *info, u32 *rules)
++{
++	if (info->cmd != ETHTOOL_GRXRINGS)
++		return -EOPNOTSUPP;
++	info->data = ndev->real_num_rx_queues;
++	return 0;
++}
++
++static const struct ethtool_ops zx279133_lan_conduit_ethtool_ops = {
++	.get_rxnfc = zx279133_lan_conduit_get_rxnfc,
++	.get_rxfh_indir_size = zx279133_lan_conduit_get_rxfh_indir_size,
++	.get_rxfh = zx279133_lan_conduit_get_rxfh,
++	.set_rxfh = zx279133_lan_conduit_set_rxfh,
++	.get_rxfh_fields = zx279133_lan_conduit_get_rxfh_fields,
++	.get_link = ethtool_op_get_link,
++	.get_channels = zx279133_lan_conduit_get_channels,
++};
++
++static void zx279133_lan_conduit_teardown(void *data)
++{
++	struct net_device *ndev = data;
++	struct zx279133_lan_conduit_priv *priv = netdev_priv(ndev);
++
++	zx279133_lan_service_netdev_teardown(priv->service, ndev);
++}
++
++static int zx279133_lan_conduit_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct zx279133_lan_conduit_priv *priv;
++	struct zx279133_lan_service *service;
++	struct net_device *ndev;
++	int ret;
++
++	service = dev_get_drvdata(dev->parent);
++	if (!zx279133_lan_service_valid(service))
++		return dev_err_probe(dev, -EPROBE_DEFER,
++				     "NPPT LAN service is unavailable\n");
++
++	ndev = devm_alloc_etherdev_mqs(dev, sizeof(*priv),
++				       ZX279133_CPU_TX_QUEUES, ZX279133_CPU_RX_QUEUES);
++	if (!ndev)
++		return -ENOMEM;
++
++	SET_NETDEV_DEV(ndev, dev);
++	strscpy(ndev->name, "lan-cpu%d", IFNAMSIZ);
++	ndev->netdev_ops = &zx279133_lan_conduit_netdev_ops;
++	ndev->ethtool_ops = &zx279133_lan_conduit_ethtool_ops;
++	ndev->tstats = devm_netdev_alloc_pcpu_stats(dev,
++						    struct pcpu_sw_netstats);
++	if (!ndev->tstats)
++		return -ENOMEM;
++
++	priv = netdev_priv(ndev);
++	priv->service = service;
++	zx279133_netdev_stats_init(&priv->stats);
++
++	ret = zx279133_lan_service_netdev_setup(service, ndev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to claim LAN conduit netdev\n");
++
++	ret = devm_add_action_or_reset(dev, zx279133_lan_conduit_teardown,
++				       ndev);
++	if (ret)
++		return ret;
++
++	if (of_property_present(dev->of_node, "nvmem-cells")) {
++		ret = of_get_ethdev_address(dev->of_node, ndev);
++		if (ret)
++			return dev_err_probe(dev, ret, "failed to read LAN MAC address\n");
++	}
++
++	ret = devm_register_netdev(dev, ndev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "failed to register LAN conduit netdev\n");
++
++	dev_info(dev, "LAN conduit netdev registered\n");
++	return 0;
++}
++
++static const struct of_device_id zx279133_lan_conduit_of_match[] = {
++	{ .compatible = "zte,zx279133-lan-conduit" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_lan_conduit_of_match);
++
++static struct platform_driver zx279133_lan_conduit_driver = {
++	.probe = zx279133_lan_conduit_probe,
++	.driver = {
++		.name = "zx279133-lan-conduit",
++		.of_match_table = zx279133_lan_conduit_of_match,
++	},
++};
++module_platform_driver(zx279133_lan_conduit_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 XMAC0 LAN conduit");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-lan.h
+@@ -0,0 +1,245 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __ZX279133_LAN_H
++#define __ZX279133_LAN_H
++
++#include <linux/netdevice.h>
++#include <linux/if_vlan.h>
++#include <linux/types.h>
++
++#include "zx279133-stats.h"
++
++#define ZX279133_LAN_USER_MAX_MTU	1970
++#define ZX279133_CPU_TX_QUEUES	2
++#define ZX279133_CPU_RX_QUEUES	2
++
++/*
++ * Service boundary between the NPPT parent and the LAN switch child.
++ *
++ * The parent retains ownership of the shared MMIO mapping, XMAC lock, and
++ * shared datapath. The child accesses them only through this typed service;
++ * parent implementation details remain private to the NPPT driver.
++ */
++struct zx279133_lan_service;
++struct ethtool_rxfh_param;
++struct ethtool_rxfh_fields;
++
++struct zx279133_lan_netdev_priv {
++	struct zx279133_lan_service *service;
++	struct zx279133_netdev_stats stats;
++};
++
++struct zx279133_lan_service_ops {
++	int (*get_rxfh)(struct zx279133_lan_service *service,
++			struct ethtool_rxfh_param *rxfh);
++	int (*set_rxfh)(struct zx279133_lan_service *service,
++			struct ethtool_rxfh_param *rxfh, struct netlink_ext_ack *extack);
++	int (*get_rxfh_fields)(struct zx279133_lan_service *service,
++			       struct ethtool_rxfh_fields *fields);
++	u32 (*nppt_read)(struct zx279133_lan_service *service, u32 offset);
++	void (*nppt_write)(struct zx279133_lan_service *service, u32 offset,
++			   u32 value);
++	void (*xmac_lock)(struct zx279133_lan_service *service);
++	void (*xmac_unlock)(struct zx279133_lan_service *service);
++	int (*datapath_get)(struct zx279133_lan_service *service);
++	void (*datapath_set_ready)(struct zx279133_lan_service *service, bool ready);
++	int (*datapath_quiesce)(struct zx279133_lan_service *service);
++	void (*datapath_put)(struct zx279133_lan_service *service);
++	void (*set_dsa_active)(struct zx279133_lan_service *service, bool active);
++	int (*netdev_setup)(struct zx279133_lan_service *service,
++			    struct net_device *ndev);
++	void (*netdev_teardown)(struct zx279133_lan_service *service,
++				struct net_device *ndev);
++	int (*netdev_open)(struct zx279133_lan_service *service,
++			   struct net_device *ndev);
++	int (*netdev_stop)(struct zx279133_lan_service *service,
++			   struct net_device *ndev);
++	netdev_tx_t (*netdev_xmit)(struct zx279133_lan_service *service,
++				   struct sk_buff *skb,
++				   struct net_device *ndev);
++	void (*netdev_tx_timeout)(struct zx279133_lan_service *service,
++				  struct net_device *ndev, unsigned int txqueue);
++	void (*netdev_get_stats64)(struct zx279133_lan_service *service,
++				   struct net_device *ndev,
++				   struct rtnl_link_stats64 *stats);
++	int (*netdev_change_mtu)(struct zx279133_lan_service *service,
++				 struct net_device *ndev, int new_mtu);
++	int (*netdev_setup_tc)(struct zx279133_lan_service *service,
++			       struct net_device *ndev,
++			       enum tc_setup_type type, void *type_data);
++	int (*port_wan_set)(struct zx279133_lan_service *service, u16 vid,
++			    bool wan);
++	int (*vlan_sync)(struct zx279133_lan_service *service,
++			 const unsigned long *vids);
++};
++
++struct zx279133_lan_service {
++	const struct zx279133_lan_service_ops *ops;
++};
++
++static inline bool
++zx279133_lan_service_valid(const struct zx279133_lan_service *service)
++{
++	return service && service->ops && service->ops->nppt_read &&
++	       service->ops->nppt_write && service->ops->xmac_lock &&
++	       service->ops->xmac_unlock && service->ops->datapath_get &&
++	       service->ops->datapath_set_ready &&
++	       service->ops->datapath_quiesce && service->ops->datapath_put &&
++	       service->ops->set_dsa_active &&
++	       service->ops->netdev_setup && service->ops->netdev_teardown &&
++	       service->ops->netdev_open && service->ops->netdev_stop &&
++	       service->ops->netdev_xmit && service->ops->netdev_tx_timeout &&
++	       service->ops->netdev_get_stats64 &&
++	       service->ops->netdev_change_mtu && service->ops->netdev_setup_tc &&
++	       service->ops->get_rxfh && service->ops->set_rxfh &&
++	       service->ops->get_rxfh_fields;
++}
++
++static inline u32
++zx279133_lan_service_nppt_read(struct zx279133_lan_service *service, u32 offset)
++{
++	return service->ops->nppt_read(service, offset);
++}
++
++static inline void
++zx279133_lan_service_nppt_write(struct zx279133_lan_service *service, u32 offset,
++				u32 value)
++{
++	service->ops->nppt_write(service, offset, value);
++}
++
++static inline void
++zx279133_lan_service_xmac_lock(struct zx279133_lan_service *service)
++{
++	service->ops->xmac_lock(service);
++}
++
++static inline void
++zx279133_lan_service_xmac_unlock(struct zx279133_lan_service *service)
++{
++	service->ops->xmac_unlock(service);
++}
++
++/* Make the LAN port with this transport VID WAN-type or LAN-type. */
++static inline int
++zx279133_lan_service_port_wan_set(struct zx279133_lan_service *service,
++				  u16 vid, bool wan)
++{
++	return service->ops->port_wan_set ?
++	       service->ops->port_wan_set(service, vid, wan) : 0;
++}
++
++static inline int
++zx279133_lan_service_datapath_get(struct zx279133_lan_service *service)
++{
++	return service->ops->datapath_get(service);
++}
++
++static inline void
++zx279133_lan_service_datapath_set_ready(struct zx279133_lan_service *service,
++					bool ready)
++{
++	service->ops->datapath_set_ready(service, ready);
++}
++
++static inline int
++zx279133_lan_service_datapath_quiesce(struct zx279133_lan_service *service)
++{
++	return service->ops->datapath_quiesce(service);
++}
++
++static inline void
++zx279133_lan_service_datapath_put(struct zx279133_lan_service *service)
++{
++	service->ops->datapath_put(service);
++}
++
++static inline void
++zx279133_lan_service_set_dsa_active(struct zx279133_lan_service *service,
++				    bool active)
++{
++	service->ops->set_dsa_active(service, active);
++}
++
++static inline int
++zx279133_lan_service_netdev_setup(struct zx279133_lan_service *service,
++				  struct net_device *ndev)
++{
++	return service->ops->netdev_setup(service, ndev);
++}
++
++static inline void
++zx279133_lan_service_netdev_teardown(struct zx279133_lan_service *service,
++				     struct net_device *ndev)
++{
++	service->ops->netdev_teardown(service, ndev);
++}
++
++static inline int
++zx279133_lan_service_netdev_open(struct zx279133_lan_service *service,
++				 struct net_device *ndev)
++{
++	return service->ops->netdev_open(service, ndev);
++}
++
++static inline int
++zx279133_lan_service_netdev_stop(struct zx279133_lan_service *service,
++				 struct net_device *ndev)
++{
++	return service->ops->netdev_stop(service, ndev);
++}
++
++static inline netdev_tx_t
++zx279133_lan_service_netdev_xmit(struct zx279133_lan_service *service,
++				 struct sk_buff *skb,
++				 struct net_device *ndev)
++{
++	return service->ops->netdev_xmit(service, skb, ndev);
++}
++
++static inline void
++zx279133_lan_service_netdev_tx_timeout(struct zx279133_lan_service *service,
++				       struct net_device *ndev,
++				       unsigned int txqueue)
++{
++	service->ops->netdev_tx_timeout(service, ndev, txqueue);
++}
++
++static inline void
++zx279133_lan_service_netdev_get_stats64(struct zx279133_lan_service *service,
++					struct net_device *ndev,
++					struct rtnl_link_stats64 *stats)
++{
++	service->ops->netdev_get_stats64(service, ndev, stats);
++}
++
++static inline int
++zx279133_lan_service_netdev_change_mtu(struct zx279133_lan_service *service,
++				       struct net_device *ndev,
++				       int new_mtu)
++{
++	return service->ops->netdev_change_mtu(service, ndev, new_mtu);
++}
++
++static inline int
++zx279133_lan_service_netdev_setup_tc(struct zx279133_lan_service *service,
++				     struct net_device *ndev,
++				     enum tc_setup_type type,
++				     void *type_data)
++{
++	return service->ops->netdev_setup_tc(service, ndev, type, type_data);
++}
++
++static inline void
++zx279133_fill_netdev_stats64(struct net_device *ndev,
++			     const struct zx279133_netdev_stats *sw_stats,
++				     struct rtnl_link_stats64 *stats)
++{
++	dev_get_tstats64(ndev, stats);
++	stats->rx_errors += atomic64_read(&sw_stats->rx_errors);
++	stats->tx_errors += atomic64_read(&sw_stats->tx_errors);
++	stats->rx_dropped += atomic64_read(&sw_stats->rx_dropped);
++	stats->tx_dropped += atomic64_read(&sw_stats->tx_dropped);
++	stats->rx_length_errors += atomic64_read(&sw_stats->rx_length_errors);
++}
++
++#endif /* __ZX279133_LAN_H */

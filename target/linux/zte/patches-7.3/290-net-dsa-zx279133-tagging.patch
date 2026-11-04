@@ -1,0 +1,176 @@
+Subject: [PATCH] net: dsa: add ZX279133 RTL8372N tagging
+
+Add the DSA tag protocol and user-port integration for the NP conduit.
+
+--- a/include/net/dsa.h
++++ b/include/net/dsa.h
+@@ -63,7 +63,10 @@
+ #define DSA_TAG_PROTO_MT7628_VALUE		35
+ #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	31
+ 
++#define DSA_TAG_PROTO_ZX279133_RTL8372N_VALUE	36
++
+ enum dsa_tag_protocol {
++	DSA_TAG_PROTO_ZX279133_RTL8372N = DSA_TAG_PROTO_ZX279133_RTL8372N_VALUE,
+ 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
+ 	DSA_TAG_PROTO_BRCM		= DSA_TAG_PROTO_BRCM_VALUE,
+ 	DSA_TAG_PROTO_BRCM_LEGACY	= DSA_TAG_PROTO_BRCM_LEGACY_VALUE,
+--- /dev/null
++++ b/include/net/dsa_zx279133_rtl8372n.h
+@@ -0,0 +1,9 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _NET_DSA_ZX279133_RTL8372N_H
++#define _NET_DSA_ZX279133_RTL8372N_H
++
++#define ZX279133_RTL8372N_USER_PORT_MIN	4
++#define ZX279133_RTL8372N_USER_PORT_MAX	7
++#define ZX279133_RTL8372N_TRANSPORT_VID_BASE	55
++
++#endif /* _NET_DSA_ZX279133_RTL8372N_H */
+--- a/net/dsa/Kconfig
++++ b/net/dsa/Kconfig
+@@ -222,6 +222,14 @@
+ 	  Say Y or M if you want to enable support for tagging frames with a
+ 	  custom VLAN-based header.
+ 
++config NET_DSA_TAG_ZX279133_RTL8372N
++	tristate "Tag driver for ZX279133 connected RTL8372N switches"
++	help
++	  Say Y or M to use the RTL8372N 8-byte protocol-4 CPU tag between the
++	  ZX279133 LAN conduit and external CPU port 8. This tagger completes
++	  partial checksums in software because the ZX279133 TX parser cannot
++	  locate the network header behind EtherType 0x8899.
++
+ config NET_DSA_TAG_XRS700X
+ 	tristate "Tag driver for XRS700x switches"
+ 	help
+--- a/net/dsa/Makefile
++++ b/net/dsa/Makefile
+@@ -48,3 +48,5 @@
+ 
+ # for tracing framework to find trace.h
+ CFLAGS_trace.o := -I$(src)
++
++obj-$(CONFIG_NET_DSA_TAG_ZX279133_RTL8372N) += tag_zx279133_rtl8372n.o
+--- /dev/null
++++ b/net/dsa/tag_zx279133_rtl8372n.c
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Factory-style RTL8372N S-VLAN tag on the SR1010 external CPU port. */
++#include <linux/etherdevice.h>
++#include <linux/if_vlan.h>
++#include <net/dsa_zx279133_rtl8372n.h>
++
++#include "tag.h"
++
++#define ZX279133_RTL8372N_TAG_NAME	"zx279133-rtl8372n"
++
++static struct sk_buff *
++zx279133_rtl8372n_xmit(struct sk_buff *skb, struct net_device *netdev)
++{
++	struct dsa_port *dp = dsa_user_to_port(netdev);
++	__be16 tag[VLAN_HLEN / sizeof(__be16)] = {
++		htons(ETH_P_8021Q),
++		htons(ZX279133_RTL8372N_TRANSPORT_VID_BASE + dp->index),
++	};
++
++	/* The switch removes the service tag before transmission, so pad the
++	 * original Ethernet frame rather than relying on conduit-side padding.
++	 */
++	if (unlikely(eth_skb_pad(skb)))
++		return NULL;
++
++	skb_push(skb, VLAN_HLEN);
++	dsa_alloc_etype_header(skb, VLAN_HLEN);
++	memcpy(dsa_etype_header_pos_tx(skb), tag, sizeof(tag));
++
++	return skb;
++}
++
++static struct sk_buff *
++zx279133_rtl8372n_rcv(struct sk_buff *skb, struct net_device *netdev)
++{
++	__be16 tag[VLAN_HLEN / sizeof(__be16)];
++	bool inline_tag = false;
++	__be16 vlan_proto;
++	u16 tci;
++	u16 vid;
++	u8 port;
++
++	if (skb_vlan_tag_present(skb)) {
++		vlan_proto = skb->vlan_proto;
++		tci = skb_vlan_tag_get(skb);
++	} else {
++		if (unlikely(!pskb_may_pull(skb, VLAN_HLEN)))
++			return NULL;
++		memcpy(tag, dsa_etype_header_pos_rx(skb), sizeof(tag));
++		vlan_proto = tag[0];
++		tci = ntohs(tag[1]);
++		inline_tag = true;
++	}
++	if (unlikely(!eth_type_vlan(vlan_proto)))
++		return NULL;
++
++	vid = tci & VLAN_VID_MASK;
++	if (unlikely(vid < ZX279133_RTL8372N_TRANSPORT_VID_BASE +
++			   ZX279133_RTL8372N_USER_PORT_MIN ||
++		     vid > ZX279133_RTL8372N_TRANSPORT_VID_BASE +
++			   ZX279133_RTL8372N_USER_PORT_MAX))
++		return NULL;
++	port = vid - ZX279133_RTL8372N_TRANSPORT_VID_BASE;
++
++	skb->dev = dsa_conduit_find_user(netdev, 0, port);
++	if (!skb->dev)
++		return NULL;
++	/* DSA user ports expose one RX queue, independently of conduit workers. */
++	skb_record_rx_queue(skb, 0);
++
++	if (inline_tag) {
++		skb_pull_rcsum(skb, VLAN_HLEN);
++		dsa_strip_etype_header(skb, VLAN_HLEN);
++	} else {
++		__vlan_hwaccel_clear_tag(skb);
++	}
++	dsa_default_offload_fwd_mark(skb);
++
++	return skb;
++}
++
++static const struct dsa_device_ops zx279133_rtl8372n_netdev_ops = {
++	.name			= ZX279133_RTL8372N_TAG_NAME,
++	.proto			= DSA_TAG_PROTO_ZX279133_RTL8372N,
++	.xmit			= zx279133_rtl8372n_xmit,
++	.rcv			= zx279133_rtl8372n_rcv,
++	.needed_headroom	= VLAN_HLEN,
++	.promisc_on_conduit	= true,
++};
++
++MODULE_ALIAS_DSA_TAG_DRIVER(DSA_TAG_PROTO_ZX279133_RTL8372N,
++			    ZX279133_RTL8372N_TAG_NAME);
++module_dsa_tag_driver(zx279133_rtl8372n_netdev_ops);
++
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("DSA S-VLAN tagger for ZX279133 connected RTL8372N");
+--- a/net/dsa/user.c
++++ b/net/dsa/user.c
+@@ -1036,7 +1036,10 @@
+ 		if (ds->ops->get_strings)
+ 			ds->ops->get_strings(ds, dp->index, stringset, data);
+ 	} else if (stringset ==  ETH_SS_TEST) {
+-		net_selftest_get_strings(data);
++		if (ds->ops->self_test && ds->ops->get_strings)
++			ds->ops->get_strings(ds, dp->index, stringset, data);
++		else
++			net_selftest_get_strings(data);
+ 	}
+ 
+ }
+@@ -1087,6 +1090,8 @@
+ 
+ 		return count + 4;
+ 	} else if (sset ==  ETH_SS_TEST) {
++		if (ds->ops->self_test && ds->ops->get_sset_count)
++			return ds->ops->get_sset_count(ds, dp->index, sset);
+ 		return net_selftest_get_count();
+ 	}
+ 

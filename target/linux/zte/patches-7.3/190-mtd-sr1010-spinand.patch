@@ -1,0 +1,792 @@
+Subject: [PATCH] mtd: support SR1010 SPI NAND layout and bad blocks
+
+Carry the SPI NAND, bad-block and partition support used by the board.
+
+--- a/drivers/mtd/mtdcore.c
++++ b/drivers/mtd/mtdcore.c
+@@ -1102,8 +1102,8 @@
+ 	return dev_err_probe(dev, err, "Failed to register OTP NVMEM device\n");
+ }
+ 
+-/**
+- * mtd_device_parse_register - parse partitions and register an MTD device.
++/*
++ * Parse partitions and register an MTD device.
+  *
+  * @mtd: the MTD device to register
+  * @types: the list of MTD partition probes to try, see
+@@ -1128,14 +1128,24 @@
+  * * If no partitions were found this function just registers the MTD device
+  *   @mtd and exits.
+  *
+- * Returns zero in case of success and a negative error code in case of failure.
+- */
+-int mtd_device_parse_register(struct mtd_info *mtd, const char * const *types,
+-			      struct mtd_part_parser_data *parser_data,
+-			      const struct mtd_partition *parts,
+-			      int nr_parts)
++ * If partitions_only is true, do not use fallback partitions or register
++ * the whole master when parsing finds no partitions.
++ */
++static int __mtd_device_parse_register(struct mtd_info *mtd,
++				       const char * const *types,
++				       struct mtd_part_parser_data *parser_data,
++				       const struct mtd_partition *parts,
++				       int nr_parts, bool partitions_only)
+ {
+ 	int ret, err;
++
++	/*
++	 * A required partition map must never expose the master, not even
++	 * temporarily.  Supporting that with MTD_PARTITIONED_MASTER would need
++	 * per-device parent and reference-count semantics throughout mtdpart.
++	 */
++	if (partitions_only && IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER))
++		return -EOPNOTSUPP;
+ 
+ 	mtd_set_dev_defaults(mtd);
+ 
+@@ -1160,14 +1170,18 @@
+ 	if (ret == -EPROBE_DEFER)
+ 		goto out;
+ 
+-	if (ret > 0)
++	if (ret > 0) {
+ 		ret = 0;
+-	else if (nr_parts)
++	} else if (partitions_only) {
++		if (!ret)
++			ret = -ENODATA;
++	} else if (nr_parts) {
+ 		ret = add_mtd_partitions(mtd, parts, nr_parts);
+-	else if (!device_is_registered(&mtd->dev))
++	} else if (!device_is_registered(&mtd->dev)) {
+ 		ret = add_mtd_device(mtd);
+-	else
++	} else {
+ 		ret = 0;
++	}
+ 
+ 	if (ret)
+ 		goto out;
+@@ -1208,7 +1222,48 @@
+ 
+ 	return ret;
+ }
++
++/**
++ * mtd_device_parse_register - parse partitions and register an MTD device
++ * @mtd: the MTD device to register
++ * @types: partition parsers to try, or %NULL for the default list
++ * @parser_data: partition parser-specific data
++ * @parts: fallback partitions to register when parsing finds none
++ * @nr_parts: number of fallback partitions; zero permits whole-master fallback
++ *
++ * Return: zero on success or a negative error code on failure.
++ */
++int mtd_device_parse_register(struct mtd_info *mtd, const char * const *types,
++			      struct mtd_part_parser_data *parser_data,
++			      const struct mtd_partition *parts,
++			      int nr_parts)
++{
++	return __mtd_device_parse_register(mtd, types, parser_data, parts,
++					   nr_parts, false);
++}
+ EXPORT_SYMBOL_GPL(mtd_device_parse_register);
++
++/**
++ * mtd_device_parse_register_partitions_only - register parsed partitions only
++ * @mtd: the MTD device whose partitions must be registered
++ * @types: partition parsers to try, or %NULL for the default list
++ * @parser_data: partition parser-specific data
++ *
++ * Parse and register partitions without ever exposing the whole MTD master.
++ * A parser result of zero is returned as %-ENODATA and parser errors are
++ * propagated.  This helper is incompatible with %MTD_PARTITIONED_MASTER,
++ * whose global semantics register the master before parsing.
++ *
++ * Return: zero on success or a negative error code on failure.
++ */
++int mtd_device_parse_register_partitions_only(struct mtd_info *mtd,
++					      const char * const *types,
++					      struct mtd_part_parser_data *parser_data)
++{
++	return __mtd_device_parse_register(mtd, types, parser_data, NULL, 0,
++					   true);
++}
++EXPORT_SYMBOL_GPL(mtd_device_parse_register_partitions_only);
+ 
+ /**
+  * mtd_device_unregister - unregister an existing MTD device.
+--- a/drivers/mtd/mtdpart.c
++++ b/drivers/mtd/mtdpart.c
+@@ -78,6 +78,7 @@
+ 	child->oobsize = parent->oobsize;
+ 	child->oobavail = parent->oobavail;
+ 	child->subpage_sft = parent->subpage_sft;
++	child->program_once = parent->program_once;
+ 
+ 	child->name = name;
+ 	child->owner = parent->owner;
+--- a/drivers/mtd/nand/bbt.c
++++ b/drivers/mtd/nand/bbt.c
+@@ -108,12 +108,14 @@
+ 	unsigned long *pos = nand->bbt.cache +
+ 			     ((entry * bits_per_block) / BITS_PER_LONG);
+ 	unsigned int offs = (entry * bits_per_block) % BITS_PER_LONG;
+-	unsigned long val = status & GENMASK(bits_per_block - 1, 0);
++	unsigned long mask = GENMASK(bits_per_block - 1, 0);
++	unsigned long val = status & mask;
+ 
+ 	if (entry >= nanddev_neraseblocks(nand))
+ 		return -ERANGE;
+ 
+-	pos[0] &= ~GENMASK(offs + bits_per_block - 1, offs);
++	/* Bits beyond BITS_PER_LONG are handled in pos[1] below. */
++	pos[0] &= ~(mask << offs);
+ 	pos[0] |= val << offs;
+ 
+ 	if (bits_per_block + offs > BITS_PER_LONG) {
+--- a/drivers/mtd/nand/spi/core.c
++++ b/drivers/mtd/nand/spi/core.c
+@@ -15,6 +15,7 @@
+ #include <linux/module.h>
+ #include <linux/mtd/spinand.h>
+ #include <linux/of.h>
++#include <linux/property.h>
+ #include <linux/slab.h>
+ #include <linux/string.h>
+ #include <linux/spi/spi.h>
+@@ -139,6 +140,9 @@
+ {
+ 	struct spi_mem_op op = SPINAND_OP(spinand, set_feature,
+ 					  reg, spinand->scratchbuf);
++
++	if (spinand->strict_read_only)
++		return -EROFS;
+ 
+ 	*spinand->scratchbuf = val;
+ 	return spi_mem_exec_op(spinand->spimem, &op);
+@@ -409,6 +413,17 @@
+ 
+ 	memset(spinand->oobbuf, 0xff, nanddev_per_page_oobsize(nand));
+ 
++	if (spinand->strict_read_only) {
++		if (!spinand->read_ready)
++			return -EIO;
++
++		/* ECC is pinned on because changing it requires SET FEATURE. */
++		if (!enable)
++			return -EOPNOTSUPP;
++
++		return 0;
++	}
++
+ 	/* Only enable or disable the engine */
+ 	return spinand_ecc_enable(spinand, enable);
+ }
+@@ -473,6 +488,9 @@
+ int spinand_write_enable_op(struct spinand_device *spinand)
+ {
+ 	struct spi_mem_op op = SPINAND_OP(spinand, wr_en);
++
++	if (spinand->strict_read_only)
++		return -EROFS;
+ 
+ 	return spi_mem_exec_op(spinand->spimem, &op);
+ }
+@@ -727,7 +745,18 @@
+ static int spinand_reset_op(struct spinand_device *spinand)
+ {
+ 	struct spi_mem_op op = SPINAND_OP(spinand, reset);
+-	int ret;
++	u8 status;
++	int ret;
++
++	if (spinand->strict_read_only) {
++		ret = spinand_read_status(spinand, &status);
++		if (ret)
++			return ret;
++		if (status & STATUS_BUSY)
++			return -EBUSY;
++		if (status & STATUS_WEL)
++			return -EROFS;
++	}
+ 
+ 	ret = spi_mem_exec_op(spinand->spimem, &op);
+ 	if (ret)
+@@ -759,6 +788,9 @@
+ 	u8 status;
+ 	int ret;
+ 
++	if (spinand->strict_read_only)
++		return -EROFS;
++
+ 	ret = nand_ecc_prepare_io_req(nand, (struct nand_page_io_req *)req);
+ 	if (ret)
+ 		return ret;
+@@ -858,7 +890,8 @@
+ 		if (ret < 0 && ret != -EBADMSG)
+ 			break;
+ 
+-		if (ret == -EBADMSG && spinand->set_read_retry) {
++		if (ret == -EBADMSG && spinand->set_read_retry &&
++		    !spinand->strict_read_only) {
+ 			if (spinand->read_retries && (++retry_mode <= spinand->read_retries)) {
+ 				ret = spinand->set_read_retry(spinand, retry_mode);
+ 				if (ret < 0) {
+@@ -983,6 +1016,9 @@
+ 	enum nand_ecc_engine_type engine_type = nand->ecc.ctx.conf.engine_type;
+ 	struct spi_controller *ctlr = spinand->spimem->spi->controller;
+ 
++	if (spinand->strict_read_only)
++		return;
++
+ 	/* OOBs cannot be retrieved so external/on-host ECC engine won't work */
+ 	if (spinand->set_cont_read) {
+ 		/*
+@@ -1102,18 +1138,23 @@
+ 		.ooblen = sizeof(marker),
+ 		.ooboffs = 0,
+ 		.oobbuf.in = marker,
+-		.mode = MTD_OPS_RAW,
++		.mode = spinand->strict_read_only ?
++			MTD_OPS_PLACE_OOB : MTD_OPS_RAW,
+ 	};
+ 	int ret;
+ 
+-	spinand_select_target(spinand, pos->target);
++	ret = spinand_select_target(spinand, pos->target);
++	if (ret)
++		return true;
+ 
+ 	ret = spinand_read_page(spinand, &req);
+ 	if (ret == -EOPNOTSUPP) {
+ 		/* Retry with ECC in case raw access is not supported */
+ 		req.mode = MTD_OPS_PLACE_OOB;
+-		spinand_read_page(spinand, &req);
+-	}
++		ret = spinand_read_page(spinand, &req);
++	}
++	if (ret < 0 && spinand->strict_read_only)
++		return true;
+ 
+ 	if (marker[0] != 0xff || marker[1] != 0xff)
+ 		return true;
+@@ -1183,6 +1224,9 @@
+ 	struct spinand_device *spinand = nand_to_spinand(nand);
+ 	u8 status;
+ 	int ret;
++
++	if (spinand->strict_read_only)
++		return -EROFS;
+ 
+ 	ret = spinand_select_target(spinand, pos->target);
+ 	if (ret)
+@@ -1648,6 +1692,8 @@
+ 		spinand->id.len = 1 + table[i].devid.len;
+ 		spinand->select_target = table[i].select_target;
+ 		spinand->configure_chip = table[i].configure_chip;
++		spinand->prepare_read_only = table[i].prepare_read_only;
++		spinand->check_read_only = table[i].check_read_only;
+ 		spinand->set_cont_read = table[i].set_cont_read;
+ 		spinand->fact_otp = &table[i].fact_otp;
+ 		spinand->user_otp = &table[i].user_otp;
+@@ -1829,11 +1875,44 @@
+ 	return 0;
+ }
+ 
++static int spinand_validate_readonly_cfg(struct spinand_device *spinand)
++{
++	struct device *dev = &spinand->spimem->spi->dev;
++	struct nand_device *nand = spinand_to_nand(spinand);
++	unsigned int target;
++	u8 cfg;
++
++	for (target = 0; target < nand->memorg.ntargets; target++) {
++		cfg = spinand->cfg_cache[target];
++		if (cfg & CFG_OTP_ENABLE) {
++			dev_err(dev, "target %u is still in OTP mode\n", target);
++			return -EROFS;
++		}
++
++		if (!(cfg & CFG_ECC_ENABLE)) {
++			dev_err(dev, "target %u has on-die ECC disabled\n", target);
++			return -EROFS;
++		}
++	}
++
++	return 0;
++}
++
+ static int spinand_init_flash(struct spinand_device *spinand)
+ {
+ 	struct device *dev = &spinand->spimem->spi->dev;
+ 	struct nand_device *nand = spinand_to_nand(spinand);
+ 	int ret, i;
++
++	if (spinand->strict_read_only && !spinand->check_read_only) {
++		dev_err(dev, "chip does not support strict read-only probing\n");
++		return -EOPNOTSUPP;
++	}
++	if (spinand->strict_read_only && spinand->prepare_read_only) {
++		ret = spinand->prepare_read_only(spinand);
++		if (ret)
++			return ret;
++	}
+ 
+ 	ret = spinand_read_cfg(spinand);
+ 	if (ret)
+@@ -1855,6 +1934,18 @@
+ 	if (ret)
+ 		goto manuf_cleanup;
+ 
++	if (spinand->strict_read_only) {
++		ret = spinand_validate_readonly_cfg(spinand);
++		if (ret)
++			goto manuf_cleanup;
++
++		ret = spinand->check_read_only(spinand);
++		if (ret)
++			goto manuf_cleanup;
++
++		return 0;
++	}
++
+ 	/* After power up, all blocks are locked, so unlock them here. */
+ 	for (i = 0; i < nand->memorg.ntargets; i++) {
+ 		ret = spinand_select_target(spinand, i);
+@@ -1879,16 +1970,31 @@
+ 	struct spinand_device *spinand = mtd_to_spinand(mtd);
+ 	int ret;
+ 
++	mutex_lock(&spinand->lock);
++	if (spinand->strict_read_only)
++		spinand->read_ready = false;
++
+ 	ret = spinand_reset_op(spinand);
+ 	if (ret)
+-		return;
++		goto out;
+ 
+ 	ret = spinand_init_flash(spinand);
+ 	if (ret)
+-		return;
+-
+-	spinand_ecc_enable(spinand, false);
+-}
++		goto out;
++
++	if (spinand->strict_read_only) {
++		spinand->read_ready = true;
++		goto out;
++	}
++
++	ret = spinand_ecc_enable(spinand, false);
++
++out:
++	if (ret)
++		dev_err(&mtd->dev, "failed to restore chip state: %d\n", ret);
++	mutex_unlock(&spinand->lock);
++}
++
+ 
+ static int spinand_mtd_suspend(struct mtd_info *mtd)
+ {
+@@ -1963,14 +2069,28 @@
+ 	if (ret)
+ 		goto err_manuf_cleanup;
+ 
++	if (spinand->strict_read_only)
++		mtd->flags &= ~MTD_WRITEABLE;
++
+ 	/* SPI-NAND default ECC engine is on-die */
+ 	nand->ecc.defaults.engine_type = NAND_ECC_ENGINE_TYPE_ON_DIE;
+ 	nand->ecc.ondie_engine = &spinand_ondie_ecc_engine;
+ 
+-	spinand_ecc_enable(spinand, false);
++	if (!spinand->strict_read_only) {
++		ret = spinand_ecc_enable(spinand, false);
++		if (ret)
++			goto err_cleanup_nanddev;
++	}
++
+ 	ret = nanddev_ecc_engine_init(nand);
+ 	if (ret)
+ 		goto err_cleanup_nanddev;
++	if (spinand->strict_read_only &&
++	    nand->ecc.engine != nand->ecc.ondie_engine) {
++		dev_err(dev, "strict read-only mode requires on-die ECC\n");
++		ret = -EOPNOTSUPP;
++		goto err_cleanup_ecc_engine;
++	}
+ 
+ 	/*
+ 	 * Continuous read can only be enabled with an on-die ECC engine, so the
+@@ -1991,7 +2111,8 @@
+ 	mtd->_suspend = spinand_mtd_suspend;
+ 	mtd->_resume = spinand_mtd_resume;
+ 
+-	if (spinand_user_otp_size(spinand) || spinand_fact_otp_size(spinand)) {
++	if (!spinand->strict_read_only &&
++	    (spinand_user_otp_size(spinand) || spinand_fact_otp_size(spinand))) {
+ 		ret = spinand_set_mtd_otp_ops(spinand);
+ 		if (ret)
+ 			goto err_cleanup_ecc_engine;
+@@ -2014,6 +2135,9 @@
+ 	mtd->ecc_strength = nanddev_get_ecc_conf(nand)->strength;
+ 	mtd->ecc_step_size = nanddev_get_ecc_conf(nand)->step_size;
+ 	mtd->bitflip_threshold = DIV_ROUND_UP(mtd->ecc_strength * 3, 4);
++
++	/* The on-die ECC is generated again at every program of a page. */
++	mtd->program_once = nand->ecc.engine == nand->ecc.ondie_engine;
+ 
+ 	ret = spinand_create_dirmaps(spinand);
+ 	if (ret) {
+@@ -2023,6 +2147,9 @@
+ 		goto err_cleanup_ecc_engine;
+ 	}
+ 
++	if (spinand->strict_read_only)
++		spinand->read_ready = true;
++
+ 	return 0;
+ 
+ err_cleanup_ecc_engine:
+@@ -2053,8 +2180,12 @@
+ 
+ static int spinand_probe(struct spi_mem *mem)
+ {
++	static const char * const ofpart_types[] = { "ofpart", NULL };
+ 	struct spinand_device *spinand;
++	struct device_node *partitions;
+ 	struct mtd_info *mtd;
++	bool fixed_partitions = false;
++	bool partitions_only;
+ 	int ret;
+ 
+ 	spinand = devm_kzalloc(&mem->spi->dev, sizeof(*spinand),
+@@ -2063,6 +2194,10 @@
+ 		return -ENOMEM;
+ 
+ 	spinand->spimem = mem;
++	spinand->strict_read_only =
++		device_property_read_bool(&mem->spi->dev, "read-only");
++	partitions_only = spinand->strict_read_only ||
++		device_property_read_bool(&mem->spi->dev, "partitions-only");
+ 	spi_mem_set_drvdata(mem, spinand);
+ 	spinand_set_of_node(spinand, mem->spi->dev.of_node);
+ 	mutex_init(&spinand->lock);
+@@ -2073,7 +2208,24 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = mtd_device_register(mtd, NULL, 0);
++	if (partitions_only) {
++		partitions = of_get_child_by_name(mem->spi->dev.of_node,
++						  "partitions");
++		if (partitions)
++			fixed_partitions = of_device_is_compatible(partitions,
++								   "fixed-partitions");
++		of_node_put(partitions);
++		if (!fixed_partitions) {
++			dev_err(&mem->spi->dev,
++				"partitions-only mode requires fixed partitions\n");
++			ret = -EINVAL;
++			goto err_spinand_cleanup;
++		}
++
++		ret = mtd_device_parse_register_partitions_only(mtd, ofpart_types, NULL);
++	} else {
++		ret = mtd_device_register(mtd, NULL, 0);
++	}
+ 	if (ret)
+ 		goto err_spinand_cleanup;
+ 
+--- a/drivers/mtd/nand/spi/winbond.c
++++ b/drivers/mtd/nand/spi/winbond.c
+@@ -20,6 +20,16 @@
+ 
+ #define W25N04KV_STATUS_ECC_5_8_BITFLIPS	(3 << 4)
+ #define W25W35NXXJW_STATUS_ECC_MULT_UNCOR	(3 << 4)
++
++#define W25N01KV_CFG_HOLD_DISABLE	BIT(0)
++#define W25N01KV_CFG_READ_MASK		(CFG_OTP_ENABLE | CFG_ECC_ENABLE | \
++					 WINBOND_CFG_BUF_READ | \
++					 W25N01KV_CFG_HOLD_DISABLE)
++#define W25N01KV_CFG_READ_STATE		(CFG_ECC_ENABLE | \
++					 WINBOND_CFG_BUF_READ | \
++					 W25N01KV_CFG_HOLD_DISABLE)
++#define W25N01KV_PROTECTION_RESET	GENMASK(6, 2)
++
+ 
+ #define W25N0XJW_SR4			0xD0
+ #define W25N0XJW_SR4_HS			BIT(2)
+@@ -344,6 +354,81 @@
+ 	.ecc = w25n02kv_ooblayout_ecc,
+ 	.free = w25n02kv_ooblayout_free,
+ };
++
++static int w25n01kv_prepare_read_only(struct spinand_device *spinand)
++{
++	struct spi_mem_op enable_reset =
++		SPI_MEM_OP(SPI_MEM_OP_CMD(0x66, 1),
++			   SPI_MEM_OP_NO_ADDR,
++			   SPI_MEM_OP_NO_DUMMY,
++			   SPI_MEM_OP_NO_DATA);
++	struct spi_mem_op reset = SPI_MEM_OP(SPI_MEM_OP_CMD(0x99, 1),
++					     SPI_MEM_OP_NO_ADDR,
++					     SPI_MEM_OP_NO_DUMMY,
++					     SPI_MEM_OP_NO_DATA);
++	u8 status;
++	int ret;
++
++	ret = spinand_read_reg_op(spinand, REG_STATUS, &status);
++	if (ret)
++		return ret;
++	if (status & STATUS_BUSY)
++		return -EBUSY;
++	if (status & STATUS_WEL)
++		return -EROFS;
++
++	ret = spi_mem_exec_op(spinand->spimem, &enable_reset);
++	if (ret)
++		return ret;
++
++	ret = spi_mem_exec_op(spinand->spimem, &reset);
++	if (ret)
++		return ret;
++
++	return spinand_wait(spinand, SPINAND_RESET_INITIAL_DELAY_US,
++			    SPINAND_RESET_POLL_DELAY_US, NULL);
++}
++
++static int w25n01kv_check_read_only(struct spinand_device *spinand)
++{
++	struct device *dev = &spinand->spimem->spi->dev;
++	u8 cfg = spinand->cfg_cache[0];
++	u8 protection, status;
++	int ret;
++
++	if ((cfg & W25N01KV_CFG_READ_MASK) != W25N01KV_CFG_READ_STATE) {
++		dev_err(dev, "unsafe configuration state 0x%02x\n", cfg);
++		return -EROFS;
++	}
++
++	ret = spinand_read_reg_op(spinand, REG_BLOCK_LOCK, &protection);
++	if (ret)
++		return ret;
++
++	if (protection != W25N01KV_PROTECTION_RESET) {
++		dev_err(dev, "unsafe protection state 0x%02x\n", protection);
++		return -EROFS;
++	}
++
++	ret = spinand_read_reg_op(spinand, REG_STATUS, &status);
++	if (ret)
++		return ret;
++
++	if (status & STATUS_BUSY) {
++		dev_err(dev, "device is busy after reset\n");
++		return -EBUSY;
++	}
++
++	if (status & STATUS_WEL) {
++		dev_err(dev, "write enable latch is set\n");
++		return -EROFS;
++	}
++	dev_info(dev,
++		 "strict read-only state: cfg=0x%02x protection=0x%02x status=0x%02x\n",
++		 cfg, protection, status);
++
++	return 0;
++}
+ 
+ static int w25n01jw_ooblayout_ecc(struct mtd_info *mtd, int section,
+ 				  struct mtd_oob_region *region)
+@@ -680,7 +765,9 @@
+ 					      &write_cache_variants,
+ 					      &update_cache_variants),
+ 		     0,
+-		     SPINAND_ECCINFO(&w25n01kv_ooblayout, w25n02kv_ecc_get_status)),
++		     SPINAND_ECCINFO(&w25n01kv_ooblayout, w25n02kv_ecc_get_status),
++		     SPINAND_PREPARE_READ_ONLY(w25n01kv_prepare_read_only),
++		     SPINAND_CHECK_READ_ONLY(w25n01kv_check_read_only)),
+ 	SPINAND_INFO("W35N01JW", /* 1.8V */
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xdc, 0x21),
+ 		     NAND_MEMORG(1, 4096, 128, 64, 512, 10, 1, 1, 1),
+@@ -787,15 +874,21 @@
+ {
+ 	struct nand_device *nand = spinand_to_nand(spinand);
+ 	unsigned int i;
++	int ret;
+ 
+ 	/*
+ 	 * Make sure all dies are in buffer read mode and not continuous read
+ 	 * mode.
+ 	 */
+ 	for (i = 0; i < nand->memorg.ntargets; i++) {
+-		spinand_select_target(spinand, i);
+-		spinand_upd_cfg(spinand, WINBOND_CFG_BUF_READ,
+-				WINBOND_CFG_BUF_READ);
++		ret = spinand_select_target(spinand, i);
++		if (ret)
++			return ret;
++
++		ret = spinand_upd_cfg(spinand, WINBOND_CFG_BUF_READ,
++				      WINBOND_CFG_BUF_READ);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	return 0;
+--- a/include/linux/mtd/mtd.h
++++ b/include/linux/mtd/mtd.h
+@@ -376,6 +376,12 @@
+ 	struct mtd_ecc_stats ecc_stats;
+ 	/* Subpage shift (NAND) */
+ 	int subpage_sft;
++	/*
++	 * A page can be programmed only once between two erases: the ECC of the
++	 * whole page is generated at every program and merged with what the
++	 * page already holds, so a page written in pieces cannot be read back.
++	 */
++	bool program_once;
+ 
+ 	void *priv;
+ 
+@@ -698,6 +704,9 @@
+ 				     struct mtd_part_parser_data *parser_data,
+ 				     const struct mtd_partition *defparts,
+ 				     int defnr_parts);
++int mtd_device_parse_register_partitions_only(struct mtd_info *mtd,
++					      const char * const *part_probe_types,
++					      struct mtd_part_parser_data *parser_data);
+ #define mtd_device_register(master, parts, nr_parts)	\
+ 	mtd_device_parse_register(master, NULL, NULL, parts, nr_parts)
+ extern int mtd_device_unregister(struct mtd_info *master);
+--- a/include/linux/mtd/spinand.h
++++ b/include/linux/mtd/spinand.h
+@@ -328,6 +328,7 @@
+ /* status register */
+ #define REG_STATUS		0xc0
+ #define STATUS_BUSY		BIT(0)
++#define STATUS_WEL		BIT(1)
+ #define STATUS_ERASE_FAILED	BIT(2)
+ #define STATUS_PROG_FAILED	BIT(3)
+ #define STATUS_ECC_MASK		GENMASK(5, 4)
+@@ -590,6 +591,8 @@
+  * @select_target: function used to select a target/die. Required only for
+  *		   multi-die chips
+  * @configure_chip: Align the chip configuration with the core settings
++ * @prepare_read_only: establish a chip-specific reset state without writes
++ * @check_read_only: validate chip-specific strict read-only state
+  * @set_cont_read: enable/disable continuous cached reads
+  * @fact_otp: SPI NAND factory OTP info.
+  * @user_otp: SPI NAND user OTP info.
+@@ -618,6 +621,8 @@
+ 			     unsigned int target);
+ 	int (*configure_chip)(struct spinand_device *spinand,
+ 			      enum spinand_bus_interface iface);
++	int (*prepare_read_only)(struct spinand_device *spinand);
++	int (*check_read_only)(struct spinand_device *spinand);
+ 	int (*set_cont_read)(struct spinand_device *spinand,
+ 			     bool enable);
+ 	struct spinand_fact_otp fact_otp;
+@@ -665,6 +670,12 @@
+ 
+ #define SPINAND_CONFIGURE_CHIP(__configure_chip)			\
+ 	.configure_chip = __configure_chip
++
++#define SPINAND_PREPARE_READ_ONLY(__prepare_read_only)			\
++	.prepare_read_only = __prepare_read_only
++
++#define SPINAND_CHECK_READ_ONLY(__check_read_only)			\
++	.check_read_only = __check_read_only
+ 
+ #define SPINAND_CONT_READ(__set_cont_read)				\
+ 	.set_cont_read = __set_cont_read
+@@ -768,6 +779,8 @@
+  *		the stack
+  * @manufacturer: SPI NAND manufacturer information
+  * @configure_chip: Align the chip configuration with the core settings
++ * @prepare_read_only: establish a chip-specific reset state without writes
++ * @check_read_only: validate chip-specific strict read-only state
+  * @cont_read_possible: Field filled by the core once the whole system
+  *		configuration is known to tell whether continuous reads are
+  *		suitable to use or not in general with this chip/configuration.
+@@ -779,10 +792,14 @@
+  * @user_otp: SPI NAND user OTP info.
+  * @read_retries: the number of read retry modes supported
+  * @set_read_retry: Enable/disable the read retry feature
++ * @strict_read_only: reject operations mutating device state
++ * @read_ready: validated read-only configuration after reset
+  * @set_randomizer: Enable/disable the randomizer feature
+  */
+ struct spinand_device {
+ 	struct nand_device base;
++	bool strict_read_only;
++	bool read_ready;
+ 	struct spi_mem *spimem;
+ 	struct mutex lock;
+ 	struct spinand_id id;
+@@ -810,6 +827,8 @@
+ 
+ 	int (*configure_chip)(struct spinand_device *spinand,
+ 			      enum spinand_bus_interface iface);
++	int (*prepare_read_only)(struct spinand_device *spinand);
++	int (*check_read_only)(struct spinand_device *spinand);
+ 	bool cont_read_possible;
+ 	int (*set_cont_read)(struct spinand_device *spinand,
+ 			     bool enable);
+--- a/Documentation/devicetree/bindings/mtd/spi-nand.yaml
++++ b/Documentation/devicetree/bindings/mtd/spi-nand.yaml
+@@ -12,6 +12,21 @@
+ allOf:
+   - $ref: nand-chip.yaml#
+   - $ref: /schemas/spi/spi-peripheral-props.yaml#
++  - if:
++      anyOf:
++        - required:
++            - read-only
++        - required:
++            - partitions-only
++    then:
++      required:
++        - partitions
++      properties:
++        partitions:
++          properties:
++            compatible:
++              contains:
++                const: fixed-partitions
+ 
+ properties:
+   compatible:
+@@ -21,6 +36,26 @@
+     description: Encode the chip-select line on the SPI bus
+     maxItems: 1
+ 
++  read-only:
++    type: boolean
++    description:
++      Operate the chip in strict read-only mode. Reset and commands needed to
++      identify and read the device are permitted, but commands that alter
++      feature registers, protection state, OTP data, or the main NAND array
++      are not. Probe succeeds only if the post-reset feature state already
++      permits reliable on-die-ECC-protected main-array and bad block marker
++      reads. Raw reads that would require disabling on-die ECC are not
++      supported. A fixed partition map is required and only its partitions are
++      registered, so parser failure cannot expose the whole chip.
++
++  partitions-only:
++    type: boolean
++    description:
++      The firmware requires that only explicitly described fixed partitions
++      are exposed. Initialization fails if the map is missing or cannot be
++      parsed, instead of exposing the whole flash device. This permits a
++      writable chip to expose only explicitly described partitions.
++
+ required:
+   - compatible
+   - reg

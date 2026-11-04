@@ -1,0 +1,87 @@
+Subject: [PATCH] fullconenat-nft: short circuit live mapping validation
+
+Stop after one confirmed or protected tuple proves mapping liveness.
+Rotate the tuple to retain eventual stale cleanup, and compare the
+external address before scanning. Preserve the existing port-range,
+flag and unconfirmed-mapping fixes.
+
+--- a/src/nf_nat_fullcone.c
++++ b/src/nf_nat_fullcone.c
+@@ -696,8 +696,12 @@
+ 		original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
+ 
+ #ifdef NF_NAT_MAPPING_ACTIVE
+-		if (nf_nat_mapping_active(net, zone, &original_tuple_item->tuple))
+-			continue;
++		if (nf_nat_mapping_active(net, zone, &original_tuple_item->tuple)) {
++			/* Keep the existing unconfirmed-mapping protection. */
++			list_move_tail(&original_tuple_item->node,
++				       &mapping->original_tuple_list);
++			return 1;
++		}
+ #endif
+ 
+ 		tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
+@@ -714,6 +718,12 @@
+ 			ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
+ 			if (likely(ct != NULL))
+ 				nf_ct_put(ct);
++			/* One live tuple proves liveness. Rotate to visit stale
++			 * members on later lookups without scanning every BT peer.
++			 */
++			list_move_tail(&original_tuple_item->node,
++				       &mapping->original_tuple_list);
++			return 1;
+ 		}
+ 
+ 	}
+@@ -755,8 +765,12 @@
+ 		original_tuple_item = list_entry(iter, struct nat_mapping_original_tuple, node);
+ 
+ #ifdef NF_NAT_MAPPING_ACTIVE
+-		if (nf_nat_mapping_active(net, zone, &original_tuple_item->tuple))
+-			continue;
++		if (nf_nat_mapping_active(net, zone, &original_tuple_item->tuple)) {
++			/* Keep the existing unconfirmed-mapping protection. */
++			list_move_tail(&original_tuple_item->node,
++				       &mapping->original_tuple_list);
++			return 1;
++		}
+ #endif
+ 
+ 		tuple_hash = nf_conntrack_find_get(net, zone, &original_tuple_item->tuple);
+@@ -773,6 +787,12 @@
+ 			ct = nf_ct_tuplehash_to_ctrack(tuple_hash);
+ 			if (likely(ct != NULL))
+ 				nf_ct_put(ct);
++			/* One live tuple proves liveness. Rotate to visit stale
++			 * members on later lookups without scanning every BT peer.
++			 */
++			list_move_tail(&original_tuple_item->node,
++				       &mapping->original_tuple_list);
++			return 1;
+ 		}
+ 
+ 	}
+@@ -804,8 +824,8 @@
+ 	struct hlist_node *tmp;
+ 
+ 	hash_for_each_possible_safe(mapping6_table_by_ext_port, p_current, tmp, node_by_ext_port, port) {
+-		if (p_current->port == port && check_mapping6(p_current, net, zone)
+-		    && nf_inet_addr_cmp(&p_current->addr, ext_ip)) {
++		if (p_current->port == port && nf_inet_addr_cmp(&p_current->addr, ext_ip)
++		    && check_mapping6(p_current, net, zone)) {
+ 			return p_current;
+ 		}
+ 	}
+@@ -827,8 +847,8 @@
+ 	struct hlist_node *tmp;
+ 
+ 	hash_for_each_possible_safe(mapping_table_by_ext_port, p_current, tmp, node_by_ext_port, port) {
+-		if (p_current->port == port && check_mapping(p_current, net, zone)
+-		    && p_current->addr == ext_ip) {
++		if (p_current->port == port && p_current->addr == ext_ip
++		    && check_mapping(p_current, net, zone)) {
+ 			return p_current;
+ 		}
+ 	}

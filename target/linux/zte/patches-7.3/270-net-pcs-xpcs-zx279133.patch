@@ -1,0 +1,146 @@
+Subject: [PATCH] net: pcs: support the ZX279133 XPCS platform
+
+Carry the platform XPCS integration used by the Ethernet controller.
+
+--- a/drivers/net/pcs/pcs-xpcs-plat.c
++++ b/drivers/net/pcs/pcs-xpcs-plat.c
+@@ -48,6 +48,33 @@
+ 	return FIELD_GET(0xff, csr);
+ }
+ 
++/* PCS control 1 is a side-effect-free register suitable for write flushing. */
++static void xpcs_mmio_flush(struct dw_xpcs_plat *pxpcs)
++{
++	ptrdiff_t csr, ofs;
++	u16 page;
++
++	csr = xpcs_mmio_addr_format(MDIO_MMD_PCS, MDIO_CTRL1);
++
++	if (!pxpcs->reg_indir) {
++		if (pxpcs->reg_width == 4)
++			readl(pxpcs->reg_base + (csr << 2));
++		else
++			readw(pxpcs->reg_base + (csr << 1));
++		return;
++	}
++
++	page = xpcs_mmio_addr_page(csr);
++	ofs = xpcs_mmio_addr_offset(csr);
++	if (pxpcs->reg_width == 4) {
++		writel(page, pxpcs->reg_base + (DW_VR_CSR_VIEWPORT << 2));
++		readl(pxpcs->reg_base + (ofs << 2));
++	} else {
++		writew(page, pxpcs->reg_base + (DW_VR_CSR_VIEWPORT << 1));
++		readw(pxpcs->reg_base + (ofs << 1));
++	}
++}
++
+ static int xpcs_mmio_read_reg_indirect(struct dw_xpcs_plat *pxpcs,
+ 				       int dev, int reg)
+ {
+@@ -60,7 +87,7 @@
+ 	ofs = xpcs_mmio_addr_offset(csr);
+ 
+ 	ret = pm_runtime_resume_and_get(&pxpcs->pdev->dev);
+-	if (ret)
++	if (ret < 0)
+ 		return ret;
+ 
+ 	switch (pxpcs->reg_width) {
+@@ -91,7 +118,7 @@
+ 	ofs = xpcs_mmio_addr_offset(csr);
+ 
+ 	ret = pm_runtime_resume_and_get(&pxpcs->pdev->dev);
+-	if (ret)
++	if (ret < 0)
+ 		return ret;
+ 
+ 	switch (pxpcs->reg_width) {
+@@ -105,6 +132,8 @@
+ 		break;
+ 	}
+ 
++	/* Complete posted writes before runtime-PM can gate the CSR clock. */
++	xpcs_mmio_flush(pxpcs);
+ 	pm_runtime_put(&pxpcs->pdev->dev);
+ 
+ 	return 0;
+@@ -119,7 +148,7 @@
+ 	csr = xpcs_mmio_addr_format(dev, reg);
+ 
+ 	ret = pm_runtime_resume_and_get(&pxpcs->pdev->dev);
+-	if (ret)
++	if (ret < 0)
+ 		return ret;
+ 
+ 	switch (pxpcs->reg_width) {
+@@ -145,7 +174,7 @@
+ 	csr = xpcs_mmio_addr_format(dev, reg);
+ 
+ 	ret = pm_runtime_resume_and_get(&pxpcs->pdev->dev);
+-	if (ret)
++	if (ret < 0)
+ 		return ret;
+ 
+ 	switch (pxpcs->reg_width) {
+@@ -157,6 +186,8 @@
+ 		break;
+ 	}
+ 
++	/* Complete posted writes before runtime-PM can gate the CSR clock. */
++	xpcs_mmio_flush(pxpcs);
+ 	pm_runtime_put(&pxpcs->pdev->dev);
+ 
+ 	return 0;
+@@ -285,12 +316,30 @@
+ 		return dev_err_probe(dev, PTR_ERR(pxpcs->cclk),
+ 				     "Failed to get CSR clock\n");
+ 
+-	pm_runtime_set_active(dev);
++	if (pxpcs->cclk)
++		ret = pm_runtime_set_suspended(dev);
++	else
++		ret = pm_runtime_set_active(dev);
++	if (ret)
++		return dev_err_probe(dev, ret,
++				     "Failed to initialize runtime-PM state\n");
++
+ 	ret = devm_pm_runtime_enable(dev);
+ 	if (ret) {
+ 		dev_err(dev, "Failed to enable runtime-PM\n");
+ 		return ret;
+ 	}
++
++	if (!pxpcs->cclk)
++		return 0;
++
++	/* The CSR clock must be enabled through the runtime-PM resume path. */
++	ret = pm_runtime_resume_and_get(dev);
++	if (ret < 0) {
++		dev_err(dev, "Failed to resume CSR clock: %d\n", ret);
++		return ret;
++	}
++	pm_runtime_put(dev);
+ 
+ 	return 0;
+ }
+@@ -402,7 +451,8 @@
+ {
+ 	struct dw_xpcs_plat *pxpcs = dev_get_drvdata(dev);
+ 
+-	clk_disable_unprepare(pxpcs->cclk);
++	if (pxpcs->cclk)
++		clk_disable_unprepare(pxpcs->cclk);
+ 
+ 	return 0;
+ }
+@@ -410,6 +460,9 @@
+ static int __maybe_unused xpcs_plat_pm_runtime_resume(struct device *dev)
+ {
+ 	struct dw_xpcs_plat *pxpcs = dev_get_drvdata(dev);
++
++	if (!pxpcs->cclk)
++		return 0;
+ 
+ 	return clk_prepare_enable(pxpcs->cclk);
+ }

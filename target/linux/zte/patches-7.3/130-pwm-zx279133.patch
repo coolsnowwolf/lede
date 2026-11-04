@@ -1,0 +1,321 @@
+Subject: [PATCH] pwm: add ZX279133 PWM controller
+
+Provide the PWM controller used by the board CPU supply regulator.
+
+--- a/drivers/pwm/Kconfig
++++ b/drivers/pwm/Kconfig
+@@ -866,4 +866,13 @@
+ 	  counting) and provide safe interfaces to the underlying C core,
+ 	  allowing driver logic to be written in safe Rust.
+ 
++config PWM_ZX279133
++	bool "ZTE ZX279133 PWM support"
++	depends on ARM64 || COMPILE_TEST
++	depends on COMMON_CLK
++	help
++	  Generic PWM framework driver for the four-channel PWM controller
++	  found on ZTE ZX279133 SoCs.
++
++
+ endif
+--- a/drivers/pwm/Makefile
++++ b/drivers/pwm/Makefile
+@@ -78,3 +78,4 @@
+ obj-$(CONFIG_PWM_VISCONTI)	+= pwm-visconti.o
+ obj-$(CONFIG_PWM_VT8500)	+= pwm-vt8500.o
+ obj-$(CONFIG_PWM_XILINX)	+= pwm-xilinx.o
++obj-$(CONFIG_PWM_ZX279133)	+= pwm-zx279133.o
+--- /dev/null
++++ b/drivers/pwm/pwm-zx279133.c
+@@ -0,0 +1,229 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ZTE ZX279133 pulse-width modulation controller driver
++ *
++ * Copyright (C) 2017 Sanechips Technology Co., Ltd.
++ * Copyright 2017 Linaro Ltd.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/clk.h>
++#include <linux/io.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/pwm.h>
++
++#define ZX279133_PWM_CHANNEL_BASE	0x10
++#define ZX279133_PWM_CHANNEL_STRIDE	0x10
++#define ZX279133_PWM_MODE		0x0
++#define ZX279133_PWM_MODE_DIV		GENMASK(11, 2)
++#define ZX279133_PWM_MODE_POLARITY	BIT(1)
++#define ZX279133_PWM_MODE_ENABLE		BIT(0)
++#define ZX279133_PWM_PERIOD		0x4
++#define ZX279133_PWM_DUTY		0x8
++
++#define ZX279133_PWM_CHANNELS		4
++#define ZX279133_PWM_DIV_MAX		1023
++#define ZX279133_PWM_PERIOD_MAX		65535
++
++struct zx279133_pwm {
++	void __iomem *base;
++	struct clk *wclk;
++	unsigned long rate;
++};
++
++static struct zx279133_pwm *zx279133_pwm_from_chip(struct pwm_chip *chip)
++{
++	return pwmchip_get_drvdata(chip);
++}
++
++static void __iomem *zx279133_pwm_reg(struct zx279133_pwm *priv,
++				      unsigned int channel, unsigned int offset)
++{
++	return priv->base + ZX279133_PWM_CHANNEL_BASE +
++		channel * ZX279133_PWM_CHANNEL_STRIDE + offset;
++}
++
++static u32 zx279133_pwm_read(struct zx279133_pwm *priv,
++			     unsigned int channel, unsigned int offset)
++{
++	return readl(zx279133_pwm_reg(priv, channel, offset));
++}
++
++static void zx279133_pwm_write(struct zx279133_pwm *priv,
++			       unsigned int channel, unsigned int offset,
++			      u32 value)
++{
++	writel(value, zx279133_pwm_reg(priv, channel, offset));
++}
++
++static void zx279133_pwm_update_mode(struct zx279133_pwm *priv,
++				     unsigned int channel, u32 mask, u32 value)
++{
++	u32 mode = zx279133_pwm_read(priv, channel, ZX279133_PWM_MODE);
++
++	mode &= ~mask;
++	mode |= value & mask;
++	zx279133_pwm_write(priv, channel, ZX279133_PWM_MODE, mode);
++}
++
++static int zx279133_pwm_get_state(struct pwm_chip *chip,
++				  struct pwm_device *pwm,
++				  struct pwm_state *state)
++{
++	struct zx279133_pwm *priv = zx279133_pwm_from_chip(chip);
++	u32 duty, mode, period;
++	u64 ticks;
++	u32 div;
++
++	mode = zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_MODE);
++	period = zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_PERIOD);
++	duty = zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_DUTY);
++
++	div = FIELD_GET(ZX279133_PWM_MODE_DIV, mode);
++	if (!div)
++		div = 1;
++
++	ticks = (u64)period * div;
++	state->period = mul_u64_u64_div_u64(ticks, NSEC_PER_SEC, priv->rate);
++	ticks = (u64)duty * div;
++	state->duty_cycle =
++		mul_u64_u64_div_u64(ticks, NSEC_PER_SEC, priv->rate);
++	state->polarity = mode & ZX279133_PWM_MODE_POLARITY ?
++		PWM_POLARITY_NORMAL : PWM_POLARITY_INVERSED;
++	state->enabled = mode & ZX279133_PWM_MODE_ENABLE;
++
++	return 0;
++}
++
++static int zx279133_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
++			      const struct pwm_state *state)
++{
++	struct zx279133_pwm *priv = zx279133_pwm_from_chip(chip);
++	u32 duty, mode, period, requested_mode;
++	bool config_changed;
++	u64 divider, total_cycles;
++	u32 div;
++
++	mode = zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_MODE);
++	if (!state->enabled) {
++		if (mode & ZX279133_PWM_MODE_ENABLE)
++			zx279133_pwm_update_mode(priv, pwm->hwpwm,
++						 ZX279133_PWM_MODE_ENABLE, 0);
++		return 0;
++	}
++
++	if (!state->period || state->duty_cycle > state->period)
++		return -EINVAL;
++
++	total_cycles = mul_u64_u64_div_u64(priv->rate, state->period,
++					   NSEC_PER_SEC);
++	if (!total_cycles)
++		return -ERANGE;
++	if (total_cycles > ZX279133_PWM_PERIOD_MAX *
++		ZX279133_PWM_DIV_MAX)
++		return -ERANGE;
++
++	divider = DIV_ROUND_UP_ULL(total_cycles, ZX279133_PWM_PERIOD_MAX);
++	div = max_t(u64, divider, 1);
++
++	period = div64_u64(total_cycles, div);
++	period = max(period, 1U);
++	duty = mul_u64_u64_div_u64(period, state->duty_cycle,
++				   state->period);
++
++	requested_mode = FIELD_PREP(ZX279133_PWM_MODE_DIV, div);
++	if (state->polarity == PWM_POLARITY_NORMAL)
++		requested_mode |= ZX279133_PWM_MODE_POLARITY;
++
++	config_changed = (mode & (ZX279133_PWM_MODE_DIV |
++				  ZX279133_PWM_MODE_POLARITY)) != requested_mode ||
++		zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_PERIOD) !=
++		period ||
++		zx279133_pwm_read(priv, pwm->hwpwm, ZX279133_PWM_DUTY) != duty;
++
++	if (!config_changed) {
++		if (!(mode & ZX279133_PWM_MODE_ENABLE))
++			zx279133_pwm_update_mode(priv, pwm->hwpwm,
++						 ZX279133_PWM_MODE_ENABLE,
++						 ZX279133_PWM_MODE_ENABLE);
++		return 0;
++	}
++
++	if (mode & ZX279133_PWM_MODE_ENABLE)
++		zx279133_pwm_update_mode(priv, pwm->hwpwm,
++					 ZX279133_PWM_MODE_ENABLE, 0);
++
++	zx279133_pwm_update_mode(priv, pwm->hwpwm,
++				 ZX279133_PWM_MODE_DIV |
++				 ZX279133_PWM_MODE_POLARITY, requested_mode);
++	zx279133_pwm_write(priv, pwm->hwpwm, ZX279133_PWM_PERIOD, period);
++	zx279133_pwm_write(priv, pwm->hwpwm, ZX279133_PWM_DUTY, duty);
++
++	zx279133_pwm_update_mode(priv, pwm->hwpwm,
++				 ZX279133_PWM_MODE_ENABLE,
++				 ZX279133_PWM_MODE_ENABLE);
++
++	return 0;
++}
++
++static const struct pwm_ops zx279133_pwm_ops = {
++	.apply = zx279133_pwm_apply,
++	.get_state = zx279133_pwm_get_state,
++};
++
++static int zx279133_pwm_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct zx279133_pwm *priv;
++	struct pwm_chip *chip;
++	struct clk *pclk;
++
++	chip = devm_pwmchip_alloc(dev, ZX279133_PWM_CHANNELS, sizeof(*priv));
++	if (IS_ERR(chip))
++		return PTR_ERR(chip);
++	priv = zx279133_pwm_from_chip(chip);
++
++	pclk = devm_clk_get_enabled(dev, "pclk");
++	if (IS_ERR(pclk))
++		return dev_err_probe(dev, PTR_ERR(pclk),
++				     "failed to enable peripheral clock\n");
++
++	priv->wclk = devm_clk_get_enabled(dev, "wclk");
++	if (IS_ERR(priv->wclk))
++		return dev_err_probe(dev, PTR_ERR(priv->wclk),
++				     "failed to enable waveform clock\n");
++
++	priv->rate = clk_get_rate(priv->wclk);
++	if (!priv->rate)
++		return dev_err_probe(dev, -EINVAL,
++				     "waveform clock has zero rate\n");
++
++	priv->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(priv->base))
++		return PTR_ERR(priv->base);
++
++	chip->ops = &zx279133_pwm_ops;
++
++	return devm_pwmchip_add(dev, chip);
++}
++
++static const struct of_device_id zx279133_pwm_of_match[] = {
++	{ .compatible = "zte,zx279133-pwm" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_pwm_of_match);
++
++static struct platform_driver zx279133_pwm_driver = {
++	.probe = zx279133_pwm_probe,
++	.driver = {
++		.name = "zx279133-pwm",
++		.of_match_table = zx279133_pwm_of_match,
++		.suppress_bind_attrs = true,
++	},
++};
++module_platform_driver(zx279133_pwm_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 PWM controller driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/pwm/zte,zx279133-pwm.yaml
+@@ -0,0 +1,59 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/pwm/zte,zx279133-pwm.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 PWM controller
++
++maintainers:
++  - ZTE Linux Team <zte.linux@gmail.com>
++
++description:
++  The ZX279133 PWM controller provides four channels. Each channel has a
++  10-bit clock divider and 16-bit period and duty counters.
++
++allOf:
++  - $ref: pwm.yaml#
++
++properties:
++  compatible:
++    const: zte,zx279133-pwm
++
++  reg:
++    maxItems: 1
++
++  clocks:
++    items:
++      - description: Peripheral bus clock
++      - description: Waveform generator clock
++
++  clock-names:
++    items:
++      - const: pclk
++      - const: wclk
++
++  "#pwm-cells":
++    const: 3
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - clock-names
++  - "#pwm-cells"
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/clock/zte,zx279133-lsp.h>
++
++    pwm@14f10000 {
++        compatible = "zte,zx279133-pwm";
++        reg = <0x14f10000 0x1000>;
++        clocks = <&lsp1_clk ZX279133_LSP1_CLK_PWM_PCLK>,
++                 <&lsp1_clk ZX279133_LSP1_CLK_PWM_WCLK>;
++        clock-names = "pclk", "wclk";
++        #pwm-cells = <3>;
++    };

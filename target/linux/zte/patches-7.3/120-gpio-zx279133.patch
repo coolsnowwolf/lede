@@ -1,0 +1,442 @@
+Subject: [PATCH] gpio: add ZX279133 GPIO controller
+
+Add the GPIO controller and its device-tree binding.
+
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -902,6 +902,17 @@
+ 	help
+ 	  Say yes here to support the GPIO controller in LSI ZEVIO SoCs.
+ 
++config GPIO_ZX279133
++	bool "ZTE ZX279133 GPIO support"
++	depends on ARM64 || COMPILE_TEST
++	depends on OF_GPIO
++	select GPIOLIB_IRQCHIP
++	help
++	  Say yes here to support the five 16-bit GPIO controller banks in
++	  the ZTE ZX279133 SoC. Each bank has a cascaded interrupt controller
++	  and integrates with the SoC pin controller through GPIO ranges. The
++	  fifth bank exposes the six pins implemented by the hardware.
++
+ config GPIO_ZYNQ
+ 	tristate "Xilinx Zynq GPIO support"
+ 	depends on ARCH_ZYNQ || ARCH_ZYNQMP || COMPILE_TEST
+--- a/drivers/gpio/Makefile
++++ b/drivers/gpio/Makefile
+@@ -222,6 +222,7 @@
+ obj-$(CONFIG_GPIO_XLP)			+= gpio-xlp.o
+ obj-$(CONFIG_GPIO_XRA1403)		+= gpio-xra1403.o
+ obj-$(CONFIG_GPIO_XTENSA)		+= gpio-xtensa.o
++obj-$(CONFIG_GPIO_ZX279133)		+= gpio-zx279133.o
+ obj-$(CONFIG_GPIO_ZEVIO)		+= gpio-zevio.o
+ obj-$(CONFIG_GPIO_ZYNQ)			+= gpio-zynq.o
+ obj-$(CONFIG_GPIO_ZYNQMP_MODEPIN)	+= gpio-zynqmp-modepin.o
+--- /dev/null
++++ b/drivers/gpio/gpio-zx279133.c
+@@ -0,0 +1,330 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/bitops.h>
++#include <linux/gpio/driver.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/irqchip/chained_irq.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/property.h>
++#include <linux/spinlock.h>
++
++#define ZX279133_GPIO_DIR		0x00
++#define ZX279133_GPIO_IRQ_MODE		0x04
++#define ZX279133_GPIO_IRQ_LEVEL		0x08
++#define ZX279133_GPIO_IRQ_RISING		0x0c
++#define ZX279133_GPIO_IRQ_FALLING	0x10
++#define ZX279133_GPIO_DATA		0x14
++#define ZX279133_GPIO_SET		0x18
++#define ZX279133_GPIO_CLEAR		0x1c
++#define ZX279133_GPIO_IRQ_MASK		0x28
++#define ZX279133_GPIO_IRQ_ENABLE	0x2c
++#define ZX279133_GPIO_IRQ_PENDING	0x30
++#define ZX279133_GPIO_IRQ_ACK		0x34
++
++#define ZX279133_GPIO_LINES		16
++
++struct zx279133_gpio {
++	struct gpio_chip chip;
++	void __iomem *base;
++	raw_spinlock_t lock;
++};
++
++static int zx279133_gpio_get_direction(struct gpio_chip *chip,
++				       unsigned int offset)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++
++	return readw(gpio->base + ZX279133_GPIO_DIR) & BIT(offset) ?
++		GPIO_LINE_DIRECTION_OUT : GPIO_LINE_DIRECTION_IN;
++}
++
++static int zx279133_gpio_direction_input(struct gpio_chip *chip,
++					 unsigned int offset)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned long flags;
++	u16 direction;
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	direction = readw(gpio->base + ZX279133_GPIO_DIR);
++	writew(direction & ~BIT(offset), gpio->base + ZX279133_GPIO_DIR);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++	return 0;
++}
++
++static int zx279133_gpio_get(struct gpio_chip *chip, unsigned int offset)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++
++	return !!(readw(gpio->base + ZX279133_GPIO_DATA) & BIT(offset));
++}
++
++static int zx279133_gpio_set(struct gpio_chip *chip, unsigned int offset,
++			     int value)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++
++	writew(BIT(offset), gpio->base +
++	       (value ? ZX279133_GPIO_SET : ZX279133_GPIO_CLEAR));
++
++	return 0;
++}
++
++static int zx279133_gpio_direction_output(struct gpio_chip *chip,
++					  unsigned int offset, int value)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned long flags;
++	u16 direction;
++
++	/* Latch the requested level before enabling the output driver. */
++	zx279133_gpio_set(chip, offset, value);
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	direction = readw(gpio->base + ZX279133_GPIO_DIR);
++	writew(direction | BIT(offset), gpio->base + ZX279133_GPIO_DIR);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++	return 0;
++}
++
++static void zx279133_gpio_irq_ack(struct irq_data *data)
++{
++	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++
++	writew(BIT(irqd_to_hwirq(data)), gpio->base + ZX279133_GPIO_IRQ_ACK);
++}
++
++static void zx279133_gpio_irq_mask(struct irq_data *data)
++{
++	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned int offset = irqd_to_hwirq(data);
++	unsigned long flags;
++	u16 enable, mask;
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	mask = readw(gpio->base + ZX279133_GPIO_IRQ_MASK);
++	writew(mask | BIT(offset), gpio->base + ZX279133_GPIO_IRQ_MASK);
++	enable = readw(gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	writew(enable & ~BIT(offset), gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++	gpiochip_disable_irq(chip, offset);
++}
++
++static void zx279133_gpio_irq_unmask(struct irq_data *data)
++{
++	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned int offset = irqd_to_hwirq(data);
++	unsigned long flags;
++	u16 enable, mask;
++
++	gpiochip_enable_irq(chip, offset);
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	enable = readw(gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	writew(enable | BIT(offset), gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	mask = readw(gpio->base + ZX279133_GPIO_IRQ_MASK);
++	writew(mask & ~BIT(offset), gpio->base + ZX279133_GPIO_IRQ_MASK);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++}
++
++static int zx279133_gpio_irq_set_type(struct irq_data *data,
++				      unsigned int flow_type)
++{
++	struct gpio_chip *chip = irq_data_get_irq_chip_data(data);
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned int offset = irqd_to_hwirq(data);
++	unsigned long flags;
++	u16 bit = BIT(offset);
++	u16 falling, level, mode, rising;
++
++	flow_type &= IRQ_TYPE_SENSE_MASK;
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	mode = readw(gpio->base + ZX279133_GPIO_IRQ_MODE);
++	level = readw(gpio->base + ZX279133_GPIO_IRQ_LEVEL);
++	rising = readw(gpio->base + ZX279133_GPIO_IRQ_RISING);
++	falling = readw(gpio->base + ZX279133_GPIO_IRQ_FALLING);
++
++	switch (flow_type) {
++	case IRQ_TYPE_EDGE_RISING:
++		mode &= ~bit;
++		rising |= bit;
++		falling &= ~bit;
++		irq_set_handler_locked(data, handle_edge_irq);
++		break;
++	case IRQ_TYPE_EDGE_FALLING:
++		mode &= ~bit;
++		rising &= ~bit;
++		falling |= bit;
++		irq_set_handler_locked(data, handle_edge_irq);
++		break;
++	case IRQ_TYPE_EDGE_BOTH:
++		mode &= ~bit;
++		rising |= bit;
++		falling |= bit;
++		irq_set_handler_locked(data, handle_edge_irq);
++		break;
++	case IRQ_TYPE_LEVEL_HIGH:
++		mode |= bit;
++		level |= bit;
++		rising &= ~bit;
++		falling &= ~bit;
++		irq_set_handler_locked(data, handle_level_irq);
++		break;
++	case IRQ_TYPE_LEVEL_LOW:
++		mode |= bit;
++		level &= ~bit;
++		rising &= ~bit;
++		falling &= ~bit;
++		irq_set_handler_locked(data, handle_level_irq);
++		break;
++	default:
++		raw_spin_unlock_irqrestore(&gpio->lock, flags);
++		return -EINVAL;
++	}
++
++	/* Program polarity and edge selection before changing edge/level mode. */
++	writew(rising, gpio->base + ZX279133_GPIO_IRQ_RISING);
++	writew(falling, gpio->base + ZX279133_GPIO_IRQ_FALLING);
++	writew(level, gpio->base + ZX279133_GPIO_IRQ_LEVEL);
++	writew(mode, gpio->base + ZX279133_GPIO_IRQ_MODE);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++	return 0;
++}
++
++static const struct irq_chip zx279133_gpio_irq_chip = {
++	.name = "zx279133-gpio",
++	.irq_ack = zx279133_gpio_irq_ack,
++	.irq_mask = zx279133_gpio_irq_mask,
++	.irq_unmask = zx279133_gpio_irq_unmask,
++	.irq_set_type = zx279133_gpio_irq_set_type,
++	.flags = IRQCHIP_IMMUTABLE,
++	GPIOCHIP_IRQ_RESOURCE_HELPERS,
++};
++
++static void zx279133_gpio_irq_handler(struct irq_desc *desc)
++{
++	struct gpio_chip *chip = irq_desc_get_handler_data(desc);
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	struct irq_chip *parent_chip = irq_desc_get_chip(desc);
++	unsigned long pending;
++	u16 enabled, mask;
++	unsigned int offset;
++
++	chained_irq_enter(parent_chip, desc);
++
++	pending = readw(gpio->base + ZX279133_GPIO_IRQ_PENDING);
++	enabled = readw(gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	mask = readw(gpio->base + ZX279133_GPIO_IRQ_MASK);
++	pending &= enabled & ~mask & GENMASK(chip->ngpio - 1, 0);
++
++	for_each_set_bit(offset, &pending, chip->ngpio)
++		generic_handle_domain_irq(chip->irq.domain, offset);
++
++	chained_irq_exit(parent_chip, desc);
++}
++
++static int zx279133_gpio_irq_init_hw(struct gpio_chip *chip)
++{
++	struct zx279133_gpio *gpio = gpiochip_get_data(chip);
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&gpio->lock, flags);
++	writew(0xffff, gpio->base + ZX279133_GPIO_IRQ_MASK);
++	writew(0, gpio->base + ZX279133_GPIO_IRQ_ENABLE);
++	writew(0xffff, gpio->base + ZX279133_GPIO_IRQ_ACK);
++	raw_spin_unlock_irqrestore(&gpio->lock, flags);
++
++	return 0;
++}
++
++static int zx279133_gpio_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct gpio_irq_chip *irq_chip;
++	struct zx279133_gpio *gpio;
++	u32 ngpios;
++	int irq, ret;
++
++	gpio = devm_kzalloc(dev, sizeof(*gpio), GFP_KERNEL);
++	if (!gpio)
++		return -ENOMEM;
++
++	gpio->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(gpio->base))
++		return PTR_ERR(gpio->base);
++
++	ret = device_property_read_u32(dev, "ngpios", &ngpios);
++	if (ret)
++		return dev_err_probe(dev, ret, "missing ngpios property\n");
++	if (!ngpios || ngpios > ZX279133_GPIO_LINES)
++		return dev_err_probe(dev, -EINVAL, "invalid ngpios value %u\n",
++				     ngpios);
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++
++	raw_spin_lock_init(&gpio->lock);
++	gpio->chip.label = dev_name(dev);
++	gpio->chip.parent = dev;
++	gpio->chip.owner = THIS_MODULE;
++	gpio->chip.base = -1;
++	gpio->chip.ngpio = ngpios;
++	gpio->chip.request = gpiochip_generic_request;
++	gpio->chip.free = gpiochip_generic_free;
++	gpio->chip.get_direction = zx279133_gpio_get_direction;
++	gpio->chip.direction_input = zx279133_gpio_direction_input;
++	gpio->chip.direction_output = zx279133_gpio_direction_output;
++	gpio->chip.get = zx279133_gpio_get;
++	gpio->chip.set = zx279133_gpio_set;
++
++	irq_chip = &gpio->chip.irq;
++	gpio_irq_chip_set_chip(irq_chip, &zx279133_gpio_irq_chip);
++	irq_chip->default_type = IRQ_TYPE_NONE;
++	irq_chip->handler = handle_bad_irq;
++	irq_chip->parent_handler = zx279133_gpio_irq_handler;
++	irq_chip->num_parents = 1;
++	irq_chip->parents = devm_kcalloc(dev, 1, sizeof(*irq_chip->parents), GFP_KERNEL);
++	if (!irq_chip->parents)
++		return -ENOMEM;
++	irq_chip->parents[0] = irq;
++	irq_chip->init_hw = zx279133_gpio_irq_init_hw;
++
++	ret = devm_gpiochip_add_data(dev, &gpio->chip, gpio);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register gpiochip\n");
++
++	dev_info(dev, "registered %u GPIO lines\n", ngpios);
++
++	return 0;
++}
++
++static const struct of_device_id zx279133_gpio_of_match[] = {
++	{ .compatible = "zte,zx279133-gpio" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_gpio_of_match);
++
++static struct platform_driver zx279133_gpio_driver = {
++	.probe = zx279133_gpio_probe,
++	.driver = {
++		.name = "zx279133-gpio",
++		.of_match_table = zx279133_gpio_of_match,
++	},
++};
++module_platform_driver(zx279133_gpio_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 GPIO controller driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/gpio/zte,zx279133-gpio.yaml
+@@ -0,0 +1,72 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/gpio/zte,zx279133-gpio.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 GPIO controller
++
++maintainers:
++  - ZTE Linux Team <zte.linux@gmail.com>
++
++description: |
++  The ZX279133 has five GPIO banks with 16-bit registers and one cascaded
++  interrupt per bank. Four banks expose 16 lines and the final bank exposes
++  six lines, for 70 GPIOs in total.
++
++properties:
++  $nodename:
++    pattern: "^gpio@[0-9a-f]+$"
++
++  compatible:
++    const: zte,zx279133-gpio
++
++  reg:
++    maxItems: 1
++
++  interrupts:
++    maxItems: 1
++
++  gpio-controller: true
++
++  '#gpio-cells':
++    const: 2
++
++  gpio-ranges:
++    minItems: 1
++    maxItems: 3
++
++  ngpios:
++    enum: [6, 16]
++
++  interrupt-controller: true
++
++  '#interrupt-cells':
++    const: 2
++
++required:
++  - compatible
++  - reg
++  - interrupts
++  - gpio-controller
++  - '#gpio-cells'
++  - gpio-ranges
++  - ngpios
++  - interrupt-controller
++  - '#interrupt-cells'
++
++additionalProperties: false
++
++examples:
++  - |
++    gpio@10d10080 {
++        compatible = "zte,zx279133-gpio";
++        reg = <0x10d10080 0x40>;
++        interrupts = <0 36 4>;
++        gpio-controller;
++        #gpio-cells = <2>;
++        gpio-ranges = <&pinctrl 0 28 16>;
++        ngpios = <16>;
++        interrupt-controller;
++        #interrupt-cells = <2>;
++    };

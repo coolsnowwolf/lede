@@ -1,0 +1,408 @@
+Subject: [PATCH] hwmon: add ZX279133 PVT sensor
+
+Expose the PVT temperature sensor with its calibration and clock inputs.
+
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -2764,6 +2764,20 @@
+ 	  This driver can also be built as a module. If so, the module
+ 	  will be called yogafan.
+ 
++config SENSORS_ZX279133_PVT
++	tristate "ZTE ZX279133 PVT sensor"
++	depends on OF
++	depends on COMMON_CLK
++	depends on NVMEM
++	depends on THERMAL_OF
++	help
++	  If you say yes here you get read-only hwmon support for the
++	  CLN22ULP process, voltage and temperature monitor in the ZTE ZX279133
++	  SoC. The driver exports the calibrated die temperature and the supply
++	  voltage observed by the PVT macro. It does not identify that supply
++	  with a board rail or expose threshold, alarm, or writable controls.
++
++
+ config SENSORS_INTEL_M10_BMC_HWMON
+ 	tristate "Intel MAX10 BMC Hardware Monitoring"
+ 	depends on MFD_INTEL_M10_BMC_CORE
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -260,3 +260,5 @@
+ obj-$(CONFIG_PMBUS)		+= pmbus/
+ 
+ ccflags-$(CONFIG_HWMON_DEBUG_CHIP) := -DDEBUG
++
++obj-$(CONFIG_SENSORS_ZX279133_PVT)	+= zx279133-pvt.o
+--- /dev/null
++++ b/drivers/hwmon/zx279133-pvt.c
+@@ -0,0 +1,294 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * ZTE ZX279133 CLN22ULP process/voltage/temperature sensor.
++ *
++ * The hardware exposes temperature and supply-voltage conversion channels.
++ * The vendor implementation starts a conversion for each read. This driver
++ * keeps the same one-shot behavior and exposes no writable hwmon files.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/hwmon.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/math64.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/nvmem-consumer.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define ZX279133_PVT_CTRL		0x00
++#define ZX279133_PVT_TRIM		0x04
++#define ZX279133_PVT_STATUS		0x08
++#define ZX279133_PVT_TEMP_DATA		0x10
++#define ZX279133_PVT_VOLT_DATA		0x14
++#define ZX279133_PVT_CONFIG		0x20
++
++#define ZX279133_PVT_READY		BIT(10)
++#define ZX279133_PVT_DATA_MASK		GENMASK(9, 0)
++#define ZX279133_PVT_CONFIG_MASK		GENMASK(7, 4)
++#define ZX279133_PVT_TRIM_MASK		GENMASK(4, 0)
++#define ZX279133_PVT_TEMP_CTRL		0x13
++#define ZX279133_PVT_VOLT_CTRL		0x33
++
++#define ZX279133_PVT_POLL_US		5
++#define ZX279133_PVT_TIMEOUT_US		500000
++
++/* The vendor DTS coefficients, with the vendor's 1e6 coefficient multiple. */
++#define ZX279133_PVT_MC_DIV		1000000000000LL
++
++/* The vendor voltage conversion reports millivolts. */
++#define ZX279133_PVT_VOLT_SLOPE		79397LL
++#define ZX279133_PVT_VOLT_OFFSET	45605000LL
++#define ZX279133_PVT_VOLT_DIV		100000LL
++
++struct zx279133_pvt_coeff {
++	s64 a4;
++	s64 a3;
++	s64 a2;
++	s64 a1;
++	s64 a0;
++};
++
++enum zx279133_pvt_clk {
++	ZX279133_PVT_CLK_PCLK,
++	ZX279133_PVT_CLK_WCLK,
++	ZX279133_PVT_NUM_CLKS,
++};
++
++struct zx279133_pvt {
++	void __iomem *base;
++	struct clk_bulk_data clks[ZX279133_PVT_NUM_CLKS];
++	struct zx279133_pvt_coeff coeff;
++	struct mutex lock; /* Serializes one-shot conversions. */
++	u8 trim;
++};
++
++static const struct zx279133_pvt_coeff zx279133_pvt_cln22ulp_coeff = {
++	.a4 = -25761LL,
++	.a3 = 97332000LL,
++	.a2 = -191650000000LL,
++	.a1 = 307620000000000LL,
++	.a0 = -52156000000000000LL,
++};
++
++static long zx279133_pvt_calc_temp(const struct zx279133_pvt *pvt, u32 raw)
++{
++	s64 value;
++
++	/* Horner form matches the vendor a4..a0 polynomial and avoids overflow. */
++	value = pvt->coeff.a4;
++	value = value * raw + pvt->coeff.a3;
++	value = value * raw + pvt->coeff.a2;
++	value = value * raw + pvt->coeff.a1;
++	value = value * raw + pvt->coeff.a0;
++
++	/* hwmon reports milli-Celsius; the polynomial is in degrees Celsius. */
++	return div64_s64(value, ZX279133_PVT_MC_DIV);
++}
++
++static long zx279133_pvt_calc_voltage(u32 raw)
++{
++	return div64_s64(raw * ZX279133_PVT_VOLT_SLOPE +
++			 ZX279133_PVT_VOLT_OFFSET, ZX279133_PVT_VOLT_DIV);
++}
++
++static int zx279133_pvt_sample(struct zx279133_pvt *pvt, u32 control,
++			       u32 data_offset, bool apply_trim, u32 *raw)
++{
++	u32 status;
++	int ret;
++
++	mutex_lock(&pvt->lock);
++
++	/* This is the one-shot sequence used by the vendor driver. */
++	writel(0, pvt->base + ZX279133_PVT_CTRL);
++	fsleep(10);
++	if (apply_trim)
++		writel(pvt->trim & ZX279133_PVT_TRIM_MASK,
++		       pvt->base + ZX279133_PVT_TRIM);
++	writel(control, pvt->base + ZX279133_PVT_CTRL);
++	fsleep(10);
++
++	ret = readl_poll_timeout(pvt->base + ZX279133_PVT_STATUS, status,
++				 status & ZX279133_PVT_READY,
++				 ZX279133_PVT_POLL_US, ZX279133_PVT_TIMEOUT_US);
++	if (ret)
++		goto out_unlock;
++
++	*raw = readl(pvt->base + data_offset) & ZX279133_PVT_DATA_MASK;
++
++out_unlock:
++	mutex_unlock(&pvt->lock);
++	return ret;
++}
++
++static int zx279133_pvt_read(struct device *dev,
++			     enum hwmon_sensor_types type, u32 attr,
++			     int channel, long *val)
++{
++	struct zx279133_pvt *pvt = dev_get_drvdata(dev);
++	u32 raw;
++	int ret;
++
++	if (channel != 0)
++		return -EOPNOTSUPP;
++
++	if (type == hwmon_temp && attr == hwmon_temp_input)
++		ret = zx279133_pvt_sample(pvt, ZX279133_PVT_TEMP_CTRL,
++					  ZX279133_PVT_TEMP_DATA, true, &raw);
++	else if (type == hwmon_in && attr == hwmon_in_input)
++		ret = zx279133_pvt_sample(pvt, ZX279133_PVT_VOLT_CTRL,
++					  ZX279133_PVT_VOLT_DATA, false, &raw);
++	else
++		return -EOPNOTSUPP;
++	if (ret)
++		return ret;
++
++	if (type == hwmon_temp)
++		*val = zx279133_pvt_calc_temp(pvt, raw);
++	else
++		*val = zx279133_pvt_calc_voltage(raw);
++	return 0;
++}
++
++static umode_t zx279133_pvt_is_visible(const void *data,
++				       enum hwmon_sensor_types type,
++				       u32 attr, int channel)
++{
++	if (channel == 0 &&
++	    ((type == hwmon_temp && attr == hwmon_temp_input) ||
++	     (type == hwmon_in && attr == hwmon_in_input)))
++		return 0444;
++
++	return 0;
++}
++
++static const struct hwmon_channel_info * const zx279133_pvt_info[] = {
++	HWMON_CHANNEL_INFO(chip, HWMON_C_REGISTER_TZ),
++	HWMON_CHANNEL_INFO(temp, HWMON_T_INPUT),
++	HWMON_CHANNEL_INFO(in, HWMON_I_INPUT),
++	NULL,
++};
++
++static const struct hwmon_ops zx279133_pvt_hwmon_ops = {
++	.is_visible = zx279133_pvt_is_visible,
++	.read = zx279133_pvt_read,
++};
++
++static const struct hwmon_chip_info zx279133_pvt_chip_info = {
++	.ops = &zx279133_pvt_hwmon_ops,
++	.info = zx279133_pvt_info,
++};
++
++static int zx279133_pvt_get_trim(struct device *dev,
++				 struct zx279133_pvt *pvt)
++{
++	u32 trim;
++	int ret;
++
++	ret = nvmem_cell_read_variable_le_u32(dev, "ttrim", &trim);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read ttrim NVMEM cell\n");
++
++	if (trim > 0x1f)
++		return dev_err_probe(dev, -ERANGE,
++				     "ttrim value %u exceeds 5-bit field\n",
++				     trim);
++
++	pvt->trim = trim;
++	return 0;
++}
++
++static void zx279133_pvt_disable_clks(void *data)
++{
++	struct zx279133_pvt *pvt = data;
++
++	clk_bulk_disable_unprepare(ZX279133_PVT_NUM_CLKS, pvt->clks);
++}
++
++static int zx279133_pvt_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct zx279133_pvt *pvt;
++	struct device *hwmon;
++	u32 config, raw;
++	unsigned long rate;
++	int ret;
++
++	pvt = devm_kzalloc(dev, sizeof(*pvt), GFP_KERNEL);
++	if (!pvt)
++		return -ENOMEM;
++
++	pvt->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(pvt->base))
++		return PTR_ERR(pvt->base);
++	mutex_init(&pvt->lock);
++
++	pvt->clks[ZX279133_PVT_CLK_PCLK].id = "pclk";
++	pvt->clks[ZX279133_PVT_CLK_WCLK].id = "wclk";
++	ret = devm_clk_bulk_get(dev, ZX279133_PVT_NUM_CLKS, pvt->clks);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get clocks\n");
++
++	ret = clk_bulk_prepare_enable(ZX279133_PVT_NUM_CLKS, pvt->clks);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to enable clocks\n");
++
++	ret = devm_add_action_or_reset(dev, zx279133_pvt_disable_clks, pvt);
++	if (ret)
++		return ret;
++
++	rate = clk_get_rate(pvt->clks[ZX279133_PVT_CLK_WCLK].clk);
++	if (!rate)
++		return dev_err_probe(dev, -EINVAL, "working clock has zero rate\n");
++
++	pvt->coeff = zx279133_pvt_cln22ulp_coeff;
++	ret = zx279133_pvt_get_trim(dev, pvt);
++	if (ret)
++		return ret;
++
++	config = readl(pvt->base + ZX279133_PVT_CONFIG);
++	writel(config | ZX279133_PVT_CONFIG_MASK,
++	       pvt->base + ZX279133_PVT_CONFIG);
++
++	/* Fail probe if the sensor cannot complete a first conversion. */
++	ret = zx279133_pvt_sample(pvt, ZX279133_PVT_TEMP_CTRL,
++				  ZX279133_PVT_TEMP_DATA, true, &raw);
++	if (ret)
++		return dev_err_probe(dev, ret, "initial conversion timed out\n");
++
++	platform_set_drvdata(pdev, pvt);
++	hwmon = devm_hwmon_device_register_with_info(dev, "zx279133_pvt",
++						     pvt,
++						     &zx279133_pvt_chip_info,
++						     NULL);
++	if (IS_ERR(hwmon))
++		return dev_err_probe(dev, PTR_ERR(hwmon),
++				    "failed to register hwmon device\n");
++
++	dev_info(dev,
++		 "ready: ttrim=%u source=nvmem raw=%u temp=%ld mC clock=%lu Hz\n",
++		 pvt->trim, raw, zx279133_pvt_calc_temp(pvt, raw), rate);
++	return 0;
++}
++
++static const struct of_device_id zx279133_pvt_of_match[] = {
++	{ .compatible = "zte,zx279133-pvt" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, zx279133_pvt_of_match);
++
++static struct platform_driver zx279133_pvt_driver = {
++	.probe = zx279133_pvt_probe,
++	.driver = {
++		.name = "zx279133-pvt",
++		.of_match_table = zx279133_pvt_of_match,
++	},
++};
++module_platform_driver(zx279133_pvt_driver);
++
++MODULE_DESCRIPTION("ZTE ZX279133 CLN22ULP PVT sensor");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/Documentation/devicetree/bindings/hwmon/zte,zx279133-pvt.yaml
+@@ -0,0 +1,73 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/hwmon/zte,zx279133-pvt.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: ZTE ZX279133 CLN22ULP PVT sensor
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description: |
++  The ZX279133 CLN22ULP PVT block contains one-shot die-temperature and
++  supply-voltage converters.  The driver starts a conversion for each read
++  and exposes standard read-only hwmon temperature and voltage inputs.  The
++  required ttrim NVMEM cell is a five-bit temperature calibration value from
++  the ZX279133 efuse controller.  The voltage input measures the PVT macro's
++  supply; the binding does not identify that supply with a board-level rail.
++  Thermal trips and cooling policy are described by separate thermal-zone
++  nodes and are intentionally not part of this binding.
++
++properties:
++  compatible:
++    const: zte,zx279133-pvt
++
++  reg:
++    maxItems: 1
++
++  clocks:
++    items:
++      - description: Peripheral register clock
++      - description: Temperature conversion working clock
++
++  clock-names:
++    items:
++      - const: pclk
++      - const: wclk
++
++  nvmem-cells:
++    maxItems: 1
++
++  nvmem-cell-names:
++    items:
++      - const: ttrim
++
++  '#thermal-sensor-cells':
++    const: 0
++
++required:
++  - compatible
++  - reg
++  - clocks
++  - clock-names
++  - nvmem-cells
++  - nvmem-cell-names
++  - '#thermal-sensor-cells'
++
++additionalProperties: false
++
++examples:
++  - |
++    pvt@10e70000 {
++        compatible = "zte,zx279133-pvt";
++        reg = <0x10e70000 0x10000>;
++        clocks = <&topcrm 10>, <&topcrm 5>;
++        clock-names = "pclk", "wclk";
++        nvmem-cells = <&pvt_ttrim>;
++        nvmem-cell-names = "ttrim";
++        #thermal-sensor-cells = <0>;
++        status = "disabled";
++    };
++
++...
