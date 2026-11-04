@@ -721,7 +721,7 @@ define KernelPackage/usb-serial-ch348
   KCONFIG:=CONFIG_USB_SERIAL_CH348
   FILES:=$(LINUX_DIR)/drivers/usb/serial/ch348.ko
   AUTOLOAD:=$(call AutoProbe,ch348)
-  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18)
+  DEPENDS:=@(LINUX_6_1||LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3)
   $(call AddDepends/usb-serial)
 endef
 
@@ -1345,7 +1345,7 @@ $(eval $(call KernelPackage,usb-net-kaweth))
 define KernelPackage/usb-net-lan78xx
   TITLE:=USB-To-Ethernet Microchip LAN78XX convertors
   DEPENDS:=+kmod-fixed-phy +kmod-phy-microchip +PACKAGE_kmod-of-mdio:kmod-of-mdio \
-	+LINUX_6_18:kmod-phylink +LINUX_6_18:kmod-net-selftests
+	+(LINUX_6_18||LINUX_7_3):kmod-phylink +(LINUX_6_18||LINUX_7_3):kmod-net-selftests
   KCONFIG:=CONFIG_USB_LAN78XX
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/lan78xx.ko
   AUTOLOAD:=$(call AutoProbe,lan78xx)
@@ -1517,7 +1517,7 @@ $(eval $(call KernelPackage,usb-net-rtl8150))
 define KernelPackage/usb-net-rtl8152
   TITLE:=Kernel module for USB-to-Ethernet Realtek convertors
   DEPENDS:=+r8152-firmware +kmod-crypto-sha256 +kmod-mii \
-	+(LINUX_6_12||LINUX_6_18):kmod-libphy
+	+(LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-libphy
   KCONFIG:=CONFIG_USB_RTL8152
   FILES:=$(LINUX_DIR)/drivers/$(USBNET_DIR)/r8152.ko
   AUTOLOAD:=$(call AutoProbe,r8152)

@@ -1,0 +1,63 @@
+From c4bd3afcf943491228e284cc6e68a145fcd07c2b Mon Sep 17 00:00:00 2001
+From: Carlo Szelinsky <github@szelinsky.de>
+Date: Sat, 23 May 2026 21:33:24 +0200
+Subject: [PATCH] net: pse-pd: guard against freed PI data on regulator disable
+
+PSE PI regulators are devm-registered inside pse_controller_register(),
+which runs before devres_add() arms the controller's own release in
+devm_pse_controller_register(). On driver detach, devres unwinds in LIFO
+order, so pse_controller_unregister() runs first and frees pcdev->pi via
+pse_release_pis(); the regulators are torn down afterwards.
+
+When regulator_unregister() flushes a pending disable, the regulator core
+invokes pse_pi_disable(), which dereferences pcdev->pi[id] (directly and
+via _pse_pi_disable() -> pse_pi_deallocate_pw_budget()). At that point the
+PI array is already freed, so this is a use-after-free.
+
+pse_release_pis() now clears pcdev->pi after freeing it, and
+pse_pi_disable() bails out under the lock when pcdev->pi is NULL, so a
+late disable from the regulator core is a no-op once the controller has
+been unregistered.
+
+Fixes: ffef61d6d273 ("net: pse-pd: Add support for budget evaluation strategies")
+---
+ drivers/net/pse-pd/pse_core.c | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/pse-pd/pse_core.c
++++ b/drivers/net/pse-pd/pse_core.c
+@@ -145,6 +145,7 @@
+ 		of_node_put(pcdev->pi[i].np);
+ 	}
+ 	kfree(pcdev->pi);
++	pcdev->pi = NULL;
+ }
+ 
+ /**
+@@ -702,15 +703,21 @@
+ static int pse_pi_disable(struct regulator_dev *rdev)
+ {
+ 	struct pse_controller_dev *pcdev = rdev_get_drvdata(rdev);
+-	struct pse_pi *pi;
+ 	int id, ret;
+ 
+ 	id = rdev_get_id(rdev);
+-	pi = &pcdev->pi[id];
+ 	mutex_lock(&pcdev->lock);
++	/* The controller may already be unregistered (pcdev->pi freed) by the
++	 * time the regulator core flushes a deferred disable during
++	 * regulator_unregister(). Bail out to avoid touching freed PI data.
++	 */
++	if (!pcdev->pi) {
++		mutex_unlock(&pcdev->lock);
++		return 0;
++	}
+ 	ret = _pse_pi_disable(pcdev, id);
+ 	if (!ret)
+-		pi->admin_state_enabled = 0;
++		pcdev->pi[id].admin_state_enabled = 0;
+ 
+ 	mutex_unlock(&pcdev->lock);
+ 	return 0;

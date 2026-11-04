@@ -1,0 +1,81 @@
+From 24bfab62d4aff34510d24d80c97ea98d8bec6fb0 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 1 Apr 2026 13:43:12 +0100
+Subject: [PATCH 08/12] net: dsa: mxl862xx: support BR_HAIRPIN_MODE bridge flag
+
+Implement hairpin mode by including the port's own bridge port ID in
+its forwarding portmap. When hairpin is enabled, bridged frames whose
+destination resolves to the ingress port are allowed to egress there
+instead of being dropped.
+
+For LAG ports, the LAG's dedicated bridge port is added to the
+master's portmap, which naturally propagates to the LAG bridge port
+via the second loop in sync_bridge_members.
+
+The port_bridge_flags handler toggles the bit directly on the cached
+portmap and pushes the update via set_bridge_port, avoiding a full
+bridge member rebuild since only the calling port is affected.
+
+---
+ drivers/net/dsa/mxl862xx/mxl862xx.c | 12 ++++++++++--
+ drivers/net/dsa/mxl862xx/mxl862xx.h |  5 +++++
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -844,6 +844,10 @@
+ 		}
+ 		mxl862xx_fw_portmap_set_bit(br_port_cfg.bridge_port_map,
+ 					    mxl862xx_cpu_bridge_port_id(ds, port));
++		if (p->hairpin)
++			mxl862xx_fw_portmap_set_bit(br_port_cfg.bridge_port_map,
++						    mxl862xx_lag_bridge_port(priv,
++									     port));
+ 	} else {
+ 		mxl862xx_fw_portmap_set_bit(br_port_cfg.bridge_port_map,
+ 					    mxl862xx_cpu_bridge_port_id(ds, port));
+@@ -4082,7 +4086,7 @@
+ 					  struct netlink_ext_ack *extack)
+ {
+ 	if (flags.mask & ~(BR_FLOOD | BR_MCAST_FLOOD | BR_BCAST_FLOOD |
+-			   BR_LEARNING))
++			   BR_LEARNING | BR_HAIRPIN_MODE))
+ 		return -EINVAL;
+ 
+ 	return 0;
+@@ -4124,7 +4128,11 @@
+ 	if (flags.mask & BR_LEARNING)
+ 		priv->ports[port].learning = !!(flags.val & BR_LEARNING);
+ 
+-	if (block != old_block || (flags.mask & BR_LEARNING)) {
++	if (flags.mask & BR_HAIRPIN_MODE)
++		priv->ports[port].hairpin = !!(flags.val & BR_HAIRPIN_MODE);
++
++	if ((block != old_block) ||
++	    (flags.mask & (BR_LEARNING | BR_HAIRPIN_MODE))) {
+ 		priv->ports[port].flood_block = block;
+ 		ret = mxl862xx_set_bridge_port(ds, port);
+ 		if (ret)
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.h
+@@ -249,6 +249,10 @@
+  * @stats_lock:          protects accumulator reads in .get_stats64 against
+  *                       concurrent updates from the polling work
+  * @tag_8021q_vid:       currently assigned tag_8021q management VID
++ * @hairpin:             true when hairpin mode is active (BR_HAIRPIN_MODE);
++ *                       the port's own bridge port is included in its
++ *                       portmap so bridged frames can egress the ingress
++ *                       port
+  * @ingress_mirror:      true when ingress mirroring is active on this port
+  * @egress_mirror:       true when egress mirroring is active on this port
+  * @lag:                 non-NULL when port is member of a LAG group;
+@@ -278,6 +282,7 @@
+ 	struct work_struct host_flood_work;
+ 	u16 tag_8021q_vid;
+ 	struct mxl862xx_evlan_block cpu_egress_evlan;
++	bool hairpin;
+ 	bool ingress_mirror;
+ 	bool egress_mirror;
+ 	struct dsa_lag *lag;

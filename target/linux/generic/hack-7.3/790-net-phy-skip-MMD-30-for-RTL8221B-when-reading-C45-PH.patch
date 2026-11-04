@@ -1,0 +1,84 @@
+From 9766d2acddd54aa4cadbccfa79665a896631f86d Mon Sep 17 00:00:00 2001
+From: Jan Hoffmann <jan@3e8.eu>
+Date: Wed, 29 Apr 2026 19:06:33 +0200
+Subject: [PATCH] net: phy: skip MMD 30 for RTL8221B when reading C45 PHY IDs
+
+Realtek RTL8221B PHYs have a bug where reading from MMD 30 can stop the
+PHY from working. On these PHYs, MMD 30 is used to access the SerDes.
+The implementation is not standards-compliant, as registers 2/3/8/14/15
+don't contain usable information.
+
+The actual SerDes registers are unaffected by the issue. However,
+reading other registers on MMD 30 breaks the PHY if bit 0 of 30.0x75f3
+is set. After that, many registers of the PHY read 0xdead, and it no
+longer works. The only known way to get out of this state is a hardware
+reset.
+
+Directly after a PHY reset, this bit is not set. However, if the PHY is
+configured for rate-matching mode via the SerDes option mode register
+(which is the default), the bit is toggled to 1 whenever the PHY
+establishes a link. If a cable is already plugged in during PHY reset,
+it takes about 4 seconds to reach this state.
+
+While scanning for PHYs, the Linux kernel reads the PHY ID for every MMD
+which is set in the devices in package register. On RTL8221B, this also
+includes MMD 30, and thus might trigger this issue.
+
+There are multiple ways the issue could be avoided:
+
+- Reset the PHY before or after reading PHY ID. This is not possible on
+  all devices, as the reset pin might not be wired, or is shared with
+  other devices in a way that makes it unusable in Linux. In SFP modules
+  tx-disable can reset the PHY, but it is not clear if this is supported
+  on all modules, and it also requires the host to support tx-disable.
+
+- Configure PHY to disable rate-matching and unset bit 0 in 30.0x75f3
+  before reading PHY ID. This could be done in firmware, but for
+  existing devices this might not be an option. On SFP modules changing
+  the firmware is not realistic, especially considering those usually
+  use rate-matching mode intentionally.
+
+- Avoid reading MMD 30 in the kernel. However, this requires changes to
+  the PHY core.
+
+Picking the last option, change get_phy_c45_ids to avoid reading MMD 30
+depending on the PHY ID from MMD 1. This is clearly not the cleanest
+solution, but it works reliably.
+
+---
+ drivers/net/phy/phy_device.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -901,6 +901,17 @@
+ 	return 0;
+ }
+ 
++static bool phy_c45_skip_mmd_read(int mmd, struct phy_c45_device_ids *c45_ids)
++{
++	if (c45_ids->device_ids[MDIO_MMD_PMAPMD] == 0x001cc849 ||
++	    c45_ids->device_ids[MDIO_MMD_PMAPMD] == 0x001cc84a) {
++		/* Reading MMD 30 on RTL8221B may cause the PHY to stop working. */
++		return mmd == MDIO_MMD_VEND1;
++	}
++
++	return false;
++}
++
+ /**
+  * get_phy_c45_ids - reads the specified addr for its 802.3-c45 IDs.
+  * @bus: the target MII bus
+@@ -968,6 +979,10 @@
+ 		if (!(devs_in_pkg & (1 << i)))
+ 			continue;
+ 
++		/* Some PHYs react badly to reading from specific MMDs. */
++		if (phy_c45_skip_mmd_read(i, c45_ids))
++			continue;
++
+ 		if (i == MDIO_MMD_VEND1 || i == MDIO_MMD_VEND2) {
+ 			/* Probe the "Device Present" bits for the vendor MMDs
+ 			 * to ignore these if they do not contain IEEE 802.3

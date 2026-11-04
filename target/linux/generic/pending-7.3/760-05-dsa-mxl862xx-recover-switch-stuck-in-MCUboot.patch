@@ -1,0 +1,918 @@
+From 513eb8147a2c74762bf700b2859bb39469aaa707 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 3 Aug 2026 04:52:10 +0100
+Subject: [PATCH net-next v10 4/5] net: dsa: mxl862xx: recover switch stuck in
+ MCUboot rescue mode
+
+A broken or interrupted firmware image, or the sticky rescue bit, keeps
+the switch in its MCUboot bootloader, which exposes only the clause-22
+SMDIO download interface. The clause-45 MMD API never comes up, so probe
+would fail with -ETIMEDOUT and the only way back would be the switch's
+UART console, or a power cycle or out-of-band reset (not currently
+implemented).
+
+Probe for the loader over SB PDI at setup, before any clause-45 access,
+since the C45 API floods the log with CRC errors when no firmware
+answers. A scratch write to two mailbox registers first establishes
+that a switch is there at all. It reaches a running firmware as well,
+but lands in registers that firmware does not read, so it is inert
+there. The status register the loader publishes then tells the cases
+apart without touching C45: a running firmware, which answers with its
+own non-zero status word (0x0003 on the firmware tested), so probe
+continues normally; a loader idle in its console loop, confirmed live
+by a register-read challenge; a loader wedged mid-download, the one
+case that publishes zero; the flashless download loop, which this
+driver cannot drive; and a switch whose scratch write does not latch --
+absent, unpowered, misdescribed in the device tree (wrong address or
+bus, or a reset GPIO with inverted polarity), or with its SB PDI window
+somewhere other than the OTP reset offsets assumed here. The first
+three enter rescue mode or normal operation, the last two fail probe
+cleanly with -EOPNOTSUPP and -ENODEV instead of a CRC-error storm.
+
+A loader that publishes the ready magic but never services the
+register-read challenge fails probe too, with -ENXIO. The challenge is
+what tells the loader apart from a firmware whose status word happens
+to read the same value, and offering to flash a healthy firmware would
+be worse than refusing to bind, so a mailbox that does not answer is
+treated as unusable rather than as a flash target. Every loader tested
+services it.
+
+In rescue mode the switch registers without user interfaces so devlink
+stays available: user ports fail port_setup with -ENODEV (the DSA core
+re-registers them as unused) while shared and CPU ports succeed, and the
+CPU port works on its fixed link with mac_select_pcs returning no PCS.
+Firmware API commands fail fast with -ENODEV and the port and STP
+callbacks become no-ops.
+
+An interrupted download can leave the loader wedged mid-payload. A
+background work item off the devlink flash path drains it back to a
+clean ready state by feeding the outstanding byte count one byte at a
+time, which takes tens of minutes for a large image and is logged as it
+progresses; until then devlink dev info reports no version and devlink
+dev flash returns -EBUSY, and -EIO once a drain has failed for good.
+Reaching the end of the count is all the drain does: the loader then
+verifies the corrupt image and returns to its console loop on its own,
+so the drain reprobes and lets the probe-time detection re-classify the
+switch -- a valid image that a last-moment interruption left bootable
+comes up as running firmware, with no second-guessing in the drain path.
+
+The reprobe the drain queues owns itself and cannot be cancelled from
+teardown, so, like the post-flash reprobe, it checks whether the device
+is still bound before touching it: a drain finishing after the driver
+is gone does nothing. Should that hand-off fail to be set up at all,
+recovery stops with an error, since the loader would otherwise sit at a
+clean ready state that nothing reclassifies while devlink keeps
+promising that a retry will work.
+
+The CHIP ID registers need a running firmware, so no asic.id/asic.rev is
+reported in rescue mode. Once the loader is ready, devlink dev info
+reports the null firmware version "0.0.0" as both running and stored:
+
+  $ devlink dev info mdio_bus/mdio-bus:10
+  mdio_bus/mdio-bus:10:
+    driver mxl862xx
+    versions:
+        running:
+          fw 0.0.0
+        stored:
+          fw 0.0.0
+
+An operational switch never reports 0.0.0 (a released firmware's major
+is non-zero), so version-comparing tools like fwupd offer every release
+as an upgrade, recovering the switch through the regular flash flow,
+matched on the driver name. The flash skips the FW_UPDATE command since
+MCUboot is already waiting. A successful flash reboots the switch into
+the new firmware and the reprobe then brings the driver up against it
+normally; after a failed one the switch is still in MCUboot, rescue mode
+is detected again, and the user can retry.
+
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-fw.c      | 463 +++++++++++++++++++-
+ drivers/net/dsa/mxl862xx/mxl862xx-fw.h      |   3 +
+ drivers/net/dsa/mxl862xx/mxl862xx-host.c    |   8 +
+ drivers/net/dsa/mxl862xx/mxl862xx-phylink.c |   2 +
+ drivers/net/dsa/mxl862xx/mxl862xx.c         | 100 ++++-
+ drivers/net/dsa/mxl862xx/mxl862xx.h         |  20 +
+ 6 files changed, 566 insertions(+), 30 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-fw.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-fw.c
+@@ -29,9 +29,11 @@
+  *
+  * STAT magics:
+  *   READY  0xc55c   loader idle in the console loop        (this driver)
++ *   DL_RDY 0xc33c   loader idle in the flashless loop
+  *   START  0xf48f   host   -> begin download session
+  *   ACK    0xf490   loader -> START acknowledged (START + 1)
+  *   END    0x3cc3   host   -> finalise now (optional, see below)
++ *   RDREG  0xe2c0   host   -> register-read command (| index), see below
+  *
+  * Console flash path (STAT=0xc55c) - mxl862xx_flash_firmware():
+  *
+@@ -71,7 +73,40 @@
+  *     - never send a slice/chunk count larger than what is outstanding;
+  *     - a STAT write is a command only once the loader has left the loop;
+  *     - the loader leaves the count in STAT while it programs the chunk, so
+- *       a lingering count does not distinguish "busy" from "verdict".
++ *       a lingering count does not distinguish "busy" from "verdict";
++ *     - interrupted-download recovery feeds 1 byte at a time (see below).
++ *
++ * Interrupted-flash recovery (mxl862xx_rescue_drain):
++ *   A host that dies mid-payload leaves the loader in the receive loop holding
++ *   STAT=0. Feed single 1-byte chunks (one DATA word + STAT=1) until r_remain
++ *   reaches 0; the loader then verifies the (now corrupt) image, publishes its
++ *   verdict and comes back to READY by itself. END is never sent here: while
++ *   r_remain is non-zero it would be consumed as a 15555-byte count, and a
++ *   lingering STAT=1 cannot be told from a chunk still being programmed.
++ *
++ * Register-read challenge (non-destructive liveness proof):
++ *   DATA := 0x7c23 (marker); STAT := 0xe2c0|idx
++ *     -> loader returns a runtime word in DATA and re-arms STAT=0xc55c.
++ *   The reply source is loader BSS, not a chip id; used only to prove a live
++ *   mailbox in mxl862xx_rescue_mode_detect().
++ *
++ * The other STAT ready magic, 0xc33c, marks the loader's flashless
++ * chip-to-chip download mode (MxL86281S 16-port tier); this driver does not
++ * use it.
++ *
++ * Rescue lifecycle (devlink): probe runs mxl862xx_rescue_mode_detect(); a
++ * wedged loader is drained back to READY by a background self-heal
++ * (rescue_heal_work), so the long recovery never holds the devlink lock.
++ * devlink dev info exposes the fw version (the "flashable" signal) only once at
++ * READY; flash_update returns -EBUSY until then, and reprobes to WSP firmware
++ * on success.
++ *
++ * Notes:
++ *   - Chip id/revision (0xc0d28884/88) are NOT reachable on this channel; they
++ *     need the clause-45 MMD firmware mailbox, which is dead under MCUboot.
++ *     Rescue identity is by SB PDI behaviour only (mxl862xx_rescue_mode_detect).
++ *   - The SMDIO PHY address comes from the device tree; the 0xe1xx register
++ *     offsets are the OTP reset defaults and the only layout supported here.
+  */
+ 
+ #include <linux/crc32.h>
+@@ -104,8 +139,15 @@
+ 
+ /* SB PDI handshake magic (published/consumed via STAT) */
+ #define MXL862XX_SB_PDI_READY		0xc55c	/* loader idle, console loop */
++#define MXL862XX_SB_PDI_DL_READY	0xc33c	/* loader idle, flashless loop */
+ #define MXL862XX_SB_PDI_START		0xf48f
+ #define MXL862XX_SB_PDI_END		0x3cc3
++#define MXL862XX_SB_PDI_RDREG		0xe2c0	/* register-read cmd (| index) */
++#define MXL862XX_SB_PDI_RDREG_MARK	0x7c23	/* marker placed in DATA for RDREG */
++
++/* Behavioural presence probe: two distinct 16-bit latches on ADDR/DATA. */
++#define MXL862XX_SB_PDI_PROBE_A		0x5a5a
++#define MXL862XX_SB_PDI_PROBE_D		0xa5a5
+ 
+ /* Image verification verdict published in STAT once the receive loop ends */
+ #define MXL862XX_SB_PDI_VERIFY_OK	0
+@@ -124,6 +166,10 @@
+ #define MXL862XX_FW_WRITE_TIMEOUT_MS	60000
+ #define MXL862XX_FW_REBOOT_DELAY_MS	5000
+ #define MXL862XX_FW_REPROBE_DELAY_MS	500
++/* One loader mailbox step: program a 1-byte chunk or service a command */
++#define MXL862XX_SB_PDI_STEP_MS		2000
++/* Covers the loader's END wait, verification and the reset into READY */
++#define MXL862XX_SB_PDI_VERIFY_MS	15000
+ 
+ static int mxl862xx_sb_pdi_reset(struct mxl862xx_priv *priv)
+ {
+@@ -193,7 +239,8 @@
+ 
+ 	ret = read_poll_timeout(mxl862xx_smdio_read, val,
+ 				val < 0 || (u16)val != (u16)data_written,
+-				10000, MXL862XX_FW_WRITE_TIMEOUT_MS * 1000,
++				10000, (MXL862XX_FW_WRITE_TIMEOUT_MS +
++					MXL862XX_SB_PDI_VERIFY_MS) * 1000,
+ 				false, priv, MXL862XX_SB_PDI_STAT);
+ 	if (val < 0)
+ 		return val;
+@@ -278,6 +325,357 @@
+ 	return rp;
+ }
+ 
++/* Byte-count of each chunk fed to the loader during drain. It MUST be 1: the
++ * loader only lets us observe "counter == 0", never "counter < step", so any
++ * step > 1 can subtract past zero, underflow the 32-bit counter and wedge the
++ * loader for ~2^32 more bytes (a state only a power cycle clears). Stepping by
++ * 1 walks the counter through every value and is guaranteed to land on zero
++ * whatever its (possibly odd) start. A 1-byte chunk is a path the loader
++ * already handles: the normal transfer ends with a single trailing byte for
++ * odd-sized images (see Step 6).
++ */
++#define MXL862XX_DRAIN_CHUNK_BYTES	1
++
++/* Log the drain's progress every so many bytes; it can run for a long time */
++#define MXL862XX_DRAIN_LOG_BYTES	(128 * 1024)
++
++/* Wait for the loader to ask for the next chunk (STAT 0) or to come back to its
++ * command loop (STAT READY), and return the STAT value either way. On timeout
++ * that is whatever STAT still holds, which carries no further information: the
++ * loader keeps the count we wrote visible while it programs the chunk, and that
++ * is the same value it publishes as the "image rejected" verdict once the
++ * counter reaches zero.
++ *
++ * STAT 0 is unambiguous here even though it is also the "image verified"
++ * verdict: by the r_remain == 0 rule the loader leaves the receive loop the
++ * moment the counter reaches zero, so it is never both inside the loop asking
++ * for a chunk and publishing a verdict. Once it has left, the next STAT write
++ * is a command rather than a count, so feeding one more chunk after a verdict
++ * cannot underflow anything either.
++ */
++static int mxl862xx_sb_pdi_poll_drain(struct mxl862xx_priv *priv,
++				      unsigned long timeout_ms)
++{
++	int val;
++
++	read_poll_timeout(mxl862xx_smdio_read, val,
++			  val < 0 || (u16)val == MXL862XX_SB_PDI_READY ||
++			  (u16)val == 0,
++			  50, timeout_ms * 1000, false,
++			  priv, MXL862XX_SB_PDI_STAT);
++	if (val < 0)
++		return val;
++	return (u16)val;
++}
++
++/* The loader is not asking for a chunk: it may still be programming the last
++ * one, or the counter has reached zero and it is verifying the image and
++ * resetting into READY. Wait that out -- STAT cannot tell the two apart, and
++ * guessing would mean writing END into a live receive loop.
++ *
++ * Return: 0 once the loader has left the loop, -EAGAIN if it asks for another
++ * chunk after all, -EIO for a loader still holding the count when the verify
++ * window expires, or an SMDIO bus error.
++ */
++static int mxl862xx_rescue_drain_finish(struct mxl862xx_priv *priv, u32 chunk)
++{
++	struct device *dev = &priv->mdiodev->dev;
++	int stat;
++
++	stat = mxl862xx_sb_pdi_poll_drain(priv, MXL862XX_SB_PDI_VERIFY_MS);
++	if (stat < 0)
++		return stat;
++	if (stat == MXL862XX_SB_PDI_READY)
++		return 0;
++	if (stat == MXL862XX_SB_PDI_VERIFY_BAD) {
++		dev_err(dev,
++			"flash: loader stuck after %u chunks, power cycle it\n",
++			chunk);
++		return -EIO;
++	}
++	if (stat) {
++		/* A firmware is answering, not the loader: an image survived
++		 * in flash and booted.
++		 */
++		dev_info(dev, "flash: firmware booted while draining\n");
++		return 0;
++	}
++
++	return -EAGAIN;
++}
++
++/* Recover a switch whose SB PDI download was interrupted mid-transfer - the
++ * host died after MCUboot began erasing flash, whether it aborted mid erase or
++ * mid image-write, both end up in the same place: the payload receive loop.
++ * There the loader publishes STAT=0, waits for the host to write a byte-count
++ * to STAT, DMAs that many bytes and subtracts the count from a remaining-bytes
++ * counter, leaving the loop only when the counter reaches exactly zero. The
++ * image size died with the host, so we feed single-byte chunks (see
++ * MXL862XX_DRAIN_CHUNK_BYTES) to walk the counter to zero without underflow.
++ * The loader then verifies the (now corrupt) image and returns to READY by
++ * itself, or boots a valid image that happened to survive in flash; either way
++ * the caller's reprobe classifies the result. Every byte costs about a dozen
++ * MDIO frames, so a multi-MiB outstanding count takes tens of minutes.
++ * Returns 0 once the loader has left the receive loop, <0 on error. Does NOT
++ * recover a counter already underflowed by an earlier oversized-chunk attempt
++ * - that needs a power cycle.
++ */
++static int mxl862xx_rescue_drain(struct mxl862xx_priv *priv)
++{
++	struct device *dev = &priv->mdiodev->dev;
++	/* Bound: twice the loader's 16 MiB image cap, one byte per chunk. */
++	u32 max_chunks = 2u * (16u << 20) / MXL862XX_DRAIN_CHUNK_BYTES;
++	u32 chunk = 0;
++	int ret, stat;
++
++	while (chunk < max_chunks) {
++		/* Teardown can interrupt this long drain. */
++		if (test_bit(MXL862XX_FLAG_WORK_STOPPED, &priv->flags))
++			return -ECANCELED;
++
++		stat = mxl862xx_sb_pdi_poll_drain(priv, MXL862XX_SB_PDI_STEP_MS);
++		if (stat < 0)
++			return stat;
++		if (stat == MXL862XX_SB_PDI_READY)
++			return 0;
++
++		if (stat) {
++			ret = mxl862xx_rescue_drain_finish(priv, chunk);
++			if (ret != -EAGAIN)
++				return ret;
++		}
++
++		/* Feed one zero byte; reset cleared the write latch. */
++		ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_CTRL,
++					   MXL862XX_SB_PDI_CTRL_WR);
++		if (ret < 0)
++			return ret;
++		ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_DATA, 0x0000);
++		if (ret < 0)
++			return ret;
++		ret = mxl862xx_sb_pdi_reset(priv);
++		if (ret < 0)
++			return ret;
++		ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_STAT,
++					   MXL862XX_DRAIN_CHUNK_BYTES);
++		if (ret < 0)
++			return ret;
++		chunk++;
++		if (!(chunk % MXL862XX_DRAIN_LOG_BYTES))
++			dev_info(dev, "flash: drained %u KiB so far\n",
++				 chunk / 1024);
++		cond_resched();
++	}
++
++	dev_err(dev,
++		"flash: interrupted download did not drain after %u chunks\n",
++		chunk);
++
++	return -ETIMEDOUT;
++}
++
++/* Background self-heal: drain a wedged download off the devlink flash path, so
++ * the long recovery never holds the devlink lock. Scheduled from probe;
++ * reprobes on success so the probe-time detection re-classifies the switch.
++ */
++void mxl862xx_rescue_heal_work_fn(struct work_struct *work)
++{
++	struct mxl862xx_priv *priv =
++		container_of(work, struct mxl862xx_priv, rescue_heal_work);
++	struct device *dev = &priv->mdiodev->dev;
++	struct mxl862xx_reprobe *ko;
++	int ret;
++
++	ret = mxl862xx_rescue_drain(priv);
++	if (ret == -ECANCELED)
++		return;
++	if (ret) {
++		/* Nothing retries this, so say so: rescue_ready stays clear
++		 * and devlink dev flash reports why it refuses.
++		 */
++		dev_err(dev, "flash: download recovery failed: %pe\n",
++			ERR_PTR(ret));
++		WRITE_ONCE(priv->rescue_failed, true);
++		return;
++	}
++
++	/* The interrupted transfer is finalised; reprobe so the probe-time
++	 * detection brings the driver up -- flashable in rescue mode if the
++	 * loader is at READY, or normally if a valid image booted. The refs
++	 * are released by the reprobe once it completes, which also decides
++	 * whether it may still run: teardown cannot cancel a work item queued
++	 * here, so the reprobe checks for itself that the device is still
++	 * bound. The flag test below only avoids queueing work that would
++	 * certainly be skipped.
++	 */
++	if (test_bit(MXL862XX_FLAG_WORK_STOPPED, &priv->flags))
++		return;
++
++	if (!try_module_get(THIS_MODULE))
++		return;
++
++	get_device(dev);
++	ko = mxl862xx_reprobe_alloc(dev);
++	if (!ko) {
++		put_device(dev);
++		module_put(THIS_MODULE);
++		/* The loader is at READY and would take an image, but nothing
++		 * will reclassify the switch, so refuse flashing with a real
++		 * error instead of the "retry shortly" that never comes true.
++		 */
++		dev_err(dev, "flash: cannot reinitialise after recovery, unbind and rebind to flash\n");
++		WRITE_ONCE(priv->rescue_failed, true);
++		return;
++	}
++
++	queue_delayed_work(system_long_wq, &ko->work,
++			   msecs_to_jiffies(MXL862XX_FW_REPROBE_DELAY_MS));
++}
++
++/* Detect MCUboot rescue mode over clause-22 SMDIO alone, so the caller can rule
++ * the loader out before any C45 API request (which spews CRC errors when no WSP
++ * firmware answers). A scratch write to ADDR/DATA must latch or the chip is
++ * absent (-ENODEV); the mailbox is reset first, or a transfer interrupted with
++ * CTRL=WR would take that write as a payload word instead of latching it. STAT
++ * then classifies the state, poked destructively only when 0, the one value a
++ * running firmware never holds:
++ *
++ *  - 0xc33c: flashless loop; recognised but not supported here.
++ *  - 0xc55c: console loop, if the register-read challenge is serviced.
++ *  - other non-zero: running firmware, left unpoked.
++ *  - 0: wedged receive loop; the 1-byte slice-advance then says whether it
++ *    still needs draining or has just finished.
++ *
++ * The scratch write reaches a running firmware too, but lands in mailbox
++ * registers it does not read, so it is inert there.
++ *
++ * Return: MXL862XX_IN_RESCUE, MXL862XX_NOT_RESCUE, -ENODEV when the scratch
++ * write does not latch, which is a switch that does not answer at all or one
++ * whose SB PDI window is not at the offsets above, -EOPNOTSUPP for the
++ * flashless loop, -ENXIO for a READY loader whose mailbox fails the challenge,
++ * or an SMDIO bus error.
++ */
++int mxl862xx_rescue_mode_detect(struct mxl862xx_priv *priv)
++{
++	int stat, dat, ret, rb, a, d;
++
++	/* rescue_ready gates flashing; a wedged loader needs the drain first. */
++	WRITE_ONCE(priv->rescue_ready, false);
++
++	ret = mxl862xx_sb_pdi_reset(priv);
++	if (ret < 0)
++		return ret;
++
++	/* Presence: a live chip latches the scratch write, an absent one floats. */
++	a = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_ADDR,
++				 MXL862XX_SB_PDI_PROBE_A);
++	if (a < 0)
++		return a;
++	d = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_DATA,
++				 MXL862XX_SB_PDI_PROBE_D);
++	if (d < 0)
++		return d;
++	a = mxl862xx_smdio_read(priv, MXL862XX_SB_PDI_ADDR);
++	if (a < 0)
++		return a;
++	d = mxl862xx_smdio_read(priv, MXL862XX_SB_PDI_DATA);
++	if (d < 0)
++		return d;
++	if ((u16)a != MXL862XX_SB_PDI_PROBE_A ||
++	    (u16)d != MXL862XX_SB_PDI_PROBE_D)
++		return -ENODEV;
++
++	ret = mxl862xx_sb_pdi_reset(priv);
++	if (ret < 0)
++		return ret;
++
++	stat = mxl862xx_smdio_read(priv, MXL862XX_SB_PDI_STAT);
++	if (stat < 0)
++		return stat;
++
++	/* Flashless-download loop (MxL86281S tier): this driver does not
++	 * support it -- the console flash path expects READY. Treat it as an
++	 * unusable configuration, like any other unsupported state.
++	 */
++	if ((u16)stat == MXL862XX_SB_PDI_DL_READY)
++		return -EOPNOTSUPP;
++
++	/* Console loop at READY: confirm the live mailbox with the register-read
++	 * challenge (consumes the marker from DATA and re-arms READY).
++	 */
++	if ((u16)stat == MXL862XX_SB_PDI_READY) {
++		ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_DATA,
++					   MXL862XX_SB_PDI_RDREG_MARK);
++		if (ret < 0)
++			return ret;
++		ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_STAT,
++					   MXL862XX_SB_PDI_RDREG);
++		if (ret < 0)
++			return ret;
++		rb = mxl862xx_sb_pdi_poll_stat(priv, MXL862XX_SB_PDI_READY,
++					       MXL862XX_SB_PDI_STEP_MS);
++		dat = mxl862xx_smdio_read(priv, MXL862XX_SB_PDI_DATA);
++		ret = mxl862xx_sb_pdi_reset(priv);
++		/* Never re-arming READY fails the challenge like any other
++		 * unserviced command; report it as such rather than as a bus
++		 * timeout the bus never saw.
++		 */
++		if (rb == -ETIMEDOUT)
++			rb = -ENXIO;
++		if (rb < 0)
++			return rb;
++		if (dat < 0)
++			return dat;
++		if (ret < 0)
++			return ret;
++		if ((u16)dat != MXL862XX_SB_PDI_RDREG_MARK) {
++			WRITE_ONCE(priv->rescue_ready, true);
++			return MXL862XX_IN_RESCUE;
++		}
++		/* READY but the marker is untouched, so nothing is servicing the
++		 * mailbox. A firmware publishing 0xc55c as its status word looks
++		 * exactly like this, and flashing one would be far worse than
++		 * refusing to bind, so treat it as unusable.
++		 */
++		return -ENXIO;
++	}
++
++	/* Any other non-zero value is a running firmware, not a loader. */
++	if (stat)
++		return MXL862XX_NOT_RESCUE;
++
++	/* STAT == 0: a wedged receive loop takes a 1-byte slice-advance (feed
++	 * one DATA word first, like a drain chunk) and asks for the next chunk
++	 * by publishing 0 again. Had that byte been the last one outstanding,
++	 * the loader leaves the loop instead and returns to READY, having
++	 * consumed the advance -- proof enough of a live mailbox to skip the
++	 * challenge. Anything else means it is still working on it. All three
++	 * are rescue, so this never fails probe; only the drain does.
++	 */
++	ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_CTRL,
++				   MXL862XX_SB_PDI_CTRL_WR);
++	if (ret < 0)
++		return ret;
++	ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_DATA, 0x0000);
++	if (ret < 0)
++		return ret;
++	ret = mxl862xx_sb_pdi_reset(priv);
++	if (ret < 0)
++		return ret;
++	ret = mxl862xx_smdio_write(priv, MXL862XX_SB_PDI_STAT,
++				   MXL862XX_DRAIN_CHUNK_BYTES);
++	if (ret < 0)
++		return ret;
++
++	rb = mxl862xx_sb_pdi_poll_drain(priv, MXL862XX_SB_PDI_STEP_MS);
++	if (rb < 0)
++		return rb;
++	if (rb == MXL862XX_SB_PDI_READY)
++		WRITE_ONCE(priv->rescue_ready, true);
++
++	return MXL862XX_IN_RESCUE;
++}
++
+ /* MCUboot firmware image header */
+ struct mxl862xx_fw_hdr {
+ 	__le32 image_type;
+@@ -353,13 +751,15 @@
+ 	int ret, i;
+ 
+ 	/* Step 1: reboot the firmware into MCUboot rescue mode */
+-	ret = mxl862xx_api_wrap(priv, SYS_MISC_FW_UPDATE, NULL, 0,
+-				false, false);
+-	if (ret) {
+-		dev_err(&priv->mdiodev->dev,
+-			"flash: FW_UPDATE command failed: %pe\n",
+-			ERR_PTR(ret));
+-		return ret;
++	if (!priv->rescue_mode) {
++		ret = mxl862xx_api_wrap(priv, SYS_MISC_FW_UPDATE, NULL, 0,
++					false, false);
++		if (ret) {
++			dev_err(&priv->mdiodev->dev,
++				"flash: FW_UPDATE command failed: %pe\n",
++				ERR_PTR(ret));
++			return ret;
++		}
+ 	}
+ 
+ 	/* Step 2: wait for bootloader ready */
+@@ -541,6 +941,25 @@
+ 	char buf[16];
+ 	int ret;
+ 
++	/* No chip-id/revision in MCUboot (needs the firmware MMD mailbox). The
++	 * fw version doubles as the "ready to flash" signal: report it only
++	 * once the loader is at a clean READY, nothing while still draining.
++	 */
++	if (priv->rescue_mode) {
++		if (!READ_ONCE(priv->rescue_ready))
++			return 0;
++
++		snprintf(buf, sizeof(buf), "%u.%u.%u",
++			 priv->fw_version.major, priv->fw_version.minor,
++			 priv->fw_version.revision);
++		ret = devlink_info_version_running_put(req,
++				DEVLINK_INFO_VERSION_GENERIC_FW, buf);
++		if (ret)
++			return ret;
++		return devlink_info_version_stored_put(req,
++				DEVLINK_INFO_VERSION_GENERIC_FW, buf);
++	}
++
+ 	/* A 0 part number means the CHIP ID read failed or the part is
+ 	 * unfused; omit it rather than publish a bogus "0000" that fwupd
+ 	 * would match firmware against -- it then falls back to the driver
+@@ -614,6 +1033,21 @@
+ 		return ret;
+ 	}
+ 
++	/* Refuse to flash while the background self-heal is still draining, and
++	 * for good once it has given up on the loader.
++	 */
++	if (READ_ONCE(priv->rescue_failed)) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "download recovery failed, power cycle the switch");
++		return -EIO;
++	}
++
++	if (priv->rescue_mode && !READ_ONCE(priv->rescue_ready)) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "switch is recovering an interrupted download, retry shortly");
++		return -EBUSY;
++	}
++
+ 	/* The references the reprobe work needs to restore normal operation
+ 	 * must be held before the switch is disturbed; the work itself is
+ 	 * scheduled only once the flash is done (see below).
+@@ -633,9 +1067,13 @@
+ 		return -ENOMEM;
+ 	}
+ 
+-	dev_info(ds->dev, "flash: running firmware %u.%u.%u\n",
+-		 priv->fw_version.major, priv->fw_version.minor,
+-		 priv->fw_version.revision);
++	if (priv->rescue_mode)
++		dev_info(ds->dev,
++			 "flash: flashing switch via MCUboot rescue mode\n");
++	else
++		dev_info(ds->dev, "flash: running firmware %u.%u.%u\n",
++			 priv->fw_version.major, priv->fw_version.minor,
++			 priv->fw_version.revision);
+ 
+ 	/* Close ports while the firmware is still alive so the DSA core's
+ 	 * MDB/FDB tracking is drained, and detach user ports so userspace
+@@ -679,6 +1117,7 @@
+ 		mutex_lock_nested(&priv->mdiodev->bus->mdio_lock,
+ 				  MDIO_MUTEX_NESTED);
+ 		priv->block_host = false;
++		priv->rescue_mode = false;
+ 		mutex_unlock(&priv->mdiodev->bus->mdio_lock);
+ 
+ 		/* Refresh the cached versions so the flash update only
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-fw.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-fw.h
+@@ -6,7 +6,10 @@
+ #include <net/dsa.h>
+ 
+ struct mxl862xx_priv;
++struct work_struct;
+ 
++int mxl862xx_rescue_mode_detect(struct mxl862xx_priv *priv);
++void mxl862xx_rescue_heal_work_fn(struct work_struct *work);
+ int mxl862xx_devlink_info_get(struct dsa_switch *ds,
+ 			      struct devlink_info_req *req,
+ 			      struct netlink_ext_ack *extack);
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-host.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-host.c
+@@ -16,6 +16,7 @@
+ #include <net/dsa.h>
+ #include "mxl862xx.h"
+ #include "mxl862xx-cmd.h"
++#include "mxl862xx-fw.h"
+ #include "mxl862xx-host.h"
+ 
+ #define CTRL_BUSY_MASK			BIT(15)
+@@ -346,6 +347,11 @@
+ 		goto out;
+ 	}
+ 
++	if (priv->rescue_mode) {
++		ret = -ENODEV;
++		goto out;
++	}
++
+ 	if (priv->block_host && cmd != SYS_MISC_FW_UPDATE) {
+ 		ret = -EBUSY;
+ 		goto out;
+@@ -549,9 +555,11 @@
+ void mxl862xx_host_init(struct mxl862xx_priv *priv)
+ {
+ 	INIT_WORK(&priv->crc_err_work, mxl862xx_crc_err_work_fn);
++	INIT_WORK(&priv->rescue_heal_work, mxl862xx_rescue_heal_work_fn);
+ }
+ 
+ void mxl862xx_host_shutdown(struct mxl862xx_priv *priv)
+ {
+ 	cancel_work_sync(&priv->crc_err_work);
++	cancel_work_sync(&priv->rescue_heal_work);
+ }
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-phylink.c
+@@ -406,6 +406,8 @@
+ 
+ 	switch (port) {
+ 	case 9 ... 16:
++		if (priv->rescue_mode)
++			return NULL;
+ 		if (!MXL862XX_FW_VER_MIN(priv, 1, 0, 84)) {
+ 			dev_warn_once(dp->ds->dev,
+ 				      "SerDes PCS unsupported on old firmware.\n");
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -692,21 +692,66 @@
+ 	int n_user_ports = 0, max_vlans;
+ 	int ingress_finals, vid_rules;
+ 	struct dsa_port *dp;
+-	int ret, i;
+-
+-	ret = mxl862xx_reset(priv);
+-	if (ret)
+-		return ret;
+-
+-	ret = mxl862xx_wait_ready(ds);
+-	if (ret)
+-		return ret;
++	int ret, i, rescue;
+ 
++	/* The SerDes state is software-only and must exist before anything can
++	 * reach phylink, including a rescue-mode flash clearing rescue_mode
++	 * ahead of the reprobe.
++	 */
+ 	mutex_init(&priv->serdes_lock);
+ 	for (i = 0; i < ARRAY_SIZE(priv->serdes_ports); i++)
+ 		mxl862xx_setup_pcs(priv, &priv->serdes_ports[i],
+ 				   i + MXL862XX_FIRST_SERDES_PORT);
+ 
++	/* Detect the loader over SB PDI first: it needs no firmware, unlike the
++	 * C45 API (mxl862xx_reset/wait_ready) which spews CRC errors when none
++	 * answers. Touch C45 only once rescue is ruled out.
++	 */
++	rescue = mxl862xx_rescue_mode_detect(priv);
++	if (rescue < 0) {
++		dev_err(ds->dev, "switch state detection failed: %pe\n",
++			ERR_PTR(rescue));
++		return rescue;
++	}
++
++	if (rescue == MXL862XX_NOT_RESCUE) {
++		ret = mxl862xx_reset(priv);
++		if (ret)
++			return ret;
++
++		ret = mxl862xx_wait_ready(ds);
++		if (ret) {
++			/* the reset may only now have triggered rescue mode */
++			rescue = mxl862xx_rescue_mode_detect(priv);
++			if (rescue < 0) {
++				dev_err(ds->dev,
++					"switch not responding after reset: %pe\n",
++					ERR_PTR(rescue));
++				return rescue;
++			}
++			if (rescue == MXL862XX_NOT_RESCUE)
++				return ret;
++		}
++	}
++
++	priv->rescue_mode = rescue;
++
++	if (priv->rescue_mode) {
++		if (priv->rescue_ready) {
++			dev_warn(ds->dev,
++				 "switch in MCUboot rescue mode, use devlink to flash new firmware\n");
++		} else {
++			/* Drain the wedged download in the background so it
++			 * never holds the devlink lock; info and flash become
++			 * available once ready.
++			 */
++			dev_warn(ds->dev,
++				 "switch in MCUboot with an interrupted download, recovering in background\n");
++			queue_work(system_long_wq, &priv->rescue_heal_work);
++		}
++		return 0;
++	}
++
+ 	/* Calculate Extended VLAN block sizes.
+ 	 * With VLAN Filter handling VID membership checks:
+ 	 *   Ingress: only final catchall rules (PVID insertion, 802.1Q
+@@ -797,11 +842,21 @@
+ static int mxl862xx_port_enable(struct dsa_switch *ds, int port,
+ 				struct phy_device *phydev)
+ {
++	struct mxl862xx_priv *priv = ds->priv;
++
++	if (priv->rescue_mode)
++		return 0;
++
+ 	return mxl862xx_port_state(ds, port, true);
+ }
+ 
+ static void mxl862xx_port_disable(struct dsa_switch *ds, int port)
+ {
++	struct mxl862xx_priv *priv = ds->priv;
++
++	if (priv->rescue_mode)
++		return;
++
+ 	if (mxl862xx_port_state(ds, port, false))
+ 		dev_err(ds->dev, "failed to disable port %d\n", port);
+ }
+@@ -1419,6 +1474,17 @@
+ 	bool is_cpu_port = dsa_port_is_cpu(dp);
+ 	int ret;
+ 
++	if (dsa_port_is_dsa(dp)) {
++		dev_err(ds->dev, "port %d: DSA links not supported\n", port);
++		return -EOPNOTSUPP;
++	}
++
++	/* DSA reinits failed user ports as unused; shared ports must
++	 * succeed for the tree to register.
++	 */
++	if (priv->rescue_mode)
++		return dsa_port_is_user(dp) ? -ENODEV : 0;
++
+ 	ret = mxl862xx_port_state(ds, port, false);
+ 	if (ret)
+ 		return ret;
+@@ -1428,11 +1494,6 @@
+ 	if (dsa_port_is_unused(dp))
+ 		return 0;
+ 
+-	if (dsa_port_is_dsa(dp)) {
+-		dev_err(ds->dev, "port %d: DSA links not supported\n", port);
+-		return -EOPNOTSUPP;
+-	}
+-
+ 	ret = mxl862xx_configure_sp_tag_proto(ds, port, is_cpu_port);
+ 	if (ret)
+ 		return ret;
+@@ -1654,11 +1715,11 @@
+ 	ether_addr_copy(qparam.mac, mdb->addr);
+ 
+ 	ret = MXL862XX_API_READ(priv, MXL862XX_MAC_TABLEENTRYQUERY, qparam);
+-	/* Post-flash teardown: the firmware and its MAC table are gone, so
+-	 * there is nothing left to delete. Outside it, -ENODEV is a bus error
+-	 * and must be reported.
++	/* Post-flash teardown or MCUboot: the firmware and its MAC table are
++	 * gone, so there is nothing left to delete. Outside those, -ENODEV is a
++	 * bus error and must be reported.
+ 	 */
+-	if (ret == -ENODEV && priv->skip_teardown)
++	if (ret == -ENODEV && (priv->skip_teardown || priv->rescue_mode))
+ 		return 0;
+ 	if (ret)
+ 		return ret;
+@@ -1716,6 +1777,9 @@
+ 	struct mxl862xx_priv *priv = ds->priv;
+ 	int ret;
+ 
++	if (priv->rescue_mode)
++		return;
++
+ 	switch (state) {
+ 	case BR_STATE_DISABLED:
+ 		param.port_state = cpu_to_le32(MXL862XX_STP_PORT_STATE_DISABLE);
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.h
+@@ -4,7 +4,9 @@
+ #define __MXL862XX_H
+ 
+ #include <asm/byteorder.h>
++#include <linux/bitops.h>
+ #include <linux/mdio.h>
++#include <linux/mutex.h>
+ #include <linux/workqueue.h>
+ #include <net/dsa.h>
+ 
+@@ -14,6 +16,10 @@
+ #define MXL862XX_FIRST_SERDES_PORT	9
+ #define MXL862XX_SERDES_SLOTS		4
+ 
++/* mxl862xx_rescue_mode_detect() return codes (negative values are errors) */
++#define MXL862XX_NOT_RESCUE		0
++#define MXL862XX_IN_RESCUE		1
++
+ #define MXL862XX_DEFAULT_BRIDGE		0
+ #define MXL862XX_MAX_BRIDGES		48
+ #define MXL862XX_MAX_BRIDGE_PORTS	128
+@@ -327,6 +333,16 @@
+  *                      during a firmware flash
+  * @skip_teardown:      discard firmware API commands during the teardown
+  *                      triggered by the post-flash reprobe
++ * @rescue_mode:        switch is in MCUboot; firmware API commands fail fast,
++ *                      only clause-22 SMDIO works. Set from setup() before the
++ *                      switch is registered and cleared under the MDIO bus lock
++ *                      for the benefit of mxl862xx_api_wrap(); other readers
++ *                      only need it to be a stable single flag.
++ * @rescue_ready:       (rescue_mode) loader is at a clean READY and will accept
++ *                      a flash; false while rescue_heal_work is draining
++ * @rescue_failed:      (rescue_mode) the self-heal gave up; the loader needs a
++ *                      power cycle and no flash can be accepted
++ * @rescue_heal_work:   background self-heal draining a wedged download to READY
+  * @stats_work:         periodic work item that polls RMON hardware counters
+  *                      and accumulates them into 64-bit per-port stats
+  */
+@@ -334,6 +350,7 @@
+ 	struct dsa_switch *ds;
+ 	struct mdio_device *mdiodev;
+ 	struct work_struct crc_err_work;
++	struct work_struct rescue_heal_work;
+ 	unsigned long flags;
+ 	u16 drop_meter;
+ 	struct mxl862xx_fw_version fw_version;
+@@ -349,6 +366,9 @@
+ 	u16 vf_block_size;
+ 	bool block_host;
+ 	bool skip_teardown;
++	bool rescue_mode;
++	bool rescue_ready;
++	bool rescue_failed;
+ 	struct delayed_work stats_work;
+ };
+ 

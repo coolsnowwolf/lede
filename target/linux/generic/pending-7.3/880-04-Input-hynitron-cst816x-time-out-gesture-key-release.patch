@@ -1,0 +1,155 @@
+From d73d26d8c9d75fa230e3dd64058acb65f45da64d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 5 Oct 2026 20:22:23 +0100
+Subject: [PATCH v4 4/5] Input: hynitron-cst816x: time out gesture key release
+
+The controller reports a gesture code once and can then stay quiet
+until the next touch, which leaves the gesture key pressed for as long
+as the panel is left alone. Release the gesture keys 40 ms after the
+last report that carried a gesture code, so that the release comes
+from whichever happens first, the timeout or a report without a
+gesture code. The 40 ms matches TSC200X_PENUP_TIME_MS, chosen there
+for the same want of a lift event from the controller, and has to stay
+above the interval between consecutive reports of a held gesture.
+
+---
+v4:
+- follow the keycode lookup and the single read of patch 3
+v3:
+- use timer_shutdown_sync() in the devres teardown action (Sashiko AI
+  review)
+v2:
+- skip the release when the interrupt handler re-armed the timer while
+  the timer callback waited for the lock (Sashiko AI review)
+
+ drivers/input/touchscreen/hynitron-cst816x.c | 52 ++++++++++++++++++--
+ 1 file changed, 49 insertions(+), 3 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/input/touchscreen/hynitron-cst816x.c
++++ b/drivers/input/touchscreen/hynitron-cst816x.c
+@@ -15,9 +15,12 @@
+ #include <linux/unaligned.h>
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
++#include <linux/spinlock.h>
++#include <linux/timer.h>
+ 
+ #define CST816X_RD_REG		0x01
+ #define CST816X_NUM_KEYS	5
++#define CST816X_GEST_HOLD_MS	40
+ 
+ struct cst816x_touch {
+ 	u8 gest;
+@@ -32,6 +35,9 @@
+ 	struct input_dev *input;
+ 	unsigned int keycode[CST816X_NUM_KEYS];
+ 	unsigned int keycodemax;
++	struct timer_list release_timer;
++	/* lock keeps the timeout out of the middle of a report */
++	spinlock_t lock;
+ 	struct touchscreen_properties prop;
+ };
+ 
+@@ -175,8 +181,9 @@
+ 	msleep(100);
+ }
+ 
+-static void cst816x_release_keys(struct cst816x_priv *priv)
++static bool cst816x_release_keys(struct cst816x_priv *priv)
+ {
++	bool released = false;
+ 	unsigned int key;
+ 	unsigned int i;
+ 
+@@ -186,34 +193,67 @@
+ 			continue;
+ 
+ 		input_report_key(priv->input, key, 0);
++		released = true;
+ 	}
++
++	return released;
++}
++
++static void cst816x_release_timeout(struct timer_list *t)
++{
++	struct cst816x_priv *priv = timer_container_of(priv, t, release_timer);
++	unsigned long flags;
++
++	spin_lock_irqsave(&priv->lock, flags);
++
++	/* a re-arm while this waited for the lock supersedes the timeout */
++	if (!timer_pending(&priv->release_timer) && cst816x_release_keys(priv))
++		input_sync(priv->input);
++
++	spin_unlock_irqrestore(&priv->lock, flags);
+ }
+ 
+ static irqreturn_t cst816x_irq_cb(int irq, void *cookie)
+ {
+ 	struct cst816x_priv *priv = cookie;
+ 	struct cst816x_touch tch;
++	unsigned long flags;
+ 	unsigned int key;
+ 
+ 	if (!cst816x_process_touch(priv, &tch))
+ 		return IRQ_HANDLED;
+ 
++	spin_lock_irqsave(&priv->lock, flags);
++
+ 	touchscreen_report_pos(priv->input, &priv->prop,
+ 			       tch.abs_x, tch.abs_y, false);
+ 
+ 	key = cst816x_gest_keycode(priv, tch.gest);
+-	if (key != KEY_RESERVED)
++	if (key != KEY_RESERVED) {
+ 		input_report_key(priv->input, key, 1);
+-	else
++		mod_timer(&priv->release_timer,
++			  jiffies + msecs_to_jiffies(CST816X_GEST_HOLD_MS));
++	} else {
++		timer_delete(&priv->release_timer);
+ 		cst816x_release_keys(priv);
++	}
+ 
+ 	input_report_key(priv->input, BTN_TOUCH, tch.active);
+ 
+ 	input_sync(priv->input);
+ 
++	spin_unlock_irqrestore(&priv->lock, flags);
++
+ 	return IRQ_HANDLED;
+ }
+ 
++static void cst816x_timer_stop(void *data)
++{
++	struct cst816x_priv *priv = data;
++
++	timer_shutdown_sync(&priv->release_timer);
++}
++
+ static int cst816x_probe(struct i2c_client *client)
+ {
+ 	struct device *dev = &client->dev;
+@@ -225,6 +265,8 @@
+ 		return -ENOMEM;
+ 
+ 	priv->client = client;
++	spin_lock_init(&priv->lock);
++	timer_setup(&priv->release_timer, cst816x_release_timeout, 0);
+ 
+ 	priv->reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+ 	if (IS_ERR(priv->reset))
+@@ -242,6 +284,10 @@
+ 	if (error)
+ 		return dev_err_probe(dev, error, "input register failed\n");
+ 
++	error = devm_add_action_or_reset(dev, cst816x_timer_stop, priv);
++	if (error)
++		return error;
++
+ 	error = devm_request_threaded_irq(dev, client->irq,
+ 					  NULL, cst816x_irq_cb, IRQF_ONESHOT,
+ 					  dev_driver_string(dev), priv);

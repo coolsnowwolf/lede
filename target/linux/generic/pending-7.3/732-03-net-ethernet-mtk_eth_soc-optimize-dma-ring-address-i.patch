@@ -1,0 +1,484 @@
+From: Felix Fietkau <nbd@nbd.name>
+Date: Tue, 15 Oct 2024 12:52:56 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: optimize dma ring address/index
+ calculation
+
+Since DMA descriptor sizes are all power of 2, we can avoid costly integer
+division in favor or simple shifts.
+
+---
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -45,6 +45,11 @@
+ 				  offsetof(struct mtk_hw_stats, xdp_stats.x) / \
+ 				  sizeof(u64) }
+ 
++#define RX_DESC_OFS(eth, i) \
++	((i) << (eth)->soc->rx.desc_shift)
++#define TX_DESC_OFS(eth, i) \
++	((i) << (eth)->soc->tx.desc_shift)
++
+ static const struct mtk_reg_map mtk_reg_map = {
+ 	.tx_irq_mask		= 0x1a1c,
+ 	.tx_irq_status		= 0x1a18,
+@@ -1329,13 +1334,13 @@
+ 	dma_addr_t dma_addr;
+ 	int i, j, len;
+ 
+-	eth->scratch_ring = mtk_dma_ring_alloc(eth, cnt * soc->tx.desc_size,
++	eth->scratch_ring = mtk_dma_ring_alloc(eth, TX_DESC_OFS(eth, cnt),
+ 					       &eth->phy_scratch_ring, true);
+ 
+ 	if (unlikely(!eth->scratch_ring))
+ 		return -ENOMEM;
+ 
+-	phy_ring_tail = eth->phy_scratch_ring + soc->tx.desc_size * (cnt - 1);
++	phy_ring_tail = eth->phy_scratch_ring + TX_DESC_OFS(eth, cnt - 1);
+ 
+ 	for (j = 0; j < DIV_ROUND_UP(soc->tx.fq_dma_size, MTK_FQ_DMA_LENGTH); j++) {
+ 		len = min_t(int, cnt - j * MTK_FQ_DMA_LENGTH, MTK_FQ_DMA_LENGTH);
+@@ -1354,11 +1359,11 @@
+ 		for (i = 0; i < len; i++) {
+ 			struct mtk_tx_dma_v2 *txd;
+ 
+-			txd = eth->scratch_ring + (j * MTK_FQ_DMA_LENGTH + i) * soc->tx.desc_size;
++			txd = eth->scratch_ring + TX_DESC_OFS(eth, j * MTK_FQ_DMA_LENGTH + i);
+ 			txd->txd1 = dma_addr + i * MTK_QDMA_PAGE_SIZE;
+ 			if (j * MTK_FQ_DMA_LENGTH + i < cnt)
+ 				txd->txd2 = eth->phy_scratch_ring +
+-					    (j * MTK_FQ_DMA_LENGTH + i + 1) * soc->tx.desc_size;
++					    TX_DESC_OFS(eth, j * MTK_FQ_DMA_LENGTH + i + 1);
+ 
+ 			txd->txd3 = TX_DMA_PLEN0(MTK_QDMA_PAGE_SIZE);
+ 			if (MTK_HAS_CAPS(soc->caps, MTK_36BIT_DMA))
+@@ -1388,9 +1393,9 @@
+ }
+ 
+ static struct mtk_tx_buf *mtk_desc_to_tx_buf(struct mtk_tx_ring *ring,
+-					     void *txd, u32 txd_size)
++					     void *txd, u32 txd_shift)
+ {
+-	int idx = (txd - ring->dma) / txd_size;
++	int idx = (txd - ring->dma) >> txd_shift;
+ 
+ 	return &ring->buf[idx];
+ }
+@@ -1401,9 +1406,9 @@
+ 	return ring->dma_pdma - (struct mtk_tx_dma *)ring->dma + dma;
+ }
+ 
+-static int txd_to_idx(struct mtk_tx_ring *ring, void *dma, u32 txd_size)
++static int txd_to_idx(struct mtk_tx_ring *ring, void *dma, u32 txd_shift)
+ {
+-	return (dma - ring->dma) / txd_size;
++	return (dma - ring->dma) >> txd_shift;
+ }
+ 
+ static void mtk_tx_unmap(struct mtk_eth *eth, struct mtk_tx_buf *tx_buf,
+@@ -1611,7 +1616,7 @@
+ 	if (itxd == ring->last_free)
+ 		return -ENOMEM;
+ 
+-	itx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_size);
++	itx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_shift);
+ 	memset(itx_buf, 0, sizeof(*itx_buf));
+ 
+ 	txd_info.addr = dma_map_single(eth->dma_dev, skb->data, txd_info.size,
+@@ -1665,7 +1670,7 @@
+ 			mtk_tx_set_dma_desc(dev, txd, &txd_info);
+ 
+ 			tx_buf = mtk_desc_to_tx_buf(ring, txd,
+-						    soc->tx.desc_size);
++						    soc->tx.desc_shift);
+ 			if (new_desc)
+ 				memset(tx_buf, 0, sizeof(*tx_buf));
+ 			tx_buf->data = (void *)MTK_DMA_DUMMY_DESC;
+@@ -1708,7 +1713,7 @@
+ 	} else {
+ 		int next_idx;
+ 
+-		next_idx = NEXT_DESP_IDX(txd_to_idx(ring, txd, soc->tx.desc_size),
++		next_idx = NEXT_DESP_IDX(txd_to_idx(ring, txd, soc->tx.desc_shift),
+ 					 ring->dma_size);
+ 		mtk_w32(eth, next_idx, MT7628_TX_CTX_IDX0);
+ 	}
+@@ -1717,7 +1722,7 @@
+ 
+ err_dma:
+ 	do {
+-		tx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_size);
++		tx_buf = mtk_desc_to_tx_buf(ring, itxd, soc->tx.desc_shift);
+ 
+ 		/* unmap dma */
+ 		mtk_tx_unmap(eth, tx_buf, NULL, false);
+@@ -1891,7 +1896,7 @@
+ 
+ 		ring = &eth->rx_ring[i];
+ 		idx = NEXT_DESP_IDX(ring->calc_idx, ring->dma_size);
+-		rxd = ring->dma + idx * eth->soc->rx.desc_size;
++		rxd = ring->dma + RX_DESC_OFS(eth, idx);
+ 		if (rxd->rxd2 & RX_DMA_DONE) {
+ 			ring->calc_idx_update = true;
+ 			return ring;
+@@ -2059,7 +2064,7 @@
+ 	}
+ 	htxd = txd;
+ 
+-	tx_buf = mtk_desc_to_tx_buf(ring, txd, soc->tx.desc_size);
++	tx_buf = mtk_desc_to_tx_buf(ring, txd, soc->tx.desc_shift);
+ 	memset(tx_buf, 0, sizeof(*tx_buf));
+ 	htx_buf = tx_buf;
+ 
+@@ -2078,7 +2083,7 @@
+ 				goto unmap;
+ 
+ 			tx_buf = mtk_desc_to_tx_buf(ring, txd,
+-						    soc->tx.desc_size);
++						    soc->tx.desc_shift);
+ 			memset(tx_buf, 0, sizeof(*tx_buf));
+ 			n_desc++;
+ 		}
+@@ -2116,7 +2121,7 @@
+ 	} else {
+ 		int idx;
+ 
+-		idx = txd_to_idx(ring, txd, soc->tx.desc_size);
++		idx = txd_to_idx(ring, txd, soc->tx.desc_shift);
+ 		mtk_w32(eth, NEXT_DESP_IDX(idx, ring->dma_size),
+ 			MT7628_TX_CTX_IDX0);
+ 	}
+@@ -2127,7 +2132,7 @@
+ 
+ unmap:
+ 	while (htxd != txd) {
+-		tx_buf = mtk_desc_to_tx_buf(ring, htxd, soc->tx.desc_size);
++		tx_buf = mtk_desc_to_tx_buf(ring, htxd, soc->tx.desc_shift);
+ 		mtk_tx_unmap(eth, tx_buf, NULL, false);
+ 
+ 		htxd->txd3 = TX_DMA_LS0 | TX_DMA_OWNER_CPU;
+@@ -2259,7 +2264,7 @@
+ 			goto rx_done;
+ 
+ 		idx = NEXT_DESP_IDX(ring->calc_idx, ring->dma_size);
+-		rxd = ring->dma + idx * eth->soc->rx.desc_size;
++		rxd = ring->dma + RX_DESC_OFS(eth, idx);
+ 		data = ring->data[idx];
+ 
+ 		if (!mtk_rx_get_desc(eth, &trxd, rxd))
+@@ -2526,7 +2531,7 @@
+ 			break;
+ 
+ 		tx_buf = mtk_desc_to_tx_buf(ring, desc,
+-					    eth->soc->tx.desc_size);
++					    eth->soc->tx.desc_shift);
+ 		if (!tx_buf->data)
+ 			break;
+ 
+@@ -2577,7 +2582,7 @@
+ 		}
+ 		mtk_tx_unmap(eth, tx_buf, &bq, true);
+ 
+-		desc = ring->dma + cpu * eth->soc->tx.desc_size;
++		desc = ring->dma + TX_DESC_OFS(eth, cpu);
+ 		ring->last_free = desc;
+ 		atomic_inc(&ring->free_count);
+ 
+@@ -2695,7 +2700,7 @@
+ {
+ 	const struct mtk_soc_data *soc = eth->soc;
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+-	int i, sz = soc->tx.desc_size;
++	int i, sz = TX_DESC_OFS(eth, 1);
+ 	struct mtk_tx_dma_v2 *txd;
+ 	int ring_size;
+ 	u32 ofs, val;
+@@ -2734,7 +2739,7 @@
+ 	 * descriptors in ring->dma_pdma.
+ 	 */
+ 	if (!MTK_HAS_CAPS(soc->caps, MTK_QDMA)) {
+-		ring->dma_pdma = dma_alloc_coherent(eth->dma_dev, ring_size * sz,
++		ring->dma_pdma = dma_alloc_coherent(eth->dma_dev, TX_DESC_OFS(eth, ring_size),
+ 						    &ring->phys_pdma, GFP_KERNEL);
+ 		if (!ring->dma_pdma)
+ 			goto no_tx_mem;
+@@ -2749,7 +2754,7 @@
+ 	atomic_set(&ring->free_count, ring_size - 2);
+ 	ring->next_free = ring->dma;
+ 	ring->last_free = (void *)txd;
+-	ring->last_free_ptr = (u32)(ring->phys + ((ring_size - 1) * sz));
++	ring->last_free_ptr = (u32)(ring->phys + TX_DESC_OFS(eth, ring_size - 1));
+ 	ring->thresh = MAX_SKB_FRAGS;
+ 
+ 	/* make sure that all changes to the dma ring are flushed before we
+@@ -2761,7 +2766,7 @@
+ 		mtk_w32(eth, ring->phys, soc->reg_map->qdma.ctx_ptr);
+ 		mtk_w32(eth, ring->phys, soc->reg_map->qdma.dtx_ptr);
+ 		mtk_w32(eth,
+-			ring->phys + ((ring_size - 1) * sz),
++			ring->phys + TX_DESC_OFS(eth, ring_size - 1),
+ 			soc->reg_map->qdma.crx_ptr);
+ 		mtk_w32(eth, ring->last_free_ptr, soc->reg_map->qdma.drx_ptr);
+ 
+@@ -2798,7 +2803,6 @@
+ 
+ static void mtk_tx_clean(struct mtk_eth *eth)
+ {
+-	const struct mtk_soc_data *soc = eth->soc;
+ 	struct mtk_tx_ring *ring = &eth->tx_ring;
+ 	int i;
+ 
+@@ -2810,14 +2814,14 @@
+ 	}
+ 
+ 	if (ring->dma) {
+-		mtk_dma_ring_free(eth, ring->dma_size * soc->tx.desc_size,
++		mtk_dma_ring_free(eth, TX_DESC_OFS(eth, ring->dma_size),
+ 				  ring->dma, ring->phys, true);
+ 		ring->dma = NULL;
+ 	}
+ 
+ 	if (ring->dma_pdma) {
+ 		dma_free_coherent(eth->dma_dev,
+-				  ring->dma_size * soc->tx.desc_size,
++				  TX_DESC_OFS(eth, ring->dma_size),
+ 				  ring->dma_pdma, ring->phys_pdma);
+ 		ring->dma_pdma = NULL;
+ 	}
+@@ -2866,7 +2870,7 @@
+ 	}
+ 
+ 	ring->dma = mtk_dma_ring_alloc(eth,
+-				       rx_dma_size * eth->soc->rx.desc_size,
++				       RX_DESC_OFS(eth, rx_dma_size),
+ 				       &ring->phys,
+ 				       rx_flag == MTK_RX_FLAGS_NORMAL);
+ 	if (!ring->dma)
+@@ -2877,7 +2881,7 @@
+ 		dma_addr_t dma_addr;
+ 		void *data;
+ 
+-		rxd = ring->dma + i * eth->soc->rx.desc_size;
++		rxd = ring->dma + RX_DESC_OFS(eth, i);
+ 		if (ring->page_pool) {
+ 			data = mtk_page_pool_get_buff(ring->page_pool,
+ 						      &dma_addr, GFP_KERNEL);
+@@ -2968,7 +2972,7 @@
+ 			if (!ring->data[i])
+ 				continue;
+ 
+-			rxd = ring->dma + i * eth->soc->rx.desc_size;
++			rxd = ring->dma + RX_DESC_OFS(eth, i);
+ 			if (!rxd->rxd1)
+ 				continue;
+ 
+@@ -2984,7 +2988,7 @@
+ 	}
+ 
+ 	if (ring->dma) {
+-		mtk_dma_ring_free(eth, ring->dma_size * eth->soc->rx.desc_size,
++		mtk_dma_ring_free(eth, RX_DESC_OFS(eth, ring->dma_size),
+ 				  ring->dma, ring->phys, in_sram);
+ 		ring->dma = NULL;
+ 	}
+@@ -3354,7 +3358,7 @@
+ 	}
+ 
+ 	if (eth->scratch_ring) {
+-		mtk_dma_ring_free(eth, soc->tx.fq_dma_size * soc->tx.desc_size,
++		mtk_dma_ring_free(eth, TX_DESC_OFS(eth, soc->tx.fq_dma_size),
+ 				  eth->scratch_ring, eth->phy_scratch_ring,
+ 				  true);
+ 		eth->scratch_ring = NULL;
+@@ -5466,6 +5470,9 @@
+ 	mtk_mdio_cleanup(eth);
+ }
+ 
++#define DESC_SIZE(struct_name)				\
++	.desc_shift = const_ilog2(sizeof(struct_name))
++
+ static const struct mtk_soc_data mt2701_data = {
+ 	.reg_map = &mtk_reg_map,
+ 	.caps = MT7623_CAPS | MTK_HWLRO,
+@@ -5474,14 +5481,14 @@
+ 	.required_pctl = true,
+ 	.version = 1,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+@@ -5502,14 +5509,14 @@
+ 	.hash_offset = 2,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+@@ -5532,14 +5539,14 @@
+ 	.has_accounting = true,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+@@ -5561,14 +5568,14 @@
+ 	.foe_entry_size = MTK_FOE_ENTRY_V1_SIZE,
+ 	.disable_pll_modes = true,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+@@ -5587,14 +5594,14 @@
+ 	.has_accounting = true,
+ 	.version = 1,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+@@ -5617,14 +5624,14 @@
+ 	.has_accounting = true,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V2_SIZE,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma_v2),
++		DESC_SIZE(struct mtk_tx_dma_v2),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+ 		.dma_len_offset = 8,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_V2,
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+@@ -5647,14 +5654,14 @@
+ 	.has_accounting = true,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V2_SIZE,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma_v2),
++		DESC_SIZE(struct mtk_tx_dma_v2),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+ 		.dma_len_offset = 8,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_V2,
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+@@ -5677,14 +5684,14 @@
+ 	.has_accounting = true,
+ 	.foe_entry_size = MTK_FOE_ENTRY_V3_SIZE,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma_v2),
++		DESC_SIZE(struct mtk_tx_dma_v2),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+ 		.dma_len_offset = 8,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 		.fq_dma_size = MTK_DMA_SIZE(4K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma_v2),
++		DESC_SIZE(struct mtk_rx_dma_v2),
+ 		.irq_done_mask = MTK_RX_DONE_INT_V2,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_V2,
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN_V2,
+@@ -5701,13 +5708,13 @@
+ 	.required_pctl = false,
+ 	.version = 1,
+ 	.tx = {
+-		.desc_size = sizeof(struct mtk_tx_dma),
++		DESC_SIZE(struct mtk_tx_dma),
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+ 		.dma_len_offset = 16,
+ 		.dma_size = MTK_DMA_SIZE(2K),
+ 	},
+ 	.rx = {
+-		.desc_size = sizeof(struct mtk_rx_dma),
++		DESC_SIZE(struct mtk_rx_dma),
+ 		.irq_done_mask = MTK_RX_DONE_INT,
+ 		.dma_l4_valid = RX_DMA_L4_VALID_PDMA,
+ 		.dma_max_len = MTK_TX_DMA_BUF_LEN,
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.h
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.h
+@@ -1202,7 +1202,7 @@
+  * @foe_entry_size		Foe table entry size.
+  * @has_accounting		Bool indicating support for accounting of
+  *				offloaded flows.
+- * @desc_size			Tx/Rx DMA descriptor size.
++ * @desc_shift			Tx/Rx DMA descriptor size (in power-of-2).
+  * @irq_done_mask		Rx irq done register mask.
+  * @dma_l4_valid		Rx DMA valid register mask.
+  * @dma_max_len			Max DMA tx/rx buffer length.
+@@ -1223,14 +1223,14 @@
+ 	bool		has_accounting;
+ 	bool		disable_pll_modes;
+ 	struct {
+-		u32	desc_size;
++		u32	desc_shift;
+ 		u32	dma_max_len;
+ 		u32	dma_len_offset;
+ 		u32	dma_size;
+ 		u32	fq_dma_size;
+ 	} tx;
+ 	struct {
+-		u32	desc_size;
++		u32	desc_shift;
+ 		u32	irq_done_mask;
+ 		u32	dma_l4_valid;
+ 		u32	dma_max_len;

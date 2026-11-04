@@ -428,7 +428,7 @@ define KernelPackage/sound-hda-codec-realtek
 	$(LINUX_DIR)/sound/hda/codecs/realtek/snd-hda-codec-alc861vd.ko@ge6.18 \
 	$(LINUX_DIR)/sound/hda/codecs/realtek/snd-hda-codec-alc880.ko@ge6.18 \
 	$(LINUX_DIR)/sound/hda/codecs/realtek/snd-hda-codec-alc882.ko@ge6.18
-  AUTOLOAD:=$(call AutoProbe,snd-hda-codec-realtek LINUX_6_18:snd-hda-codec-realtek-lib LINUX_6_18:snd-hda-codec-alc260 LINUX_6_18:snd-hda-codec-alc262 LINUX_6_18:snd-hda-codec-alc268 LINUX_6_18:snd-hda-codec-alc269 LINUX_6_18:snd-hda-codec-alc662 LINUX_6_18:snd-hda-codec-alc680 LINUX_6_18:snd-hda-codec-alc861 LINUX_6_18:snd-hda-codec-alc861vd LINUX_6_18:snd-hda-codec-alc880 LINUX_6_18:snd-hda-codec-alc882)
+  AUTOLOAD:=$(call AutoProbe,snd-hda-codec-realtek snd-hda-codec-realtek-lib@ge6.18 snd-hda-codec-alc260@ge6.18 snd-hda-codec-alc262@ge6.18 snd-hda-codec-alc268@ge6.18 snd-hda-codec-alc269@ge6.18 snd-hda-codec-alc662@ge6.18 snd-hda-codec-alc680@ge6.18 snd-hda-codec-alc861@ge6.18 snd-hda-codec-alc861vd@ge6.18 snd-hda-codec-alc880@ge6.18 snd-hda-codec-alc882@ge6.18)
   $(call AddDepends/sound,kmod-sound-hda-core +kmod-snd-hda-scodec-component)
 endef
 

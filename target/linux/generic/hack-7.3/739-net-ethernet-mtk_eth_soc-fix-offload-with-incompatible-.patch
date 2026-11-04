@@ -1,0 +1,88 @@
+From: Mieczyslaw Nalewaj <namiltd@yahoo.com>
+Date: Fri, 3 Jul 2026 22:15:02 +0200
+Subject: [PATCH] net: ethernet: mtk_eth_soc: fix offload with incompatible dsa
+ tag
+
+DSA copies the driver features to slave device, including offload
+capabilities. Once a packet is sent through a DSA slave interface,
+according to its features, the kernel does not calculate checksums,
+expecting that the HW will fill the gaps. DSA adds the defined DSA
+tag and sends the tagged packet through the master device.
+
+Ethertype DSA tags expect the driver to calculate checksum based on the
+csum_start/csum_offset. However, mtk_eth_soc does not use that info.
+mtk_eth_soc checks the network header and decides if the HW can manage
+that packet, unaware that MAC layer now contains an extra DSA tag. When
+that tag is the Mediatek CPU tag, offload will work as expected.
+When it is an incompatible DSA tag or if DSA is stacking two incompatible
+DSA tags, the driver will still count on the HW offload. In this case,
+packets are sent to the network with an incorrect checksum.
+
+This patch adds an extra check that disables offloading only for the
+RTL8367S switch's RTL8_4 tag, which is known to break MTK checksum
+offload. The RTL8_4T (the trailing-tag variant) is not affected because
+its rtl8_4t tagger already checksums the frame in software before appending
+the tag, so ip_summed is no longer CHECKSUM_PARTIAL by the time this driver
+sees it.
+
+This approach avoids an overly conservative whitelist which would
+disable offload for every non-Mediatek tag, regardless of whether
+that tag is actually incompatible with MTK checksum offload.
+
+Tags for other DSA-capable switches are left untouched by this fix
+and are not claimed to be offload-safe.
+
+---
+ drivers/net/ethernet/mediatek/mtk_eth_soc.c | 32 +++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/ethernet/mediatek/mtk_eth_soc.c
++++ b/drivers/net/ethernet/mediatek/mtk_eth_soc.c
+@@ -5120,6 +5120,35 @@
+ 	return queue;
+ }
+ 
++#if IS_ENABLED(CONFIG_NET_DSA)
++static netdev_features_t mtk_features_check(struct sk_buff *skb,
++					   struct net_device *dev,
++					   netdev_features_t features)
++{
++	/* No point in doing any of this if neither checksum nor GSO are
++	 * being requested for this frame. We can rule out both by just
++	 * checking for CHECKSUM_PARTIAL
++	 */
++	if (skb->ip_summed != CHECKSUM_PARTIAL)
++		return features;
++
++	if (netdev_uses_dsa(dev)) {
++		const struct dsa_device_ops *tag_ops = dev->dsa_ptr->tag_ops;
++
++		/* RTL8_4 hides the L2 ethertype this driver relies on for
++		 * offload. RTL8_4T (the trailing-tag variant) is unaffected
++		 * because its rtl8_4t tagger already checksums the frame in
++		 * software before appending the tag, so ip_summed is no longer
++		 * CHECKSUM_PARTIAL by the time this driver sees it.
++		 */
++		if (tag_ops->proto == DSA_TAG_PROTO_RTL8_4)
++			features &= ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
++	}
++
++	return features;
++}
++#endif
++
+ static const struct ethtool_ops mtk_ethtool_ops = {
+ 	.get_link_ksettings	= mtk_get_link_ksettings,
+ 	.set_link_ksettings	= mtk_set_link_ksettings,
+@@ -5160,6 +5189,9 @@
+ 	.ndo_bpf		= mtk_xdp,
+ 	.ndo_xdp_xmit		= mtk_xdp_xmit,
+ 	.ndo_select_queue	= mtk_select_queue,
++#if IS_ENABLED(CONFIG_NET_DSA)
++	.ndo_features_check	= mtk_features_check,
++#endif
+ };
+ 
+ static int mtk_fill_available_pcs(struct phylink_config *config,

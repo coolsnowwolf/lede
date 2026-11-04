@@ -1,0 +1,272 @@
+From 6a3ee372b8d8db7ab2bd48c401607566b5cc025e Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Mon, 21 Sep 2026 10:19:53 +0000
+Subject: [PATCH] net: phy: realtek: apply SerDes lane polarity on RTL8261C/D
+
+Boards such as the Gemtek W1700K (Airoha AN7581) route the USXGMII
+lanes between the SoC and the PHY inverted and describe that in the
+device tree with the generic tx-polarity/rx-polarity properties.
+Nothing in the RTL8261C/D driver reads them and the Airoha PCS has no
+polarity handling of its own, so the inversion is never programmed.
+The copper side negotiates normally while the SerDes never trains and
+the netdev stays NO-CARRIER.
+
+Lane polarity on this part lives behind the same VEND1 SerDes command
+window the RTL822x code already uses for in-band autoneg, in SerDes
+registers 0x0000 (bits 9:8) and 0x00c2 (bits 14:13). The register at
+VEND1 0xc1 that some other Realtek 10G PHYs use for the same purpose
+is not implemented on this die and reads back as zero after a write.
+
+Add a read side and a read-modify-write helper to the command window,
+move rtl822x_serdes_write() up next to them so all three are visible
+from the RTL8261 code, apply the polarity from config_init() and select
+PHY_COMMON_PROPS for the property helpers. Only lanes actually described
+in the firmware node are touched; a board without the properties keeps
+whatever the boot loader and the PHY firmware left in place.
+
+The bit assignment has been verified on an RTL8261CE (sub-model 0x00,
+PHY ID 0x001cc899): on the W1700K, SerDes register 0x0000 goes from
+0x1403 to 0x1703 and 0x00c2 from 0x0000 to 0x6000, after which VEND1
+0x758d reports the SerDes linked (0x0010 -> 0x001e) and the link comes
+up at 1G and 10G and passes traffic. The RTL8261C, RTL8261D and
+RTL8261D_VM share rtl8261x_config_init() and get the same treatment,
+but have not been tested with inverted lanes.
+
+Assisted-by: LLM
+---
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/phy/realtek/Kconfig
++++ b/drivers/net/phy/realtek/Kconfig
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ config REALTEK_PHY
+ 	tristate "Realtek PHYs"
++	select PHY_COMMON_PROPS
+ 	select PHY_PACKAGE
+ 	help
+ 	  Currently supports RTL821x/RTL822x and fast ethernet PHYs
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -13,9 +13,11 @@
+ #include <linux/firmware.h>
+ #include <linux/of.h>
+ #include <linux/phy.h>
++#include <linux/phy/phy-common-props.h>
+ #include <linux/pm_wakeirq.h>
+ #include <linux/netdevice.h>
+ #include <linux/module.h>
++#include <linux/property.h>
+ #include <linux/delay.h>
+ #include <linux/clk.h>
+ #include <linux/string_choices.h>
+@@ -165,6 +167,7 @@
+ #define   RTL822X_VND1_SERDES_INBAND_DISABLE	0x71d0
+ #define   RTL822X_VND1_SERDES_INBAND_ENABLE	0x70d0
+ #define RTL822X_VND1_SERDES_DATA		0x7589
++#define RTL822X_VND1_SERDES_RDATA		0x758a
+ 
+ #define RTL822X_VND2_TO_PAGE(reg)		((reg) >> 4)
+ #define RTL822X_VND2_TO_PAGE_REG(reg)		(16 + (((reg) & GENMASK(3, 0)) >> 1))
+@@ -276,6 +279,18 @@
+ #define RTL8261X_INT_ALDPS_CHG		BIT(9)
+ #define RTL8261X_INT_JABBER		BIT(10)
+ 
++/* SerDes lane polarity, behind the VEND1 SerDes command window. This is not
++ * the global inversion bit that other Realtek 10G PHYs use; the bit
++ * assignment below has only been verified on an RTL8261CE reporting PHY ID
++ * 0x001cc899.
++ */
++#define RTL8261X_SERDES_POL_REG0	0x0000
++#define  RTL8261X_SERDES_POL_REG0_TX	BIT(8)
++#define  RTL8261X_SERDES_POL_REG0_RX	BIT(9)
++#define RTL8261X_SERDES_POL_REGC2	0x00c2
++#define  RTL8261X_SERDES_POL_REGC2_TX	BIT(14)
++#define  RTL8261X_SERDES_POL_REGC2_RX	BIT(13)
++
+ #define RTL8261X_INT_MASK_DEFAULT	(RTL8261X_INT_AUTONEG_DONE | \
+ 					 RTL8261X_INT_LINK_CHG | \
+ 					 RTL8261X_INT_AUTONEG_ERROR | \
+@@ -704,18 +719,147 @@
+ 	return 0;
+ }
+ 
++static int rtl822x_serdes_wait(struct phy_device *phydev)
++{
++	int poll;
++
++	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
++					 RTL822X_VND1_SERDES_CMD, poll,
++					 !(poll & RTL822X_VND1_SERDES_CMD_BUSY),
++					 500, 100000, false);
++}
++
++static int rtl822x_serdes_read(struct phy_device *phydev, u16 reg)
++{
++	int ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_ADDR, reg);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_CMD,
++			    RTL822X_VND1_SERDES_CMD_BUSY);
++	if (ret < 0)
++		return ret;
++
++	ret = rtl822x_serdes_wait(phydev);
++	if (ret < 0)
++		return ret;
++
++	return phy_read_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_RDATA);
++}
++
++static int rtl822x_serdes_write(struct phy_device *phydev, u16 reg, u16 val)
++{
++	int ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_ADDR, reg);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_DATA, val);
++	if (ret < 0)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_CMD,
++			    RTL822X_VND1_SERDES_CMD_WRITE |
++			    RTL822X_VND1_SERDES_CMD_BUSY);
++	if (ret < 0)
++		return ret;
++
++	return rtl822x_serdes_wait(phydev);
++}
++
++static int rtl822x_serdes_modify(struct phy_device *phydev, u16 reg,
++				 u16 mask, u16 set)
++{
++	int val;
++
++	val = rtl822x_serdes_read(phydev, reg);
++	if (val < 0)
++		return val;
++
++	if ((val & mask) == set)
++		return 0;
++
++	return rtl822x_serdes_write(phydev, reg, (val & ~mask) | set);
++}
++
++/* The host-side SerDes lanes are only inverted when the board says so.
++ * Lanes the firmware node does not describe are left as the boot loader
++ * and PHY firmware left them.
++ */
++static int rtl8261x_config_serdes_polarity(struct phy_device *phydev)
++{
++	bool tx_present, rx_present, tx_invert = false, rx_invert = false;
++	u16 reg0_mask = 0, reg0_set = 0, regc2_mask = 0, regc2_set = 0;
++	struct fwnode_handle *fwnode = dev_fwnode(&phydev->mdio.dev);
++	const char *mode = phy_modes(phydev->interface);
++	unsigned int pol;
++	int ret;
++
++	tx_present = fwnode_property_present(fwnode, "tx-polarity");
++	rx_present = fwnode_property_present(fwnode, "rx-polarity");
++	if (!tx_present && !rx_present)
++		return 0;
++
++	if (tx_present) {
++		ret = phy_get_manual_tx_polarity(fwnode, mode, &pol);
++		if (ret)
++			return ret;
++		tx_invert = pol == PHY_POL_INVERT;
++	}
++
++	if (rx_present) {
++		ret = phy_get_manual_rx_polarity(fwnode, mode, &pol);
++		if (ret)
++			return ret;
++		rx_invert = pol == PHY_POL_INVERT;
++	}
++
++	if (tx_present) {
++		reg0_mask |= RTL8261X_SERDES_POL_REG0_TX;
++		regc2_mask |= RTL8261X_SERDES_POL_REGC2_TX;
++		if (tx_invert) {
++			reg0_set |= RTL8261X_SERDES_POL_REG0_TX;
++			regc2_set |= RTL8261X_SERDES_POL_REGC2_TX;
++		}
++	}
++
++	if (rx_present) {
++		reg0_mask |= RTL8261X_SERDES_POL_REG0_RX;
++		regc2_mask |= RTL8261X_SERDES_POL_REGC2_RX;
++		if (rx_invert) {
++			reg0_set |= RTL8261X_SERDES_POL_REG0_RX;
++			regc2_set |= RTL8261X_SERDES_POL_REGC2_RX;
++		}
++	}
++
++	ret = rtl822x_serdes_modify(phydev, RTL8261X_SERDES_POL_REG0,
++				    reg0_mask, reg0_set);
++	if (ret < 0)
++		return ret;
++
++	return rtl822x_serdes_modify(phydev, RTL8261X_SERDES_POL_REGC2,
++				     regc2_mask, regc2_set);
++}
++
+ static int rtl8261x_config_init(struct phy_device *phydev)
+ {
+ 	struct rtl8261x_priv *priv = phydev->priv;
++	int ret;
+ 
+ 	/* The firmware parameters are preserved across IEEE soft resets and
+ 	 * suspend/resume cycles. Reloading is only necessary after a power
+ 	 * cycle or hard reset.
+ 	 */
+-	if (priv->fw_name && !priv->fw_loaded)
+-		return rtl8261x_fw_load(phydev);
++	if (priv->fw_name && !priv->fw_loaded) {
++		ret = rtl8261x_fw_load(phydev);
++		if (ret)
++			return ret;
++	}
+ 
+-	return 0;
++	return rtl8261x_config_serdes_polarity(phydev);
+ }
+ 
+ static int rtl821x_probe(struct phy_device *phydev)
+@@ -2156,30 +2300,6 @@
+ 	return rtl822x_set_serdes_option_mode(phydev, false);
+ }
+ 
+-static int rtl822x_serdes_write(struct phy_device *phydev, u16 reg, u16 val)
+-{
+-	int ret, poll;
+-
+-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_ADDR, reg);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_DATA, val);
+-	if (ret < 0)
+-		return ret;
+-
+-	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, RTL822X_VND1_SERDES_CMD,
+-			    RTL822X_VND1_SERDES_CMD_WRITE |
+-			    RTL822X_VND1_SERDES_CMD_BUSY);
+-	if (ret < 0)
+-		return ret;
+-
+-	return phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
+-					 RTL822X_VND1_SERDES_CMD, poll,
+-					 !(poll & RTL822X_VND1_SERDES_CMD_BUSY),
+-					 500, 100000, false);
+-}
+-
+ static int rtl822x_config_inband(struct phy_device *phydev, unsigned int modes)
+ {
+ 	return rtl822x_serdes_write(phydev, RTL822X_VND1_SERDES_ADDR_AUTONEG,

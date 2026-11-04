@@ -62,7 +62,7 @@ define KernelPackage/iptables
 	CONFIG_IP6_NF_IPTABLES_LEGACY \
 	CONFIG_BRIDGE_NF_EBTABLES_LEGACY
   HIDDEN:=1
-  DEPENDS:=@LINUX_6_18
+  DEPENDS:=@LINUX_6_18||LINUX_7_3
   FILES:= \
 	$(LINUX_DIR)/net/ipv4/netfilter/ip_tables.ko \
 	$(LINUX_DIR)/net/netfilter/x_tables.ko
@@ -76,9 +76,10 @@ define KernelPackage/nf-ipt
   SUBMENU:=$(NF_MENU)
   TITLE:=Iptables core
   KCONFIG:=$(KCONFIG_NF_IPT)
-  DEPENDS:=+LINUX_6_18:kmod-iptables
-  FILES:=$(foreach mod,$(NF_IPT-m),$(LINUX_DIR)/net/$(mod).ko)
-  AUTOLOAD:=$(call AutoProbe,$(notdir $(NF_IPT-m)))
+  DEPENDS:=+(LINUX_6_18||LINUX_7_3):kmod-iptables
+  # Linux 7.3 makes these symbols modular again; kmod-iptables owns the files.
+  FILES:=$(foreach mod,$(NF_IPT-m),$(LINUX_DIR)/net/$(mod).ko@lt7.3)
+  AUTOLOAD:=$(call AutoProbe,$(addsuffix @lt7.3,$(notdir $(NF_IPT-m))))
 endef
 
 $(eval $(call KernelPackage,nf-ipt))

@@ -525,7 +525,7 @@ define KernelPackage/serial-8250-exar
   KCONFIG:= CONFIG_SERIAL_8250_EXAR
   FILES:=$(LINUX_DIR)/drivers/tty/serial/8250/8250_exar.ko
   AUTOLOAD:=$(call AutoProbe,8250 8250_base 8250_exar)
-  DEPENDS:=@PCI_SUPPORT +kmod-serial-8250 +LINUX_6_18:kmod-eeprom-93cx6
+  DEPENDS:=@PCI_SUPPORT +kmod-serial-8250 +(LINUX_6_18||LINUX_7_3):kmod-eeprom-93cx6
 endef
 
 define KernelPackage/serial-8250-exar/description

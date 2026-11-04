@@ -1,0 +1,48 @@
+From: Hauke Mehrtens <hauke@hauke-m.de>
+Date: Thu, 27 Aug 2026 20:00:00 +0200
+Subject: [PATCH] net: dsa: support EPROBE_DEFER when reading the port MAC
+ address
+
+The MAC address of a user port can be stored in an NVMEM provider which
+is not available yet when the switch probes, for example an MTD
+partition or an EEPROM. of_get_mac_address() returns -EPROBE_DEFER in
+that case, but the return value is thrown away and the port silently
+inherits the MAC address of its conduit interface instead.
+
+Propagate the deferral instead so the switch is probed again later.
+Ports without any MAC address in the device tree are unaffected,
+of_get_mac_address() returns -ENODEV for those and that is still
+ignored.
+
+dsa_tree_setup_ports() has to pass -EPROBE_DEFER on as well, otherwise
+it converts the port into an unused one and the retry never happens.
+
+---
+ net/dsa/dsa.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/net/dsa/dsa.c
++++ b/net/dsa/dsa.c
+@@ -511,7 +511,10 @@
+ 
+ 		break;
+ 	case DSA_PORT_TYPE_USER:
+-		of_get_mac_address(dp->dn, dp->mac);
++		err = of_get_mac_address(dp->dn, dp->mac);
++		if (err == -EPROBE_DEFER)
++			break;
++
+ 		err = dsa_user_create(dp);
+ 		break;
+ 	}
+@@ -752,6 +755,8 @@
+ 	list_for_each_entry(dp, &dst->ports, list) {
+ 		if (dsa_port_is_user(dp) || dsa_port_is_unused(dp)) {
+ 			err = dsa_port_setup(dp);
++			if (err == -EPROBE_DEFER)
++				goto teardown;
+ 			if (err) {
+ 				err = dsa_port_setup_as_unused(dp);
+ 				if (err)

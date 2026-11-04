@@ -68,7 +68,8 @@ define KernelPackage/fs-btrfs
   SUBMENU:=$(FS_MENU)
   TITLE:=BTRFS filesystem support
   DEPENDS:=+kmod-lib-crc32c +kmod-lib-lzo +kmod-lib-zlib-inflate +kmod-lib-zlib-deflate \
-	+kmod-lib-raid6 +kmod-lib-xor +kmod-lib-zstd +kmod-crypto-blake2b +kmod-crypto-xxhash
+	+kmod-lib-raid6 +kmod-lib-xor +kmod-lib-zstd +kmod-crypto-blake2b +kmod-crypto-xxhash \
+	+LINUX_7_3:kmod-crypto-lib-blake2b
   KCONFIG:=\
 	CONFIG_BTRFS_FS \
 	CONFIG_BTRFS_FS_CHECK_INTEGRITY=n
@@ -94,8 +95,8 @@ define KernelPackage/fs-smbfs-common
   DEPENDS:= \
 	+(LINUX_5_4||LINUX_5_10):kmod-crypto-arc4 \
 	+(LINUX_5_4||LINUX_5_10):kmod-crypto-md4 \
-	+(LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-fs-netfs \
-	+(LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-nls-ucs2-utils
+	+(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-fs-netfs \
+	+(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-nls-ucs2-utils
   FILES:= \
 	$(LINUX_DIR)/fs/smbfs_common/cifs_arc4.ko@lt6.1 \
 	$(LINUX_DIR)/fs/smbfs_common/cifs_md4.ko@lt6.1 \
@@ -351,7 +352,7 @@ define KernelPackage/fs-jfs
   KCONFIG:=CONFIG_JFS_FS
   FILES:=$(LINUX_DIR)/fs/jfs/jfs.ko
   AUTOLOAD:=$(call AutoLoad,30,jfs,1)
-  DEPENDS:=+(LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-nls-ucs2-utils
+  DEPENDS:=+(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-nls-ucs2-utils
   $(call AddDepends/nls)
 endef
 
@@ -509,12 +510,12 @@ define KernelPackage/fs-nfs-common-rpcsec
   TITLE:=NFS Secure RPC
   DEPENDS:= \
 	+kmod-fs-nfs-common \
-	+LINUX_6_18:kmod-crypto-aead \
-	+LINUX_6_18:kmod-crypto-authenc \
-	+LINUX_6_18:kmod-crypto-cmac \
-	+LINUX_6_18:kmod-crypto-misc \
-	+LINUX_6_18:kmod-crypto-sha256 \
-	+LINUX_6_18:kmod-crypto-sha512 \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-aead \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-authenc \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-cmac \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-misc \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-sha256 \
+	+(LINUX_6_18||LINUX_7_3):kmod-crypto-sha512 \
 	+kmod-crypto-des \
 	+kmod-crypto-cbc \
 	+kmod-crypto-cts \
@@ -751,8 +752,8 @@ define KernelPackage/pstore
 	CONFIG_PSTORE_DEFLATE_COMPRESS_DEFAULT=y
   FILES:= $(LINUX_DIR)/fs/pstore/pstore.ko
   AUTOLOAD:=$(call AutoLoad,30,pstore,1)
-  DEPENDS:=+(LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-lib-zlib-deflate \
-	   +(LINUX_6_6||LINUX_6_12||LINUX_6_18):kmod-lib-zlib-inflate
+  DEPENDS:=+(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-lib-zlib-deflate \
+	   +(LINUX_6_6||LINUX_6_12||LINUX_6_18||LINUX_7_3):kmod-lib-zlib-inflate
 endef
 
 define KernelPackage/pstore/description

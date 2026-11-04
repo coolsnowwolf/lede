@@ -1,0 +1,155 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Brandon Mahdavi <brandon.mahdavi@mahcom.com>
+Date: Fri, 10 Jul 2026 00:00:00 +0000
+Subject: [PATCH] net: dsa: qca8k: skip host FDB entries on CPU ports,
+ purge stale dynamic ones
+
+DSA installs host FDB entries for the same {MAC, VID} once per CPU port
+in use. qca8k used to overwrite the single ATU entry, so the last CPU
+port won and host reachability broke for user ports served by the other
+CPU port (e.g. Netgear R7800 with wan bridged into br-lan). Merging the
+CPU port bits into the destination mask instead is no better: the ATU
+forwards a unicast hit to every port set in the mask, so a host entry
+spanning both CPU ports makes the switch deliver one copy of each
+host-bound frame per CPU port. This duplicated nearly all host traffic
+and halved throughput on TP-Link TGR1900, Archer C2600 and ASUS
+RT-AX89X, with "failed to delete ... from fdb: -22" log spam from the
+asymmetric delete path.
+
+Host FDB entries are a pure optimization on this switch: the unknown
+unicast forward mask in GLOBAL_FW_CTRL1 already contains all CPU ports
+and is filtered per ingress port by PORT_LOOKUP_CTRL members, so a
+host-bound frame with no ATU entry reaches exactly one CPU port, the
+conduit of its ingress port, and the tag parser delivers it to the
+correct user netdevice from either conduit. The conduits run in
+promiscuous mode (qca8k does not implement FDB isolation), so no RX
+filtering relies on these entries either.
+
+Skip programming unicast host FDB entries on CPU ports entirely. This
+fixes the multi-CPU bridged setups without ever creating a unicast
+destination mask with more than one CPU port bit, regardless of how a
+board assigns its conduits. (This host-FDB skip was originally authored
+by Olaf Marzocchi and tested by @xback for the multi-CPU-port case.)
+
+Relying on unknown-unicast flooding only holds while the address has
+no ATU entry at all, though. When a station roams from a wired user
+port to an interface behind the CPU (e.g. a wireless client moving
+from another AP, or a client behind a WDS link), the ATU still holds
+the dynamically-learned entry pointing at the user port the station's
+traffic used to ingress. A unicast hit on that entry forwards all
+host-bound frames to the stale port - where the ingress port filter
+discards them as same-port traffic - and the CPU never sees them.
+Hardware cannot correct the entry either: source address learning is
+disabled on the CPU port (assisted learning), so the station's
+post-roam traffic never re-teaches the ATU. The result is a per-MAC
+blackhole: the roamed client associates and transmits fine, but every
+downstream frame from the wired side is dropped in silicon until the
+stale entry ages out (if ever), while the bridge believes the entry
+was offloaded because the skipped add reports success.
+
+Observed in the field on IPQ4019 (assisted learning enabled, single
+CPU port): a roamed client's traffic stayed blackholed indefinitely,
+with 'bridge fdb show' reporting the stale entry on the wired port:
+
+  xx:xx:xx:xx:xx:xx dev lan vlan 1 self
+  xx:xx:xx:xx:xx:xx dev phy1-ap0 vlan 1 master br-lan
+
+Deleting the stale entry by hand restored connectivity instantly.
+
+Purge any dynamically-learned ATU entry for {addr, vid} when the host
+FDB add is skipped: the bridge just told us the address lives behind
+the CPU now, so a dynamic entry on any user port is stale by
+definition. The address then returns to unknown unicast flooding,
+which is exactly the delivery mechanism host-bound traffic relies on
+above. Static entries are left untouched, as they reflect deliberate
+configuration rather than learning.
+
+Verified on IPQ4019: the stale entry is purged at association time
+and roaming recovers instantly.
+
+Fixes: openwrt/openwrt#21317
+---
+ drivers/net/dsa/qca/qca8k-common.c | 56 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 56 insertions(+)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/dsa/qca/qca8k-common.c
++++ b/drivers/net/dsa/qca/qca8k-common.c
+@@ -322,6 +322,36 @@
+ 	return ret;
+ }
+ 
++static int qca8k_fdb_purge_dynamic(struct qca8k_priv *priv, const u8 *mac,
++				   u16 vid)
++{
++	struct qca8k_fdb fdb = { 0 };
++	int ret;
++
++	mutex_lock(&priv->reg_mutex);
++
++	qca8k_fdb_write(priv, vid, 0, mac, 0);
++	ret = qca8k_fdb_access(priv, QCA8K_FDB_SEARCH, -1);
++	if (ret < 0)
++		goto exit;
++
++	ret = qca8k_fdb_read(priv, &fdb);
++	if (ret < 0)
++		goto exit;
++
++	/* Nothing to purge, or a deliberately configured static entry */
++	if (!fdb.aging || fdb.aging == QCA8K_ATU_STATUS_STATIC) {
++		ret = 0;
++		goto exit;
++	}
++
++	ret = qca8k_fdb_access(priv, QCA8K_FDB_PURGE, -1);
++
++exit:
++	mutex_unlock(&priv->reg_mutex);
++	return ret;
++}
++
+ static int qca8k_vlan_access(struct qca8k_priv *priv,
+ 			     enum qca8k_vlan_cmd cmd, u16 vid)
+ {
+@@ -829,6 +859,29 @@
+ 	struct qca8k_priv *priv = ds->priv;
+ 	u16 port_mask = BIT(port);
+ 
++	/* The ATU forwards a unicast hit to every port set in the
++	 * destination mask, so a host entry spanning multiple CPU ports
++	 * would deliver one copy of each host-bound frame per CPU port.
++	 * Skip host entries entirely: unknown unicast is already forwarded
++	 * to all CPU ports by GLOBAL_FW_CTRL1 and filtered by the ingress
++	 * port LOOKUP_MEMBER, so host-bound frames reach exactly one CPU
++	 * port, the conduit of the ingress port.
++	 */
++	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port)) {
++		/* The bridge now sees {addr, vid} on a software port behind
++		 * the CPU (e.g. a wireless interface). A dynamically-learned
++		 * ATU entry may still point at the user port the station
++		 * roamed away from; a unicast hit on it forwards host-bound
++		 * frames to that stale port, where the ingress port filter
++		 * discards them, instead of flooding them to the CPU. Purge
++		 * such an entry so the address is unknown unicast again.
++		 */
++		if (!vid)
++			vid = QCA8K_PORT_VID_DEF;
++
++		return qca8k_fdb_purge_dynamic(priv, addr, vid);
++	}
++
+ 	return qca8k_port_fdb_insert(priv, addr, port_mask, vid);
+ }
+ 
+@@ -839,6 +892,9 @@
+ 	struct qca8k_priv *priv = ds->priv;
+ 	u16 port_mask = BIT(port);
+ 
++	if (dsa_is_cpu_port(ds, port) || dsa_is_dsa_port(ds, port))
++		return 0;
++
+ 	if (!vid)
+ 		vid = QCA8K_PORT_VID_DEF;
+ 

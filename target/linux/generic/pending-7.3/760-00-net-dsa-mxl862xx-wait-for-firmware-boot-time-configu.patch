@@ -1,0 +1,123 @@
+From 6758d67ecec231a370f24a7da664f1eb3061bc23 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Wed, 12 Aug 2026 22:15:45 +0100
+Subject: [PATCH] net: dsa: mxl862xx: wait for firmware boot-time configuration
+ to finish
+
+The switch firmware answers MDIO API commands long before its
+application thread has finished applying the built-in boot-time
+default configuration. The management interface is brought up as
+part of the firmware's device initialization, while the application
+thread afterwards reconfigures bridge ports 0..16, meters, WRED
+thresholds, PCE rules and VLAN resources, and only then enables
+ingress SDMA on all ports as the very last step of its default
+configuration.
+
+mxl862xx_wait_ready() declares the switch ready as soon as
+FW_VERSION and CFGGET succeed, typically ~2.4s after reset. All
+configuration issued by the driver between that point and the
+firmware's final SDMA enable races the firmware's own writes and may
+be silently overwritten. Depending on boot timing this can leave the
+switch in a state where every frame received from the conduit is
+dropped by the ingress filter (RxFilteredPkts on the CPU port
+increments in lockstep with conduit TX) while the reverse direction
+keeps working. The state persists until the race is re-run with
+better luck. Observed on a MxL86252C in roughly half of the boots
+of a BananaPi BPI-R4 Pro 8X board [1].
+
+Gate readiness on the firmware's final configuration step instead:
+poll the SDMA port control register of logical port 0 via the
+RegisterGet API until the port enable bit is set. The reset issued
+right before waiting clears that bit on all ports, and the driver
+does not touch any port state until after mxl862xx_wait_ready() has
+returned, so within this window the bit can only have been set by
+the firmware application completing its boot-time configuration.
+Logical port 0 is the switch-internal CPU port which the driver
+itself never enables.
+
+[1] https://github.com/openwrt/openwrt/pull/24642#issuecomment-5270711174
+
+Fixes: 23794bec1cb6 ("net: dsa: add basic initial driver for MxL862xx switches")
+---
+ drivers/net/dsa/mxl862xx/mxl862xx-api.h | 13 +++++++++++++
+ drivers/net/dsa/mxl862xx/mxl862xx-cmd.h |  1 +
+ drivers/net/dsa/mxl862xx/mxl862xx.c     | 20 +++++++++++++++++++-
+ 3 files changed, 33 insertions(+), 1 deletion(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-api.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-api.h
+@@ -21,6 +21,19 @@
+ } __packed;
+ 
+ /**
++ * struct mxl862xx_register - Register access parameter to directly read
++ *                            internal registers
++ * @addr: Register address offset for read access
++ * @data: Value read from the register address
++ *
++ * Used for direct register read operations.
++ */
++struct mxl862xx_register {
++	__le16 addr;
++	__le16 data;
++} __packed;
++
++/**
+  * struct mxl862xx_register_mod - Register access parameter to directly
+  *                                modify internal registers
+  * @addr: Register address offset for modification
+--- a/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
++++ b/drivers/net/dsa/mxl862xx/mxl862xx-cmd.h
+@@ -26,6 +26,7 @@
+ #define SYS_MISC_MAGIC			0x1900
+ #define MXL862XX_XPCS_MAGIC		0x1a00
+ 
++#define MXL862XX_COMMON_REGISTERGET	(MXL862XX_COMMON_MAGIC + 0x1)
+ #define MXL862XX_COMMON_CFGGET		(MXL862XX_COMMON_MAGIC + 0x9)
+ #define MXL862XX_COMMON_CFGSET		(MXL862XX_COMMON_MAGIC + 0xa)
+ #define MXL862XX_COMMON_REGISTERMOD	(MXL862XX_COMMON_MAGIC + 0x11)
+--- a/drivers/net/dsa/mxl862xx/mxl862xx.c
++++ b/drivers/net/dsa/mxl862xx/mxl862xx.c
+@@ -227,6 +227,7 @@
+ 	struct mxl862xx_sys_fw_image_version ver = {};
+ 	unsigned long start = jiffies, timeout;
+ 	struct mxl862xx_priv *priv = ds->priv;
++	struct mxl862xx_register reg = {};
+ 	struct mxl862xx_cfg cfg = {};
+ 	int ret;
+ 
+@@ -238,7 +239,7 @@
+ 			goto not_ready_yet;
+ 
+ 		/* being able to perform CFGGET indicates that
+-		 * the firmware is ready
++		 * the firmware is servicing API requests
+ 		 */
+ 		ret = MXL862XX_API_READ_QUIET(priv,
+ 					      MXL862XX_COMMON_CFGGET,
+@@ -246,6 +247,23 @@
+ 		if (ret)
+ 			goto not_ready_yet;
+ 
++		/* The firmware application enables ingress SDMA on all
++		 * ports as the very last step of its boot-time default
++		 * configuration; driver configuration issued before that
++		 * point may be silently overwritten. The reset cleared
++		 * this bit on all ports and the driver has not touched
++		 * any port state yet at this point, so the bit of
++		 * logical port 0 (switch-internal port, never enabled by
++		 * the driver) being set means the firmware boot-time
++		 * configuration has completed.
++		 */
++		reg.addr = cpu_to_le16(MXL862XX_SDMA_PCTRLP(0));
++		ret = MXL862XX_API_READ_QUIET(priv,
++					      MXL862XX_COMMON_REGISTERGET,
++					      reg);
++		if (ret || !(le16_to_cpu(reg.data) & MXL862XX_SDMA_PCTRL_EN))
++			goto not_ready_yet;
++
+ 		dev_info(ds->dev, "switch ready after %ums, firmware %u.%u.%u (build %u)\n",
+ 			 jiffies_to_msecs(jiffies - start),
+ 			 ver.iv_major, ver.iv_minor,

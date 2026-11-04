@@ -1,0 +1,158 @@
+From 3eb794a9c0ce3f5af8309e713d700a1469dbed23 Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Tue, 7 Jul 2026 17:17:21 +0200
+Subject: [PATCH 01/12] net: dsa: tag_mxl862xx: leave offload_fwd_mark unset on
+ trapped IGMP/MLD
+
+The mxl862xx driver installs PCE rules on every user port which
+redirect IGMP and MLD frames exclusively to the CPU port, so the
+hardware no longer forwards or floods them to other ports. Setting
+skb->offload_fwd_mark on such frames makes
+nbp_switchdev_allowed_egress() suppress software forwarding towards
+ports of the same switch as well, with the result that IGMP and MLD
+frames never cross the switch at all: queries from an external
+querier are not delivered to hosts on other ports, reports never
+reach the querier, and multicast group state at the router expires.
+With multicast snooping disabled on the bridge these frames are
+blackholed entirely.
+
+Frames which are trapped rather than forwarded by the hardware must
+be handed to the bridge without offload_fwd_mark so that the
+software bridge performs the forwarding decision, just like
+mv88e6xxx does for TO_CPU frames. The MxL862xx special tag carries
+no trap-reason indication, so classify received frames structurally,
+mirroring the PCE trap rule patterns: IPv4 packets carrying IP
+protocol 2 (IGMP, all types), and IPv6 packets whose final next
+header after any extension headers is ICMPv6 with type 130-132
+(MLDv1 query/report/done) or 143 (MLDv2 listener report). Like the
+hardware parser, the classifier looks through up to two VLAN tags
+and PPPoE session encapsulation.
+
+Non-first IPv6 fragments and LLC/SNAP encapsulated frames are
+treated as not trapped; MLD is not fragmented in practice.
+
+This change is ordered before the driver commit installing the trap
+rules. Until those rules are installed the affected frames are still
+flooded in hardware and may transiently be duplicated by the
+software bridge, which is harmless for IGMP/MLD control frames,
+whereas the opposite order would transiently blackhole them.
+
+---
+ net/dsa/tag_mxl862xx.c | 88 +++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 87 insertions(+), 1 deletion(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/net/dsa/tag_mxl862xx.c
++++ b/net/dsa/tag_mxl862xx.c
+@@ -8,8 +8,15 @@
+ 
+ #include <linux/bitops.h>
+ #include <linux/etherdevice.h>
++#include <linux/icmpv6.h>
++#include <linux/if_pppox.h>
++#include <linux/if_vlan.h>
++#include <linux/ip.h>
++#include <linux/ipv6.h>
++#include <linux/ppp_defs.h>
+ #include <linux/skbuff.h>
+ #include <net/dsa.h>
++#include <net/ipv6.h>
+ #include "tag.h"
+ 
+ #define MXL862_NAME	"mxl862xx"
+@@ -56,6 +63,84 @@
+ 	return skb;
+ }
+ 
++/* Must match the IGMP/MLD trap rules the mxl862xx driver installs on
++ * all user ports; frames matching them reach the CPU port without
++ * being forwarded in hardware.
++ */
++static bool mxl862_rcv_is_snoop_trapped(struct sk_buff *skb)
++{
++	unsigned int offset = MXL862_HEADER_LEN - 2;
++	const struct ipv6hdr *ip6h;
++	const struct iphdr *iph;
++	struct ipv6hdr _ip6h;
++	struct iphdr _iph;
++	const __be16 *p;
++	__be16 frag_off;
++	__be16 _proto;
++	__be16 proto;
++	const u8 *tp;
++	u8 nexthdr;
++	int start;
++	u8 _tp;
++	int i;
++
++	p = skb_header_pointer(skb, offset, sizeof(_proto), &_proto);
++	if (!p)
++		return false;
++	proto = *p;
++
++	for (i = 0; i < 2 && (proto == htons(ETH_P_8021Q) ||
++			      proto == htons(ETH_P_8021AD)); i++) {
++		offset += VLAN_HLEN;
++		p = skb_header_pointer(skb, offset, sizeof(_proto), &_proto);
++		if (!p)
++			return false;
++		proto = *p;
++	}
++
++	start = offset + 2;
++
++	if (proto == htons(ETH_P_PPP_SES)) {
++		p = skb_header_pointer(skb, start + sizeof(struct pppoe_hdr),
++				       sizeof(_proto), &_proto);
++		if (!p)
++			return false;
++		if (*p == htons(PPP_IP))
++			proto = htons(ETH_P_IP);
++		else if (*p == htons(PPP_IPV6))
++			proto = htons(ETH_P_IPV6);
++		else
++			return false;
++		start += PPPOE_SES_HLEN;
++	}
++
++	if (proto == htons(ETH_P_IP)) {
++		iph = skb_header_pointer(skb, start, sizeof(_iph), &_iph);
++		return iph && iph->version == 4 &&
++		       iph->protocol == IPPROTO_IGMP;
++	}
++
++	if (proto != htons(ETH_P_IPV6))
++		return false;
++
++	ip6h = skb_header_pointer(skb, start, sizeof(_ip6h), &_ip6h);
++	if (!ip6h || ip6h->version != 6)
++		return false;
++
++	nexthdr = ip6h->nexthdr;
++	start = ipv6_skip_exthdr(skb, start + sizeof(*ip6h), &nexthdr,
++				 &frag_off);
++	if (start < 0 || frag_off != 0 || nexthdr != IPPROTO_ICMPV6)
++		return false;
++
++	tp = skb_header_pointer(skb, start, sizeof(_tp), &_tp);
++	if (!tp)
++		return false;
++
++	return (*tp >= ICMPV6_MGM_QUERY && *tp <= ICMPV6_MGM_REDUCTION) ||
++	       *tp == ICMPV6_MLD2_REPORT;
++}
++
+ static struct sk_buff *mxl862_tag_rcv(struct sk_buff *skb,
+ 				      struct net_device *dev)
+ {
+@@ -89,7 +174,8 @@
+ 		return NULL;
+ 	}
+ 
+-	if (likely(!is_link_local_ether_addr(eth_hdr(skb)->h_dest)))
++	if (likely(!is_link_local_ether_addr(eth_hdr(skb)->h_dest) &&
++		   !mxl862_rcv_is_snoop_trapped(skb)))
+ 		dsa_default_offload_fwd_mark(skb);
+ 
+ 	/* remove the MxL862xx special tag between the MAC addresses and the

@@ -1,0 +1,332 @@
+From 34551486030a0b5b3a1bac4bb293633f0e5e3e0e Mon Sep 17 00:00:00 2001
+From: Carlo Szelinsky <github@szelinsky.de>
+Date: Sun, 29 Mar 2026 16:26:08 +0200
+Subject: net: pse-pd: add devm_pse_poll_helper()
+
+Extract the common event handling loop from pse_isr() into a shared
+pse_handle_events() function, and add a generic poll-based alternative
+to the IRQ path for PSE controllers that lack interrupt support or
+have IRQ lines not wired on the board.
+
+The new devm_pse_poll_helper() function sets up a delayed work that
+periodically calls the driver's map_event callback to detect state
+changes, feeding events into the existing ntf_fifo / pse_send_ntf_worker
+notification pipeline. This reuses the same pse_irq_desc interface as
+the IRQ path: the driver provides a map_event callback that populates
+per-PI notification arrays.
+
+The poll worker uses system_freezable_wq to avoid running during system
+suspend when the underlying hardware (e.g. I2C bus) may be inaccessible.
+
+devm_pse_poll_helper() only allocates the per-PI state and initializes
+the delayed work; the work is armed by pse_controller_register() as the
+very last step on success, gated on pcdev->polling. Drivers set up the
+helper before registering the controller, so arming earlier would let
+pse_poll_worker() acquire pcdev->lock and push events into the ntf_fifo
+before they are initialized; and if probe failed after the helper but
+before registration, the work would fire against freed devres memory.
+Arming after a successful register closes both. Probe is a preemptible
+process and can be outscheduled at any point, so this is reachable in
+practice, not just in theory (e.g. a single-core SoC with the pse-pd
+core built as a module and a squashfs rootfs makes the boot heavy
+enough to lose the race).
+
+The poll work is cancelled in pse_controller_unregister() before
+pse_release_pis() frees pcdev->pi, next to the IRQ disable, so neither
+the poll worker nor the IRQ handler can dereference the freed PI array.
+
+The notifs_mask is allocated as a real bitmap via devm_bitmap_zalloc()
+and passed to pse_handle_events() and the driver's map_event callback
+as a pointer (mirroring the pattern from commit 5099807f335c
+("net: pse-pd: fix out-of-bounds bitmap access in pse_isr() on 32-bit"))
+so for_each_set_bit() does not read past a single unsigned long when
+nr_lines > BITS_PER_LONG.
+
+The poll interval defaults to 500ms, balancing responsiveness against
+bus load (e.g. I2C).
+
+
+---
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/pse-pd/pse_core.c
++++ b/drivers/net/pse-pd/pse_core.c
+@@ -15,10 +15,17 @@
+ #include <linux/regulator/driver.h>
+ #include <linux/regulator/machine.h>
+ #include <linux/rtnetlink.h>
++#include <linux/workqueue.h>
+ #include <net/net_trackers.h>
+ 
+ #define PSE_PW_D_LIMIT INT_MAX
+ 
++/* Default poll interval for controllers without IRQ support.
++ * 500ms provides a reasonable trade-off between responsiveness
++ * (event detection, PD detection) and I2C bus utilization.
++ */
++#define PSE_DEFAULT_POLL_INTERVAL_MS 500
++
+ static DEFINE_MUTEX(pse_list_mutex);
+ static LIST_HEAD(pse_controller_list);
+ static DEFINE_XARRAY_ALLOC(pse_pw_d_map);
+@@ -1194,6 +1201,15 @@
+ 	blocking_notifier_call_chain(&pse_controller_notifier,
+ 				     PSE_REGISTERED, pcdev);
+ 
++	/* Arm the poll work last, once everything is initialized and
++	 * registration has succeeded. devm_pse_poll_helper() only sets up the
++	 * delayed work; queuing it here ensures pse_poll_worker() never runs
++	 * against a half-initialized controller or one whose probe later fails.
++	 */
++	if (pcdev->polling)
++		queue_delayed_work(system_freezable_wq, &pcdev->poll_work,
++				   msecs_to_jiffies(pcdev->poll_interval_ms));
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(pse_controller_register);
+@@ -1210,6 +1226,8 @@
+ 	pse_flush_pw_ds(pcdev);
+ 	if (pcdev->irq)
+ 		disable_irq(pcdev->irq);
++	if (pcdev->polling)
++		cancel_delayed_work_sync(&pcdev->poll_work);
+ 	pse_release_pis(pcdev);
+ 	cancel_work_sync(&pcdev->ntf_work);
+ 	kfifo_free(&pcdev->ntf_fifo);
+@@ -1332,66 +1350,104 @@
+ }
+ 
+ /**
+- * pse_isr - IRQ handler for PSE
+- * @irq: irq number
+- * @data: pointer to user interrupt structure
++ * pse_handle_events - Process PSE events for all PIs
++ * @pcdev: a pointer to the PSE controller device
++ * @notifs: per-PI notification array
++ * @notifs_mask: bitmap of PIs with events (sized for pcdev->nr_lines)
+  *
+- * Return: irqreturn_t - status of IRQ
++ * Common event handling shared between IRQ and poll paths.
++ * Caller must hold pcdev->lock.
+  */
+-static irqreturn_t pse_isr(int irq, void *data)
++static void pse_handle_events(struct pse_controller_dev *pcdev,
++			      unsigned long *notifs,
++			      unsigned long *notifs_mask)
+ {
+-	struct pse_controller_dev *pcdev;
+-	struct pse_irq_desc *desc;
+-	struct pse_irq *h = data;
+-	int ret, i;
+-
+-	desc = &h->desc;
+-	pcdev = h->pcdev;
+-
+-	/* Clear notifs mask */
+-	memset(h->notifs, 0, pcdev->nr_lines * sizeof(*h->notifs));
+-	bitmap_zero(h->notifs_mask, pcdev->nr_lines);
+-	mutex_lock(&pcdev->lock);
+-	ret = desc->map_event(irq, pcdev, h->notifs, h->notifs_mask);
+-	if (ret || bitmap_empty(h->notifs_mask, pcdev->nr_lines)) {
+-		mutex_unlock(&pcdev->lock);
+-		return IRQ_NONE;
+-	}
++	int i;
+ 
+-	for_each_set_bit(i, h->notifs_mask, pcdev->nr_lines) {
+-		unsigned long notifs, rnotifs;
++	for_each_set_bit(i, notifs_mask, pcdev->nr_lines) {
++		unsigned long pi_notifs, rnotifs;
+ 		struct pse_ntf ntf = {};
++		int ret;
+ 
+ 		/* Do nothing PI not described */
+ 		if (!pcdev->pi[i].rdev)
+ 			continue;
+ 
+-		notifs = h->notifs[i];
++		pi_notifs = notifs[i];
+ 		if (pse_pw_d_is_sw_pw_control(pcdev, pcdev->pi[i].pw_d)) {
+-			ret = pse_set_config_isr(pcdev, i, notifs);
++			ret = pse_set_config_isr(pcdev, i, pi_notifs);
+ 			if (ret)
+-				notifs |= ETHTOOL_PSE_EVENT_SW_PW_CONTROL_ERROR;
++				pi_notifs |= ETHTOOL_PSE_EVENT_SW_PW_CONTROL_ERROR;
+ 		}
+ 
+-		dev_dbg(h->pcdev->dev,
+-			"Sending PSE notification EVT 0x%lx\n", notifs);
++		dev_dbg(pcdev->dev,
++			"Sending PSE notification EVT 0x%lx\n", pi_notifs);
+ 
+-		ntf.notifs = notifs;
++		ntf.notifs = pi_notifs;
+ 		ntf.id = i;
+ 		kfifo_in_spinlocked(&pcdev->ntf_fifo, &ntf, 1,
+ 				    &pcdev->ntf_fifo_lock);
+ 		schedule_work(&pcdev->ntf_work);
+ 
+-		rnotifs = pse_to_regulator_notifs(notifs);
++		rnotifs = pse_to_regulator_notifs(pi_notifs);
+ 		regulator_notifier_call_chain(pcdev->pi[i].rdev, rnotifs,
+ 					      NULL);
+ 	}
++}
+ 
++/**
++ * pse_isr - IRQ handler for PSE
++ * @irq: irq number
++ * @data: pointer to user interrupt structure
++ *
++ * Return: irqreturn_t - status of IRQ
++ */
++static irqreturn_t pse_isr(int irq, void *data)
++{
++	struct pse_controller_dev *pcdev;
++	struct pse_irq *h = data;
++	int ret;
++
++	pcdev = h->pcdev;
++
++	/* Clear notifs mask */
++	memset(h->notifs, 0, pcdev->nr_lines * sizeof(*h->notifs));
++	bitmap_zero(h->notifs_mask, pcdev->nr_lines);
++	mutex_lock(&pcdev->lock);
++	ret = h->desc.map_event(irq, pcdev, h->notifs, h->notifs_mask);
++	if (ret || bitmap_empty(h->notifs_mask, pcdev->nr_lines)) {
++		mutex_unlock(&pcdev->lock);
++		return IRQ_NONE;
++	}
++
++	pse_handle_events(pcdev, h->notifs, h->notifs_mask);
+ 	mutex_unlock(&pcdev->lock);
+ 
+ 	return IRQ_HANDLED;
+ }
+ 
++static void pse_poll_worker(struct work_struct *work)
++{
++	struct pse_controller_dev *pcdev =
++		container_of(work, struct pse_controller_dev,
++			     poll_work.work);
++	int ret;
++
++	memset(pcdev->poll_notifs, 0,
++	       pcdev->nr_lines * sizeof(*pcdev->poll_notifs));
++	bitmap_zero(pcdev->poll_notifs_mask, pcdev->nr_lines);
++	mutex_lock(&pcdev->lock);
++	ret = pcdev->poll_desc.map_event(0, pcdev, pcdev->poll_notifs,
++					 pcdev->poll_notifs_mask);
++	if (!ret && !bitmap_empty(pcdev->poll_notifs_mask, pcdev->nr_lines))
++		pse_handle_events(pcdev, pcdev->poll_notifs,
++				  pcdev->poll_notifs_mask);
++	mutex_unlock(&pcdev->lock);
++
++	queue_delayed_work(system_freezable_wq, &pcdev->poll_work,
++			   msecs_to_jiffies(pcdev->poll_interval_ms));
++}
++
+ /**
+  * devm_pse_irq_helper - Register IRQ based PSE event notifier
+  * @pcdev: a pointer to the PSE
+@@ -1449,6 +1505,61 @@
+ }
+ EXPORT_SYMBOL_GPL(devm_pse_irq_helper);
+ 
++/**
++ * devm_pse_poll_helper - Register poll-based PSE event notifier
++ * @pcdev: a pointer to the PSE controller device
++ * @d: PSE event description (uses same pse_irq_desc as IRQ path)
++ *
++ * For PSE controllers without IRQ support or with IRQ not wired. Sets
++ * up a delayed work that periodically calls the driver's map_event
++ * callback to detect state changes, feeding events into the standard
++ * notification pipeline.
++ *
++ * The poll worker uses system_freezable_wq to ensure it does not run
++ * during system suspend while the hardware may be inaccessible.
++ *
++ * Must be called before devm_pse_controller_register(): this helper only
++ * sets up the delayed work, which pse_controller_register() arms as its
++ * last step on success. Calling it afterwards leaves the work unarmed and
++ * polling never starts.
++ *
++ * Return: 0 on success and errno on failure
++ */
++int devm_pse_poll_helper(struct pse_controller_dev *pcdev,
++			 const struct pse_irq_desc *d)
++{
++	struct device *dev = pcdev->dev;
++
++	if (!d || !d->map_event || !d->name)
++		return -EINVAL;
++
++	pcdev->poll_desc = *d;
++	pcdev->poll_notifs = devm_kcalloc(dev, pcdev->nr_lines,
++					  sizeof(*pcdev->poll_notifs),
++					  GFP_KERNEL);
++	if (!pcdev->poll_notifs)
++		return -ENOMEM;
++
++	pcdev->poll_notifs_mask = devm_bitmap_zalloc(dev, pcdev->nr_lines,
++						     GFP_KERNEL);
++	if (!pcdev->poll_notifs_mask)
++		return -ENOMEM;
++
++	if (!pcdev->poll_interval_ms)
++		pcdev->poll_interval_ms = PSE_DEFAULT_POLL_INTERVAL_MS;
++
++	INIT_DELAYED_WORK(&pcdev->poll_work, pse_poll_worker);
++	pcdev->polling = true;
++
++	/* The poll work is armed by pse_controller_register() as the last
++	 * step on success, so it never runs against a half-initialized or
++	 * never-registered controller.
++	 */
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(devm_pse_poll_helper);
++
+ /* PSE control section */
+ 
+ static void __pse_control_release(struct kref *kref)
+--- a/include/linux/pse-pd/pse.h
++++ b/include/linux/pse-pd/pse.h
+@@ -293,6 +293,12 @@
+  * @pi: table of PSE PIs described in this controller device
+  * @no_of_pse_pi: flag set if the pse_pis devicetree node is not used
+  * @irq: PSE interrupt
++ * @polling: flag indicating poll-based event detection is active
++ * @poll_interval_ms: poll interval in milliseconds
++ * @poll_work: delayed work for poll-based event detection
++ * @poll_desc: copy of the driver's event descriptor for polling
++ * @poll_notifs: per-PI notification scratch space for poll worker
++ * @poll_notifs_mask: bitmap of PIs with events for poll worker
+  * @pis_prio_max: Maximum value allowed for the PSE PIs priority
+  * @supp_budget_eval_strategies: budget evaluation strategies supported
+  *				 by the PSE
+@@ -313,6 +319,12 @@
+ 	struct pse_pi *pi;
+ 	bool no_of_pse_pi;
+ 	int irq;
++	bool polling;
++	unsigned int poll_interval_ms;
++	struct delayed_work poll_work;
++	struct pse_irq_desc poll_desc;
++	unsigned long *poll_notifs;
++	unsigned long *poll_notifs_mask;
+ 	unsigned int pis_prio_max;
+ 	u32 supp_budget_eval_strategies;
+ 	struct work_struct ntf_work;
+@@ -364,6 +376,8 @@
+ 				 struct pse_controller_dev *pcdev);
+ int devm_pse_irq_helper(struct pse_controller_dev *pcdev, int irq,
+ 			int irq_flags, const struct pse_irq_desc *d);
++int devm_pse_poll_helper(struct pse_controller_dev *pcdev,
++			 const struct pse_irq_desc *d);
+ 
+ struct pse_control *of_pse_control_get(struct device_node *node,
+ 				       struct phy_device *phydev);

@@ -1,0 +1,36 @@
+From a2d81faf75c1661d7a5977725731f481ba8de92d Mon Sep 17 00:00:00 2001
+From: Carlo Szelinsky <github@szelinsky.de>
+Date: Sat, 23 May 2026 21:32:58 +0200
+Subject: [PATCH] net: pse-pd: disable IRQ before freeing PI data in unregister
+
+pse_controller_unregister() frees the PI array via pse_release_pis()
+before disabling the controller IRQ. The threaded IRQ handler pse_isr()
+walks pcdev->pi[] (via pse_set_config_isr() and
+regulator_notifier_call_chain() on pcdev->pi[i].rdev), so an interrupt
+arriving in the window between pse_release_pis() and disable_irq()
+dereferences freed memory.
+
+Disable the IRQ first, then release the PI array. cancel_work_sync()
+for the notification worker stays after pse_release_pis(): the worker
+only touches the kfifo and the pse_control list, not pcdev->pi.
+
+Fixes: ffef61d6d273 ("net: pse-pd: Add support for budget evaluation strategies")
+---
+ drivers/net/pse-pd/pse_core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/pse-pd/pse_core.c
++++ b/drivers/net/pse-pd/pse_core.c
+@@ -1115,9 +1115,9 @@
+ void pse_controller_unregister(struct pse_controller_dev *pcdev)
+ {
+ 	pse_flush_pw_ds(pcdev);
+-	pse_release_pis(pcdev);
+ 	if (pcdev->irq)
+ 		disable_irq(pcdev->irq);
++	pse_release_pis(pcdev);
+ 	cancel_work_sync(&pcdev->ntf_work);
+ 	kfifo_free(&pcdev->ntf_fifo);
+ 	mutex_lock(&pse_list_mutex);

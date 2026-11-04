@@ -10,7 +10,7 @@ include $(INCLUDE_DIR)/kernel.mk
 
 PKG_NAME:=linux-atm
 PKG_VERSION:=2.5.2
-PKG_RELEASE:=8
+PKG_RELEASE:=9
 
 PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
 PKG_SOURCE_URL:=@SF/$(PKG_NAME)
@@ -99,7 +99,13 @@ endef
 
 $(foreach t,$(ATM_DEBUG_TOOLS),$(eval $(call GenAtmPlugin,atm-$(t),$(t))))
 
+# Linux 7.3 removed legacy ATM SVC ioctls still used by these userspace tools.
+# Keep their ABI declarations in a private include directory on newer kernels.
+ifeq ($(call kernel_patchver_ge,7.3),)
 TARGET_CFLAGS += -I$(LINUX_DIR)/user_headers/include
+else
+TARGET_CPPFLAGS := -I$(PKG_BUILD_DIR)/src/compat $(TARGET_CPPFLAGS)
+endif
 
 define Build/Configure
 	$(call Build/Configure/Default)

@@ -1,0 +1,137 @@
+From 4b1d5d51528a2178aa9abeea4881e15f2344285d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Mon, 31 Aug 2026 16:34:31 +0200
+Subject: net: phy: add (*notify_phy_attach/detach)() hooks to struct mii_bus
+
+Some MDIO buses require programming PHY polling registers depending
+on the PHY type. RealTek switch SoCs are the most prominent example
+of a DSA switch which doesn't allow to program MAC speed, duplex and
+flow-control settings without using PHY polling to do so [1].
+
+Avoid a half-baked solution in the MDIO bus driver because
+
+- it must reinvent the bus scanning to determine the PHYs and
+- it must anticipate the right point in time (e.g. deferred PHYs).
+
+Hence there is a need to inform the MDIO bus driver that a PHY is
+being attached or detached. Provide two hooks in struct mii_bus
+
+- notify_phy_attach(): called in phy_attach_direct() after PHY
+  hardware has been initialized and just before PHY is resumed.
+- notify_phy_detach(): called in phy_detach() right after PHY
+  has been suspended.
+
+Worth to notice: As of now phy_detach() is not 100% LIFO symmetric
+to phy_attach_direct(). E.g. sysfs links are torn down before
+suspend while being created before resume. Without reordering of the
+detach function the above mentioned notifier placement is the best
+possible symmetric implementation. An unconditional call of
+notify_phy_detach() was favoured [3].
+
+Remark! A slightly different version of this patch was part of a
+former series [2]. The discussion already showed that an initialization
+hook should be placed somewhere late during the whole setup. This
+commit implants it right after phy_init_hw() as suggested. On top of
+this it adds the detach hook.
+
+[1] https://github.com/openwrt/openwrt/pull/21515#discussion_r2714069716
+[2] https://lore.kernel.org/netdev/cover.1769053496.git.daniel@makrotopia.org/
+[3] https://lore.kernel.org/netdev/9e40f50b-357a-4a93-9f59-94847850835d@lunn.ch/#t
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20260831143439.2404484-6-markus.stockhausen@gmx.de
+---
+ drivers/net/phy/phy_device.c | 20 ++++++++++++++++----
+ include/linux/phy.h          | 18 ++++++++++++++++++
+ 2 files changed, 34 insertions(+), 4 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -1737,11 +1737,12 @@
+ /**
+  * phy_detach_internal - detach a PHY device from its network device
+  * @phydev: target phy_device struct
++ * @notify_bus: whether to notify the MDIO bus about the PHY detach
+  *
+  * This detaches the phy device from its network device and the phy
+  * driver, and drops the reference count taken in phy_attach_direct().
+  */
+-static void phy_detach_internal(struct phy_device *phydev)
++static void phy_detach_internal(struct phy_device *phydev, bool notify_bus)
+ {
+ 	struct net_device *dev = phydev->attached_dev;
+ 	struct module *ndev_owner = NULL;
+@@ -1763,6 +1764,10 @@
+ 				  &dev_attr_phy_standalone.attr);
+ 
+ 	phy_suspend(phydev);
++
++	if (notify_bus && phydev->mdio.bus->notify_phy_detach)
++		phydev->mdio.bus->notify_phy_detach(phydev);
++
+ 	if (dev) {
+ 		struct hwtstamp_provider *hwprov;
+ 
+@@ -1819,7 +1824,8 @@
+  */
+ void phy_detach(struct phy_device *phydev)
+ {
+-	phy_detach_internal(phydev);
++	/* cleanup including bus notification */
++	phy_detach_internal(phydev, true);
+ }
+ EXPORT_SYMBOL(phy_detach);
+ 
+@@ -1965,6 +1971,12 @@
+ 	if (err)
+ 		goto error;
+ 
++	if (phydev->mdio.bus->notify_phy_attach) {
++		err = phydev->mdio.bus->notify_phy_attach(phydev);
++		if (err)
++			goto error;
++	}
++
+ 	phy_resume(phydev);
+ 
+ 	/**
+@@ -1979,8 +1991,8 @@
+ 	return err;
+ 
+ error:
+-	/* phy_detach() does all of the cleanup below */
+-	phy_detach(phydev);
++	/* phy_detach_internal() does all of the cleanup below */
++	phy_detach_internal(phydev, false);
+ 	return err;
+ 
+ error_module_put:
+--- a/include/linux/phy.h
++++ b/include/linux/phy.h
+@@ -376,6 +376,24 @@
+ 			 int regnum, u16 val);
+ 	/** @reset: Perform a reset of the bus */
+ 	int (*reset)(struct mii_bus *bus);
++	/**
++	 * @notify_phy_attach: Perform post-attach handling for MDIO bus
++	 * drivers. Optional and independent of @notify_phy_detach. Called
++	 * in phy_attach_direct() right before phy_resume(). Runs in process
++	 * context, may sleep and may be called with RTNL held. Must not
++	 * acquire or rely on RTNL. Returns 0 on success or negative errno
++	 * on failure. Must unwind its own state on error as attachment is
++	 * aborted.
++	 */
++	int (*notify_phy_attach)(struct phy_device *phydev);
++	/**
++	 * @notify_phy_detach: Perform pre-detach handling for MDIO bus
++	 * drivers. Optional and independent of @notify_phy_attach. Called
++	 * in phy_detach() right after phy_suspend(). Runs in process context,
++	 * may sleep and may be called with RTNL held. Must not acquire or
++	 * rely on RTNL.
++	 */
++	void (*notify_phy_detach)(struct phy_device *phydev);
+ 
+ 	/** @stats: Statistic counters per device on the bus */
+ 	struct mdio_bus_stats stats[PHY_MAX_ADDR];

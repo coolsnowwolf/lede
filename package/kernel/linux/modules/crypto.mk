@@ -83,14 +83,26 @@ $(eval $(call KernelPackage,crypto-authenc))
 
 define KernelPackage/crypto-blake2b
   TITLE:=Support for BLAKE2b cryptographic hash function (RFC 7693)
-  DEPENDS:=+kmod-crypto-hash
+  DEPENDS:=+kmod-crypto-hash +LINUX_7_3:kmod-crypto-lib-blake2b
   KCONFIG:=CONFIG_CRYPTO_BLAKE2B
-  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic)
+  FILES:=$(LINUX_DIR)/crypto/blake2b_generic.ko@lt7.3 \
+	$(LINUX_DIR)/crypto/blake2b.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,09,blake2b_generic@lt7.3 blake2b@ge7.3)
   $(call AddDepends/crypto)
 endef
 
 $(eval $(call KernelPackage,crypto-blake2b))
+
+define KernelPackage/crypto-lib-blake2b
+  TITLE:=BLAKE2b hash function library
+  DEPENDS:=@LINUX_7_3
+  KCONFIG:=CONFIG_CRYPTO_LIB_BLAKE2B
+  HIDDEN:=1
+  FILES:=$(LINUX_DIR)/lib/crypto/libblake2b.ko
+  $(call AddDepends/crypto)
+endef
+
+$(eval $(call KernelPackage,crypto-lib-blake2b))
 
 
 define KernelPackage/crypto-cbc
@@ -119,9 +131,10 @@ $(eval $(call KernelPackage,crypto-ccm))
 
 define KernelPackage/crypto-chacha20poly1305
   TITLE:=ChaCha20-Poly1305 AEAD support, RFC7539 (used by strongSwan IPsec VPN)
-  DEPENDS:=+kmod-crypto-aead +kmod-crypto-manager +LINUX_6_18:kmod-crypto-lib-poly1305
+  DEPENDS:=+kmod-crypto-aead +kmod-crypto-manager +(LINUX_6_18||LINUX_7_3):kmod-crypto-lib-poly1305 +LINUX_7_3:kmod-crypto-lib-chacha20
   KCONFIG:=CONFIG_CRYPTO_CHACHA20POLY1305
-  FILES:=$(LINUX_DIR)/crypto/chacha20poly1305.ko
+  FILES:=$(LINUX_DIR)/crypto/chacha20poly1305.ko \
+	$(LINUX_DIR)/crypto/chacha.ko@ge7.3
   AUTOLOAD:=$(call AutoLoad,09,chacha20poly1305)
   $(call AddDepends/crypto)
 endef
@@ -331,10 +344,12 @@ define KernelPackage/crypto-ghash
   TITLE:=GHASH digest CryptoAPI module
   DEPENDS:=+kmod-crypto-gf128 +kmod-crypto-hash
   KCONFIG:= \
-	CONFIG_CRYPTO_GHASH \
-	CONFIG_CRYPTO_GHASH_ARM_CE
-  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,ghash-generic)
+	CONFIG_CRYPTO_GHASH@lt7.3 \
+	CONFIG_CRYPTO_GHASH_ARM_CE@lt7.3 \
+	CONFIG_CRYPTO_LIB_GF128HASH@ge7.3
+  FILES:=$(LINUX_DIR)/crypto/ghash-generic.ko@lt7.3 \
+	$(LINUX_DIR)/lib/crypto/libgf128hash.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,09,ghash-generic@lt7.3 libgf128hash@ge7.3)
   $(call AddDepends/crypto)
 endef
 
@@ -539,7 +554,7 @@ $(eval $(call KernelPackage,crypto-kpp))
 
 define KernelPackage/crypto-lib-aescfb
   TITLE:=AES cipher operations feedback mode library
-  DEPENDS:=@LINUX_6_12||LINUX_6_18
+  DEPENDS:=@LINUX_6_12||LINUX_6_18||LINUX_7_3
   KCONFIG:=CONFIG_CRYPTO_LIB_AESCFB
   FILES:=$(LINUX_DIR)/lib/crypto/libaescfb.ko
   AUTOLOAD:=$(call AutoLoad,09,libaescfb)
@@ -556,7 +571,7 @@ define KernelPackage/crypto-lib-chacha20
   $(call AddDepends/crypto)
 endef
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-chacha20/x86_64
   KCONFIG+=CONFIG_CRYPTO_CHACHA20_X86_64
@@ -565,7 +580,7 @@ endef
 endif
 endif
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 # Note that a non-neon fallback implementation is available on arm32 when
 # NEON is not supported, hence all arm targets can utilize lib-chacha20/arm
 define KernelPackage/crypto-lib-chacha20/arm
@@ -621,7 +636,7 @@ define KernelPackage/crypto-lib-curve25519
   $(call AddDepends/crypto,+kmod-crypto-kpp)
 endef
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-curve25519/x86_64
   KCONFIG+=CONFIG_CRYPTO_CURVE25519_X86
@@ -630,7 +645,7 @@ endef
 endif
 endif
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 define KernelPackage/crypto-lib-curve25519/arm-neon
   KCONFIG+=CONFIG_CRYPTO_CURVE25519_NEON
   FILES+=$(LINUX_DIR)/arch/arm/crypto/curve25519-neon.ko
@@ -659,7 +674,7 @@ define KernelPackage/crypto-lib-poly1305
   $(call AddDepends/crypto,+kmod-crypto-hash)
 endef
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 ifndef CONFIG_TARGET_uml
 define KernelPackage/crypto-lib-poly1305/x86_64
   KCONFIG+=CONFIG_CRYPTO_POLY1305_X86_64
@@ -668,7 +683,7 @@ endef
 endif
 endif
 
-ifneq ($(KERNEL_PATCHVER),6.18)
+ifeq ($(filter 6.18 7.3,$(KERNEL_PATCHVER)),)
 define KernelPackage/crypto-lib-poly1305/arm
   KCONFIG+=CONFIG_CRYPTO_POLY1305_ARM
   FILES:=$(LINUX_DIR)/arch/arm/crypto/poly1305-arm.ko
@@ -1044,8 +1059,10 @@ define KernelPackage/crypto-sha3
   TITLE:=SHA3 digest CryptoAPI module
   DEPENDS:=+kmod-crypto-hash
   KCONFIG:= CONFIG_CRYPTO_SHA3
-  FILES:=$(LINUX_DIR)/crypto/sha3_generic.ko
-  AUTOLOAD:=$(call AutoLoad,09,sha3_generic)
+  FILES:=$(LINUX_DIR)/crypto/sha3_generic.ko@lt7.3 \
+	$(LINUX_DIR)/crypto/sha3.ko@ge7.3 \
+	$(LINUX_DIR)/lib/crypto/libsha3.ko@ge7.3
+  AUTOLOAD:=$(call AutoLoad,09,sha3_generic@lt7.3 sha3@ge7.3)
   $(call AddDepends/crypto)
 endef
 

@@ -1,0 +1,147 @@
+From fd59b838dd90452f61a17dc9e5ff175205003068 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Thu, 15 Sep 2022 18:49:43 +0200
+Subject: [PATCH] OPP: Provide old opp to config_clks on _set_opp
+
+With the target opp, also pass the old opp to config_clks function.
+This can be useful when a driver needs to take decision on what fequency
+to set based on what is the current frequency without using a
+clk_get_freq call.
+Update the only user of custom config_clks (tegra30 devfreq driver) to
+this new implementation.
+
+---
+ drivers/devfreq/tegra30-devfreq.c |  5 +++--
+ drivers/opp/core.c                | 11 ++++++-----
+ include/linux/pm_opp.h            | 11 ++++++-----
+ 3 files changed, 15 insertions(+), 12 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/devfreq/tegra30-devfreq.c
++++ b/drivers/devfreq/tegra30-devfreq.c
+@@ -818,8 +818,9 @@
+ 
+ static int tegra_devfreq_config_clks_nop(struct device *dev,
+ 					 struct opp_table *opp_table,
+-					 struct dev_pm_opp *opp, void *data,
+-					 bool scaling_down)
++					 struct dev_pm_opp *old_opp,
++					 struct dev_pm_opp *opp,
++					 void *data, bool scaling_down)
+ {
+ 	/* We want to skip clk configuration via dev_pm_opp_set_opp() */
+ 	return 0;
+--- a/drivers/opp/core.c
++++ b/drivers/opp/core.c
+@@ -1056,7 +1056,8 @@
+ 
+ static int
+ _opp_config_clk_single(struct device *dev, struct opp_table *opp_table,
+-		       struct dev_pm_opp *opp, void *data, bool scaling_down)
++		       struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
++		       void *data, bool scaling_down)
+ {
+ 	unsigned long *target = data;
+ 	unsigned long freq;
+@@ -1088,8 +1089,8 @@
+  * the order in which they are present in the array while scaling up.
+  */
+ int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down)
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down)
+ {
+ 	int ret, i;
+ 
+@@ -1355,7 +1356,7 @@
+ 	}
+ 
+ 	if (opp_table->config_clks) {
+-		ret = opp_table->config_clks(dev, opp_table, opp, clk_data, scaling_down);
++		ret = opp_table->config_clks(dev, opp_table, old_opp, opp, clk_data, scaling_down);
+ 		if (ret)
+ 			return ret;
+ 	}
+@@ -1432,7 +1433,7 @@
+ 		 * equivalent to a clk_set_rate()
+ 		 */
+ 		if (!_get_opp_count(opp_table)) {
+-			return opp_table->config_clks(dev, opp_table, NULL,
++			return opp_table->config_clks(dev, opp_table, NULL, NULL,
+ 						      &target_freq, false);
+ 		}
+ 
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -1129,8 +1129,8 @@
+ }
+ 
+ int ufshcd_opp_config_clks(struct device *dev, struct opp_table *opp_table,
+-			   struct dev_pm_opp *opp, void *data,
+-			   bool scaling_down)
++			   struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
++			   void *data, bool scaling_down)
+ {
+ 	struct ufs_hba *hba = dev_get_drvdata(dev);
+ 	struct list_head *head = &hba->clk_list_head;
+--- a/include/linux/pm_opp.h
++++ b/include/linux/pm_opp.h
+@@ -51,7 +51,8 @@
+ 			struct dev_pm_opp *old_opp, struct dev_pm_opp *new_opp,
+ 			struct regulator **regulators, unsigned int count);
+ 
+-typedef int (*config_clks_t)(struct device *dev, struct opp_table *opp_table,
++typedef int (*config_clks_t)(struct device *dev,
++			struct opp_table *opp_table, struct dev_pm_opp *old_opp,
+ 			struct dev_pm_opp *opp, void *data, bool scaling_down);
+ 
+ /**
+@@ -208,8 +209,8 @@
+ int devm_pm_opp_set_config(struct device *dev, struct dev_pm_opp_config *config);
+ void dev_pm_opp_clear_config(int token);
+ int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down);
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down);
+ 
+ struct dev_pm_opp *dev_pm_opp_xlate_required_opp(struct opp_table *src_table, struct opp_table *dst_table, struct dev_pm_opp *src_opp);
+ int dev_pm_opp_xlate_performance_state(struct opp_table *src_table, struct opp_table *dst_table, unsigned int pstate);
+@@ -442,8 +443,8 @@
+ static inline void dev_pm_opp_clear_config(int token) {}
+ 
+ static inline int dev_pm_opp_config_clks_simple(struct device *dev,
+-		struct opp_table *opp_table, struct dev_pm_opp *opp, void *data,
+-		bool scaling_down)
++		struct opp_table *opp_table, struct dev_pm_opp *old_opp,
++		struct dev_pm_opp *opp, void *data, bool scaling_down)
+ {
+ 	return -EOPNOTSUPP;
+ }
+--- a/include/ufs/ufshcd.h
++++ b/include/ufs/ufshcd.h
+@@ -1514,8 +1514,8 @@
+ void ufshcd_mcq_config_esi(struct ufs_hba *hba, struct msi_msg *msg);
+ 
+ int ufshcd_opp_config_clks(struct device *dev, struct opp_table *opp_table,
+-			   struct dev_pm_opp *opp, void *data,
+-			   bool scaling_down);
++			   struct dev_pm_opp *old_opp, struct dev_pm_opp *opp,
++			   void *data, bool scaling_down);
+ /**
+  * ufshcd_set_variant - set variant specific data to the hba
+  * @hba: per adapter instance
+--- a/drivers/cpufreq/airoha-cpufreq.c
++++ b/drivers/cpufreq/airoha-cpufreq.c
+@@ -21,7 +21,8 @@
+ /* NOP function to disable OPP from setting clock */
+ static int airoha_cpufreq_config_clks_nop(struct device *dev,
+ 					  struct opp_table *opp_table,
+-					  struct dev_pm_opp *opp,
++					  struct dev_pm_opp *old_opp,
++					  struct dev_pm_opp *new_opp,
+ 					  void *data, bool scaling_down)
+ {
+ 	return 0;

@@ -18,7 +18,7 @@ PKG_SOURCE_URL:=https://github.com/openwrt/backports/releases/download/backports
 PKG_SOURCE:=backports-$(PKG_VERSION).tar.zst
 PATCH_DIR:=./patches-qualcommbe
 else
-ifneq ($(filter y,$(CONFIG_LINUX_6_12) $(CONFIG_LINUX_6_18)),)
+ifneq ($(filter y,$(CONFIG_LINUX_6_12) $(CONFIG_LINUX_6_18) $(CONFIG_LINUX_7_3)),)
 PKG_VERSION:=6.18.39
 PKG_HASH:=8951c1e270d7c311432377bd50951cd1d5dee2b5fedf33d30db41aa8e428aeb0
 PKG_SOURCE_URL:=https://github.com/openwrt/backports/releases/download/backports-v$(PKG_VERSION)

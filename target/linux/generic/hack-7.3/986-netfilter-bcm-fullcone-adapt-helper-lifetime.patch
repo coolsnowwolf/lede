@@ -1,0 +1,98 @@
+From: lean <chenlin@fnnas.com>
+Subject: [PATCH] netfilter: adapt BCM fullcone helper lifetime to Linux 7.3
+
+Linux 7.3 stores expectation policies inline and reference counts dynamically
+allocated helpers. Register the helper with the first masquerade notifier
+user, take a reference for each connection, and unregister it only after
+the last user releases the notifiers. Limit expectations to the conntrack
+API maximum and use the current protocol fields.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/net/netfilter/nf_nat_masquerade.c
++++ b/net/netfilter/nf_nat_masquerade.c
+@@ -89,19 +89,20 @@
+ }
+ 
+ /****************************************************************************/
+-static struct nf_conntrack_expect_policy bcm_nat_exp_policy __read_mostly = {
+-       .max_expected   = 1000,
+-       .timeout        = 240,
+-};
++static struct nf_conntrack_helper *bcm_nat_helper __read_mostly;
+ 
+-/****************************************************************************/
+ static struct nf_conntrack_helper nf_conntrack_helper_bcm_nat __read_mostly = {
+        .name = "BCM-NAT",
+        .me = THIS_MODULE,
+-       .tuple.src.l3num = AF_INET,
+-       .tuple.dst.protonum = IPPROTO_UDP,
+-       .expect_policy = &bcm_nat_exp_policy,
+-       .expect_class_max = 1,
++       .nfproto = NFPROTO_IPV4,
++       .l4proto = IPPROTO_UDP,
++       .expect_policy = {
++               [NF_CT_EXPECT_CLASS_DEFAULT] = {
++                       .max_expected = NF_CT_EXPECT_MAX_CNT,
++                       .timeout = 240,
++               },
++       },
++       .expect_class_max = NF_CT_EXPECT_CLASS_DEFAULT,
+        .help = bcm_nat_help,
+ };
+ 
+@@ -257,8 +258,9 @@
+                        struct nf_conn_help *help = nfct_help(ct);
+                        if (help == NULL)
+                                help = nf_ct_helper_ext_add(ct, GFP_ATOMIC);
+-                       if (help != NULL) {
+-                               help->helper = &nf_conntrack_helper_bcm_nat;
++                       if (help != NULL &&
++                           refcount_inc_not_zero(&bcm_nat_helper->ct_refcnt)) {
++                               rcu_assign_pointer(help->helper, bcm_nat_helper);
+                                pr_debug("bcm_nat: helper set\n");
+                                ret = bcm_nat_help(skb, 0, ct, ctinfo);
+                        } else {
+@@ -514,10 +516,15 @@
+ 	if (++masq_refcnt > 1)
+ 		goto out_unlock;
+ 
++	ret = nf_conntrack_helper_register(&nf_conntrack_helper_bcm_nat,
++					   &bcm_nat_helper);
++	if (ret)
++		goto err_dec;
++
+ 	/* Register for device down reports */
+ 	ret = register_netdevice_notifier(&masq_dev_notifier);
+ 	if (ret)
+-		goto err_dec;
++		goto err_helper;
+ 	/* Register IP address change reports */
+ 	ret = register_inetaddr_notifier(&masq_inet_notifier);
+ 	if (ret)
+@@ -533,6 +540,9 @@
+ 	unregister_inetaddr_notifier(&masq_inet_notifier);
+ err_unregister:
+ 	unregister_netdevice_notifier(&masq_dev_notifier);
++err_helper:
++	nf_conntrack_helper_unregister(bcm_nat_helper);
++	bcm_nat_helper = NULL;
+ err_dec:
+ 	masq_refcnt--;
+ out_unlock:
+@@ -543,12 +553,14 @@
+ 
+ void nf_nat_masquerade_inet_unregister_notifiers(void)
+ {
+-       nf_conntrack_helper_unregister(&nf_conntrack_helper_bcm_nat);
+ 	mutex_lock(&masq_mutex);
+ 	/* check if the notifiers still have clients */
+ 	if (--masq_refcnt > 0)
+ 		goto out_unlock;
+ 
++	nf_conntrack_helper_unregister(bcm_nat_helper);
++	bcm_nat_helper = NULL;
++
+ 	unregister_netdevice_notifier(&masq_dev_notifier);
+ 	unregister_inetaddr_notifier(&masq_inet_notifier);
+ #if IS_ENABLED(CONFIG_IPV6)

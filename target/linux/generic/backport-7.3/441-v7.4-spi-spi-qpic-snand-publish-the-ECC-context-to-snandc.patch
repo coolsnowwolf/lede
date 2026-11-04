@@ -1,0 +1,86 @@
+From f94c9b68bb5fdbef9f841da493d5305ff634ebb5 Mon Sep 17 00:00:00 2001
+From: Johan Alvarado <contact@c127.dev>
+Date: Fri, 11 Sep 2026 13:44:15 -0500
+Subject: [PATCH] spi: spi-qpic-snand: publish the ECC context to snandc->qspi
+
+qcom_spi_ooblayout_ecc() and qcom_spi_ooblayout_free() read the ECC
+configuration through snandc->qspi->ecc. qcom_spi_probe() points it at a
+zeroed scratch struct and only qcom_spi_ecc_prepare_io_req_pipelined(),
+which runs on page I/O, ever updates it. qcom_spi_ecc_init_ctx_pipelined()
+installs the ooblayout but does not publish the context it just
+allocated, and qcom_spi_ecc_cleanup_ctx_pipelined() frees that context
+without clearing the pointer.
+
+spinand_init() calls mtd_ooblayout_count_freebytes() right after the ECC
+context is created and before any page I/O, so the ooblayout always runs
+against a pointer that does not describe the current context:
+
+  - On a first probe it reads the zeroed struct from qcom_spi_probe(),
+    so steps, bytes and bbm_size are 0. The count then returns 0 rather
+    than an error, so the probe continues with mtd->oobavail set to 0.
+
+  - On a probe retry it reads the ecc_cfg the previous attempt freed.
+
+A retry is easy to hit. On IPQ5018 with the qcom,smem-part parser the
+partition parse returns -EPROBE_DEFER until SMEM has probed, so the
+first spi-nand probe defers. It defers inside
+mtd_device_parse_register(), after mtd_otp_nvmem_add() has already read
+the factory OTP - that read goes through prepare_io_req and leaves
+snandc->qspi->ecc pointing at the context that spinand_cleanup() then
+frees. The second probe allocates a new context, never publishes it, and
+computes the OOB layout from the freed one. Once the slab has been
+reused, qecc->steps holds garbage and
+
+  oobregion->length = qecc->steps * 4;
+
+goes negative. qcom_spi_ooblayout_free() only reports -ERANGE for
+section 1 and later, so mtd_ooblayout_count_bytes() sums the regions and
+returns that negative length as the byte count. The -512 below is
+steps * 4 with steps == -128. It is a byte count that happens to
+collide with -ERESTARTSYS, not an error the driver returned.
+spinand_init() takes it as an error, and because it is not
+-EPROBE_DEFER the driver core never retries and the NAND never appears:
+
+  spi-nand spi0.0: ESMT SPI NAND was found.
+  spi-nand spi0.0: probe with driver spi-nand failed with error -512
+  UBI error: cannot open mtd rootfs, error -2
+  Waiting for root device /dev/ubiblock0_1...
+
+On a Mercusys MR80X (IPQ5018, ESMT F50D1G41LB) about half of the boots
+failed to mount the rootfs, the outcome depending on whether the freed
+memory had been overwritten yet.
+
+Publish the context when it is created and clear the pointer when it is
+destroyed. Clearing leaves snandc->qspi->ecc NULL after cleanup, which
+is safe: the mtd is unregistered before cleanup_ctx runs, so no
+ooblayout callback can follow.
+
+Fixes: 7304d1909080 ("spi: spi-qpic: add driver for QCOM SPI NAND flash Interface")
+Cc: stable@vger.kernel.org
+Tested-by: Gabor Juhos <j4g8y7@gmail.com>
+Link: https://patch.msgid.link/20260911184416.109790-2-contact@c127.dev
+---
+ drivers/spi/spi-qpic-snand.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/spi/spi-qpic-snand.c
++++ b/drivers/spi/spi-qpic-snand.c
+@@ -411,6 +411,8 @@
+ 	dev_dbg(snandc->dev, "ECC strength: %u bits per %u bytes\n",
+ 		ecc_cfg->strength, ecc_cfg->step_size);
+ 
++	snandc->qspi->ecc = ecc_cfg;
++
+ 	return 0;
+ 
+ err_free_ecc_cfg:
+@@ -427,6 +429,7 @@
+ 
+ 	kfree(snandc->qspi->oob_buf);
+ 	snandc->qspi->oob_buf = NULL;
++	snandc->qspi->ecc = NULL;
+ 	kfree(ecc_cfg);
+ }
+ 

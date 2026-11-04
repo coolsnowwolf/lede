@@ -1,0 +1,205 @@
+From 2df76677c1c08f622cc577a49f0645a5976d7c91 Mon Sep 17 00:00:00 2001
+From: Markus Stockhausen <markus.stockhausen@gmx.de>
+Date: Mon, 31 Aug 2026 16:34:30 +0200
+Subject: net: phy: add phy_detach_internal() helper
+
+For the upcoming MDIO bus notification enhancements the PHY detach path
+needs to inform the bus about these actions. Until now phy_detach() is
+used for the regular detach path as well as from the phy_attach_direct()
+error paths So in the future there must be a clear indication if a
+notification is needed (normal path) or not (cleanup path).
+
+Carve out the phy_detach() code into a new helper phy_detach_internal()
+and make phy_detach() a short stub that calls the new helper.
+
+Reviewed-by: Andrew Lunn <andrew@lunn.ch>
+Link: https://patch.msgid.link/20260831143439.2404484-5-markus.stockhausen@gmx.de
+---
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/phy/phy_device.c
++++ b/drivers/net/phy/phy_device.c
+@@ -1735,6 +1735,95 @@
+ }
+ 
+ /**
++ * phy_detach_internal - detach a PHY device from its network device
++ * @phydev: target phy_device struct
++ *
++ * This detaches the phy device from its network device and the phy
++ * driver, and drops the reference count taken in phy_attach_direct().
++ */
++static void phy_detach_internal(struct phy_device *phydev)
++{
++	struct net_device *dev = phydev->attached_dev;
++	struct module *ndev_owner = NULL;
++	struct mii_bus *bus;
++
++	if (phydev->devlink) {
++		device_link_del(phydev->devlink);
++		phydev->devlink = NULL;
++	}
++
++	if (phydev->sysfs_links) {
++		if (dev)
++			sysfs_remove_link(&dev->dev.kobj, "phydev");
++		sysfs_remove_link(&phydev->mdio.dev.kobj, "attached_dev");
++	}
++
++	if (!phydev->attached_dev)
++		sysfs_remove_file(&phydev->mdio.dev.kobj,
++				  &dev_attr_phy_standalone.attr);
++
++	phy_suspend(phydev);
++	if (dev) {
++		struct hwtstamp_provider *hwprov;
++
++		/* hwprov may technically be protected by ops lock but
++		 * not for devices with a phydev, see phy_link_topo_add_phy()
++		 */
++		hwprov = rtnl_dereference(dev->hwprov);
++		/* Disable timestamp if it is the one selected */
++		if (hwprov && hwprov->phydev == phydev) {
++			rcu_assign_pointer(dev->hwprov, NULL);
++			kfree_rcu(hwprov, rcu_head);
++		}
++
++		phydev->attached_dev->phydev = NULL;
++		phydev->attached_dev = NULL;
++		phy_link_topo_del_phy(dev, phydev);
++	}
++
++	phydev->phy_link_change = NULL;
++	phydev->phylink = NULL;
++
++	if (phydev->mdio.dev.driver)
++		module_put(phydev->mdio.dev.driver->owner);
++
++	/* If the device had no specific driver before (i.e. - it
++	 * was using the generic driver), we unbind the device
++	 * from the generic driver so that there's a chance a
++	 * real driver could be loaded
++	 */
++	if (phydev->is_genphy_driven) {
++		device_release_driver(&phydev->mdio.dev);
++		phydev->is_genphy_driven = 0;
++	}
++
++	/* Assert the reset signal */
++	phy_device_reset(phydev, 1);
++
++	/*
++	 * The phydev might go away on the put_device() below, so avoid
++	 * a use-after-free bug by reading the underlying bus first.
++	 */
++	bus = phydev->mdio.bus;
++
++	put_device(&phydev->mdio.dev);
++	if (dev)
++		ndev_owner = dev->dev.parent->driver->owner;
++	if (ndev_owner != bus->owner)
++		module_put(bus->owner);
++}
++
++/**
++ * phy_detach - detach a PHY device from its network device
++ * @phydev: target phy_device struct
++ */
++void phy_detach(struct phy_device *phydev)
++{
++	phy_detach_internal(phydev);
++}
++EXPORT_SYMBOL(phy_detach);
++
++/**
+  * phy_attach_direct - attach a network device to a given PHY device pointer
+  * @dev: network device to attach
+  * @phydev: Pointer to phy_device to attach
+@@ -1906,86 +1995,6 @@
+ }
+ EXPORT_SYMBOL(phy_attach_direct);
+ 
+-/**
+- * phy_detach - detach a PHY device from its network device
+- * @phydev: target phy_device struct
+- *
+- * This detaches the phy device from its network device and the phy
+- * driver, and drops the reference count taken in phy_attach_direct().
+- */
+-void phy_detach(struct phy_device *phydev)
+-{
+-	struct net_device *dev = phydev->attached_dev;
+-	struct module *ndev_owner = NULL;
+-	struct mii_bus *bus;
+-
+-	if (phydev->devlink) {
+-		device_link_del(phydev->devlink);
+-		phydev->devlink = NULL;
+-	}
+-
+-	if (phydev->sysfs_links) {
+-		if (dev)
+-			sysfs_remove_link(&dev->dev.kobj, "phydev");
+-		sysfs_remove_link(&phydev->mdio.dev.kobj, "attached_dev");
+-	}
+-
+-	if (!phydev->attached_dev)
+-		sysfs_remove_file(&phydev->mdio.dev.kobj,
+-				  &dev_attr_phy_standalone.attr);
+-
+-	phy_suspend(phydev);
+-	if (dev) {
+-		struct hwtstamp_provider *hwprov;
+-
+-		/* hwprov may technically be protected by ops lock but
+-		 * not for devices with a phydev, see phy_link_topo_add_phy()
+-		 */
+-		hwprov = rtnl_dereference(dev->hwprov);
+-		/* Disable timestamp if it is the one selected */
+-		if (hwprov && hwprov->phydev == phydev) {
+-			rcu_assign_pointer(dev->hwprov, NULL);
+-			kfree_rcu(hwprov, rcu_head);
+-		}
+-
+-		phydev->attached_dev->phydev = NULL;
+-		phydev->attached_dev = NULL;
+-		phy_link_topo_del_phy(dev, phydev);
+-	}
+-
+-	phydev->phy_link_change = NULL;
+-	phydev->phylink = NULL;
+-
+-	if (phydev->mdio.dev.driver)
+-		module_put(phydev->mdio.dev.driver->owner);
+-
+-	/* If the device had no specific driver before (i.e. - it
+-	 * was using the generic driver), we unbind the device
+-	 * from the generic driver so that there's a chance a
+-	 * real driver could be loaded
+-	 */
+-	if (phydev->is_genphy_driven) {
+-		device_release_driver(&phydev->mdio.dev);
+-		phydev->is_genphy_driven = 0;
+-	}
+-
+-	/* Assert the reset signal */
+-	phy_device_reset(phydev, 1);
+-
+-	/*
+-	 * The phydev might go away on the put_device() below, so avoid
+-	 * a use-after-free bug by reading the underlying bus first.
+-	 */
+-	bus = phydev->mdio.bus;
+-
+-	put_device(&phydev->mdio.dev);
+-	if (dev)
+-		ndev_owner = dev->dev.parent->driver->owner;
+-	if (ndev_owner != bus->owner)
+-		module_put(bus->owner);
+-}
+-EXPORT_SYMBOL(phy_detach);
+-
+ int phy_suspend(struct phy_device *phydev)
+ {
+ 	struct net_device *netdev = phydev->attached_dev;

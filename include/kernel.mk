@@ -151,9 +151,11 @@ define collect_module_symvers
 		grep -F $(PKG_BUILD_DIR) $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers >> $(PKG_BUILD_DIR)/Module.symvers.tmp; \
 		[ "$(PKG_BUILD_DIR)" = "$$$$realdir" ] || \
 			grep -F $$$$realdir $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers >> $(PKG_BUILD_DIR)/Module.symvers.tmp; \
-		[ -s "$(PKG_BUILD_DIR)/Module.symvers.tmp" ] || [ "$(KERNEL_PATCHVER)" = "6.18" ] && \
+		if [ ! -s "$(PKG_BUILD_DIR)/Module.symvers.tmp" ] && \
+		   { [ "$(KERNEL_PATCHVER)" = "6.18" ] || [ "$(KERNEL_PATCHVER)" = "7.3" ]; }; then \
 			sed 's/\.o$$$$//' $(PKG_BUILD_DIR)/$$$$subdir/modules.order | \
 			grep -Ff - $(PKG_BUILD_DIR)/$$$$subdir/Module.symvers >> $(PKG_BUILD_DIR)/Module.symvers.tmp; \
+		fi; \
 	done; \
 	sort -u $(PKG_BUILD_DIR)/Module.symvers.tmp > $(PKG_BUILD_DIR)/Module.symvers; \
 	mkdir -p $(PKG_SYMVERS_DIR); \

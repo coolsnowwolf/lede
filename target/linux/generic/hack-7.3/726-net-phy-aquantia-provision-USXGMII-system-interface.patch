@@ -1,0 +1,167 @@
+From 16bd4afcc1dbcc97c9836d1648e642fc51ad6d6d Mon Sep 17 00:00:00 2001
+From: Daniel Golle <daniel@makrotopia.org>
+Date: Thu, 8 Oct 2026 11:46:36 +0100
+Subject: [PATCH] net: phy: aquantia: provision USXGMII system interface
+
+The system interface of the gen2 and later PHYs is whatever the firmware
+provisioned into the per-speed global configuration words. A board whose
+firmware selects an XFI SerDes with pause-frame rate adaptation can never
+run USXGMII, whatever its device tree says: the driver reports 10GBASE-R
+as the only possible interface and the MAC is throttled by pause frames
+at every media speed below 10G. The SmartRG SDG-9000 ships its CUX3410
+provisioned that way although the MxL86282 port facing it supports
+USXGMII.
+
+When phy-mode is usxgmii and the words do not already select XFI with
+USX rate adaptation, rewrite them with the PHY held in low power, as the
+AQR112 and AQR412 path does, and set the start rate to 10G. Words that
+read zero denote speeds the firmware does not support and are left
+alone. The PHY then runs USXGMII with symbol replication at the lower
+media speeds and the driver reports it as such.
+
+---
+ drivers/net/phy/aquantia/aquantia_main.c | 117 ++++++++++++++++++-----
+ 1 file changed, 93 insertions(+), 24 deletions(-)
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/drivers/net/phy/aquantia/aquantia_main.c
++++ b/drivers/net/phy/aquantia/aquantia_main.c
+@@ -1004,6 +1004,95 @@
+ 	return 0;
+ }
+ 
++static int aqr_gen1_wait_processor_intensive_op(struct phy_device *phydev)
++{
++	int val, err;
++
++	/* The datasheet notes to wait at least 1ms after issuing a
++	 * processor intensive operation before checking.
++	 * We cannot use the 'sleep_before_read' parameter of read_poll_timeout
++	 * because that just determines the maximum time slept, not the minimum.
++	 */
++	usleep_range(1000, 5000);
++
++	err = phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
++					VEND1_GLOBAL_GEN_STAT2, val,
++					!(val & VEND1_GLOBAL_GEN_STAT2_OP_IN_PROG),
++					AQR107_OP_IN_PROG_SLEEP,
++					AQR107_OP_IN_PROG_TIMEOUT, false);
++	if (err) {
++		phydev_err(phydev, "timeout: processor-intensive MDIO operation\n");
++		return err;
++	}
++
++	return 0;
++}
++
++static int aqr_gen2_provision_usxgmii(struct phy_device *phydev)
++{
++	u16 cfg[AQR_NUM_GLOBAL_CFG];
++	bool provisioned = true;
++	int i, val, ret;
++
++	if (phydev->interface != PHY_INTERFACE_MODE_USXGMII)
++		return 0;
++
++	for (i = 0; i < AQR_NUM_GLOBAL_CFG; i++) {
++		val = phy_read_mmd(phydev, MDIO_MMD_VEND1,
++				   aqr_global_cfg_regs[i].reg);
++		if (val < 0)
++			return val;
++
++		cfg[i] = val;
++		if (!val)
++			continue;
++
++		if (FIELD_GET(VEND1_GLOBAL_CFG_SERDES_MODE, val) !=
++		    VEND1_GLOBAL_CFG_SERDES_MODE_XFI ||
++		    FIELD_GET(VEND1_GLOBAL_CFG_RATE_ADAPT, val) !=
++		    VEND1_GLOBAL_CFG_RATE_ADAPT_USX)
++			provisioned = false;
++	}
++
++	if (provisioned)
++		return 0;
++
++	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
++			       MDIO_CTRL1_LPOWER);
++	if (ret)
++		return ret;
++
++	ret = aqr_gen1_wait_processor_intensive_op(phydev);
++	if (ret)
++		return ret;
++
++	ret = phy_write_mmd(phydev, MDIO_MMD_VEND1, AQUANTIA_VND1_GSTART_RATE,
++			    AQUANTIA_VND1_GSTART_RATE_10G);
++	if (ret)
++		return ret;
++
++	for (i = 0; i < AQR_NUM_GLOBAL_CFG; i++) {
++		if (!cfg[i])
++			continue;
++
++		ret = phy_write_mmd(phydev, MDIO_MMD_VEND1,
++				    aqr_global_cfg_regs[i].reg,
++				    FIELD_PREP(VEND1_GLOBAL_CFG_RATE_ADAPT,
++					       VEND1_GLOBAL_CFG_RATE_ADAPT_USX) |
++				    FIELD_PREP(VEND1_GLOBAL_CFG_SERDES_MODE,
++					       VEND1_GLOBAL_CFG_SERDES_MODE_XFI));
++		if (ret)
++			return ret;
++	}
++
++	ret = phy_clear_bits_mmd(phydev, MDIO_MMD_VEND1, MDIO_CTRL1,
++				 MDIO_CTRL1_LPOWER);
++	if (ret)
++		return ret;
++
++	return aqr_gen1_wait_processor_intensive_op(phydev);
++}
++
+ static int aqr_gen2_fill_interface_modes(struct phy_device *phydev)
+ {
+ 	unsigned long *possible = phydev->possible_interfaces;
+@@ -1025,6 +1114,10 @@
+ 			return ret;
+ 	}
+ 
++	ret = aqr_gen2_provision_usxgmii(phydev);
++	if (ret)
++		return ret;
++
+ 	ret = aqr_gen2_read_global_syscfg(phydev);
+ 	if (ret)
+ 		return ret;
+@@ -1109,30 +1202,6 @@
+ 		phydev_info(phydev, "Aquantia 1000Base-T2 mode active\n");
+ }
+ 
+-static int aqr_gen1_wait_processor_intensive_op(struct phy_device *phydev)
+-{
+-	int val, err;
+-
+-	/* The datasheet notes to wait at least 1ms after issuing a
+-	 * processor intensive operation before checking.
+-	 * We cannot use the 'sleep_before_read' parameter of read_poll_timeout
+-	 * because that just determines the maximum time slept, not the minimum.
+-	 */
+-	usleep_range(1000, 5000);
+-
+-	err = phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND1,
+-					VEND1_GLOBAL_GEN_STAT2, val,
+-					!(val & VEND1_GLOBAL_GEN_STAT2_OP_IN_PROG),
+-					AQR107_OP_IN_PROG_SLEEP,
+-					AQR107_OP_IN_PROG_TIMEOUT, false);
+-	if (err) {
+-		phydev_err(phydev, "timeout: processor-intensive MDIO operation\n");
+-		return err;
+-	}
+-
+-	return 0;
+-}
+-
+ static int aqr_gen2_get_rate_matching(struct phy_device *phydev,
+ 				      phy_interface_t iface)
+ {
