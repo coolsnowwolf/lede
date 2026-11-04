@@ -1,0 +1,169 @@
+Subject: [PATCH] netfilter: flowtable: provide lifecycle HW/SW totals
+
+Maintain optional logical flow totals without a per-client database,
+per-packet accounting or query-time traversal.
+
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -725,6 +725,14 @@
+ 
+ 	  To compile it as a module, choose M here.
+ 
++config NF_FLOW_TABLE_SUMMARY
++	bool "Flowtable HW/SW connection totals"
++	depends on NF_FLOW_TABLE && PROC_FS
++	select NF_FLOW_TABLE_PROCFS
++	help
++	  Export logical hardware/software connection totals at
++	  /proc/net/nf_flowtable_summary without walking flows or clients.
++
+ config NF_FLOW_TABLE_PROCFS
+ 	bool "Supply flow table statistics in procfs"
+ 	depends on NF_FLOW_TABLE
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -245,3 +245,5 @@
+ ifdef CONFIG_GCOV_PROFILE_NETFILTER
+ GCOV_PROFILE := y
+ endif
++
++nf_flow_table-$(CONFIG_NF_FLOW_TABLE_SUMMARY) += nf_flow_table_summary.o
+--- /dev/null
++++ b/net/netfilter/nf_flow_table_summary.c
+@@ -0,0 +1,136 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Lifecycle totals and a lifetime token for shared interface accounting. */
++#include <linux/refcount.h>
++#include <linux/seq_file_net.h>
++#include <linux/slab.h>
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_flow_table.h>
++
++struct nf_flow_summary {
++	refcount_t refs;
++	struct net __rcu *net;
++	spinlock_t lock;
++	u32 connections;
++	u32 hw_connections;
++};
++
++void nf_flow_summary_scope_get(const void *owner)
++{
++	struct nf_flow_summary *summary = (struct nf_flow_summary *)owner;
++
++	refcount_inc(&summary->refs);
++}
++
++void nf_flow_summary_scope_put(const void *owner)
++{
++	struct nf_flow_summary *summary = (struct nf_flow_summary *)owner;
++
++	if (refcount_dec_and_test(&summary->refs))
++		kfree(summary);
++}
++
++/* Caller holds RCU. Do not pin netns: that would prevent flow cleanup. */
++struct net *nf_flow_summary_scope_net(const void *owner)
++{
++	const struct nf_flow_summary *summary = owner;
++
++	return rcu_dereference(summary->net);
++}
++
++int nf_flow_summary_bind(struct nf_flowtable *table, struct flow_offload *flow)
++{
++	struct nf_flow_summary *summary = read_pnet(&table->net)->ft.summary;
++
++	nf_flow_summary_scope_get(summary);
++	flow->summary = summary;
++	spin_lock_bh(&summary->lock);
++	flow->summary_active = true;
++	summary->connections++;
++	spin_unlock_bh(&summary->lock);
++	return 0;
++}
++
++void nf_flow_summary_hw(struct flow_offload *flow, u8 mask)
++{
++	struct nf_flow_summary *summary = flow->summary;
++	bool hw;
++
++	if (!summary || READ_ONCE(flow->summary_hw) == !!mask)
++		return;
++	spin_lock_bh(&summary->lock);
++	spin_lock_bh(&flow->hw_lock);
++	hw = flow->hw_mask != 0;
++	if (flow->summary_active && flow->summary_hw != hw) {
++		if (hw)
++			summary->hw_connections++;
++		else
++			summary->hw_connections--;
++		WRITE_ONCE(flow->summary_hw, hw);
++	}
++	spin_unlock_bh(&flow->hw_lock);
++	spin_unlock_bh(&summary->lock);
++}
++
++void nf_flow_summary_deactivate(struct flow_offload *flow)
++{
++	struct nf_flow_summary *summary = flow->summary;
++
++	if (!summary)
++		return;
++	spin_lock_bh(&summary->lock);
++	if (flow->summary_active) {
++		if (flow->summary_hw)
++			summary->hw_connections--;
++		summary->connections--;
++		flow->summary_active = false;
++		WRITE_ONCE(flow->summary_hw, false);
++	}
++	spin_unlock_bh(&summary->lock);
++}
++
++void nf_flow_summary_release(struct flow_offload *flow)
++{
++	if (!flow->summary)
++		return;
++	nf_flow_summary_deactivate(flow);
++	nf_flow_summary_scope_put(flow->summary);
++	flow->summary = NULL;
++}
++
++int nf_flow_summary_seq_show(struct seq_file *seq, void *v)
++{
++	struct nf_flow_summary *summary = seq_file_single_net(seq)->ft.summary;
++	u32 total, hw;
++
++	/* A coherent pair, no allocation, flow iteration, sampling or MMIO. */
++	spin_lock_bh(&summary->lock);
++	total = summary->connections;
++	hw = summary->hw_connections;
++	spin_unlock_bh(&summary->lock);
++	seq_printf(seq, "version=1 source=flowtable connections=%u hw=%u sw=%u\n",
++		   total, hw, total - hw);
++	return 0;
++}
++
++int nf_flow_summary_init_net(struct net *net)
++{
++	struct nf_flow_summary *summary = kzalloc(sizeof(*summary), GFP_KERNEL);
++
++	if (!summary)
++		return -ENOMEM;
++	refcount_set(&summary->refs, 1);
++	spin_lock_init(&summary->lock);
++	RCU_INIT_POINTER(summary->net, net);
++	net->ft.summary = summary;
++	return 0;
++}
++
++void nf_flow_summary_free_net(struct net *net)
++{
++	struct nf_flow_summary *summary = net->ft.summary;
++
++	/* Hardware final-stat callbacks can outlive pernet teardown. */
++	rcu_assign_pointer(summary->net, NULL);
++	synchronize_rcu();
++	nf_flow_summary_scope_put(summary);
++}

@@ -5,8 +5,7 @@ define KernelPackage/zte-npu
   TITLE:=ZTE ZX279133 NP Ethernet controller
   DEPENDS:=@TARGET_zte
   KCONFIG:=CONFIG_ZTE_ZX279133_ETH \
-	CONFIG_ZTE_ZX279133_LAN_CONDUIT \
-	CONFIG_ZTE_ZX279133_NATIVE_DEBUG=n
+	CONFIG_ZTE_ZX279133_LAN_CONDUIT
   FILES:=$(LINUX_DIR)/drivers/net/ethernet/zte/npu.ko \
 	$(LINUX_DIR)/drivers/net/ethernet/zte/zx279133-lan-conduit.ko
   AUTOLOAD:=$(call AutoLoad,30,npu zx279133-lan-conduit,1)

@@ -33,22 +33,15 @@ endef
 define Device/zte_zxslc-sr1010
   DEVICE_VENDOR := ZTE
   DEVICE_MODEL := ZXSLC SR1010
-  DEVICE_DTS := zx279133-sr1010
-  SUPPORTED_DEVICES := zte,zx279133-sr1010
-  DEVICE_PACKAGES := zte-fwslot luci-app-zte-fwslot
-endef
-TARGET_DEVICES += zte_zxslc-sr1010
-
-define Device/zte_zxslc-sr1010-flash
-  $(Device/zte_zxslc-sr1010)
-  DEVICE_VARIANT := Flash
   DEVICE_DTS := zx279133-sr1010-openwrt
   DEVICE_DTS_DIR := $(TOPDIR)/target/linux/zte/dts
+  SUPPORTED_DEVICES := zte,zx279133-sr1010
+  DEVICE_PACKAGES := zte-fwslot luci-app-zte-fwslot
   # Reuse Imm's scratch-buffer fix; generate no stock-8MiB variant.
   # The complete legacy container remains compatible with existing fwslot.
   IMAGES := sysupgrade.bin
   IMAGE/sysupgrade.bin := sr1010-firmware
 endef
-TARGET_DEVICES += zte_zxslc-sr1010-flash
+TARGET_DEVICES += zte_zxslc-sr1010
 
 $(eval $(call BuildImage))

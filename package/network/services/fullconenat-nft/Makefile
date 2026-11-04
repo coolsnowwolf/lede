@@ -8,11 +8,9 @@ include $(TOPDIR)/rules.mk
 PKG_NAME:=fullconenat-nft
 
 SR1010_OFFLOAD_FIXES:=$(if $(and $(filter y,$(CONFIG_TARGET_zte_zx279133)),\
-	$(filter y,$(CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010) \
-		$(CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010-flash))),y)
+	$(filter y,$(CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010))),y)
 PKG_CONFIG_DEPENDS += CONFIG_TARGET_zte_zx279133 \
-	CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010 \
-	CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010-flash
+	CONFIG_TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010
 PKG_PREPARED_DEPENDS += $(PKG_CONFIG_DEPENDS)
 PKG_RELEASE:=$(if $(SR1010_OFFLOAD_FIXES),4,3)
 
