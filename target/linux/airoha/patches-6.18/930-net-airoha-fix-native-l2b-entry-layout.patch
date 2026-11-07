@@ -13,7 +13,7 @@ Signed-off-by: lean <chenlin@fnnas.com>
 ---
 --- a/drivers/net/ethernet/airoha/airoha_eth.h
 +++ b/drivers/net/ethernet/airoha/airoha_eth.h
-@@ -388,6 +388,26 @@
+@@ -390,6 +390,26 @@
  	struct airoha_foe_mac_info l2;
  };
  
@@ -40,7 +40,7 @@ Signed-off-by: lean <chenlin@fnnas.com>
  struct airoha_foe_ipv4_tuple {
  	u32 src_ip;
  	u32 dest_ip;
-@@ -464,6 +484,7 @@
+@@ -466,6 +486,7 @@
  			u32 ib1;
  			union {
  				struct airoha_foe_bridge bridge;
@@ -48,22 +48,22 @@ Signed-off-by: lean <chenlin@fnnas.com>
  				struct airoha_foe_ipv4 ipv4;
  				struct airoha_foe_ipv4_dslite dslite;
  				struct airoha_foe_ipv6 ipv6;
-@@ -473,6 +494,12 @@
- 		u8 data[PPE_ENTRY_SIZE];
+@@ -476,6 +497,12 @@
  	};
  };
-+
+ 
 +static_assert(offsetof(struct airoha_foe_entry, l2b.src_mac_hi) == 16);
 +static_assert(offsetof(struct airoha_foe_entry, l2b.data) == 40);
 +static_assert(offsetof(struct airoha_foe_entry, l2b.ib2) == 44);
 +static_assert(offsetof(struct airoha_foe_entry, l2b.vlan1) == 48);
 +static_assert(sizeof(struct airoha_foe_entry) == PPE_ENTRY_SIZE);
- 
++
  struct airoha_foe_stats {
  	u32 bytes;
+ 	u32 packets;
 --- a/drivers/net/ethernet/airoha/airoha_ppe.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe.c
-@@ -749,6 +749,10 @@
+@@ -748,6 +748,10 @@
  	int ppe_num_stats_entries;
  	u8 nbq;
  
@@ -74,7 +74,7 @@ Signed-off-by: lean <chenlin@fnnas.com>
  	ppe_num_stats_entries = airoha_ppe_get_total_num_stats_entries(ppe);
  	if (ppe_num_stats_entries < 0)
  		return;
-@@ -1022,6 +1026,15 @@
+@@ -1021,6 +1025,15 @@
  	hwe.ib1 = (hwe.ib1 & mask) | (e->data.ib1 & ~mask);
  
  	type = FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe.ib1);
@@ -90,7 +90,7 @@ Signed-off-by: lean <chenlin@fnnas.com>
  	if (type >= PPE_PKT_TYPE_IPV6_ROUTE_3T) {
  		memcpy(&hwe.ipv6.l2, &e->data.bridge.l2, sizeof(hwe.ipv6.l2));
  		hwe.ipv6.ib2 = e->data.bridge.ib2;
-@@ -1040,6 +1053,7 @@
+@@ -1039,6 +1052,7 @@
  	}
  
  	hwe.bridge.data = e->data.bridge.data;
@@ -99,19 +99,19 @@ Signed-off-by: lean <chenlin@fnnas.com>
  
  	return 0;
 @@ -1065,6 +1079,12 @@
- 	state = FIELD_GET(AIROHA_FOE_IB1_BIND_STATE, hwe->ib1);
  	if (state == AIROHA_FOE_STATE_BIND)
  		goto unlock;
-+
+ 
 +	/* Native L2B uses its learned key, not an IPv4/L4 software hash bucket. */
 +	if (airoha_is_7581(ppe->eth) &&
 +	    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, hwe->ib1) ==
 +	    PPE_PKT_TYPE_BRIDGE)
 +		goto l2_lookup;
- 
++
  	index = airoha_ppe_foe_get_entry_hash(ppe, hwe);
  	hlist_for_each_entry_safe(e, n, &ppe->foe_flow[index], list) {
-@@ -1088,6 +1108,7 @@
+ 		if (e->type == FLOW_TYPE_L2_SUBFLOW) {
+@@ -1087,6 +1107,7 @@
  	if (commit_done)
  		goto unlock;
  
@@ -119,21 +119,22 @@ Signed-off-by: lean <chenlin@fnnas.com>
  	airoha_ppe_foe_set_bridge_addrs(&br, eth_hdr(skb));
  	e = rhashtable_lookup_fast(&ppe->l2_flows, &br,
  				   airoha_l2_flow_table_params);
-@@ -1471,7 +1492,14 @@
+@@ -1470,8 +1491,15 @@
  	struct airoha_eth *eth = ppe->eth;
  	int ppe_num_stats_entries;
  	struct airoha_npu *npu;
 +	struct airoha_foe_entry *hwe;
  	u32 index;
-+
+ 
 +	hwe = ppe->foe + hash * sizeof(*hwe);
 +	if (airoha_is_7581(eth) &&
 +	    FIELD_GET(AIROHA_FOE_IB1_BIND_PACKET_TYPE, READ_ONCE(hwe->ib1)) ==
 +	    PPE_PKT_TYPE_BRIDGE)
 +		return;
- 
++
  	ppe_num_stats_entries = airoha_ppe_get_total_num_stats_entries(ppe);
  	if (ppe_num_stats_entries < 0)
+ 		return;
 --- a/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
 +++ b/drivers/net/ethernet/airoha/airoha_ppe_debugfs.c
 @@ -61,6 +61,7 @@
