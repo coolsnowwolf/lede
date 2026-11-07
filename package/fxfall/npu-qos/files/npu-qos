@@ -1,0 +1,86 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Explicit configuration frontend; no daemon, timer, boot policy or flow dump.
+set -f
+
+usage() {
+	cat <<'EOF'
+Usage: npu-qos status
+       npu-qos set IFACE RATE_KBPS [CAP_RAW [port|QUEUE]]
+       npu-qos clear IFACE [port|QUEUE]
+       npu-qos schedule IFACE STRICT_QUEUE|none WEIGHT0 ... WEIGHT7
+       npu-qos clear-scheduler IFACE
+
+IFACE must be the NPU WAN netdev or shared LAN conduit, not a DSA user port,
+VLAN, PPP or macvlan interface. Port scope includes ALL traffic at that output.
+QUEUE is SSCH child 0..7; this command does not classify flows into that queue.
+CAP_RAW defaults to 0 (OEM rate-derived capacity); its byte unit is unverified.
+Setting requires explicit npu.experimental_sqm=1. Clearing remains available.
+Changing the opt-in flag does not remove existing policies: use clear.
+status reads cached policy state, not hardware counters or proven wire speed.
+
+schedule configures one strict-priority queue (0..7), or all queues as DWRR
+with `none`; weights are 18-bit values (1..262143). Strict queues can starve
+lower classes, so pair them with a child shaper sized to cap the priority class.
+This is an explicit low-level NPU scheduler control, not automatic SQM.
+EOF
+}
+[ "$#" -gt 0 ] || { usage >&2; exit 2; }
+op=$1; shift
+case "$op" in
+	status) [ "$#" -eq 0 ] || { usage >&2; exit 2; };;
+	set)
+		[ "$#" -ge 2 ] && [ "$#" -le 4 ] || { usage >&2; exit 2; }
+		iface=$1; rate=$2; cap=${3:-0}; queue=${4:-port};;
+	clear)
+		[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
+		iface=$1; queue=${2:-port};;
+	schedule)
+		[ "$#" -eq 10 ] || { usage >&2; exit 2; }
+		iface=$1; strict=$2; shift 2; weights="$*";;
+	clear-scheduler)
+		[ "$#" -eq 1 ] || { usage >&2; exit 2; }
+		iface=$1;;
+	-h|--help) usage; exit 0;;
+	*) usage >&2; exit 2;;
+esac
+if [ "$op" != status ]; then
+	case "$iface" in ''|*[!a-zA-Z0-9_.:-]*) echo 'Invalid interface' >&2; exit 2;; esac
+	if [ "$op" = set ] || [ "$op" = clear ]; then
+		case "$queue" in port|[0-7]) ;; *) echo 'Queue must be port or 0..7' >&2; exit 2;; esac
+	fi
+	if [ "$op" = set ]; then
+		case "$rate:$cap" in *[!0-9:]*|:*|*:) echo 'Use decimal rate/capacity' >&2; exit 2;; esac
+	fi
+	if [ "$op" = schedule ]; then
+		case "$strict" in none|[0-7]) ;; *) echo 'Strict queue must be 0..7 or none' >&2; exit 2;; esac
+		set -- $weights
+		for weight do
+			case "$weight" in ''|*[!0-9]*) echo 'Weights must be decimal integers' >&2; exit 2;; esac
+			[ "$weight" -ge 1 ] && [ "$weight" -le 262143 ] || {
+				echo 'Weights must be 1..262143' >&2; exit 2;
+			}
+		done
+		[ "$#" -eq 8 ] || { echo 'Exactly eight weights are required' >&2; exit 2; }
+	fi
+fi
+path=
+set +f
+for candidate in /sys/bus/platform/drivers/zx279133-eth/*/npu_qos; do
+	[ -f "$candidate" ] || continue
+	[ -z "$path" ] || { echo 'Multiple NPU instances; use their npu_qos attributes directly' >&2; exit 1; }
+	path=$candidate
+done
+set -f
+[ -n "$path" ] || { echo 'Managed NPU QoS endpoint missing' >&2; exit 1; }
+case "$op" in
+	set) request="set $iface $queue $rate $cap";;
+	clear) request="clear $iface $queue";;
+	schedule) request="schedule $iface $strict $weights";;
+	clear-scheduler) request="clear-scheduler $iface";;
+esac
+if [ "$op" != status ]; then
+	# As in npu-debug, avoid BusyBox emitting a separate newline write.
+	printf '%s' "$request" > "$path" || exit 1
+fi
+cat "$path"

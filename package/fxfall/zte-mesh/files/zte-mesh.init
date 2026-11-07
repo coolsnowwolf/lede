@@ -1,0 +1,442 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Runs the ZTE multiapd Controller in its private sandbox and keeps the
+# sandbox's wire attached to the LAN bridge.
+
+USE_PROCD=1
+START=96
+STOP=09
+
+ROOT=${ZTE_MESH_ROOT:-/usr/lib/zte-mesh/root}
+NSRUN=${ZTE_MESH_NSRUN:-/usr/libexec/zte-mesh/ns-run}
+ATTACH=${ZTE_MESH_ATTACH:-/usr/libexec/zte-mesh/attach}
+RUNDIR=${ZTE_MESH_RUNDIR:-/run/zte-mesh}
+
+log() { logger -t zte-mesh -p daemon.warn "$*"; }
+
+service_triggers() {
+	procd_add_reload_trigger zte_mesh
+}
+
+# The controller's VersionMode bit mask, fixed at the SR1010 factory value 128: ZTE vendor TLVs on (bit1 clear),
+# bit7 adds the Wi-Fi 7 MLD TLVs (0xdd, 0xe0) and nothing else (replay runs 15/16). A child applies an M2 in the
+# controller's mode. The factory UI has no setting for it; its one mesh switch is the self-organizing network
+# (mesh_v2). The old UCI option 'mode' is ignored.
+VERSION_MODE=128
+
+# ---- UCI input checks -------------------------------------------------------------------------
+# The service validates its configuration file again and rejects the whole file on any bad line;
+# these checks only exist so that the log names the option instead of a generic rejection. Values
+# of ssid/key options are never logged.
+
+# 0 = printable ASCII only (the service file is line based; a newline would inject keys)
+plain() {
+	case "$1" in *[![:print:]]*) return 1 ;; esac
+	return 0
+}
+
+# is_int VALUE MIN MAX (an optional leading minus sign is allowed)
+is_int() {
+	case "${1#-}" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
+# bool01 VALUE -> prints 0 or 1 (OpenWrt spellings), non-zero for anything else
+bool01() {
+	case "$1" in
+	1|yes|on|true|enabled) echo 1 ;;
+	0|no|off|false|disabled) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# security_code NAME -> the factory BeaconType: none 0, psk2 3, psk-mixed 6, sae 10, sae-mixed 12
+security_code() {
+	case "$1" in
+	none) echo 0 ;;
+	psk2) echo 3 ;;
+	psk-mixed) echo 6 ;;
+	sae) echo 10 ;;
+	sae-mixed) echo 12 ;;
+	*) return 1 ;;
+	esac
+}
+
+# channel_ok RADIO VALUE (0 = automatic; the legal 20 MHz channels, no 2.4 GHz channel 14)
+channel_ok() {
+	[ "$2" = 0 ] && return 0
+	if [ "$1" = 0 ]; then
+		is_int "$2" 1 13
+		return
+	fi
+	case " 36 40 44 48 52 56 60 64 100 104 108 112 116 120 124 128 132 136 140 144 149 153 157 161 165 " in
+	*" $2 "*) return 0 ;;
+	esac
+	return 1
+}
+
+# mac_ok VALUE: aa:bb:cc:dd:ee:ff, unicast, not all zero
+mac_ok() {
+	local o
+	case "$1" in
+	[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+	*) return 1 ;;
+	esac
+	[ "$1" = "00:00:00:00:00:00" ] && return 1
+	o=${1%%:*}
+	[ $(( 0x$o & 1 )) -eq 0 ]
+}
+
+bad() { log "$*; not starting"; return 1; }
+
+emit() { printf '%s=%s\n' "$1" "$2" >> "$CFG_TMP"; }
+
+# band_name RADIO -> the UCI spelling of the band
+band_name() { [ "$1" = 0 ] && echo 24g || echo 5g; }
+
+# Optional per-band options of the main section. $1 = radio (0/1), $2 = 1 when the bands are synchronised: the 5 GHz
+# radio then takes the hidden flag, security and MAC filter policy of the 2.4 GHz band, as it takes its name and key.
+# Returns non-zero (after logging) on a bad value.
+emit_band_options() {
+	local radio="$1" b s v code
+	b=$(band_name "$radio")
+	s=$b
+	[ "$2" = 1 ] && s=24g
+	config_get v main "wifi_${s}_hidden" ""
+	if [ -n "$v" ]; then
+		v=$(bool01 "$v") || { bad "wifi_${s}_hidden must be 0 or 1"; return 1; }
+		emit "radio$radio.hidden" "$v"
+	fi
+	config_get v main "wifi_${s}_security" ""
+	if [ -n "$v" ]; then
+		code=$(security_code "$v") || { bad "wifi_${s}_security must be none, psk2, psk-mixed, sae or sae-mixed"; return 1; }
+		emit "radio$radio.beacon_type" "$code"
+	fi
+	config_get v main "wifi_${b}_beacon_interval" ""
+	if [ -n "$v" ]; then
+		is_int "$v" 20 1000 || { bad "wifi_${b}_beacon_interval must be 20..1000"; return 1; }
+		emit "radio$radio.beacon_interval" "$v"
+	fi
+	config_get v main "wifi_${b}_channel" ""
+	if [ -n "$v" ]; then
+		channel_ok "$radio" "$v" || { bad "wifi_${b}_channel is not a legal channel for this band (0 = automatic)"; return 1; }
+		emit "radio$radio.channel" "$v"
+	fi
+	config_get v main "wifi_${b}_tx_power" ""
+	if [ -n "$v" ]; then
+		is_int "$v" 0 30 || { bad "wifi_${b}_tx_power must be 0..30 (dBm)"; return 1; }
+		emit "radio$radio.tx_power" "$v"
+	fi
+	config_get v main "wifi_${s}_acl_policy" ""
+	if [ -n "$v" ]; then
+		case "$v" in disabled|ban|allow) ;; *) bad "wifi_${s}_acl_policy must be disabled, ban or allow"; return 1 ;; esac
+		emit "radio$radio.acl_policy" "$v"
+	fi
+}
+
+# config_foreach callback for 'config zte_mesh_bss': one extra SSID slot of a band
+BSS_SEEN=""
+bss_section() {
+	local sec="$1" band slot en ssid key hid sec_name acl radio code
+	config_get band "$sec" band ""
+	case "$band" in 24g) radio=0 ;; 5g) radio=1 ;; *) bad "zte_mesh_bss '$sec': band must be 24g or 5g"; BSS_FAIL=1; return 1 ;; esac
+	config_get slot "$sec" slot ""
+	is_int "$slot" 1 3 || { bad "zte_mesh_bss '$sec': slot must be 1, 2 or 3"; BSS_FAIL=1; return 1; }
+	case " $BSS_SEEN " in *" $radio.$slot "*) bad "zte_mesh_bss '$sec': $band slot $slot is configured twice"; BSS_FAIL=1; return 1 ;; esac
+	BSS_SEEN="$BSS_SEEN $radio.$slot"
+	config_get en "$sec" enabled ""
+	config_get ssid "$sec" ssid ""
+	config_get key "$sec" key ""
+	en=$(bool01 "$en") || { bad "zte_mesh_bss '$sec': enabled must be 0 or 1"; BSS_FAIL=1; return 1; }
+	[ "${#ssid}" -ge 1 ] && [ "${#ssid}" -le 31 ] && plain "$ssid" &&
+	[ "${#key}" -ge 8 ] && [ "${#key}" -le 63 ] && plain "$key" ||
+		{ bad "zte_mesh_bss '$sec': ssid (1-31) and key (8-63) are required, printable ASCII"; BSS_FAIL=1; return 1; }
+	emit "radio$radio.bss$slot.enabled" "$en"
+	emit "radio$radio.bss$slot.ssid" "$ssid"
+	emit "radio$radio.bss$slot.key" "$key"
+	config_get hid "$sec" hidden ""
+	if [ -n "$hid" ]; then
+		hid=$(bool01 "$hid") || { bad "zte_mesh_bss '$sec': hidden must be 0 or 1"; BSS_FAIL=1; return 1; }
+		emit "radio$radio.bss$slot.hidden" "$hid"
+	fi
+	config_get sec_name "$sec" security ""
+	if [ -n "$sec_name" ]; then
+		code=$(security_code "$sec_name") ||
+			{ bad "zte_mesh_bss '$sec': security must be none, psk2, psk-mixed, sae or sae-mixed"; BSS_FAIL=1; return 1; }
+		emit "radio$radio.bss$slot.beacon_type" "$code"
+	fi
+	config_get acl "$sec" acl_policy ""
+	if [ -n "$acl" ]; then
+		case "$acl" in disabled|ban|allow) ;; *) bad "zte_mesh_bss '$sec': acl_policy must be disabled, ban or allow"; BSS_FAIL=1; return 1 ;; esac
+		emit "radio$radio.bss$slot.acl_policy" "$acl"
+	fi
+	config_get hid "$sec" access_minutes ""
+	if [ -n "$hid" ]; then
+		is_int "$hid" 1 10080 || { bad "zte_mesh_bss '$sec': access_minutes must be 1..10080"; BSS_FAIL=1; return 1; }
+		emit "radio$radio.bss$slot.access_minutes" "$hid"
+	fi
+	config_get hid "$sec" force_wifi5 ""
+	if [ -n "$hid" ]; then
+		hid=$(bool01 "$hid") || { bad "zte_mesh_bss '$sec': force_wifi5 must be 0 or 1"; BSS_FAIL=1; return 1; }
+		emit "radio$radio.bss$slot.force_wifi5" "$hid"
+	fi
+}
+
+# config_foreach callback for 'config zte_mesh_acl': one MAC filter rule (at most 16, numbered in file order)
+ACL_COUNT=0
+acl_section() {
+	local sec="$1" mac name band bss radio n
+	ACL_COUNT=$((ACL_COUNT + 1))
+	n=$ACL_COUNT
+	[ "$n" -le 16 ] || { bad "more than 16 zte_mesh_acl rules"; ACL_FAIL=1; return 1; }
+	config_get mac "$sec" mac ""
+	mac_ok "$mac" || { bad "zte_mesh_acl '$sec': mac must be a unicast aa:bb:cc:dd:ee:ff address"; ACL_FAIL=1; return 1; }
+	emit "acl.$n.mac" "$mac"
+	config_get name "$sec" name ""
+	if [ -n "$name" ]; then
+		case "$name" in *[!A-Za-z0-9_.-]*) bad "zte_mesh_acl '$sec': name may only use A-Z a-z 0-9 _ . -"; ACL_FAIL=1; return 1 ;; esac
+		[ "${#name}" -le 20 ] || { bad "zte_mesh_acl '$sec': name is longer than 20 characters"; ACL_FAIL=1; return 1; }
+		emit "acl.$n.name" "$name"
+	fi
+	config_get band "$sec" band ""
+	case "$band" in
+	"") radio=both ;;
+	both) radio=both; emit "acl.$n.radio" both ;;
+	24g) radio=0; emit "acl.$n.radio" 0 ;;
+	5g) radio=1; emit "acl.$n.radio" 1 ;;
+	*) bad "zte_mesh_acl '$sec': band must be 24g, 5g or both"; ACL_FAIL=1; return 1 ;;
+	esac
+	config_get bss "$sec" bss ""
+	if [ -n "$bss" ]; then
+		is_int "$bss" 0 3 || { bad "zte_mesh_acl '$sec': bss must be 0 (main SSID) or 1..3"; ACL_FAIL=1; return 1; }
+		if [ "$bss" != 0 ]; then
+			# a slot needs its own BSS section on every band the rule covers
+			case "$radio" in
+			both) case " $BSS_SEEN " in *" 0.$bss "*" 1.$bss "*|*" 1.$bss "*" 0.$bss "*) ;; *) bad "zte_mesh_acl '$sec': slot $bss is not configured on both bands"; ACL_FAIL=1; return 1 ;; esac ;;
+			*) case " $BSS_SEEN " in *" $radio.$bss "*) ;; *) bad "zte_mesh_acl '$sec': slot $bss is not configured on that band"; ACL_FAIL=1; return 1 ;; esac ;;
+			esac
+		fi
+		emit "acl.$n.bss" "$bss"
+	fi
+}
+
+# tz_offset_minutes: the router's UTC offset in minutes east (the sandbox has no time zone; the service needs it for the schedule)
+tz_offset_minutes() {
+	local z sign h m
+	z=$(date +%z 2>/dev/null)
+	case "$z" in [+-][0-9][0-9][0-9][0-9]) ;; *) echo 0; return ;; esac
+	sign=${z%"${z#?}"}; z=${z#?}; h=${z%??}; m=${z#??}
+	h=$(( ${h#0} + 0 )); m=$(( ${m#0} + 0 ))
+	if [ "$sign" = "-" ]; then echo $(( -(h * 60 + m) )); else echo $(( h * 60 + m )); fi
+}
+
+# time_ok HH:MM
+time_ok() {
+	case "$1" in [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) return 0 ;; esac
+	return 1
+}
+
+# config_foreach callback for 'config zte_mesh_timer': one Wi-Fi off window (at most 8, numbered in file order)
+TIMER_COUNT=0
+timer_section() {
+	local sec="$1" start end days scope mask="" d word n
+	TIMER_COUNT=$((TIMER_COUNT + 1))
+	n=$TIMER_COUNT
+	[ "$n" -le 8 ] || { bad "more than 8 zte_mesh_timer rules"; TIMER_FAIL=1; return 1; }
+	config_get start "$sec" start ""
+	config_get end "$sec" end ""
+	time_ok "$start" && time_ok "$end" || { bad "zte_mesh_timer '$sec': start and end must be HH:MM"; TIMER_FAIL=1; return 1; }
+	[ "$start" != "$end" ] || { bad "zte_mesh_timer '$sec': start and end are the same time"; TIMER_FAIL=1; return 1; }
+	config_get days "$sec" days "mon tue wed thu fri sat sun"
+	for d in mon tue wed thu fri sat sun; do
+		word=0
+		case " $days " in *" $d "*) word=1 ;; esac
+		mask="$mask$word"
+	done
+	# every word must be a weekday name (a typo must not silently drop a day)
+	for word in $days; do
+		case "$word" in mon|tue|wed|thu|fri|sat|sun) ;; *) bad "zte_mesh_timer '$sec': days must be a list of mon tue wed thu fri sat sun"; TIMER_FAIL=1; return 1 ;; esac
+	done
+	[ "$mask" != 0000000 ] || { bad "zte_mesh_timer '$sec': no weekday selected"; TIMER_FAIL=1; return 1; }
+	config_get scope "$sec" scope all
+	case "$scope" in all|guest) ;; *) bad "zte_mesh_timer '$sec': scope must be all or guest"; TIMER_FAIL=1; return 1 ;; esac
+	emit "timer.$n.start" "$start"
+	emit "timer.$n.end" "$end"
+	emit "timer.$n.days" "$mask"
+	emit "timer.$n.scope" "$scope"
+}
+
+# Writes $RUNDIR/config atomically (0600). Returns non-zero when incomplete or invalid.
+write_config() {
+	local e0 s0 k0 e1 s1 k1 sync suffix v radio key a b
+	config_load zte_mesh
+	config_get e0 main wifi_24g_enabled 1
+	config_get s0 main wifi_24g_ssid ""
+	config_get k0 main wifi_24g_key ""
+	config_get e1 main wifi_5g_enabled 1
+	config_get s1 main wifi_5g_ssid ""
+	config_get k1 main wifi_5g_key ""
+	config_get sync main wifi_dual_band_sync 0
+	config_get suffix main wifi_5g_suffix ""
+
+	e0=$(bool01 "$e0") && e1=$(bool01 "$e1") || { bad "wifi_24g_enabled / wifi_5g_enabled must be 0 or 1"; return 1; }
+	sync=$(bool01 "$sync") || { bad "wifi_dual_band_sync must be 0 or 1"; return 1; }
+
+	# 2.4 GHz name and key are always needed. The 5 GHz ones are needed only when the bands are not synchronised AND
+	# the 5 GHz name is not derived: with wifi_dual_band_sync 0, an empty wifi_5g_ssid becomes the 2.4 GHz name plus
+	# wifi_5g_suffix (default -5G, the factory rule) and an empty wifi_5g_key is the 2.4 GHz key. With sync on, the
+	# 5 GHz name and key are the 2.4 GHz ones and any wifi_5g_ssid / wifi_5g_key is ignored.
+	[ "${#s0}" -ge 1 ] && [ "${#s0}" -le 31 ] && [ "${#k0}" -ge 8 ] && [ "${#k0}" -le 63 ] && plain "$s0" && plain "$k0" || {
+		log "Wi-Fi profile incomplete (2.4 GHz SSID of 1-31 and a key of 8-63 printable characters); not starting"
+		return 1
+	}
+	if [ "$sync" = 0 ]; then
+		if [ -n "$s1" ]; then
+			[ "${#s1}" -le 31 ] && plain "$s1" || { bad "wifi_5g_ssid must be 1-31 printable characters"; return 1; }
+		else
+			v=${suffix:--5G}
+			[ "${#v}" -ge 1 ] && [ "${#v}" -le 8 ] && plain "$v" || { bad "wifi_5g_suffix must be 1-8 printable characters"; return 1; }
+			[ $(( ${#s0} + ${#v} )) -le 31 ] || { bad "the derived 5 GHz name (2.4 GHz name + suffix) is longer than 31 characters"; return 1; }
+		fi
+		if [ -n "$k1" ]; then
+			[ "${#k1}" -ge 8 ] && [ "${#k1}" -le 63 ] && plain "$k1" || { bad "wifi_5g_key must be 8-63 printable characters"; return 1; }
+		fi
+	elif [ -n "$suffix" ]; then
+		plain "$suffix" && [ "${#suffix}" -le 8 ] || { bad "wifi_5g_suffix must be 1-8 printable characters"; return 1; }
+	fi
+
+	mkdir -p "$RUNDIR" && chmod 0700 "$RUNDIR" || return 1
+	CFG_TMP="$RUNDIR/.config.$$"
+	( umask 077; : > "$CFG_TMP" ) || return 1
+	BSS_SEEN="" BSS_FAIL="" ACL_COUNT=0 ACL_FAIL="" TIMER_COUNT=0 TIMER_FAIL=""
+
+	emit version_mode "$VERSION_MODE"
+	emit radio0.enabled "$e0"
+	emit radio0.ssid "$s0"
+	emit radio0.key "$k0"
+	emit_band_options 0 || { rm -f "$CFG_TMP"; return 1; }
+	emit radio1.enabled "$e1"
+	if [ "$sync" = 0 ]; then
+		[ -n "$s1" ] && emit radio1.ssid "$s1"
+		[ -n "$k1" ] && emit radio1.key "$k1"
+	fi
+	emit_band_options 1 "$sync" || { rm -f "$CFG_TMP"; return 1; }
+
+	# Network-level and policy options: written only when set, so an untouched router keeps the fixed defaults.
+	config_get v main wifi_dual_band_sync ""
+	[ -n "$v" ] && emit wifi.dual_band_sync "$sync"
+	[ -n "$suffix" ] && emit wifi.essid_suffix "$suffix"
+	config_get v main mesh_v2 ""
+	if [ -n "$v" ]; then
+		v=$(bool01 "$v") || { bad "mesh_v2 must be 0 or 1"; rm -f "$CFG_TMP"; return 1; }
+		emit mesh.v2 "$v"
+	fi
+	config_get v main mesh_role ""
+	if [ -n "$v" ]; then
+		case "$v" in master|auto) emit mesh.role "$v" ;; *) bad "mesh_role must be master or auto"; rm -f "$CFG_TMP"; return 1 ;; esac
+	fi
+	config_get v main mlo_enable ""
+	if [ -n "$v" ]; then
+		v=$(bool01 "$v") || { bad "mlo_enable must be 0 or 1"; rm -f "$CFG_TMP"; return 1; }
+		emit mlo.enable "$v"
+	fi
+	config_get v main band_steer ""
+	if [ -n "$v" ]; then
+		v=$(bool01 "$v") || { bad "band_steer must be 0 or 1"; rm -f "$CFG_TMP"; return 1; }
+		emit band_steer.enabled "$v"
+	fi
+	config_get v main roam_force ""
+	if [ -n "$v" ]; then
+		v=$(bool01 "$v") || { bad "roam_force must be 0 or 1"; rm -f "$CFG_TMP"; return 1; }
+		emit roam.force "$v"
+	fi
+	for key in band_steer_rssi roam_rssi; do
+		config_get a main "${key}_24g" ""
+		config_get b main "${key}_5g" ""
+		[ -z "$a$b" ] && continue
+		# both bands or neither (the service writes both limits of a domain together)
+		[ -n "$a" ] && [ -n "$b" ] && is_int "$a" -110 -30 && is_int "$b" -110 -30 ||
+			{ bad "${key}_24g and ${key}_5g must both be set, -110..-30 (dBm)"; rm -f "$CFG_TMP"; return 1; }
+		case "$key" in
+		band_steer_rssi) emit band_steer.rssi24 "$a"; emit band_steer.rssi5 "$b" ;;
+		*) emit roam.rssi24 "$a"; emit roam.rssi5 "$b" ;;
+		esac
+	done
+
+	# Extra SSID slots (guest, spare, hidden backhaul) and MAC filter rules. Slots of a band must be 1..k without a gap:
+	# the child matches the BSS entries of the M2 message by position.
+	config_foreach bss_section zte_mesh_bss
+	[ -z "$BSS_FAIL" ] || { rm -f "$CFG_TMP"; return 1; }
+	for radio in 0 1; do
+		case " $BSS_SEEN " in
+		*" $radio.3 "*) case " $BSS_SEEN " in *" $radio.2 "*) ;; *) bad "$(band_name $radio) slot 3 needs slot 2 (slots must be 1..k)"; rm -f "$CFG_TMP"; return 1 ;; esac ;;
+		esac
+		case " $BSS_SEEN " in
+		*" $radio.2 "*) case " $BSS_SEEN " in *" $radio.1 "*) ;; *) bad "$(band_name $radio) slot 2 needs slot 1 (slots must be 1..k)"; rm -f "$CFG_TMP"; return 1 ;; esac ;;
+		esac
+	done
+	config_foreach acl_section zte_mesh_acl
+	[ -z "$ACL_FAIL" ] || { rm -f "$CFG_TMP"; return 1; }
+	config_foreach timer_section zte_mesh_timer
+	[ -z "$TIMER_FAIL" ] || { rm -f "$CFG_TMP"; return 1; }
+	[ "$TIMER_COUNT" = 0 ] || emit timer.utc_offset "$(tz_offset_minutes)"
+
+	mv "$CFG_TMP" "$RUNDIR/config" || { rm -f "$CFG_TMP"; return 1; }
+	echo "$VERSION_MODE" > "$RUNDIR/version_mode.host"
+	# Which optional policy keys exist (names only): a key that appears or disappears needs a restart, a changed value does not
+	{ grep -E '^(mesh\.role|wifi\.dual_band_sync|band_steer\.|roam\.|mlo\.enable)' "$RUNDIR/config" | cut -d= -f1 | sort
+	  echo "$VERSION_MODE"; } | tr '\n' ' ' > "$RUNDIR/restart.sig"
+}
+
+start_service() {
+	local enabled bridge
+	config_load zte_mesh
+	config_get_bool enabled main enabled 0
+	[ "$enabled" = 1 ] || return 0
+	config_get bridge main bridge br-lan
+	[ -d "/sys/class/net/$bridge/bridge" ] || { log "bridge $bridge does not exist"; return 1; }
+	[ -x "$NSRUN" ] && [ -d "$ROOT" ] || { log "runtime is not installed"; return 1; }
+	write_config || return 1
+
+	# A previous sandbox's wire can only be left behind by a crash.
+	ip link del zmesh0 >/dev/null 2>&1
+	ip link del lab-peer >/dev/null 2>&1
+
+	procd_open_instance controller
+	procd_set_param command "$NSRUN" "$ROOT" /lib/ld-linux.so.3 --library-path /lib /bin/db-engine-probe --controller-service
+	# The identity a real ZTE child accepts (REAL_CHILD.md section 2): this router's public vendor and
+	# model (no serial) and the child's market code, as mreplay.py --identity passes them. Without them
+	# the child rejects the ZTE layer (reason=1/2): no ZTE node data, no LED or reboot actions.
+	procd_set_param env ZTE_MESH_REAL_MANUFACTURER=ZTE "ZTE_MESH_REAL_MODEL=ZXSLC SR1010" \
+		ZTE_MESH_REAL_MARKET_SIGN=8000
+	procd_set_param respawn 3600 5 0
+	procd_set_param stderr 1
+	procd_set_param stdout 1
+	procd_close_instance
+
+	procd_open_instance attach
+	procd_set_param command "$ATTACH" "$bridge"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}
+
+reload_service() {
+	local old new
+	old=$(cat "$RUNDIR/restart.sig" 2>/dev/null)
+	if ! write_config; then
+		stop
+		return 1
+	fi
+	new=$(cat "$RUNDIR/restart.sig" 2>/dev/null)
+	# Values are picked up by the running controller. A different VersionMode, or an optional policy key that appeared
+	# or disappeared (the service reads those once at start), needs a restart.
+	[ "$old" = "$new" ] && procd_running zte-mesh controller && return 0
+	restart
+}
+
+stop_service() {
+	ip link del zmesh0 >/dev/null 2>&1
+	ip link del lab-peer >/dev/null 2>&1
+	rm -f "$RUNDIR/state.json" "$RUNDIR/config" "$RUNDIR/restart.sig"
+}

@@ -1,0 +1,111 @@
+#!/bin/sh /etc/rc.common
+
+START=20
+STOP=90
+
+STATE_FILE=/var/run/sqm-npu-policy.state
+WAN_PARAM=/sys/module/npu/parameters/experimental_sqm
+
+load_config() {
+	. /lib/functions.sh
+	config_load sqm-npu
+	config_get_bool enabled wan enabled 0
+	config_get wan_ifname wan wan_ifname eth0
+	# Hardware shaper is attached to the shared NPU LAN conduit, not br-lan.
+	lan_ifname=lan-cpu0
+	config_get upload wan upload 0
+	config_get download wan download 0
+}
+
+valid_rate() {
+	case "$1" in ''|*[!0-9]*) return 1;; esac
+	[ "$1" -le 2500000 ]
+}
+
+valid_iface() {
+	case "$1" in ''|*[!a-zA-Z0-9_.:-]*) return 1;; esac
+}
+
+get_sched_weights() {
+	npu-qos status | awk -v key="if=$1" '$1 == key { for (i = 1; i <= NF; i++) if ($i ~ /^weights=/) { sub(/^weights=/, "", $i); print $i; exit } }'
+}
+
+restore_scheduler() {
+	iface=$1
+	weights=$2
+	if [ -n "$weights" ]; then
+		weights=$(printf '%s' "$weights" | tr ',' ' ')
+		set -- $weights
+		npu-qos schedule "$iface" none "$@"
+	else
+		npu-qos clear-scheduler "$iface"
+	fi
+}
+
+has_shaper() {
+	npu-qos status | grep -F "if=$1 " | grep -F "queue=$2 " >/dev/null 2>&1
+}
+
+clear_npu() {
+	[ -f "$STATE_FILE" ] || return 0
+	state_wan= state_lan= state_up=0 state_down=0 state_sched=0 state_sched_lan=0 state_prev_wan= state_prev_lan=
+	while IFS='=' read -r key value; do
+		case "$key" in
+			wan) state_wan=$value;;
+			lan) state_lan=$value;;
+			up) state_up=$value;;
+			down) state_down=$value;;
+			sched) state_sched=$value;;
+			sched_lan) state_sched_lan=$value;;
+			prev_wan_sched) state_prev_wan=$value;;
+			prev_lan_sched) state_prev_lan=$value;;
+		esac
+	done < "$STATE_FILE"
+	if [ "$state_sched" = 1 ]; then restore_scheduler "$state_wan" "$state_prev_wan" || return 1; fi
+	if [ "$state_sched_lan" = 1 ]; then restore_scheduler "$state_lan" "$state_prev_lan" || return 1; fi
+	if [ "$state_up" = 1 ] && has_shaper "$state_wan" 8; then
+		npu-qos clear "$state_wan" port || return 1
+	fi
+	if [ "$state_down" = 1 ]; then
+		if has_shaper "$state_lan" 8; then
+			npu-qos clear "$state_lan" port || return 1
+		fi
+	fi
+	rm -f "$STATE_FILE"
+	[ ! -w "$WAN_PARAM" ] || printf 'N\n' > "$WAN_PARAM"
+}
+
+apply_npu() {
+	valid_iface "$wan_ifname" && valid_rate "$upload" && valid_rate "$download" || return 2
+	[ "$wan_ifname" = eth0 ] && [ "$lan_ifname" = lan-cpu0 ] || {
+		echo 'SR1010 NPU mode requires WAN eth0 and shared LAN conduit lan-cpu0' >&2
+		return 2
+	}
+	[ -w "$WAN_PARAM" ] || { echo 'NPU SQM opt-in parameter is unavailable' >&2; return 1; }
+	clear_npu || return 1
+	prev_wan_sched=$(get_sched_weights "$wan_ifname")
+	prev_lan_sched=$(get_sched_weights "$lan_ifname")
+	printf 'Y\n' > "$WAN_PARAM" || return 1
+	up=0; down=0; sched=1; sched_lan=1
+	[ "$upload" = 0 ] || up=1
+	[ "$download" = 0 ] || down=1
+	{
+		printf 'wan=%s\nlan=%s\nup=%s\ndown=%s\nsched=%s\nsched_lan=%s\nprev_wan_sched=%s\nprev_lan_sched=%s\n' \
+			"$wan_ifname" "$lan_ifname" "$up" "$down" "$sched" "$sched_lan" "$prev_wan_sched" "$prev_lan_sched"
+	} > "$STATE_FILE"
+	if [ "$up" = 1 ]; then npu-qos set "$wan_ifname" "$upload" 0 port || { clear_npu; return 1; }; fi
+	if [ "$down" = 1 ]; then npu-qos set "$lan_ifname" "$download" 0 port || { clear_npu; return 1; }; fi
+	npu-qos schedule "$wan_ifname" none 64 64 64 64 64 64 64 64 || { clear_npu; return 1; }
+	npu-qos schedule "$lan_ifname" none 64 64 64 64 64 64 64 64 || { clear_npu; return 1; }
+}
+
+start() {
+	load_config
+	[ "$enabled" = 1 ] || { stop; return $?; }
+	apply_npu
+}
+
+reload() { start; }
+stop() {
+	clear_npu || return 1
+}

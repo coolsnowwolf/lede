@@ -11,7 +11,7 @@ define Package/zte-fwslot
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=ZTE SR1010 firmware slot flasher
-  DEPENDS:=@TARGET_zte
+  DEPENDS:=@TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010
 endef
 
 define Package/zte-fwslot/description

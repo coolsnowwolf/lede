@@ -1,11 +1,8 @@
 Subject: [PATCH] net: zte: add the NP hardware rule API
 
-Implement rule submission, removal, counters and resource coordination
-for the separate flowtable translator.
-
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-offload-api.c
-@@ -0,0 +1,1310 @@
+@@ -0,0 +1,1807 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* NPPT supplier, optional client registration and hardware access boundary. */
 +#include <linux/iopoll.h>
@@ -13,6 +10,7 @@ for the separate flowtable translator.
 +#include <linux/if_vlan.h>
 +#include <linux/overflow.h>
 +#include <linux/if_bridge.h>
++#include <linux/debugfs.h>
 +#include <linux/kref.h>
 +#include <linux/ktime.h>
 +#include <linux/rwsem.h>
@@ -23,6 +21,7 @@ for the separate flowtable translator.
 +#include "zx279133-host.h"
 +#include "zx279133-native.h"
 +#include "zx279133-meter.h"
++#include "zx279133-native-debug.h"
 +
 +#define ZX279133_SE_ALG_WR_DONE 0x50000
 +#define ZX279133_SE_ALG_WR_CMD  0x50004
@@ -52,13 +51,18 @@ for the separate flowtable translator.
 +	void *client;
 +	struct zx279133_host_manager *hosts;
 +	struct zx279133_meter_pool *meters;
++	struct dentry *native_debugfs;
 +	struct list_head vlans;
 +	/* Configuration admission survives flow retirement and hardware reset. */
 +	DECLARE_BITMAP(configured_vlans, VLAN_N_VID);
++	DECLARE_BITMAP(lan_vlans, VLAN_N_VID);
++	DECLARE_BITMAP(wan_vlans, VLAN_N_VID);
 +	struct zte_nppt_vlan_row *vlan_originals;
 +	bool vlan_config_uncertain;
 +	u32 vlan_rows, vlan_users, vlan_uncertain;
 +	u64 generation;
++	struct zte_nppt_me_diagnostics me_stats;
++	bool me_stats_valid;
 +};
 +
 +static DEFINE_MUTEX(zte_nppt_devices_lock);
@@ -148,7 +152,8 @@ for the separate flowtable translator.
 +				ZTE_NPPT_CAP_STATS | ZTE_NPPT_CAP_AGE |
 +				ZTE_NPPT_CAP_PPU_MCODE |
 +				(np->eth && READ_ONCE(np->eth->vid_key_active) ?
-+				 ZTE_NPPT_CAP_LAN_VID_KEY : 0),
++				 ZTE_NPPT_CAP_LAN_VID_KEY |
++				 ZTE_NPPT_CAP_WAN_VID_KEY : 0),
 +		.ppu_version_major = np->eth ? np->eth->ppu_version_major : 0,
 +		.ppu_version_minor = np->eth ? np->eth->ppu_version_minor : 0,
 +		.ppu_version_valid = np->eth && np->eth->ppu_mcode_prepared &&
@@ -368,6 +373,12 @@ for the separate flowtable translator.
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_host_put);
 +
++void zte_nppt_hosts_show(struct zte_nppt *np, struct seq_file *s)
++{
++	zx279133_hosts_show(np->hosts, s);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_hosts_show);
++
 +void zx279133_flow_offload_flush(struct zx279133_eth *eth)
 +{
 +	/* Invalidate rules while clocks are still on, before releasing resources. */
@@ -422,6 +433,7 @@ for the separate flowtable translator.
 +		return ZX279133_FLOW_PORT_WAN;
 +	return ZX279133_FLOW_PORT_LAN;
 +}
++
 +
 +enum zx279133_flow_port zte_nppt_dev_port(struct zte_nppt *np,
 +					struct net_device *dev, u16 *port)
@@ -495,6 +507,25 @@ for the separate flowtable translator.
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_ddr_write);
 +
++#ifdef CONFIG_DEBUG_FS
++int zte_nppt_debug_ddr_read(struct zte_nppt *np, u32 bucket, u32 *table)
++{
++	u8 raw[ZX279133_DDR_BUCKET_SIZE];
++	u8 *dst = (u8 *)table;
++	unsigned int i;
++
++	if (!table || bucket >= ZTE_NPPT_DDR_BYTES / ZX279133_DDR_BUCKET_SIZE)
++		return -EINVAL;
++	lockdep_assert_held(&np->eth->datapath_lock);
++	memcpy_fromio(raw, np->eth->se_hash_mem + (bucket << ZX279133_DDR_BUCKET_SHIFT),
++		      sizeof(raw));
++	for (i = 0; i < ARRAY_SIZE(raw); i++)
++		dst[i] = raw[ARRAY_SIZE(raw) - 1 - i];
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_debug_ddr_read);
++#endif
++
 +int zte_nppt_ddr_clear(struct zte_nppt *np, u32 bucket)
 +{
 +	u8 __iomem *dst;
@@ -553,6 +584,111 @@ for the separate flowtable translator.
 +	lockdep_assert_held(&eth->datapath_lock);
 +	return eth->hardware_prepared ? 0 : -ENETDOWN;
 +}
++
++int zte_nppt_frame_limits_get(struct zte_nppt *np,
++			    struct zte_nppt_frame_limits *limits)
++{
++	/* SPA memory indices from the existing CPU/LAN/WAN initialization,
++	 * not Linux port numbers or downstream action/gemport identifiers.
++	 */
++	static const u8 memories[ZTE_NPPT_FRAME_SPA_ROWS] = {
++		0, 5, 6, 10, 12, 14, 15,
++	};
++	struct zx279133_eth *eth = np->eth;
++	unsigned int i;
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!limits)
++		return -EINVAL;
++	memset(limits, 0, sizeof(*limits));
++	limits->generation = np->generation;
++	for (i = 0; i < ARRAY_SIZE(memories); i++) {
++		limits->spa[i].mem = memories[i];
++		limits->spa[i].rc = -ECANCELED;
++	}
++	/* These are configuration registers, not read-clear MMC counters. */
++	limits->xmac_rx[0] = readl(eth->base + ZX279133_XMAC0_BASE +
++				  ZX279133_XMAC_RX_CTRL);
++	limits->xmac_frame[0] = readl(eth->base + ZX279133_XMAC0_BASE +
++				     ZX279133_XMAC_FRAME_CFG);
++	limits->xmac_rx[1] = readl(eth->base + ZX279133_XMAC1_BASE +
++				  ZX279133_XMAC_RX_CTRL);
++	limits->xmac_frame[1] = readl(eth->base + ZX279133_XMAC1_BASE +
++				     ZX279133_XMAC_FRAME_CFG);
++	limits->sdet_up = readl(eth->base + ZX279133_SDET_FRAME_CFG);
++	limits->sdet_down = readl(eth->base + ZX279133_SDET_DOWN_FRAME_CFG);
++	limits->global_rc = zx279133_native_sdt128_io(eth, 1, 0,
++						     limits->global_raw, false);
++	/* Stop on the first indirect timeout, retaining the partial snapshot. */
++	if (limits->global_rc) {
++		memset(limits->global_raw, 0, sizeof(limits->global_raw));
++		return 0;
++	}
++	for (i = 0; i < ARRAY_SIZE(memories); i++) {
++		struct zte_nppt_frame_spa *row = &limits->spa[i];
++
++		row->rc = zx279133_native_spa_io(eth, row->mem, 10,
++						 &row->raw, false);
++		if (row->rc) {
++			row->raw = 0;
++			break;
++		}
++	}
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_frame_limits_get);
++
++int zte_nppt_ppu_me_diagnostics_get(struct zte_nppt *np,
++				    struct zte_nppt_me_diagnostics *diagnostics)
++{
++	struct zte_nppt_me_diagnostics sample = {};
++	u64 now;
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!diagnostics)
++		return -EINVAL;
++	if (!np->eth->ppu_mcode_prepared)
++		return -ENETDOWN;
++	now = ktime_get_ns();
++	/* access + datapath_lock serialize cache users and supplier reset/remove. */
++	if (np->me_stats_valid && np->me_stats.stats.generation == np->generation &&
++	    now - np->me_stats.stats.sampled_ns < ZTE_NPPT_ME_STATS_INTERVAL_NS) {
++		*diagnostics = np->me_stats;
++		return 0;
++	}
++	ret = zx279133_ppu_me_diagnostics_read(np->eth, &sample);
++	if (ret)
++		return ret;
++	sample.stats.generation = np->generation;
++	sample.stats.sampled_ns = ktime_get_ns();
++	np->me_stats = sample;
++	np->me_stats_valid = true;
++	*diagnostics = sample;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ppu_me_diagnostics_get);
++
++int zte_nppt_ppu_me_stats_get(struct zte_nppt *np,
++			      struct zte_nppt_me_stats *stats)
++{
++	struct zte_nppt_me_diagnostics diagnostics;
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!stats)
++		return -EINVAL;
++	/* Original callers and the extended debug view share this one cache. */
++	ret = zte_nppt_ppu_me_diagnostics_get(np, &diagnostics);
++	if (!ret)
++		*stats = diagnostics.stats;
++	return ret;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ppu_me_stats_get);
 +
 +int zte_nppt_native_plcr_profile_get(struct zte_nppt *np,
 +				     u8 id, struct zte_nppt_plcr_profile *profile)
@@ -616,6 +752,50 @@ for the separate flowtable translator.
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_native_plcr_timing_get);
 +
++int zte_nppt_native_red_buffer_get(struct zte_nppt *np, u16 queue,
++				   struct zte_nppt_red_buffer *config)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_red_buffer_get(np->eth, queue, config);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_red_buffer_get);
++
++int zte_nppt_native_red_buffer_set(struct zte_nppt *np, u16 queue,
++				   const struct zte_nppt_red_buffer *config)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_red_buffer_set(np->eth, queue, config);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_red_buffer_set);
++
++int zte_nppt_native_red_usage_get(struct zte_nppt *np, u16 queue,
++				  struct zte_nppt_red_usage *usage)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_red_usage_get(np->eth, queue, usage);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_red_usage_get);
++
++int zte_nppt_native_red_usage_full_get(struct zte_nppt *np, u16 queue,
++				       struct zte_nppt_red_usage_full *usage)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_red_usage_full_get(np->eth, queue, usage);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_red_usage_full_get);
++
 +int zte_nppt_shaper_set(struct zte_nppt *np, struct net_device *dev, u8 queue,
 +			u64 owner, const struct zte_nppt_shaper_request *request)
 +{
@@ -646,6 +826,126 @@ for the separate flowtable translator.
 +	return zx279133_qos_status(np->eth, dev, queue, status);
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_shaper_status);
++
++int zte_nppt_native_ssch_global_get(struct zte_nppt *np,
++				    struct zte_nppt_ssch_global *config)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_ssch_global_get(np->eth, config);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_global_get);
++
++int zte_nppt_native_ssch_global_set(struct zte_nppt *np,
++				    const struct zte_nppt_ssch_global *config)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_qos_conflicts(np->eth, -1))
++		return -EBUSY;
++	return zx279133_native_ssch_global_set(np->eth, config);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_global_set);
++
++int zte_nppt_native_ssch_mode_get(struct zte_nppt *np,
++				  u8 port, u8 queue, u8 *mode_bit)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_ssch_mode_get(np->eth, port, queue, mode_bit);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_mode_get);
++
++int zte_nppt_native_ssch_mode_set(struct zte_nppt *np,
++				  u8 port, u8 queue, u8 mode_bit)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_qos_conflicts(np->eth, port))
++		return -EBUSY;
++	return zx279133_native_ssch_mode_set(np->eth, port, queue, mode_bit);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_mode_set);
++
++int zte_nppt_native_ssch_weight_get(struct zte_nppt *np,
++				    u8 port, u8 queue, u32 *weight)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_ssch_weight_get(np->eth, port, queue, weight);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_weight_get);
++
++int zte_nppt_native_ssch_weight_set(struct zte_nppt *np,
++				    u8 port, u8 queue, u32 weight)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_qos_conflicts(np->eth, port))
++		return -EBUSY;
++	return zx279133_native_ssch_weight_set(np->eth, port, queue, weight);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_weight_set);
++
++int zte_nppt_native_ssch_queue_get(struct zte_nppt *np,
++				   u8 port, u8 queue, struct zte_nppt_ssch_shaper *shaper)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_ssch_queue_get(np->eth, port, queue, shaper);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_queue_get);
++
++int zte_nppt_native_ssch_queue_set(struct zte_nppt *np,
++				   u8 port, u8 queue, const struct zte_nppt_ssch_shaper *shaper)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_qos_conflicts(np->eth, port))
++		return -EBUSY;
++	return zx279133_native_ssch_queue_set(np->eth, port, queue, shaper);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_queue_set);
++
++int zte_nppt_native_ssch_port_get(struct zte_nppt *np,
++				  u8 port, struct zte_nppt_ssch_shaper *shaper)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_ssch_port_get(np->eth, port, shaper);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_port_get);
++
++int zte_nppt_native_ssch_port_set(struct zte_nppt *np,
++				  u8 port, const struct zte_nppt_ssch_shaper *shaper)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zx279133_qos_conflicts(np->eth, port))
++		return -EBUSY;
++	return zx279133_native_ssch_port_set(np->eth, port, shaper);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_ssch_port_set);
 +
 +void zte_nppt_vlan_status(struct zte_nppt *np, u32 *rows, u32 *users,
 +			  u32 *uncertain)
@@ -833,6 +1133,7 @@ for the separate flowtable translator.
 +			      const unsigned long *vids)
 +{
 +	struct zte_nppt *np = eth->flow_offload;
++	DECLARE_BITMAP(merged, VLAN_N_VID);
 +	int ret;
 +
 +	if (!np)
@@ -840,7 +1141,45 @@ for the separate flowtable translator.
 +	/* LAN callers must release the switch MDIO lock before this boundary. */
 +	mutex_lock(&np->access);
 +	mutex_lock(&eth->datapath_lock);
-+	ret = zx279133_vlan_config_apply(np, vids);
++	bitmap_or(merged, vids, np->wan_vlans, VLAN_N_VID);
++	ret = zx279133_vlan_config_apply(np, merged);
++	if (!ret)
++		bitmap_copy(np->lan_vlans, vids, VLAN_N_VID);
++	mutex_unlock(&eth->datapath_lock);
++	mutex_unlock(&np->access);
++	return ret;
++}
++
++/* eth0's VLAN filter callbacks are configuration transactions, not packet
++ * sampling. Keep WAN and DSA ownership separate: removing either side must
++ * not remove a shared SDT0 row still required by the other side.
++ */
++int zx279133_wan_vlan_update(struct zx279133_eth *eth, __be16 proto,
++			    u16 vid, bool add)
++{
++	struct zte_nppt *np = eth->flow_offload;
++	DECLARE_BITMAP(wan, VLAN_N_VID);
++	DECLARE_BITMAP(merged, VLAN_N_VID);
++	int ret;
++
++	if (proto != htons(ETH_P_8021Q) || vid >= VLAN_VID_MASK)
++		return -EOPNOTSUPP;
++	/* The networking core adds VID0 for priority-tag reception. */
++	if (!vid)
++		return 0;
++	if (!np)
++		return -ENODEV;
++	mutex_lock(&np->access);
++	mutex_lock(&eth->datapath_lock);
++	bitmap_copy(wan, np->wan_vlans, VLAN_N_VID);
++	if (add)
++		__set_bit(vid, wan);
++	else
++		__clear_bit(vid, wan);
++	bitmap_or(merged, wan, np->lan_vlans, VLAN_N_VID);
++	ret = zx279133_vlan_config_apply(np, merged);
++	if (!ret)
++		bitmap_copy(np->wan_vlans, wan, VLAN_N_VID);
 +	mutex_unlock(&eth->datapath_lock);
 +	mutex_unlock(&np->access);
 +	return ret;
@@ -1012,6 +1351,100 @@ for the separate flowtable translator.
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_vlan_abandon);
 +
++int zte_nppt_native_vlan_get(struct zte_nppt *np,
++			     u16 vid, struct zte_nppt_vlan_row *row)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_vlan_get(np->eth, vid, row);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_vlan_get);
++
++int zte_nppt_native_vlan_set(struct zte_nppt *np,
++			     u16 vid, const struct zte_nppt_vlan_row *row)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (vid >= VLAN_N_VID)
++		return -EINVAL;
++	if (zte_nppt_vlan_find(np, vid) || test_bit(vid, np->configured_vlans))
++		return -EBUSY;
++	return zx279133_native_vlan_set(np->eth, vid, row);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_vlan_set);
++
++int zte_nppt_native_vlan_mode_get(struct zte_nppt *np,
++				  u16 vid, u8 port, u8 *mode)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_vlan_mode_get(np->eth, vid, port, mode);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_vlan_mode_get);
++
++int zte_nppt_native_vlan_mode_set(struct zte_nppt *np,
++				  u16 vid, u8 port, u8 mode)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (zte_nppt_vlan_find(np, vid))
++		return -EBUSY;
++	return zx279133_native_vlan_mode_set(np->eth, vid, port, mode);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_vlan_mode_set);
++
++int zte_nppt_native_pvid_get(struct zte_nppt *np,
++			     u8 mem, u16 *vid, u8 *prio)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_pvid_get(np->eth, mem, vid, prio);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_pvid_get);
++
++int zte_nppt_native_pvid_set(struct zte_nppt *np,
++			     u8 mem, u16 vid, u8 prio)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_pvid_set(np->eth, mem, vid, prio);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_pvid_set);
++
++int zte_nppt_native_invlan_get(struct zte_nppt *np,
++			       u8 mem, bool *enabled)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_invlan_get(np->eth, mem, enabled);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_invlan_get);
++
++int zte_nppt_native_invlan_set(struct zte_nppt *np,
++			       u8 mem, bool enabled)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	return zx279133_native_invlan_set(np->eth, mem, enabled);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_native_invlan_set);
++
 +static struct zx279133_eth *zx279133_wan_ports_eth(struct device *dev)
 +{
 +	struct zx279133_lan_service *service = dev_get_drvdata(dev);
@@ -1115,6 +1548,7 @@ for the separate flowtable translator.
 +	.attrs = zx279133_wan_ports_attrs,
 +};
 +
++
 +static void zx279133_nppt_endpoint_cleanup(void *data)
 +{
 +	struct zte_nppt *np = data;
@@ -1122,6 +1556,7 @@ for the separate flowtable translator.
 +	int ret;
 +
 +	/* Remove before access/datapath locks; open fds hold their own NP ref. */
++	debugfs_remove_recursive(np->native_debugfs);
 +	/* Stop event producers before taking locks needed by the event worker. */
 +	zx279133_hosts_quiesce(np->hosts);
 +	mutex_lock(&zte_nppt_devices_lock);
@@ -1195,6 +1630,7 @@ for the separate flowtable translator.
 +				       zx279133_nppt_endpoint_cleanup, np);
 +	if (ret)
 +		return ret;
++	np->native_debugfs = zx279133_native_debug_create(np, dev_name(eth->dev));
 +	return devm_device_add_group(eth->dev, &zx279133_wan_ports_group);
 +fail:
 +	eth->flow_offload = NULL;
@@ -1232,6 +1668,64 @@ for the separate flowtable translator.
 +	zx279133_meter_abandon(np->meters, meter);
 +}
 +EXPORT_SYMBOL_GPL(zte_nppt_meter_abandon);
++
++/* The fixed ME context window is calibrated by the author's PPU tracer.
++ * Running firmware can change these words while we read: retain both PC and
++ * stop observations, and never label a running observation coherent.
++ */
++int zte_nppt_ppu_context_get(struct zte_nppt *np, u8 me,
++			    struct zte_nppt_ppu_context *context)
++{
++	struct zx279133_eth *eth;
++	unsigned int i;
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!context || me >= 8)
++		return -EINVAL;
++	eth = np->eth;
++	mutex_lock(&eth->np_ind_lock);
++	context->firmware_crc = READ_ONCE(eth->ppu_firmware_crc32);
++	context->key_rc = -ENODATA;
++	context->interrupt_mask = readl(eth->pps_base + 0x90008);
++	context->stopped_before = readl(eth->pps_base + 0x90004) & 0xff;
++	context->pc_before = readl(eth->pps_base + 0x90100 + me * 4) & 0xffff;
++	for (i = 0; i < ARRAY_SIZE(context->words); i++)
++		context->words[i] = readl(eth->pps_base + 0x94400 + me * 0x400 + i * 4);
++	context->pc_after = readl(eth->pps_base + 0x90100 + me * 4) & 0xffff;
++	context->stopped_after = readl(eth->pps_base + 0x90004) & 0xff;
++	mutex_unlock(&eth->np_ind_lock);
++	return 0;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ppu_context_get);
++
++int zte_nppt_ppu_capture(struct zte_nppt *np, u16 pc, u8 *me,
++			 struct zte_nppt_ppu_context *context)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!context || !me)
++		return -EINVAL;
++	return zx279133_ppu_capture(np->eth, pc, me, context);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ppu_capture);
++
++int zte_nppt_ppu_vid_probe(struct zte_nppt *np, u8 *me,
++			   struct zte_nppt_ppu_context *context)
++{
++	int ret = zte_nppt_native_ready(np);
++
++	if (ret)
++		return ret;
++	if (!context || !me)
++		return -EINVAL;
++	return zx279133_ppu_vid_probe(np->eth, me, context);
++}
++EXPORT_SYMBOL_GPL(zte_nppt_ppu_vid_probe);
++
 +
 +/* OEM MAC policers use independent source/destination binding ranges. */
 +int zte_nppt_meter_mac_get(struct zte_nppt *np,

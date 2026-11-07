@@ -1,11 +1,296 @@
 Subject: [PATCH] net: zte: add the flowtable rule translator
 
-Translate Linux flow rules to NP actions, keeping policy and per-rule
-lifecycle in fnoffload and global hardware resources in npu.
-
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-client-limits.h
+@@ -0,0 +1,285 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Explicit per-MAC policy, not a connection table. Called with supplier
++ * begin/end and translator lock held; no packet hook, worker or timer.
++ */
++struct zx279133_client_config {
++	u8 mac[ETH_ALEN];
++	u64 upload;
++	u64 download;
++	u32 burst_bytes;
++	bool used;
++};
++
++static bool zx279133_clients_active(struct zx279133_flow_offload *o)
++{
++	unsigned int i;
++
++	if (o->mac_global_owned)
++		return true;
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++)
++		if (o->clients[i].pinned)
++			return true;
++	return false;
++}
++
++static int zx279133_client_release(struct zx279133_flow_offload *o,
++				   struct zx279133_client_limit *c, u8 slot)
++{
++	int ret, dir;
++
++	/* Disable both MAC selectors before releasing a shared binding. On any
++	 * failure retain Host + meters and module pin for a later explicit retry.
++	 */
++	if (c->host) {
++		ret = zte_nppt_host_limit(o->np, c->host, slot, false, false);
++		if (ret)
++			return ret;
++		c->programmed = false;
++	}
++	for (dir = 0; dir < 2; dir++) {
++		if (!c->meters[dir])
++			continue;
++		ret = zte_nppt_meter_put(o->np, c->meters[dir]);
++		if (ret)
++			return ret;
++		c->meters[dir] = NULL;
++		c->cbs_raw[dir] = 0;
++	}
++	if (c->host) {
++		ret = zte_nppt_host_put(o->np, c->host);
++		/* host_put consumes the reference even if its final row delete
++		 * fails; the NPU Host manager quarantines that zero-user row.
++		 */
++		c->host = NULL;
++		if (ret)
++			return ret;
++	}
++	if (c->pinned) {
++		c->pinned = false;
++		module_put(THIS_MODULE);
++	}
++	return 0;
++}
++
++static int zx279133_clients_global_restore(struct zx279133_flow_offload *o)
++{
++	unsigned int i;
++	int ret;
++
++	if (!o->mac_global_owned)
++		return 0;
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++)
++		if (o->clients[i].pinned)
++			return 0;
++	ret = zte_nppt_mac_global_set(o->np, o->mac_global_saved);
++	if (!ret) {
++		o->mac_global_owned = false;
++		module_put(THIS_MODULE);
++	}
++	return ret;
++}
++
++static int zx279133_client_apply(struct zx279133_flow_offload *o,
++				 struct zx279133_client_limit *c, u8 slot)
++{
++	struct zte_nppt_plcr_timing timing;
++	struct zte_nppt_plcr_profile profile;
++	u64 rate[2] = { c->upload, c->download };
++	int ret, dir;
++
++	if (c->programmed)
++		return 0;
++	if (c->pinned)
++		return -EIO; /* failed cleanup must be retried before reprogramming */
++	if (!READ_ONCE(experimental_mac_limits))
++		return -EOPNOTSUPP;
++	ret = zte_nppt_native_plcr_timing_get(o->np, &timing);
++	if (ret)
++		return ret;
++	if (timing.time_count != 62500 || timing.packet_length != 8000 ||
++	    timing.packet_offset != 24 || timing.loose_length != 16000)
++		return -ESTALE;
++	c->host = zte_nppt_host_lookup_get(o->np, c->mac);
++	if (IS_ERR(c->host)) {
++		ret = PTR_ERR(c->host);
++		c->host = NULL;
++		return ret;
++	}
++	__module_get(THIS_MODULE);
++	c->pinned = true;
++	for (dir = 0; dir < 2; dir++) {
++		if (!rate[dir])
++			continue;
++		ret = zx279133_mac_police_tokens(rate[dir], c->burst_bytes,
++						 police_unit_bps,
++						 police_burst_unit, &profile);
++		if (ret)
++			goto rollback;
++		ret = zte_nppt_meter_mac_get(o->np, &profile, slot, dir, &c->meters[dir]);
++		if (ret)
++			goto rollback;
++		c->cbs_raw[dir] = profile.cbs;
++	}
++	if (!o->mac_global_owned) {
++		ret = zte_nppt_mac_global_get(o->np, &o->mac_global_saved);
++		if (ret)
++			goto rollback;
++		__module_get(THIS_MODULE);
++		o->mac_global_owned = true;
++		ret = zte_nppt_mac_global_set(o->np, true);
++		if (ret)
++			goto rollback;
++	}
++	ret = zte_nppt_host_limit(o->np, c->host, slot, !!rate[0], !!rate[1]);
++	if (ret)
++		goto rollback;
++	c->programmed = true;
++	return 0;
++rollback:
++	zx279133_client_release(o, c, slot);
++	zx279133_clients_global_restore(o);
++	return ret;
++}
++
++static void zx279133_clients_sync(struct zx279133_flow_offload *o)
++{
++	unsigned int i;
++
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++)
++		if (o->clients[i].used && !o->clients[i].programmed)
++			o->clients[i].error = zx279133_client_apply(o, &o->clients[i], i);
++}
++
++static int zx279133_clients_clear(struct zx279133_flow_offload *o, bool hardware)
++{
++	unsigned int i;
++	int ret, error = 0;
++
++	if (!hardware && zx279133_clients_active(o))
++		return -EBUSY;
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++) {
++		ret = zx279133_client_release(o, &o->clients[i], i);
++		if (ret)
++			error = ret;
++		if (o->clients[i].used)
++			o->clients[i].error = ret ? ret : -ENETDOWN;
++	}
++	ret = zx279133_clients_global_restore(o);
++	return error ? error : ret;
++}
++
++static int zx279133_client_set(struct zx279133_flow_offload *o,
++			       const u8 *mac, u64 upload, u64 download,
++			       u32 burst_bytes)
++{
++	struct zx279133_client_limit *c = NULL;
++	struct zx279133_client_config previous = {};
++	struct zte_nppt_plcr_profile profile;
++	unsigned int i, slot = ZX279133_CLIENT_LIMITS;
++	int ret, apply_ret, cleanup_ret;
++
++	if (!is_valid_ether_addr(mac))
++		return -EINVAL;
++	/* Zero remains the automatic policy, including across retries/rollback. */
++	if (burst_bytes && (burst_bytes < ZX279133_CLIENT_CBS_MIN ||
++			    burst_bytes > ZX279133_CLIENT_CBS_MAX))
++		return -ERANGE;
++	/* Validate before removing an existing policy. 0 disables that direction. */
++	if (upload && zx279133_mac_police_tokens(upload, burst_bytes,
++						 police_unit_bps, police_burst_unit,
++						 &profile))
++		return -ERANGE;
++	if (download && zx279133_mac_police_tokens(download, burst_bytes,
++						   police_unit_bps, police_burst_unit,
++						   &profile))
++		return -ERANGE;
++	/* Do not tear down a working limit before discovering that the explicit
++	 * experimental gate has been closed. Disabling a policy remains allowed.
++	 */
++	if ((upload || download) && !READ_ONCE(experimental_mac_limits))
++		return -EOPNOTSUPP;
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++) {
++		if (!o->clients[i].used) {
++			if (slot == ZX279133_CLIENT_LIMITS)
++				slot = i;
++			continue;
++		}
++		if (ether_addr_equal(o->clients[i].mac, mac)) {
++			c = &o->clients[i];
++			slot = i;
++			break;
++		}
++	}
++	if (!c && !upload && !download)
++		return zx279133_clients_global_restore(o);
++	if (slot == ZX279133_CLIENT_LIMITS)
++		return -ENOSPC;
++	c = &o->clients[slot];
++	previous.used = c->used;
++	if (previous.used) {
++		ether_addr_copy(previous.mac, c->mac);
++		previous.upload = c->upload;
++		previous.download = c->download;
++		previous.burst_bytes = c->burst_bytes;
++	}
++	ret = zx279133_client_release(o, c, slot);
++	if (ret) {
++		c->error = ret;
++		return ret;
++	}
++	if (!upload && !download) {
++		zte_nppt_host_watch(o->np, slot, NULL);
++		memset(c, 0, sizeof(*c));
++		return zx279133_clients_global_restore(o);
++	}
++	ether_addr_copy(c->mac, mac);
++	c->used = true;
++	zte_nppt_host_watch(o->np, slot, mac);
++	c->upload = upload;
++	c->download = download;
++	c->burst_bytes = burst_bytes;
++	c->error = zx279133_client_apply(o, c, slot);
++	/* Desired policy survives startup without an active Host. A subsequent
++	 * flow installation retries once, without polling or a userspace sampler.
++	 */
++	if (c->error == -ENOENT || c->error == -EAGAIN) {
++		c->error = 0;
++		return 0;
++	}
++	if (!c->error)
++		return 0;
++
++	/* OEM-style MAC limiting changes the PLCR bindings and table9 action in
++	 * separate hardware operations. Try to restore the prior policy if a new
++	 * request fails. If cleanup fails, retain ownership of every uncertain
++	 * resource instead of replacing pointers that may still be live in NP.
++	 */
++	apply_ret = c->error;
++	if (c->pinned)
++		return apply_ret;
++	cleanup_ret = zx279133_client_release(o, c, slot);
++	if (cleanup_ret) {
++		c->error = cleanup_ret;
++		return cleanup_ret;
++	}
++	if (previous.used) {
++		ether_addr_copy(c->mac, previous.mac);
++		c->used = true;
++		c->upload = previous.upload;
++		c->download = previous.download;
++		c->burst_bytes = previous.burst_bytes;
++		zte_nppt_host_watch(o->np, slot, previous.mac);
++		c->error = zx279133_client_apply(o, c, slot);
++		if (c->error == -ENOENT || c->error == -EAGAIN)
++			c->error = 0;
++		if (c->error)
++			return c->error;
++	} else {
++		zte_nppt_host_watch(o->np, slot, NULL);
++		memset(c, 0, sizeof(*c));
++		cleanup_ret = zx279133_clients_global_restore(o);
++		if (cleanup_ret)
++			return cleanup_ret;
++	}
++	return apply_ret;
++}
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-offload.c
-@@ -0,0 +1,2032 @@
+@@ -0,0 +1,2231 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* ZTE ZX279133 NPPT IPv4/IPv6 flow-table offload. */
 +
@@ -13,6 +298,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +#include <linux/hashtable.h>
 +#include <linux/jhash.h>
 +#include <linux/capability.h>
++#include <linux/debugfs.h>
 +#include <linux/etherdevice.h>
 +#include <linux/ip.h>
 +#include <linux/if_vlan.h>
@@ -38,22 +324,36 @@ lifecycle in fnoffload and global hardware resources in npu.
 +#include <linux/zte_nppt_native.h>
 +#include "zx279133-policy.h"
 +
-+/* Raw token calibration is an opt-in experiment until packet tests establish
-+ * units and color/drop semantics. Calibration stays read-only under live rules.
++/* Admission and the NPU cold-load key layout are enabled together by the
++ * platform package. Capability detection remains mandatory for every rule.
 + */
-+static bool experimental_vlan;
-+module_param(experimental_vlan, bool, 0644);
-+MODULE_PARM_DESC(experimental_vlan, "Admit experimental single-tag LAN IPv4 rules when NPU VID key is active");
++static bool vlan_offload;
++module_param(vlan_offload, bool, 0644);
++MODULE_PARM_DESC(vlan_offload, "Admit single-tag LAN/WAN IPv4 rules when the NPU VID keys are active");
++module_param_named(experimental_vlan, vlan_offload, bool, 0644);
++MODULE_PARM_DESC(experimental_vlan, "Compatibility alias for vlan_offload");
 +
 +static bool zx279133_vlan_enabled(struct zte_nppt *np)
 +{
 +	struct zte_nppt_info info;
 +
 +	zte_nppt_get_info(np, &info);
-+	return READ_ONCE(experimental_vlan) &&
++	return READ_ONCE(vlan_offload) &&
 +		(info.capabilities & ZTE_NPPT_CAP_LAN_VID_KEY);
 +}
 +
++static bool zx279133_wan_vlan_enabled(struct zte_nppt *np)
++{
++	struct zte_nppt_info info;
++
++	zte_nppt_get_info(np, &info);
++	return READ_ONCE(vlan_offload) &&
++		(info.capabilities & ZTE_NPPT_CAP_WAN_VID_KEY);
++}
++
++/* Raw token calibration remains opt-in until its units and semantics have
++ * been established. VLAN admission does not enable policers or shapers.
++ */
 +static bool experimental_police;
 +module_param(experimental_police, bool, 0644);
 +MODULE_PARM_DESC(experimental_police, "Allow new experimental byte police rules; delete rules before disabling");
@@ -85,6 +385,8 @@ lifecycle in fnoffload and global hardware resources in npu.
 +#define ZX279133_FAST_MULTI_FOOTER	0xc1
 +#define ZX279133_FAST_FULL_SELECTOR	0x00
 +#define ZX279133_FAST_FULL_FOOTER	0xe0
++
++#include "zx279133-offload-debug-types.h"
 +
 +struct zx279133_flow_tuple {
 +	__be32 src_addr;
@@ -125,6 +427,10 @@ lifecycle in fnoffload and global hardware resources in npu.
 +
 +struct zx279133_flow_entry {
 +	struct zx279133_stat_group *stat_group;
++#ifdef CONFIG_DEBUG_FS
++	unsigned long debug_cookie;
++	u64 debug_generation;
++#endif
 +	struct zx279133_flow_spec spec;
 +	struct zte_nppt_meter *meter;
 +	struct zte_nppt_vlan *vlan_in;
@@ -173,10 +479,32 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	bool in_ddr;
 +};
 +
++#define ZX279133_CLIENT_LIMITS 32
++#define ZX279133_CLIENT_CBS_DEFAULT 0 /* automatic, per-direction OEM rate formula */
++#define ZX279133_CLIENT_CBS_MIN 16384
++#define ZX279133_CLIENT_CBS_MAX ZX279133_MAC_CBS_MAX_RAW
++struct zx279133_client_limit {
++	u8 mac[ETH_ALEN];
++	u64 upload;
++	u64 download;
++	u32 burst_bytes;
++	u32 cbs_raw[2];
++	struct zte_nppt_host *host;
++	struct zte_nppt_meter *meters[2];
++	int error;
++	bool used;
++	bool pinned;
++	bool programmed;
++};
++
 +struct zx279133_flow_offload {
++#ifdef CONFIG_DEBUG_FS
++	struct zx279133_diag diag;
++#endif
 +	struct zte_nppt *np;
 +	struct device *dev;
 +	struct kref ref;
++	struct dentry *debugfs;
 +	bool detached;
 +	/* Serializes software flow state and SE indirect accesses. */
 +	struct mutex lock;
@@ -192,8 +520,19 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	u32 stat_group_count;
 +	u32 ddr_entries;
 +	u16 fast_full_zcam_used;
++	struct zx279133_client_limit clients[ZX279133_CLIENT_LIMITS];
++	bool mac_global_owned;
++	bool mac_global_saved;
 +
 +};
++
++static bool experimental_mac_limits;
++module_param(experimental_mac_limits, bool, 0644);
++MODULE_PARM_DESC(experimental_mac_limits, "Allow explicit experimental shared MAC policers");
++
++static void zx279133_clients_sync(struct zx279133_flow_offload *o);
++static int zx279133_clients_clear(struct zx279133_flow_offload *o, bool hardware);
++static bool zx279133_clients_active(struct zx279133_flow_offload *o);
 +
 +static const struct rhashtable_params zx279133_flow_key_ht_params = {
 +	.head_offset = offsetof(struct zx279133_flow_entry, key_node),
@@ -450,7 +789,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +static void zx279133_fast_reply_key_build(u8 *key,
 +					  const struct zx279133_flow_data *data,
 +					  const struct zx279133_flow_tuple *xlate,
-+					  u8 ip_proto, bool ipv6)
++					  u8 ip_proto, bool ipv6, u16 vid)
 +{
 +	struct zx279133_flow_data reply = {};
 +
@@ -464,7 +803,21 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		zx279133_fast_key_build_v6(key, &reply, ip_proto);
 +	} else {
 +		zx279133_fast_key_build(key, &reply.tuple, ip_proto);
++		zx279133_fast_key_vid(key, vid);
 +	}
++}
++
++/* The two callbacks describe opposite wire domains, not necessarily the
++ * same VID. Match ingress(A) to egress(B) and egress(A) to ingress(B).
++ */
++static bool zx279133_flow_vlan_peer_matches(const struct zx279133_flow_data *data,
++					   const struct zx279133_flow_data *peer,
++					   bool wan_vid_key)
++{
++	return zx279133_vlan_egress_vid(data) ==
++			(peer->vlan.tagged ? peer->vlan.vid : 0) &&
++		(!wan_vid_key || zx279133_vlan_egress_vid(peer) ==
++			(data->vlan.tagged ? data->vlan.vid : 0));
 +}
 +
 +static void zx279133_fast_response_build(u8 *fast,
@@ -750,7 +1103,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		     (vlan.mask->vlan_eth_type != htons(0xffff) ||
 +		      vlan.key->vlan_eth_type != htons(ETH_P_IP)))) {
 +			NL_SET_ERR_MSG_MOD(f->common.extack,
-+				"NPPT experimental VLAN requires exact nonzero VID, IPv4 and no PCP/DEI match");
++				"NPPT VLAN offload requires active VID keys, exact nonzero VID, IPv4 and no PCP/DEI match");
 +			return -EOPNOTSUPP;
 +		}
 +		vlan_inner_ipv4 = vlan.mask->vlan_eth_type == htons(0xffff) &&
@@ -893,9 +1246,17 @@ lifecycle in fnoffload and global hardware resources in npu.
 +				return ret;
 +			break;
 +		case FLOW_ACTION_VLAN_MANGLE:
-+			NL_SET_ERR_MSG_MOD(f->common.extack,
-+				"NPPT VID replacement requires another query-path calibration");
-+			return -EOPNOTSUPP;
++			if (!zx279133_vlan_enabled(offload->np) ||
++			    act->vlan.vid >= VLAN_VID_MASK || act->vlan.prio > 7)
++				return -EOPNOTSUPP;
++			ret = zx279133_vlan_edit(&data->vlan, ZX_VLAN_REPLACE,
++				act->vlan.vid | (act->vlan.prio << VLAN_PRIO_SHIFT),
++				be16_to_cpu(act->vlan.proto));
++			if (ret)
++				return ret;
++			data->vlan_push = true;
++			data->vlan_tci = data->vlan.tci;
++			break;
 +		case FLOW_ACTION_POLICE:
 +			if (!READ_ONCE(experimental_police)) {
 +				NL_SET_ERR_MSG_MOD(f->common.extack,
@@ -954,11 +1315,11 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		return -EOPNOTSUPP;
 +	}
 +	if (data->vlan.tagged &&
-+	    (*ipv6 || *ingress != ZX279133_FLOW_PORT_LAN ||
-+	     *egress != ZX279133_FLOW_PORT_WAN || *pppoe_sid ||
-+	     data->vlan.edit != ZX_VLAN_POP)) {
++	    (*ipv6 || *pppoe_sid || *ingress == *egress ||
++	     (*ingress == ZX279133_FLOW_PORT_WAN &&
++	      !zx279133_wan_vlan_enabled(offload->np)))) {
 +		NL_SET_ERR_MSG_MOD(f->common.extack,
-+			"NPPT VID key currently covers plain LAN IPv4 to WAN only");
++			"NPPT VLAN ingress requires IPv4 LAN/WAN routing and the direction's VID key");
 +		return -EOPNOTSUPP;
 +	}
 +	if (data->vlan_push &&
@@ -1134,6 +1495,8 @@ lifecycle in fnoffload and global hardware resources in npu.
 +static int zx279133_flow_entry_hw_clear(struct zx279133_flow_offload *offload,
 +					const struct zx279133_flow_entry *entry);
 +
++#include "zx279133-client-limits.h"
++
 +static int zx279133_flow_replace(struct zx279133_flow_offload *offload,
 +				 struct zx279133_flow_block *block,
 +				 struct flow_cls_offload *f)
@@ -1197,6 +1560,15 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		.gemport = gemport, .pppoe_sid = pppoe_sid,
 +		.ip_proto = ip_proto, .ipv6 = ipv6,
 +	};
++#ifdef CONFIG_DEBUG_FS
++	{
++		struct zte_nppt_info info;
++
++		zte_nppt_get_info(offload->np, &info);
++		entry->debug_cookie = f->cookie;
++		entry->debug_generation = info.generation;
++	}
++#endif
 +	entry->snat = snat;
 +	entry->fblock = block->fblock;
 +	entry->flowtable = block->flowtable;
@@ -1205,7 +1577,9 @@ lifecycle in fnoffload and global hardware resources in npu.
 +			    egress == ZX279133_FLOW_PORT_LAN;
 +	if (entry->upstream)
 +		zx279133_fast_reply_key_build(entry->reply_key, &data, &xlate,
-+					      ip_proto, ipv6);
++					      ip_proto, ipv6,
++			zx279133_wan_vlan_enabled(offload->np) ?
++			zx279133_vlan_egress_vid(&data) : 0);
 +
 +	mutex_lock(&offload->lock);
 +	peer = xa_load(&offload->flows, f->cookie);
@@ -1264,7 +1638,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		ret = -EEXIST;
 +		goto out_free;
 +	}
-+	if (entry->upstream && data.vlan.tagged &&
++	if (entry->upstream && (data.vlan.tagged || data.vlan_push) &&
 +	    rhashtable_lookup_fast(&offload->reply_flows, entry->reply_key,
 +				  zx279133_flow_reply_ht_params)) {
 +		NL_SET_ERR_MSG_MOD(f->common.extack,
@@ -1308,11 +1682,10 @@ lifecycle in fnoffload and global hardware resources in npu.
 +						  f->common.extack);
 +		if (ret)
 +			goto out_free;
-+		if ((peer->spec.data.vlan.tagged &&
-+		     (data.vlan.edit != ZX_VLAN_PUSH ||
-+		      zx279133_vlan_egress_vid(&data) != peer->spec.data.vlan.vid)) ||
-+		    (!peer->spec.data.vlan.tagged && data.vlan_push &&
-+		     egress == ZX279133_FLOW_PORT_LAN)) {
++		if ((data.vlan.tagged || data.vlan_push ||
++		     peer->spec.data.vlan.tagged || peer->spec.data.vlan_push) &&
++		    !zx279133_flow_vlan_peer_matches(&data, &peer->spec.data,
++					 zx279133_wan_vlan_enabled(offload->np))) {
 +			NL_SET_ERR_MSG_MOD(f->common.extack,
 +				"NPPT VLAN reverse action does not match upstream VID");
 +			ret = -EOPNOTSUPP;
@@ -1322,7 +1695,12 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	}
 +	/* PPPoE pop stays out of the finite IKEY table in a full entry. */
 +	entry->pppoe = pppoe;
-+	entry->wan_vlan = data.vlan_push && egress == ZX279133_FLOW_PORT_WAN;
++	/* Counters observe the WAN wire domain in both directions, including
++	 * a downstream POP/REPLACE whose egress no longer carries that tag.
++	 */
++	entry->wan_vlan = ingress == ZX279133_FLOW_PORT_WAN ?
++		data.vlan.tagged : egress == ZX279133_FLOW_PORT_WAN &&
++		zx279133_vlan_egress_vid(&data);
 +	entry->full = pppoe && !entry->upstream;
 +	entry->has_age = true;
 +	if (data.vlan.tagged) {
@@ -1334,7 +1712,6 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		}
 +	}
 +	if (zx279133_vlan_enabled(offload->np) &&
-+	    egress == ZX279133_FLOW_PORT_LAN &&
 +	    zx279133_vlan_egress_vid(&data) &&
 +	    (!data.vlan.tagged || zx279133_vlan_egress_vid(&data) != data.vlan.vid)) {
 +		entry->vlan_out = zte_nppt_vlan_get(offload->np,
@@ -1493,6 +1870,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	}
 +	__module_get(THIS_MODULE);
 +	entry->module_pinned = true;
++	zx279133_clients_sync(offload);
 +	mutex_unlock(&offload->lock);
 +	return 0;
 +
@@ -1738,14 +2116,28 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	return ret;
 +}
 +
++static void zx279133_diag_record(struct zx279133_flow_offload *offload,
++				 struct flow_cls_offload *f, int ret);
++
 +static int zx279133_flow_command(struct zx279133_flow_offload *offload,
 +				  struct zx279133_flow_block *block,
 +				  struct flow_cls_offload *f)
 +{
++#ifdef CONFIG_DEBUG_FS
++	struct netlink_ext_ack local_ack;
++#endif
 +	struct netlink_ext_ack *original_ack = f->common.extack;
 +	int ret;
 +
 +	/* Preserve a rejection reason even for callers that supplied no extack. */
++#ifdef CONFIG_DEBUG_FS
++	if (!original_ack && f->command != FLOW_CLS_STATS &&
++	    READ_ONCE(offload->diag.remaining) &&
++	    time_before(jiffies, READ_ONCE(offload->diag.expires))) {
++		memset(&local_ack, 0, sizeof(local_ack));
++		f->common.extack = &local_ack;
++	}
++#endif
 +	switch (f->command) {
 +	case FLOW_CLS_REPLACE:
 +		ret = zx279133_flow_replace(offload, block, f);
@@ -1768,6 +2160,8 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	 */
 +	if (ret == -EAGAIN && !block->flowtable)
 +		ret = -EBUSY;
++	if (f->command != FLOW_CLS_STATS_AGGREGATE)
++		zx279133_diag_record(offload, f, ret);
 +	f->common.extack = original_ack;
 +	return ret;
 +}
@@ -1800,6 +2194,9 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	struct zx279133_flow_offload *offload =
 +		container_of(ref, struct zx279133_flow_offload, ref);
 +
++#ifdef CONFIG_DEBUG_FS
++	kfree(offload->diag.events);
++#endif
 +	rhashtable_destroy(&offload->reply_flows);
 +	rhashtable_destroy(&offload->key_flows);
 +	xa_destroy(&offload->flows);
@@ -1835,7 +2232,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +			dev_warn(offload->dev,
 +				 "quarantined hardware flow %lu after delete failure\n", index);
 +	}
-+	ret = 0;
++	ret = zx279133_clients_clear(offload, clear_hardware);
 +	xa_for_each(&offload->flows, index, entry)
 +		if (!retire || (!entry->retired && !entry->refused)) {
 +			ret = -EIO;
@@ -1923,6 +2320,74 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	}
 +}
 +
++#ifdef CONFIG_DEBUG_FS
++/* One line per hardware flow, with the SDT29 counters read live. */
++static int zx279133_flows_show(struct seq_file *s, void *unused)
++{
++	struct zx279133_flow_offload *offload = s->private;
++	struct zx279133_flow_entry *entry;
++	unsigned long index;
++	u64 packets, bytes;
++	int ret;
++
++	ret = zte_nppt_try_begin(offload->np);
++	if (ret)
++		return ret;
++	mutex_lock(&offload->lock);
++	xa_for_each(&offload->flows, index, entry) {
++		if (entry->retired) {
++			seq_printf(s, "%16phN retired packets %llu ip_bytes %llu\n",
++				   entry->key, entry->final_stats.pkts,
++				   entry->final_stats.bytes);
++			continue;
++		}
++		if (entry->refused) {
++			seq_printf(s, "%16phN lan refused pppoe\n", entry->key);
++			continue;
++		}
++		seq_printf(s, "%16phN %s %s wanid %u pppoe %d snat %d age %u wan_vlan %d",
++			   entry->key, entry->lan_routed ? "lan" :
++			   entry->upstream ? "up" : "down",
++			   entry->full ? "full" : "multi", entry->wanid,
++			   entry->pppoe, entry->snat, entry->age, entry->wan_vlan);
++		if (entry->in_ddr)
++			seq_printf(s, " ddr %u", entry->ddr_bucket);
++		else
++			seq_printf(s, " zcam %u/%u/%u", entry->zblock,
++				   entry->zcell, entry->zaddr);
++		if (entry->has_stat &&
++		    !zte_nppt_stats_read(offload->np, entry->stat,
++					      &packets, &bytes))
++			seq_printf(s, " stat %u packets %llu bytes %llu",
++				   entry->stat, packets, bytes);
++		seq_putc(s, '\n');
++	}
++	zte_nppt_hosts_show(offload->np, s);
++	mutex_unlock(&offload->lock);
++	zte_nppt_end(offload->np);
++
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(zx279133_flows);
++
++static int zx279133_flows_debugfs_init(struct zx279133_flow_offload *offload)
++{
++	char name[80];
++
++	snprintf(name, sizeof(name), "zx279133-flows-%s", dev_name(offload->dev));
++	offload->debugfs = debugfs_create_file(name, 0400, NULL, offload,
++					      &zx279133_flows_fops);
++	return 0;
++}
++#else
++static int zx279133_flows_debugfs_init(struct zx279133_flow_offload *offload)
++{
++	return 0;
++}
++#endif
++
++#include "zx279133-offload-debug.h"
++
 +static void *zx279133_offload_attach(struct zte_nppt *np, struct device *dev)
 +{
 +	struct zx279133_flow_offload *offload;
@@ -1958,6 +2423,8 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		goto keys;
 +	INIT_LIST_HEAD(&offload->block_cb_list);
 +	zte_nppt_get(np);
++	zx279133_flows_debugfs_init(offload);
++	zx279133_diag_init(offload);
 +	return offload;
 +keys:
 +	rhashtable_destroy(&offload->key_flows);
@@ -1976,6 +2443,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	bool active = false;
 +
 +	mutex_lock(&offload->lock);
++	active = zx279133_clients_active(offload);
 +	xa_for_each(&offload->flows, index, entry)
 +		if (!entry->retired && !entry->refused) {
 +			active = true;
@@ -1994,16 +2462,21 @@ lifecycle in fnoffload and global hardware resources in npu.
 +{
 +	struct zx279133_flow_offload *offload = priv;
 +	struct zte_nppt_info info;
++	unsigned int i;
 +
 +	offload->detached = true;
 +	/* The supplier holds datapath_lock. No new hardware callbacks can start. */
 +	zte_nppt_get_info(offload->np, &info);
 +	zx279133_flow_entries_clear(offload, info.ready, false);
-+	if (!xa_empty(&offload->flows)) {
++	debugfs_remove(offload->debugfs);
++	zx279133_diag_remove(offload);
++	if (!xa_empty(&offload->flows) || zx279133_clients_active(offload)) {
 +		/* Preserve uncertain hardware allocations and the module references. */
 +		dev_err(offload->dev, "uncleared flows quarantined; offload unload blocked\n");
 +		return -EIO;
 +	}
++	for (i = 0; i < ZX279133_CLIENT_LIMITS; i++)
++		zte_nppt_host_watch(offload->np, i, NULL);
 +	kref_put(&offload->ref, zx279133_offload_release);
 +	return 0;
 +}
@@ -2016,12 +2489,23 @@ lifecycle in fnoffload and global hardware resources in npu.
 +	return zx279133_flow_setup_block(priv, dev, data, type == TC_SETUP_FT);
 +}
 +
++static void zx279133_offload_resync(void *priv)
++{
++	struct zx279133_flow_offload *offload = priv;
++
++	mutex_lock(&offload->lock);
++	if (!offload->detached)
++		zx279133_clients_sync(offload);
++	mutex_unlock(&offload->lock);
++}
++
 +static const struct zte_nppt_client_ops zx279133_offload_ops = {
 +	.attach = zx279133_offload_attach,
 +	.detach = zx279133_offload_detach,
 +	.setup_tc = zx279133_offload_setup_tc,
 +	.active = zx279133_offload_active,
 +	.reset = zx279133_offload_reset,
++	.resync = zx279133_offload_resync,
 +};
 +
 +static int __init zx279133_fnoffload_init(void)
@@ -2040,7 +2524,7 @@ lifecycle in fnoffload and global hardware resources in npu.
 +MODULE_LICENSE("GPL");
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-policy.h
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,136 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +#ifndef _ZX279133_POLICY_H
 +#define _ZX279133_POLICY_H
@@ -2086,6 +2570,16 @@ lifecycle in fnoffload and global hardware resources in npu.
 +static inline int zx279133_vlan_edit(struct zx279133_vlan_plan *p,
 +				     u8 edit, u16 tci, u16 tpid)
 +{
++	/* Flowtable describes a routed VLAN translation as POP then PUSH.
++	 * Collapse exactly that ordered pair to the OEM replacement opcode;
++	 * two PUSHes still mean a stack and must never be flattened.
++	 */
++	if (p->tagged && p->edit == ZX_VLAN_POP && edit == ZX_VLAN_PUSH &&
++	    tpid == 0x8100 && (tci & 0xfff) < 4095) {
++		p->edit = ZX_VLAN_REPLACE;
++		p->tci = tci;
++		return 0;
++	}
 +	if (p->edit || edit < ZX_VLAN_PUSH || edit > ZX_VLAN_REPLACE ||
 +	    (edit == ZX_VLAN_PUSH && p->tagged) ||
 +	    (edit != ZX_VLAN_PUSH && !p->tagged) ||
@@ -2166,578 +2660,6 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		ZX279133_MAC_CBS_MAX_RAW : (u32)cbs;
 +	return 0;
 +}
-+#endif
---- /dev/null
-+++ b/drivers/net/ethernet/zte/zx279133-rx-hash.h
-@@ -0,0 +1,569 @@
-+/* SPDX-License-Identifier: GPL-2.0-only */
-+#ifndef _ZX279133_RX_HASH_H
-+#define _ZX279133_RX_HASH_H
-+
-+#include <linux/types.h>
-+
-+/* Calibrated guarded IPv4 programs; firmware CRC32 0xef1d7647. */
-+struct zx279133_rx_hash_program {
-+	u16 hook;
-+	u16 start;
-+	u16 count;
-+	u16 map_count;
-+	struct {
-+		u16 offset;
-+		u8 bucket;
-+		u8 port; /* 0: WAN, 1: LAN */
-+	} map[16];
-+	u64 inst[288];
-+};
-+
-+static const struct zx279133_rx_hash_program zx279133_rx_hash_programs[] = {
-+	{
-+		.hook = 1558, .start = 6000, .count = 204,
-+		.map_count = 16,
-+		.map = {
-+			{ 52, 0, 1 },
-+			{ 61, 4, 1 },
-+			{ 71, 2, 1 },
-+			{ 80, 6, 1 },
-+			{ 91, 1, 1 },
-+			{ 100, 5, 1 },
-+			{ 110, 3, 1 },
-+			{ 119, 7, 1 },
-+			{ 131, 0, 0 },
-+			{ 140, 4, 0 },
-+			{ 150, 2, 0 },
-+			{ 159, 6, 0 },
-+			{ 170, 1, 0 },
-+			{ 179, 5, 0 },
-+			{ 189, 3, 0 },
-+			{ 198, 7, 0 },
-+		},
-+		.inst = {
-+			0x01080c1c8bb8a880ULL, /* 6000 */
-+			0x01080bb90c1caaa0ULL, /* 6001 */
-+			0x01080bb98bba28a0ULL, /* 6002 */
-+			0x01080c1c8bba28c0ULL, /* 6003 */
-+			0x0700800028180523ULL, /* 6004 */
-+			0x0000000000000000ULL, /* 6005 */
-+			0x0704000028200523ULL, /* 6006 */
-+			0x0000000000000000ULL, /* 6007 */
-+			0x06208010100003ffULL, /* 6008 */
-+			0x0000000000000000ULL, /* 6009 */
-+			0x0704000008000523ULL, /* 6010 */
-+			0x0000000000000000ULL, /* 6011 */
-+			0x06208010100003ffULL, /* 6012 */
-+			0x0000000000000000ULL, /* 6013 */
-+			0x0704000028120520ULL, /* 6014 */
-+			0x0000000000000000ULL, /* 6015 */
-+			0x0504008000008527ULL, /* 6016 */
-+			0x0000000000000000ULL, /* 6017 */
-+			0x06208010100003ffULL, /* 6018 */
-+			0x0000000000000000ULL, /* 6019 */
-+			0x050400140000852fULL, /* 6020 */
-+			0x0000000000000000ULL, /* 6021 */
-+			0x06208010100003ffULL, /* 6022 */
-+			0x0000000000000000ULL, /* 6023 */
-+			0x0504001200008537ULL, /* 6024 */
-+			0x0000000000000000ULL, /* 6025 */
-+			0x06208010100003ffULL, /* 6026 */
-+			0x0000000000000000ULL, /* 6027 */
-+			0x050400110000853bULL, /* 6028 */
-+			0x0000000000000000ULL, /* 6029 */
-+			0x06208010100003ffULL, /* 6030 */
-+			0x0000000000000000ULL, /* 6031 */
-+			0x05040010c000853cULL, /* 6032 */
-+			0x0000000000000000ULL, /* 6033 */
-+			0x06208010100003ffULL, /* 6034 */
-+			0x0000000000000000ULL, /* 6035 */
-+			0x050400500000053fULL, /* 6036 */
-+			0x0000000000000000ULL, /* 6037 */
-+			0x0502881000000522ULL, /* 6038 */
-+			0x0000000000000000ULL, /* 6039 */
-+			0x0502870740000520ULL, /* 6040 */
-+			0x0000000000000000ULL, /* 6041 */
-+			0x01080bcd8bf52860ULL, /* 6042 */
-+			0x01080bce0be1a880ULL, /* 6043 */
-+			0x01080bce8bd828a0ULL, /* 6044 */
-+			0x01080bcf0bd3a8c0ULL, /* 6045 */
-+			0x050280800000053fULL, /* 6046 */
-+			0x0000000000000000ULL, /* 6047 */
-+			0x010400000000852fULL, /* 6048 */
-+			0x0000000000000000ULL, /* 6049 */
-+			0x0504210680000523ULL, /* 6050 */
-+			0x0000000000000000ULL, /* 6051 */
-+			0x0104200000000522ULL, /* 6052 */
-+			0x0000000000000000ULL, /* 6053 */
-+			0x01080bd3830b8520ULL, /* 6054 */
-+			0x050280800000053fULL, /* 6055 */
-+			0x0000000000000000ULL, /* 6056 */
-+			0x010400000000852fULL, /* 6057 */
-+			0x0000000000000000ULL, /* 6058 */
-+			0x0504210680000523ULL, /* 6059 */
-+			0x0000000000000000ULL, /* 6060 */
-+			0x0104200008000522ULL, /* 6061 */
-+			0x0000000000000000ULL, /* 6062 */
-+			0x01080bd8030b8520ULL, /* 6063 */
-+			0x01080bd88bdd28c0ULL, /* 6064 */
-+			0x050280800000053fULL, /* 6065 */
-+			0x0000000000000000ULL, /* 6066 */
-+			0x010400000000852fULL, /* 6067 */
-+			0x0000000000000000ULL, /* 6068 */
-+			0x0504210680000523ULL, /* 6069 */
-+			0x0000000000000000ULL, /* 6070 */
-+			0x0104200004000522ULL, /* 6071 */
-+			0x0000000000000000ULL, /* 6072 */
-+			0x01080bdd030b8520ULL, /* 6073 */
-+			0x050280800000053fULL, /* 6074 */
-+			0x0000000000000000ULL, /* 6075 */
-+			0x010400000000852fULL, /* 6076 */
-+			0x0000000000000000ULL, /* 6077 */
-+			0x0504210680000523ULL, /* 6078 */
-+			0x0000000000000000ULL, /* 6079 */
-+			0x010420000c000522ULL, /* 6080 */
-+			0x0000000000000000ULL, /* 6081 */
-+			0x01080be1830b8520ULL, /* 6082 */
-+			0x01080be20beba8a0ULL, /* 6083 */
-+			0x01080be28be728c0ULL, /* 6084 */
-+			0x050280800000053fULL, /* 6085 */
-+			0x0000000000000000ULL, /* 6086 */
-+			0x010400000000852fULL, /* 6087 */
-+			0x0000000000000000ULL, /* 6088 */
-+			0x0504210680000523ULL, /* 6089 */
-+			0x0000000000000000ULL, /* 6090 */
-+			0x0104200002000522ULL, /* 6091 */
-+			0x0000000000000000ULL, /* 6092 */
-+			0x01080be7030b8520ULL, /* 6093 */
-+			0x050280800000053fULL, /* 6094 */
-+			0x0000000000000000ULL, /* 6095 */
-+			0x010400000000852fULL, /* 6096 */
-+			0x0000000000000000ULL, /* 6097 */
-+			0x0504210680000523ULL, /* 6098 */
-+			0x0000000000000000ULL, /* 6099 */
-+			0x010420000a000522ULL, /* 6100 */
-+			0x0000000000000000ULL, /* 6101 */
-+			0x01080beb830b8520ULL, /* 6102 */
-+			0x01080bec0bf0a8c0ULL, /* 6103 */
-+			0x050280800000053fULL, /* 6104 */
-+			0x0000000000000000ULL, /* 6105 */
-+			0x010400000000852fULL, /* 6106 */
-+			0x0000000000000000ULL, /* 6107 */
-+			0x0504210680000523ULL, /* 6108 */
-+			0x0000000000000000ULL, /* 6109 */
-+			0x0104200006000522ULL, /* 6110 */
-+			0x0000000000000000ULL, /* 6111 */
-+			0x01080bf0830b8520ULL, /* 6112 */
-+			0x050280800000053fULL, /* 6113 */
-+			0x0000000000000000ULL, /* 6114 */
-+			0x010400000000852fULL, /* 6115 */
-+			0x0000000000000000ULL, /* 6116 */
-+			0x0504210680000523ULL, /* 6117 */
-+			0x0000000000000000ULL, /* 6118 */
-+			0x010420000e000522ULL, /* 6119 */
-+			0x0000000000000000ULL, /* 6120 */
-+			0x01080bf5030b8520ULL, /* 6121 */
-+			0x01080bf58c092880ULL, /* 6122 */
-+			0x01080bf60bffa8a0ULL, /* 6123 */
-+			0x01080bf68bfb28c0ULL, /* 6124 */
-+			0x050280800000053fULL, /* 6125 */
-+			0x0000000000000000ULL, /* 6126 */
-+			0x010400000000852fULL, /* 6127 */
-+			0x0000000000000000ULL, /* 6128 */
-+			0x0504210680000523ULL, /* 6129 */
-+			0x0000000000000000ULL, /* 6130 */
-+			0x0104200000000522ULL, /* 6131 */
-+			0x0000000000000000ULL, /* 6132 */
-+			0x01080bfb030b8520ULL, /* 6133 */
-+			0x050280800000053fULL, /* 6134 */
-+			0x0000000000000000ULL, /* 6135 */
-+			0x010400000000852fULL, /* 6136 */
-+			0x0000000000000000ULL, /* 6137 */
-+			0x0504210680000523ULL, /* 6138 */
-+			0x0000000000000000ULL, /* 6139 */
-+			0x0104200008000522ULL, /* 6140 */
-+			0x0000000000000000ULL, /* 6141 */
-+			0x01080bff830b8520ULL, /* 6142 */
-+			0x01080c000c04a8c0ULL, /* 6143 */
-+			0x050280800000053fULL, /* 6144 */
-+			0x0000000000000000ULL, /* 6145 */
-+			0x010400000000852fULL, /* 6146 */
-+			0x0000000000000000ULL, /* 6147 */
-+			0x0504210680000523ULL, /* 6148 */
-+			0x0000000000000000ULL, /* 6149 */
-+			0x0104200004000522ULL, /* 6150 */
-+			0x0000000000000000ULL, /* 6151 */
-+			0x01080c04830b8520ULL, /* 6152 */
-+			0x050280800000053fULL, /* 6153 */
-+			0x0000000000000000ULL, /* 6154 */
-+			0x010400000000852fULL, /* 6155 */
-+			0x0000000000000000ULL, /* 6156 */
-+			0x0504210680000523ULL, /* 6157 */
-+			0x0000000000000000ULL, /* 6158 */
-+			0x010420000c000522ULL, /* 6159 */
-+			0x0000000000000000ULL, /* 6160 */
-+			0x01080c09030b8520ULL, /* 6161 */
-+			0x01080c098c1328a0ULL, /* 6162 */
-+			0x01080c0a0c0ea8c0ULL, /* 6163 */
-+			0x050280800000053fULL, /* 6164 */
-+			0x0000000000000000ULL, /* 6165 */
-+			0x010400000000852fULL, /* 6166 */
-+			0x0000000000000000ULL, /* 6167 */
-+			0x0504210680000523ULL, /* 6168 */
-+			0x0000000000000000ULL, /* 6169 */
-+			0x0104200002000522ULL, /* 6170 */
-+			0x0000000000000000ULL, /* 6171 */
-+			0x01080c0e830b8520ULL, /* 6172 */
-+			0x050280800000053fULL, /* 6173 */
-+			0x0000000000000000ULL, /* 6174 */
-+			0x010400000000852fULL, /* 6175 */
-+			0x0000000000000000ULL, /* 6176 */
-+			0x0504210680000523ULL, /* 6177 */
-+			0x0000000000000000ULL, /* 6178 */
-+			0x010420000a000522ULL, /* 6179 */
-+			0x0000000000000000ULL, /* 6180 */
-+			0x01080c13030b8520ULL, /* 6181 */
-+			0x01080c138c1828c0ULL, /* 6182 */
-+			0x050280800000053fULL, /* 6183 */
-+			0x0000000000000000ULL, /* 6184 */
-+			0x010400000000852fULL, /* 6185 */
-+			0x0000000000000000ULL, /* 6186 */
-+			0x0504210680000523ULL, /* 6187 */
-+			0x0000000000000000ULL, /* 6188 */
-+			0x0104200006000522ULL, /* 6189 */
-+			0x0000000000000000ULL, /* 6190 */
-+			0x01080c18030b8520ULL, /* 6191 */
-+			0x050280800000053fULL, /* 6192 */
-+			0x0000000000000000ULL, /* 6193 */
-+			0x010400000000852fULL, /* 6194 */
-+			0x0000000000000000ULL, /* 6195 */
-+			0x0504210680000523ULL, /* 6196 */
-+			0x0000000000000000ULL, /* 6197 */
-+			0x010420000e000522ULL, /* 6198 */
-+			0x0000000000000000ULL, /* 6199 */
-+			0x01080c1c830b8520ULL, /* 6200 */
-+			0x0504210680000523ULL, /* 6201 */
-+			0x0000000000000000ULL, /* 6202 */
-+			0x01080c1e030b8520ULL, /* 6203 */
-+		},
-+	},
-+	{
-+		.hook = 1893, .start = 6288, .count = 212,
-+		.map_count = 16,
-+		.map = {
-+			{ 58, 0, 1 },
-+			{ 67, 4, 1 },
-+			{ 77, 2, 1 },
-+			{ 86, 6, 1 },
-+			{ 97, 1, 1 },
-+			{ 106, 5, 1 },
-+			{ 116, 3, 1 },
-+			{ 125, 7, 1 },
-+			{ 137, 0, 0 },
-+			{ 146, 4, 0 },
-+			{ 156, 2, 0 },
-+			{ 165, 6, 0 },
-+			{ 176, 1, 0 },
-+			{ 185, 5, 0 },
-+			{ 195, 3, 0 },
-+			{ 204, 7, 0 },
-+		},
-+		.inst = {
-+			0x01080caf8c48a880ULL, /* 6288 */
-+			0x01080c490cafaaa0ULL, /* 6289 */
-+			0x01080c498c4a28a0ULL, /* 6290 */
-+			0x01080caf8c4a28c0ULL, /* 6291 */
-+			0x0601a092148000e7ULL, /* 6292 */
-+			0x0000000000000000ULL, /* 6293 */
-+			0x06018090148000e7ULL, /* 6294 */
-+			0x0000000000000000ULL, /* 6295 */
-+			0x0700800028180523ULL, /* 6296 */
-+			0x0000000000000000ULL, /* 6297 */
-+			0x0704000028200523ULL, /* 6298 */
-+			0x0000000000000000ULL, /* 6299 */
-+			0x06208010100003ffULL, /* 6300 */
-+			0x0000000000000000ULL, /* 6301 */
-+			0x0704000008000523ULL, /* 6302 */
-+			0x0000000000000000ULL, /* 6303 */
-+			0x06208010100003ffULL, /* 6304 */
-+			0x0000000000000000ULL, /* 6305 */
-+			0x0704000028120520ULL, /* 6306 */
-+			0x0000000000000000ULL, /* 6307 */
-+			0x0504008000008527ULL, /* 6308 */
-+			0x0000000000000000ULL, /* 6309 */
-+			0x06208010100003ffULL, /* 6310 */
-+			0x0000000000000000ULL, /* 6311 */
-+			0x050400140000852fULL, /* 6312 */
-+			0x0000000000000000ULL, /* 6313 */
-+			0x06208010100003ffULL, /* 6314 */
-+			0x0000000000000000ULL, /* 6315 */
-+			0x0504001200008537ULL, /* 6316 */
-+			0x0000000000000000ULL, /* 6317 */
-+			0x06208010100003ffULL, /* 6318 */
-+			0x0000000000000000ULL, /* 6319 */
-+			0x050400110000853bULL, /* 6320 */
-+			0x0000000000000000ULL, /* 6321 */
-+			0x06208010100003ffULL, /* 6322 */
-+			0x0000000000000000ULL, /* 6323 */
-+			0x05040010c000853cULL, /* 6324 */
-+			0x0000000000000000ULL, /* 6325 */
-+			0x06208010100003ffULL, /* 6326 */
-+			0x0000000000000000ULL, /* 6327 */
-+			0x050180a400008527ULL, /* 6328 */
-+			0x0000000000000000ULL, /* 6329 */
-+			0x050400500000053fULL, /* 6330 */
-+			0x0000000000000000ULL, /* 6331 */
-+			0x0502881000000522ULL, /* 6332 */
-+			0x0000000000000000ULL, /* 6333 */
-+			0x0502870740000520ULL, /* 6334 */
-+			0x0000000000000000ULL, /* 6335 */
-+			0x01080c608c882860ULL, /* 6336 */
-+			0x01080c610c74a880ULL, /* 6337 */
-+			0x01080c618c6b28a0ULL, /* 6338 */
-+			0x01080c620c66a8c0ULL, /* 6339 */
-+			0x050280800000053fULL, /* 6340 */
-+			0x0000000000000000ULL, /* 6341 */
-+			0x010400000000852fULL, /* 6342 */
-+			0x0000000000000000ULL, /* 6343 */
-+			0x0504210680000523ULL, /* 6344 */
-+			0x0000000000000000ULL, /* 6345 */
-+			0x0104200000000522ULL, /* 6346 */
-+			0x0000000000000000ULL, /* 6347 */
-+			0x01080c6683b30520ULL, /* 6348 */
-+			0x050280800000053fULL, /* 6349 */
-+			0x0000000000000000ULL, /* 6350 */
-+			0x010400000000852fULL, /* 6351 */
-+			0x0000000000000000ULL, /* 6352 */
-+			0x0504210680000523ULL, /* 6353 */
-+			0x0000000000000000ULL, /* 6354 */
-+			0x0104200008000522ULL, /* 6355 */
-+			0x0000000000000000ULL, /* 6356 */
-+			0x01080c6b03b30520ULL, /* 6357 */
-+			0x01080c6b8c7028c0ULL, /* 6358 */
-+			0x050280800000053fULL, /* 6359 */
-+			0x0000000000000000ULL, /* 6360 */
-+			0x010400000000852fULL, /* 6361 */
-+			0x0000000000000000ULL, /* 6362 */
-+			0x0504210680000523ULL, /* 6363 */
-+			0x0000000000000000ULL, /* 6364 */
-+			0x0104200004000522ULL, /* 6365 */
-+			0x0000000000000000ULL, /* 6366 */
-+			0x01080c7003b30520ULL, /* 6367 */
-+			0x050280800000053fULL, /* 6368 */
-+			0x0000000000000000ULL, /* 6369 */
-+			0x010400000000852fULL, /* 6370 */
-+			0x0000000000000000ULL, /* 6371 */
-+			0x0504210680000523ULL, /* 6372 */
-+			0x0000000000000000ULL, /* 6373 */
-+			0x010420000c000522ULL, /* 6374 */
-+			0x0000000000000000ULL, /* 6375 */
-+			0x01080c7483b30520ULL, /* 6376 */
-+			0x01080c750c7ea8a0ULL, /* 6377 */
-+			0x01080c758c7a28c0ULL, /* 6378 */
-+			0x050280800000053fULL, /* 6379 */
-+			0x0000000000000000ULL, /* 6380 */
-+			0x010400000000852fULL, /* 6381 */
-+			0x0000000000000000ULL, /* 6382 */
-+			0x0504210680000523ULL, /* 6383 */
-+			0x0000000000000000ULL, /* 6384 */
-+			0x0104200002000522ULL, /* 6385 */
-+			0x0000000000000000ULL, /* 6386 */
-+			0x01080c7a03b30520ULL, /* 6387 */
-+			0x050280800000053fULL, /* 6388 */
-+			0x0000000000000000ULL, /* 6389 */
-+			0x010400000000852fULL, /* 6390 */
-+			0x0000000000000000ULL, /* 6391 */
-+			0x0504210680000523ULL, /* 6392 */
-+			0x0000000000000000ULL, /* 6393 */
-+			0x010420000a000522ULL, /* 6394 */
-+			0x0000000000000000ULL, /* 6395 */
-+			0x01080c7e83b30520ULL, /* 6396 */
-+			0x01080c7f0c83a8c0ULL, /* 6397 */
-+			0x050280800000053fULL, /* 6398 */
-+			0x0000000000000000ULL, /* 6399 */
-+			0x010400000000852fULL, /* 6400 */
-+			0x0000000000000000ULL, /* 6401 */
-+			0x0504210680000523ULL, /* 6402 */
-+			0x0000000000000000ULL, /* 6403 */
-+			0x0104200006000522ULL, /* 6404 */
-+			0x0000000000000000ULL, /* 6405 */
-+			0x01080c8383b30520ULL, /* 6406 */
-+			0x050280800000053fULL, /* 6407 */
-+			0x0000000000000000ULL, /* 6408 */
-+			0x010400000000852fULL, /* 6409 */
-+			0x0000000000000000ULL, /* 6410 */
-+			0x0504210680000523ULL, /* 6411 */
-+			0x0000000000000000ULL, /* 6412 */
-+			0x010420000e000522ULL, /* 6413 */
-+			0x0000000000000000ULL, /* 6414 */
-+			0x01080c8803b30520ULL, /* 6415 */
-+			0x01080c888c9c2880ULL, /* 6416 */
-+			0x01080c890c92a8a0ULL, /* 6417 */
-+			0x01080c898c8e28c0ULL, /* 6418 */
-+			0x050280800000053fULL, /* 6419 */
-+			0x0000000000000000ULL, /* 6420 */
-+			0x010400000000852fULL, /* 6421 */
-+			0x0000000000000000ULL, /* 6422 */
-+			0x0504210680000523ULL, /* 6423 */
-+			0x0000000000000000ULL, /* 6424 */
-+			0x0104200000000522ULL, /* 6425 */
-+			0x0000000000000000ULL, /* 6426 */
-+			0x01080c8e03b30520ULL, /* 6427 */
-+			0x050280800000053fULL, /* 6428 */
-+			0x0000000000000000ULL, /* 6429 */
-+			0x010400000000852fULL, /* 6430 */
-+			0x0000000000000000ULL, /* 6431 */
-+			0x0504210680000523ULL, /* 6432 */
-+			0x0000000000000000ULL, /* 6433 */
-+			0x0104200008000522ULL, /* 6434 */
-+			0x0000000000000000ULL, /* 6435 */
-+			0x01080c9283b30520ULL, /* 6436 */
-+			0x01080c930c97a8c0ULL, /* 6437 */
-+			0x050280800000053fULL, /* 6438 */
-+			0x0000000000000000ULL, /* 6439 */
-+			0x010400000000852fULL, /* 6440 */
-+			0x0000000000000000ULL, /* 6441 */
-+			0x0504210680000523ULL, /* 6442 */
-+			0x0000000000000000ULL, /* 6443 */
-+			0x0104200004000522ULL, /* 6444 */
-+			0x0000000000000000ULL, /* 6445 */
-+			0x01080c9783b30520ULL, /* 6446 */
-+			0x050280800000053fULL, /* 6447 */
-+			0x0000000000000000ULL, /* 6448 */
-+			0x010400000000852fULL, /* 6449 */
-+			0x0000000000000000ULL, /* 6450 */
-+			0x0504210680000523ULL, /* 6451 */
-+			0x0000000000000000ULL, /* 6452 */
-+			0x010420000c000522ULL, /* 6453 */
-+			0x0000000000000000ULL, /* 6454 */
-+			0x01080c9c03b30520ULL, /* 6455 */
-+			0x01080c9c8ca628a0ULL, /* 6456 */
-+			0x01080c9d0ca1a8c0ULL, /* 6457 */
-+			0x050280800000053fULL, /* 6458 */
-+			0x0000000000000000ULL, /* 6459 */
-+			0x010400000000852fULL, /* 6460 */
-+			0x0000000000000000ULL, /* 6461 */
-+			0x0504210680000523ULL, /* 6462 */
-+			0x0000000000000000ULL, /* 6463 */
-+			0x0104200002000522ULL, /* 6464 */
-+			0x0000000000000000ULL, /* 6465 */
-+			0x01080ca183b30520ULL, /* 6466 */
-+			0x050280800000053fULL, /* 6467 */
-+			0x0000000000000000ULL, /* 6468 */
-+			0x010400000000852fULL, /* 6469 */
-+			0x0000000000000000ULL, /* 6470 */
-+			0x0504210680000523ULL, /* 6471 */
-+			0x0000000000000000ULL, /* 6472 */
-+			0x010420000a000522ULL, /* 6473 */
-+			0x0000000000000000ULL, /* 6474 */
-+			0x01080ca603b30520ULL, /* 6475 */
-+			0x01080ca68cab28c0ULL, /* 6476 */
-+			0x050280800000053fULL, /* 6477 */
-+			0x0000000000000000ULL, /* 6478 */
-+			0x010400000000852fULL, /* 6479 */
-+			0x0000000000000000ULL, /* 6480 */
-+			0x0504210680000523ULL, /* 6481 */
-+			0x0000000000000000ULL, /* 6482 */
-+			0x0104200006000522ULL, /* 6483 */
-+			0x0000000000000000ULL, /* 6484 */
-+			0x01080cab03b30520ULL, /* 6485 */
-+			0x050280800000053fULL, /* 6486 */
-+			0x0000000000000000ULL, /* 6487 */
-+			0x010400000000852fULL, /* 6488 */
-+			0x0000000000000000ULL, /* 6489 */
-+			0x0504210680000523ULL, /* 6490 */
-+			0x0000000000000000ULL, /* 6491 */
-+			0x010420000e000522ULL, /* 6492 */
-+			0x0000000000000000ULL, /* 6493 */
-+			0x01080caf83b30520ULL, /* 6494 */
-+			0x0504210680000523ULL, /* 6495 */
-+			0x0000000000000000ULL, /* 6496 */
-+			0x01080cb103b30520ULL, /* 6497 */
-+			0x0000000000000000ULL, /* 6498 */
-+			0x0000000000000000ULL, /* 6499 */
-+		},
-+	},
-+	{
-+		.hook = 2216, .start = 6592, .count = 76,
-+		.inst = {
-+			0x01080d000ce0a880ULL, /* 6592 */
-+			0x01080ce10d002aa0ULL, /* 6593 */
-+			0x01080ce18ce228a0ULL, /* 6594 */
-+			0x01080d000ce228c0ULL, /* 6595 */
-+			0x040000f80000069bULL, /* 6596 */
-+			0x0000000000000000ULL, /* 6597 */
-+			0x0507c0800000053fULL, /* 6598 */
-+			0x0000000000000000ULL, /* 6599 */
-+			0x0601a092148000e7ULL, /* 6600 */
-+			0x0000000000000000ULL, /* 6601 */
-+			0x06018090148000e7ULL, /* 6602 */
-+			0x0000000000000000ULL, /* 6603 */
-+			0x0700800028180523ULL, /* 6604 */
-+			0x0000000000000000ULL, /* 6605 */
-+			0x0704000028200523ULL, /* 6606 */
-+			0x0000000000000000ULL, /* 6607 */
-+			0x06208010100003ffULL, /* 6608 */
-+			0x0000000000000000ULL, /* 6609 */
-+			0x0704000008000523ULL, /* 6610 */
-+			0x0000000000000000ULL, /* 6611 */
-+			0x06208010100003ffULL, /* 6612 */
-+			0x0000000000000000ULL, /* 6613 */
-+			0x0704000028120520ULL, /* 6614 */
-+			0x0000000000000000ULL, /* 6615 */
-+			0x0504008000008527ULL, /* 6616 */
-+			0x0000000000000000ULL, /* 6617 */
-+			0x06208010100003ffULL, /* 6618 */
-+			0x0000000000000000ULL, /* 6619 */
-+			0x050400140000852fULL, /* 6620 */
-+			0x0000000000000000ULL, /* 6621 */
-+			0x06208010100003ffULL, /* 6622 */
-+			0x0000000000000000ULL, /* 6623 */
-+			0x0504001200008537ULL, /* 6624 */
-+			0x0000000000000000ULL, /* 6625 */
-+			0x06208010100003ffULL, /* 6626 */
-+			0x0000000000000000ULL, /* 6627 */
-+			0x050400110000853bULL, /* 6628 */
-+			0x0000000000000000ULL, /* 6629 */
-+			0x06208010100003ffULL, /* 6630 */
-+			0x0000000000000000ULL, /* 6631 */
-+			0x05040010c000853cULL, /* 6632 */
-+			0x0000000000000000ULL, /* 6633 */
-+			0x06208010100003ffULL, /* 6634 */
-+			0x0000000000000000ULL, /* 6635 */
-+			0x050400f80000053fULL, /* 6636 */
-+			0x0000000000000000ULL, /* 6637 */
-+			0x0707c00018680523ULL, /* 6638 */
-+			0x0000000000000000ULL, /* 6639 */
-+			0x040000100000069bULL, /* 6640 */
-+			0x0000000000000000ULL, /* 6641 */
-+			0x050080f80000053fULL, /* 6642 */
-+			0x0000000000000000ULL, /* 6643 */
-+			0x0707c00018600523ULL, /* 6644 */
-+			0x0000000000000000ULL, /* 6645 */
-+			0x0107fe0002000520ULL, /* 6646 */
-+			0x0000000000000000ULL, /* 6647 */
-+			0x040000f80000061bULL, /* 6648 */
-+			0x0000000000000000ULL, /* 6649 */
-+			0x0507c0100000053fULL, /* 6650 */
-+			0x0000000000000000ULL, /* 6651 */
-+			0x0700800018680523ULL, /* 6652 */
-+			0x0000000000000000ULL, /* 6653 */
-+			0x01100000088d3180ULL, /* 6654 */
-+			0x0018000000000000ULL, /* 6655 */
-+			0x050080f80000053fULL, /* 6656 */
-+			0x0000000000000000ULL, /* 6657 */
-+			0x0707c00018600523ULL, /* 6658 */
-+			0x0000000000000000ULL, /* 6659 */
-+			0x0107fe0000000520ULL, /* 6660 */
-+			0x0000000000000000ULL, /* 6661 */
-+			0x040000f80000061bULL, /* 6662 */
-+			0x0000000000000000ULL, /* 6663 */
-+			0x0507c0100000053fULL, /* 6664 */
-+			0x0000000000000000ULL, /* 6665 */
-+			0x01100000088d3180ULL, /* 6666 */
-+			0x0018000000000000ULL, /* 6667 */
-+		},
-+	},
-+};
-+
 +#endif
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-rx-hash-ipv6.h
@@ -3515,3 +3437,575 @@ lifecycle in fnoffload and global hardware resources in npu.
 +		},
 +	},
 +};
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-rx-hash.h
+@@ -0,0 +1,569 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_RX_HASH_H
++#define _ZX279133_RX_HASH_H
++
++#include <linux/types.h>
++
++/* Calibrated guarded IPv4 programs; firmware CRC32 0xef1d7647. */
++struct zx279133_rx_hash_program {
++	u16 hook;
++	u16 start;
++	u16 count;
++	u16 map_count;
++	struct {
++		u16 offset;
++		u8 bucket;
++		u8 port; /* 0: WAN, 1: LAN */
++	} map[16];
++	u64 inst[288];
++};
++
++static const struct zx279133_rx_hash_program zx279133_rx_hash_programs[] = {
++	{
++		.hook = 1558, .start = 6000, .count = 204,
++		.map_count = 16,
++		.map = {
++			{ 52, 0, 1 },
++			{ 61, 4, 1 },
++			{ 71, 2, 1 },
++			{ 80, 6, 1 },
++			{ 91, 1, 1 },
++			{ 100, 5, 1 },
++			{ 110, 3, 1 },
++			{ 119, 7, 1 },
++			{ 131, 0, 0 },
++			{ 140, 4, 0 },
++			{ 150, 2, 0 },
++			{ 159, 6, 0 },
++			{ 170, 1, 0 },
++			{ 179, 5, 0 },
++			{ 189, 3, 0 },
++			{ 198, 7, 0 },
++		},
++		.inst = {
++			0x01080c1c8bb8a880ULL, /* 6000 */
++			0x01080bb90c1caaa0ULL, /* 6001 */
++			0x01080bb98bba28a0ULL, /* 6002 */
++			0x01080c1c8bba28c0ULL, /* 6003 */
++			0x0700800028180523ULL, /* 6004 */
++			0x0000000000000000ULL, /* 6005 */
++			0x0704000028200523ULL, /* 6006 */
++			0x0000000000000000ULL, /* 6007 */
++			0x06208010100003ffULL, /* 6008 */
++			0x0000000000000000ULL, /* 6009 */
++			0x0704000008000523ULL, /* 6010 */
++			0x0000000000000000ULL, /* 6011 */
++			0x06208010100003ffULL, /* 6012 */
++			0x0000000000000000ULL, /* 6013 */
++			0x0704000028120520ULL, /* 6014 */
++			0x0000000000000000ULL, /* 6015 */
++			0x0504008000008527ULL, /* 6016 */
++			0x0000000000000000ULL, /* 6017 */
++			0x06208010100003ffULL, /* 6018 */
++			0x0000000000000000ULL, /* 6019 */
++			0x050400140000852fULL, /* 6020 */
++			0x0000000000000000ULL, /* 6021 */
++			0x06208010100003ffULL, /* 6022 */
++			0x0000000000000000ULL, /* 6023 */
++			0x0504001200008537ULL, /* 6024 */
++			0x0000000000000000ULL, /* 6025 */
++			0x06208010100003ffULL, /* 6026 */
++			0x0000000000000000ULL, /* 6027 */
++			0x050400110000853bULL, /* 6028 */
++			0x0000000000000000ULL, /* 6029 */
++			0x06208010100003ffULL, /* 6030 */
++			0x0000000000000000ULL, /* 6031 */
++			0x05040010c000853cULL, /* 6032 */
++			0x0000000000000000ULL, /* 6033 */
++			0x06208010100003ffULL, /* 6034 */
++			0x0000000000000000ULL, /* 6035 */
++			0x050400500000053fULL, /* 6036 */
++			0x0000000000000000ULL, /* 6037 */
++			0x0502881000000522ULL, /* 6038 */
++			0x0000000000000000ULL, /* 6039 */
++			0x0502870740000520ULL, /* 6040 */
++			0x0000000000000000ULL, /* 6041 */
++			0x01080bcd8bf52860ULL, /* 6042 */
++			0x01080bce0be1a880ULL, /* 6043 */
++			0x01080bce8bd828a0ULL, /* 6044 */
++			0x01080bcf0bd3a8c0ULL, /* 6045 */
++			0x050280800000053fULL, /* 6046 */
++			0x0000000000000000ULL, /* 6047 */
++			0x010400000000852fULL, /* 6048 */
++			0x0000000000000000ULL, /* 6049 */
++			0x0504210680000523ULL, /* 6050 */
++			0x0000000000000000ULL, /* 6051 */
++			0x0104200000000522ULL, /* 6052 */
++			0x0000000000000000ULL, /* 6053 */
++			0x01080bd3830b8520ULL, /* 6054 */
++			0x050280800000053fULL, /* 6055 */
++			0x0000000000000000ULL, /* 6056 */
++			0x010400000000852fULL, /* 6057 */
++			0x0000000000000000ULL, /* 6058 */
++			0x0504210680000523ULL, /* 6059 */
++			0x0000000000000000ULL, /* 6060 */
++			0x0104200008000522ULL, /* 6061 */
++			0x0000000000000000ULL, /* 6062 */
++			0x01080bd8030b8520ULL, /* 6063 */
++			0x01080bd88bdd28c0ULL, /* 6064 */
++			0x050280800000053fULL, /* 6065 */
++			0x0000000000000000ULL, /* 6066 */
++			0x010400000000852fULL, /* 6067 */
++			0x0000000000000000ULL, /* 6068 */
++			0x0504210680000523ULL, /* 6069 */
++			0x0000000000000000ULL, /* 6070 */
++			0x0104200004000522ULL, /* 6071 */
++			0x0000000000000000ULL, /* 6072 */
++			0x01080bdd030b8520ULL, /* 6073 */
++			0x050280800000053fULL, /* 6074 */
++			0x0000000000000000ULL, /* 6075 */
++			0x010400000000852fULL, /* 6076 */
++			0x0000000000000000ULL, /* 6077 */
++			0x0504210680000523ULL, /* 6078 */
++			0x0000000000000000ULL, /* 6079 */
++			0x010420000c000522ULL, /* 6080 */
++			0x0000000000000000ULL, /* 6081 */
++			0x01080be1830b8520ULL, /* 6082 */
++			0x01080be20beba8a0ULL, /* 6083 */
++			0x01080be28be728c0ULL, /* 6084 */
++			0x050280800000053fULL, /* 6085 */
++			0x0000000000000000ULL, /* 6086 */
++			0x010400000000852fULL, /* 6087 */
++			0x0000000000000000ULL, /* 6088 */
++			0x0504210680000523ULL, /* 6089 */
++			0x0000000000000000ULL, /* 6090 */
++			0x0104200002000522ULL, /* 6091 */
++			0x0000000000000000ULL, /* 6092 */
++			0x01080be7030b8520ULL, /* 6093 */
++			0x050280800000053fULL, /* 6094 */
++			0x0000000000000000ULL, /* 6095 */
++			0x010400000000852fULL, /* 6096 */
++			0x0000000000000000ULL, /* 6097 */
++			0x0504210680000523ULL, /* 6098 */
++			0x0000000000000000ULL, /* 6099 */
++			0x010420000a000522ULL, /* 6100 */
++			0x0000000000000000ULL, /* 6101 */
++			0x01080beb830b8520ULL, /* 6102 */
++			0x01080bec0bf0a8c0ULL, /* 6103 */
++			0x050280800000053fULL, /* 6104 */
++			0x0000000000000000ULL, /* 6105 */
++			0x010400000000852fULL, /* 6106 */
++			0x0000000000000000ULL, /* 6107 */
++			0x0504210680000523ULL, /* 6108 */
++			0x0000000000000000ULL, /* 6109 */
++			0x0104200006000522ULL, /* 6110 */
++			0x0000000000000000ULL, /* 6111 */
++			0x01080bf0830b8520ULL, /* 6112 */
++			0x050280800000053fULL, /* 6113 */
++			0x0000000000000000ULL, /* 6114 */
++			0x010400000000852fULL, /* 6115 */
++			0x0000000000000000ULL, /* 6116 */
++			0x0504210680000523ULL, /* 6117 */
++			0x0000000000000000ULL, /* 6118 */
++			0x010420000e000522ULL, /* 6119 */
++			0x0000000000000000ULL, /* 6120 */
++			0x01080bf5030b8520ULL, /* 6121 */
++			0x01080bf58c092880ULL, /* 6122 */
++			0x01080bf60bffa8a0ULL, /* 6123 */
++			0x01080bf68bfb28c0ULL, /* 6124 */
++			0x050280800000053fULL, /* 6125 */
++			0x0000000000000000ULL, /* 6126 */
++			0x010400000000852fULL, /* 6127 */
++			0x0000000000000000ULL, /* 6128 */
++			0x0504210680000523ULL, /* 6129 */
++			0x0000000000000000ULL, /* 6130 */
++			0x0104200000000522ULL, /* 6131 */
++			0x0000000000000000ULL, /* 6132 */
++			0x01080bfb030b8520ULL, /* 6133 */
++			0x050280800000053fULL, /* 6134 */
++			0x0000000000000000ULL, /* 6135 */
++			0x010400000000852fULL, /* 6136 */
++			0x0000000000000000ULL, /* 6137 */
++			0x0504210680000523ULL, /* 6138 */
++			0x0000000000000000ULL, /* 6139 */
++			0x0104200008000522ULL, /* 6140 */
++			0x0000000000000000ULL, /* 6141 */
++			0x01080bff830b8520ULL, /* 6142 */
++			0x01080c000c04a8c0ULL, /* 6143 */
++			0x050280800000053fULL, /* 6144 */
++			0x0000000000000000ULL, /* 6145 */
++			0x010400000000852fULL, /* 6146 */
++			0x0000000000000000ULL, /* 6147 */
++			0x0504210680000523ULL, /* 6148 */
++			0x0000000000000000ULL, /* 6149 */
++			0x0104200004000522ULL, /* 6150 */
++			0x0000000000000000ULL, /* 6151 */
++			0x01080c04830b8520ULL, /* 6152 */
++			0x050280800000053fULL, /* 6153 */
++			0x0000000000000000ULL, /* 6154 */
++			0x010400000000852fULL, /* 6155 */
++			0x0000000000000000ULL, /* 6156 */
++			0x0504210680000523ULL, /* 6157 */
++			0x0000000000000000ULL, /* 6158 */
++			0x010420000c000522ULL, /* 6159 */
++			0x0000000000000000ULL, /* 6160 */
++			0x01080c09030b8520ULL, /* 6161 */
++			0x01080c098c1328a0ULL, /* 6162 */
++			0x01080c0a0c0ea8c0ULL, /* 6163 */
++			0x050280800000053fULL, /* 6164 */
++			0x0000000000000000ULL, /* 6165 */
++			0x010400000000852fULL, /* 6166 */
++			0x0000000000000000ULL, /* 6167 */
++			0x0504210680000523ULL, /* 6168 */
++			0x0000000000000000ULL, /* 6169 */
++			0x0104200002000522ULL, /* 6170 */
++			0x0000000000000000ULL, /* 6171 */
++			0x01080c0e830b8520ULL, /* 6172 */
++			0x050280800000053fULL, /* 6173 */
++			0x0000000000000000ULL, /* 6174 */
++			0x010400000000852fULL, /* 6175 */
++			0x0000000000000000ULL, /* 6176 */
++			0x0504210680000523ULL, /* 6177 */
++			0x0000000000000000ULL, /* 6178 */
++			0x010420000a000522ULL, /* 6179 */
++			0x0000000000000000ULL, /* 6180 */
++			0x01080c13030b8520ULL, /* 6181 */
++			0x01080c138c1828c0ULL, /* 6182 */
++			0x050280800000053fULL, /* 6183 */
++			0x0000000000000000ULL, /* 6184 */
++			0x010400000000852fULL, /* 6185 */
++			0x0000000000000000ULL, /* 6186 */
++			0x0504210680000523ULL, /* 6187 */
++			0x0000000000000000ULL, /* 6188 */
++			0x0104200006000522ULL, /* 6189 */
++			0x0000000000000000ULL, /* 6190 */
++			0x01080c18030b8520ULL, /* 6191 */
++			0x050280800000053fULL, /* 6192 */
++			0x0000000000000000ULL, /* 6193 */
++			0x010400000000852fULL, /* 6194 */
++			0x0000000000000000ULL, /* 6195 */
++			0x0504210680000523ULL, /* 6196 */
++			0x0000000000000000ULL, /* 6197 */
++			0x010420000e000522ULL, /* 6198 */
++			0x0000000000000000ULL, /* 6199 */
++			0x01080c1c830b8520ULL, /* 6200 */
++			0x0504210680000523ULL, /* 6201 */
++			0x0000000000000000ULL, /* 6202 */
++			0x01080c1e030b8520ULL, /* 6203 */
++		},
++	},
++	{
++		.hook = 1893, .start = 6288, .count = 212,
++		.map_count = 16,
++		.map = {
++			{ 58, 0, 1 },
++			{ 67, 4, 1 },
++			{ 77, 2, 1 },
++			{ 86, 6, 1 },
++			{ 97, 1, 1 },
++			{ 106, 5, 1 },
++			{ 116, 3, 1 },
++			{ 125, 7, 1 },
++			{ 137, 0, 0 },
++			{ 146, 4, 0 },
++			{ 156, 2, 0 },
++			{ 165, 6, 0 },
++			{ 176, 1, 0 },
++			{ 185, 5, 0 },
++			{ 195, 3, 0 },
++			{ 204, 7, 0 },
++		},
++		.inst = {
++			0x01080caf8c48a880ULL, /* 6288 */
++			0x01080c490cafaaa0ULL, /* 6289 */
++			0x01080c498c4a28a0ULL, /* 6290 */
++			0x01080caf8c4a28c0ULL, /* 6291 */
++			0x0601a092148000e7ULL, /* 6292 */
++			0x0000000000000000ULL, /* 6293 */
++			0x06018090148000e7ULL, /* 6294 */
++			0x0000000000000000ULL, /* 6295 */
++			0x0700800028180523ULL, /* 6296 */
++			0x0000000000000000ULL, /* 6297 */
++			0x0704000028200523ULL, /* 6298 */
++			0x0000000000000000ULL, /* 6299 */
++			0x06208010100003ffULL, /* 6300 */
++			0x0000000000000000ULL, /* 6301 */
++			0x0704000008000523ULL, /* 6302 */
++			0x0000000000000000ULL, /* 6303 */
++			0x06208010100003ffULL, /* 6304 */
++			0x0000000000000000ULL, /* 6305 */
++			0x0704000028120520ULL, /* 6306 */
++			0x0000000000000000ULL, /* 6307 */
++			0x0504008000008527ULL, /* 6308 */
++			0x0000000000000000ULL, /* 6309 */
++			0x06208010100003ffULL, /* 6310 */
++			0x0000000000000000ULL, /* 6311 */
++			0x050400140000852fULL, /* 6312 */
++			0x0000000000000000ULL, /* 6313 */
++			0x06208010100003ffULL, /* 6314 */
++			0x0000000000000000ULL, /* 6315 */
++			0x0504001200008537ULL, /* 6316 */
++			0x0000000000000000ULL, /* 6317 */
++			0x06208010100003ffULL, /* 6318 */
++			0x0000000000000000ULL, /* 6319 */
++			0x050400110000853bULL, /* 6320 */
++			0x0000000000000000ULL, /* 6321 */
++			0x06208010100003ffULL, /* 6322 */
++			0x0000000000000000ULL, /* 6323 */
++			0x05040010c000853cULL, /* 6324 */
++			0x0000000000000000ULL, /* 6325 */
++			0x06208010100003ffULL, /* 6326 */
++			0x0000000000000000ULL, /* 6327 */
++			0x050180a400008527ULL, /* 6328 */
++			0x0000000000000000ULL, /* 6329 */
++			0x050400500000053fULL, /* 6330 */
++			0x0000000000000000ULL, /* 6331 */
++			0x0502881000000522ULL, /* 6332 */
++			0x0000000000000000ULL, /* 6333 */
++			0x0502870740000520ULL, /* 6334 */
++			0x0000000000000000ULL, /* 6335 */
++			0x01080c608c882860ULL, /* 6336 */
++			0x01080c610c74a880ULL, /* 6337 */
++			0x01080c618c6b28a0ULL, /* 6338 */
++			0x01080c620c66a8c0ULL, /* 6339 */
++			0x050280800000053fULL, /* 6340 */
++			0x0000000000000000ULL, /* 6341 */
++			0x010400000000852fULL, /* 6342 */
++			0x0000000000000000ULL, /* 6343 */
++			0x0504210680000523ULL, /* 6344 */
++			0x0000000000000000ULL, /* 6345 */
++			0x0104200000000522ULL, /* 6346 */
++			0x0000000000000000ULL, /* 6347 */
++			0x01080c6683b30520ULL, /* 6348 */
++			0x050280800000053fULL, /* 6349 */
++			0x0000000000000000ULL, /* 6350 */
++			0x010400000000852fULL, /* 6351 */
++			0x0000000000000000ULL, /* 6352 */
++			0x0504210680000523ULL, /* 6353 */
++			0x0000000000000000ULL, /* 6354 */
++			0x0104200008000522ULL, /* 6355 */
++			0x0000000000000000ULL, /* 6356 */
++			0x01080c6b03b30520ULL, /* 6357 */
++			0x01080c6b8c7028c0ULL, /* 6358 */
++			0x050280800000053fULL, /* 6359 */
++			0x0000000000000000ULL, /* 6360 */
++			0x010400000000852fULL, /* 6361 */
++			0x0000000000000000ULL, /* 6362 */
++			0x0504210680000523ULL, /* 6363 */
++			0x0000000000000000ULL, /* 6364 */
++			0x0104200004000522ULL, /* 6365 */
++			0x0000000000000000ULL, /* 6366 */
++			0x01080c7003b30520ULL, /* 6367 */
++			0x050280800000053fULL, /* 6368 */
++			0x0000000000000000ULL, /* 6369 */
++			0x010400000000852fULL, /* 6370 */
++			0x0000000000000000ULL, /* 6371 */
++			0x0504210680000523ULL, /* 6372 */
++			0x0000000000000000ULL, /* 6373 */
++			0x010420000c000522ULL, /* 6374 */
++			0x0000000000000000ULL, /* 6375 */
++			0x01080c7483b30520ULL, /* 6376 */
++			0x01080c750c7ea8a0ULL, /* 6377 */
++			0x01080c758c7a28c0ULL, /* 6378 */
++			0x050280800000053fULL, /* 6379 */
++			0x0000000000000000ULL, /* 6380 */
++			0x010400000000852fULL, /* 6381 */
++			0x0000000000000000ULL, /* 6382 */
++			0x0504210680000523ULL, /* 6383 */
++			0x0000000000000000ULL, /* 6384 */
++			0x0104200002000522ULL, /* 6385 */
++			0x0000000000000000ULL, /* 6386 */
++			0x01080c7a03b30520ULL, /* 6387 */
++			0x050280800000053fULL, /* 6388 */
++			0x0000000000000000ULL, /* 6389 */
++			0x010400000000852fULL, /* 6390 */
++			0x0000000000000000ULL, /* 6391 */
++			0x0504210680000523ULL, /* 6392 */
++			0x0000000000000000ULL, /* 6393 */
++			0x010420000a000522ULL, /* 6394 */
++			0x0000000000000000ULL, /* 6395 */
++			0x01080c7e83b30520ULL, /* 6396 */
++			0x01080c7f0c83a8c0ULL, /* 6397 */
++			0x050280800000053fULL, /* 6398 */
++			0x0000000000000000ULL, /* 6399 */
++			0x010400000000852fULL, /* 6400 */
++			0x0000000000000000ULL, /* 6401 */
++			0x0504210680000523ULL, /* 6402 */
++			0x0000000000000000ULL, /* 6403 */
++			0x0104200006000522ULL, /* 6404 */
++			0x0000000000000000ULL, /* 6405 */
++			0x01080c8383b30520ULL, /* 6406 */
++			0x050280800000053fULL, /* 6407 */
++			0x0000000000000000ULL, /* 6408 */
++			0x010400000000852fULL, /* 6409 */
++			0x0000000000000000ULL, /* 6410 */
++			0x0504210680000523ULL, /* 6411 */
++			0x0000000000000000ULL, /* 6412 */
++			0x010420000e000522ULL, /* 6413 */
++			0x0000000000000000ULL, /* 6414 */
++			0x01080c8803b30520ULL, /* 6415 */
++			0x01080c888c9c2880ULL, /* 6416 */
++			0x01080c890c92a8a0ULL, /* 6417 */
++			0x01080c898c8e28c0ULL, /* 6418 */
++			0x050280800000053fULL, /* 6419 */
++			0x0000000000000000ULL, /* 6420 */
++			0x010400000000852fULL, /* 6421 */
++			0x0000000000000000ULL, /* 6422 */
++			0x0504210680000523ULL, /* 6423 */
++			0x0000000000000000ULL, /* 6424 */
++			0x0104200000000522ULL, /* 6425 */
++			0x0000000000000000ULL, /* 6426 */
++			0x01080c8e03b30520ULL, /* 6427 */
++			0x050280800000053fULL, /* 6428 */
++			0x0000000000000000ULL, /* 6429 */
++			0x010400000000852fULL, /* 6430 */
++			0x0000000000000000ULL, /* 6431 */
++			0x0504210680000523ULL, /* 6432 */
++			0x0000000000000000ULL, /* 6433 */
++			0x0104200008000522ULL, /* 6434 */
++			0x0000000000000000ULL, /* 6435 */
++			0x01080c9283b30520ULL, /* 6436 */
++			0x01080c930c97a8c0ULL, /* 6437 */
++			0x050280800000053fULL, /* 6438 */
++			0x0000000000000000ULL, /* 6439 */
++			0x010400000000852fULL, /* 6440 */
++			0x0000000000000000ULL, /* 6441 */
++			0x0504210680000523ULL, /* 6442 */
++			0x0000000000000000ULL, /* 6443 */
++			0x0104200004000522ULL, /* 6444 */
++			0x0000000000000000ULL, /* 6445 */
++			0x01080c9783b30520ULL, /* 6446 */
++			0x050280800000053fULL, /* 6447 */
++			0x0000000000000000ULL, /* 6448 */
++			0x010400000000852fULL, /* 6449 */
++			0x0000000000000000ULL, /* 6450 */
++			0x0504210680000523ULL, /* 6451 */
++			0x0000000000000000ULL, /* 6452 */
++			0x010420000c000522ULL, /* 6453 */
++			0x0000000000000000ULL, /* 6454 */
++			0x01080c9c03b30520ULL, /* 6455 */
++			0x01080c9c8ca628a0ULL, /* 6456 */
++			0x01080c9d0ca1a8c0ULL, /* 6457 */
++			0x050280800000053fULL, /* 6458 */
++			0x0000000000000000ULL, /* 6459 */
++			0x010400000000852fULL, /* 6460 */
++			0x0000000000000000ULL, /* 6461 */
++			0x0504210680000523ULL, /* 6462 */
++			0x0000000000000000ULL, /* 6463 */
++			0x0104200002000522ULL, /* 6464 */
++			0x0000000000000000ULL, /* 6465 */
++			0x01080ca183b30520ULL, /* 6466 */
++			0x050280800000053fULL, /* 6467 */
++			0x0000000000000000ULL, /* 6468 */
++			0x010400000000852fULL, /* 6469 */
++			0x0000000000000000ULL, /* 6470 */
++			0x0504210680000523ULL, /* 6471 */
++			0x0000000000000000ULL, /* 6472 */
++			0x010420000a000522ULL, /* 6473 */
++			0x0000000000000000ULL, /* 6474 */
++			0x01080ca603b30520ULL, /* 6475 */
++			0x01080ca68cab28c0ULL, /* 6476 */
++			0x050280800000053fULL, /* 6477 */
++			0x0000000000000000ULL, /* 6478 */
++			0x010400000000852fULL, /* 6479 */
++			0x0000000000000000ULL, /* 6480 */
++			0x0504210680000523ULL, /* 6481 */
++			0x0000000000000000ULL, /* 6482 */
++			0x0104200006000522ULL, /* 6483 */
++			0x0000000000000000ULL, /* 6484 */
++			0x01080cab03b30520ULL, /* 6485 */
++			0x050280800000053fULL, /* 6486 */
++			0x0000000000000000ULL, /* 6487 */
++			0x010400000000852fULL, /* 6488 */
++			0x0000000000000000ULL, /* 6489 */
++			0x0504210680000523ULL, /* 6490 */
++			0x0000000000000000ULL, /* 6491 */
++			0x010420000e000522ULL, /* 6492 */
++			0x0000000000000000ULL, /* 6493 */
++			0x01080caf83b30520ULL, /* 6494 */
++			0x0504210680000523ULL, /* 6495 */
++			0x0000000000000000ULL, /* 6496 */
++			0x01080cb103b30520ULL, /* 6497 */
++			0x0000000000000000ULL, /* 6498 */
++			0x0000000000000000ULL, /* 6499 */
++		},
++	},
++	{
++		.hook = 2216, .start = 6592, .count = 76,
++		.inst = {
++			0x01080d000ce0a880ULL, /* 6592 */
++			0x01080ce10d002aa0ULL, /* 6593 */
++			0x01080ce18ce228a0ULL, /* 6594 */
++			0x01080d000ce228c0ULL, /* 6595 */
++			0x040000f80000069bULL, /* 6596 */
++			0x0000000000000000ULL, /* 6597 */
++			0x0507c0800000053fULL, /* 6598 */
++			0x0000000000000000ULL, /* 6599 */
++			0x0601a092148000e7ULL, /* 6600 */
++			0x0000000000000000ULL, /* 6601 */
++			0x06018090148000e7ULL, /* 6602 */
++			0x0000000000000000ULL, /* 6603 */
++			0x0700800028180523ULL, /* 6604 */
++			0x0000000000000000ULL, /* 6605 */
++			0x0704000028200523ULL, /* 6606 */
++			0x0000000000000000ULL, /* 6607 */
++			0x06208010100003ffULL, /* 6608 */
++			0x0000000000000000ULL, /* 6609 */
++			0x0704000008000523ULL, /* 6610 */
++			0x0000000000000000ULL, /* 6611 */
++			0x06208010100003ffULL, /* 6612 */
++			0x0000000000000000ULL, /* 6613 */
++			0x0704000028120520ULL, /* 6614 */
++			0x0000000000000000ULL, /* 6615 */
++			0x0504008000008527ULL, /* 6616 */
++			0x0000000000000000ULL, /* 6617 */
++			0x06208010100003ffULL, /* 6618 */
++			0x0000000000000000ULL, /* 6619 */
++			0x050400140000852fULL, /* 6620 */
++			0x0000000000000000ULL, /* 6621 */
++			0x06208010100003ffULL, /* 6622 */
++			0x0000000000000000ULL, /* 6623 */
++			0x0504001200008537ULL, /* 6624 */
++			0x0000000000000000ULL, /* 6625 */
++			0x06208010100003ffULL, /* 6626 */
++			0x0000000000000000ULL, /* 6627 */
++			0x050400110000853bULL, /* 6628 */
++			0x0000000000000000ULL, /* 6629 */
++			0x06208010100003ffULL, /* 6630 */
++			0x0000000000000000ULL, /* 6631 */
++			0x05040010c000853cULL, /* 6632 */
++			0x0000000000000000ULL, /* 6633 */
++			0x06208010100003ffULL, /* 6634 */
++			0x0000000000000000ULL, /* 6635 */
++			0x050400f80000053fULL, /* 6636 */
++			0x0000000000000000ULL, /* 6637 */
++			0x0707c00018680523ULL, /* 6638 */
++			0x0000000000000000ULL, /* 6639 */
++			0x040000100000069bULL, /* 6640 */
++			0x0000000000000000ULL, /* 6641 */
++			0x050080f80000053fULL, /* 6642 */
++			0x0000000000000000ULL, /* 6643 */
++			0x0707c00018600523ULL, /* 6644 */
++			0x0000000000000000ULL, /* 6645 */
++			0x0107fe0002000520ULL, /* 6646 */
++			0x0000000000000000ULL, /* 6647 */
++			0x040000f80000061bULL, /* 6648 */
++			0x0000000000000000ULL, /* 6649 */
++			0x0507c0100000053fULL, /* 6650 */
++			0x0000000000000000ULL, /* 6651 */
++			0x0700800018680523ULL, /* 6652 */
++			0x0000000000000000ULL, /* 6653 */
++			0x01100000088d3180ULL, /* 6654 */
++			0x0018000000000000ULL, /* 6655 */
++			0x050080f80000053fULL, /* 6656 */
++			0x0000000000000000ULL, /* 6657 */
++			0x0707c00018600523ULL, /* 6658 */
++			0x0000000000000000ULL, /* 6659 */
++			0x0107fe0000000520ULL, /* 6660 */
++			0x0000000000000000ULL, /* 6661 */
++			0x040000f80000061bULL, /* 6662 */
++			0x0000000000000000ULL, /* 6663 */
++			0x0507c0100000053fULL, /* 6664 */
++			0x0000000000000000ULL, /* 6665 */
++			0x01100000088d3180ULL, /* 6666 */
++			0x0018000000000000ULL, /* 6667 */
++		},
++	},
++};
++
++#endif
