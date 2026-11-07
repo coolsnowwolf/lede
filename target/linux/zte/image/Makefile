@@ -36,7 +36,10 @@ define Device/zte_zxslc-sr1010
   DEVICE_DTS := zx279133-sr1010-openwrt
   DEVICE_DTS_DIR := $(TOPDIR)/target/linux/zte/dts
   SUPPORTED_DEVICES := zte,zx279133-sr1010
-  DEVICE_PACKAGES := zte-fwslot luci-app-zte-fwslot
+  DEVICE_PACKAGES := \
+		zte-fwslot luci-app-zte-fwslot \
+		kmod-zte-npu kmod-zte-fnoffload kmod-zte-rtl8372n \
+		npu-qos sqm-npu-policy luci-app-zte-sqm luci-i18n-zte-sqm-zh-cn
   # Reuse Imm's scratch-buffer fix; generate no stock-8MiB variant.
   # The complete legacy container remains compatible with existing fwslot.
   IMAGES := sysupgrade.bin

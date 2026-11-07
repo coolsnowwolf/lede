@@ -3,7 +3,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI page to switch the firmware slot of the ZTE SR1010
-LUCI_DEPENDS:=+luci-base +zte-fwslot @TARGET_zte_zx279133
+LUCI_DEPENDS:=@TARGET_zte_zx279133_DEVICE_zte_zxslc-sr1010 +luci-base +zte-fwslot
 LUCI_PKGARCH:=all
 
 PKG_LICENSE:=GPL-2.0-only

@@ -1,14 +1,1177 @@
 Subject: [PATCH] net: zte: add PPU and NP table management
 
-Add the PPU microcode, NP table programming and metering primitives.
-
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-meter.c
+@@ -0,0 +1,387 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Managed PLCR leases. No workqueues, packet hooks or probe-time table scan. */
++#include <linux/bitmap.h>
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/export.h>
++#include "zx279133-native.h"
++#include "zx279133-meter.h"
++
++#define METER_FAST_BUCKETS 32
++#define METER_MAC_CLIENTS 32
++#define METER_BUCKETS (METER_FAST_BUCKETS + 2 * METER_MAC_CLIENTS)
++#define METER_FLOW_BASE 192
++
++struct meter_profile {
++	struct zte_nppt_plcr_profile config;
++	u32 saved[3];
++	unsigned int refs;
++	bool dirty;
++};
++
++struct zte_nppt_meter {
++	u32 saved[4];
++	const void *scope;
++	u32 action_index;
++	unsigned int refs;
++	u8 bucket;
++	u8 profile;
++	bool used;
++	bool orphan;
++	bool binding_restored;
++	bool uncertain;
++};
++
++struct zx279133_meter_pool {
++	struct meter_profile profiles[ZTE_NPPT_PLCR_PROFILES];
++	struct zte_nppt_meter buckets[METER_BUCKETS];
++	DECLARE_BITMAP(external_profiles, ZTE_NPPT_PLCR_PROFILES);
++	bool inventoried;
++};
++
++static u16 meter_flow_id(unsigned int bucket)
++{
++	if (bucket < METER_FAST_BUCKETS)
++		return METER_FLOW_BASE + bucket;
++	bucket -= METER_FAST_BUCKETS;
++	return (bucket & 1 ? 0x814 : 0x414) + bucket / 2;
++}
++
++static bool meter_profile_equal(const struct zte_nppt_plcr_profile *a,
++				const struct zte_nppt_plcr_profile *b)
++{
++	return a->cir == b->cir && a->eir == b->eir && a->cbs == b->cbs &&
++	a->ebs == b->ebs && a->cd_mode == b->cd_mode &&
++	a->cf_flag == b->cf_flag && a->cm_flag == b->cm_flag &&
++	a->pkt_sign == b->pkt_sign;
++}
++
++static int meter_profile_restore(struct zx279133_eth *eth, u8 id, u32 *saved)
++{
++	u32 actual[3];
++	int ret = zx279133_native_profile_words(eth, id, saved, true);
++
++	if (!ret)
++		ret = zx279133_native_profile_words(eth, id, actual, false);
++	if (!ret && memcmp(saved, actual, sizeof(actual)))
++		ret = -EIO;
++	return ret;
++}
++
++static int meter_binding_restore(struct zx279133_eth *eth, u16 id, u32 *saved)
++{
++	u32 actual[4];
++	int ret = zx279133_native_binding_words(eth, id, saved, true);
++
++	if (!ret)
++		ret = zx279133_native_binding_words(eth, id, actual, false);
++	if (!ret && memcmp(saved, actual, sizeof(actual)))
++		ret = -EIO;
++	return ret;
++}
++
++int zx279133_meter_put(struct zx279133_meter_pool *p,
++		       struct zx279133_eth *eth, struct zte_nppt_meter *m)
++{
++	struct meter_profile *profile;
++	int ret;
++
++	if (!p || !m || m->bucket >= METER_BUCKETS ||
++	    m != &p->buckets[m->bucket] || !m->used)
++		return -EINVAL;
++	if (m->refs > 1) {
++		m->refs--;
++		return 0;
++	}
++	profile = &p->profiles[m->profile];
++	m->uncertain = true;
++	if (!m->binding_restored) {
++		ret = meter_binding_restore(eth, meter_flow_id(m->bucket), m->saved);
++		if (ret)
++			return ret;
++		m->binding_restored = true;
++	}
++	if (profile->refs == 1) {
++		profile->dirty = true;
++		ret = meter_profile_restore(eth, m->profile, profile->saved);
++		if (ret)
++			return ret;
++		profile->dirty = false;
++	}
++	profile->refs--;
++	m->used = false;
++	return 0;
++}
++
++void zx279133_meter_abandon(struct zx279133_meter_pool *p,
++			    struct zte_nppt_meter *m)
++{
++	if (p && m && m->bucket < METER_BUCKETS && m == &p->buckets[m->bucket] &&
++	    m->used)
++		m->orphan = true;
++}
++
++static int meter_reap(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
++{
++	unsigned int i;
++	int ret;
++
++	for (i = 0; i < METER_BUCKETS; i++)
++		if (p->buckets[i].used && p->buckets[i].orphan) {
++			ret = zx279133_meter_put(p, eth, &p->buckets[i]);
++			if (ret)
++				return ret;
++		}
++	return 0;
++}
++
++int zx279133_meter_drain(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
++{
++	unsigned int i;
++	int ret;
++
++	if (!p)
++		return 0;
++	ret = meter_reap(p, eth);
++	if (ret)
++		return ret;
++	for (i = 0; i < METER_BUCKETS; i++)
++		if (p->buckets[i].used)
++			return -EBUSY;
++	p->inventoried = false;
++	return 0;
++}
++
++/* Scan only on first use or after an unmanaged binding edit. Never per packet
++ * or from a timer. Do not overwrite a profile referenced by an external meter.
++ */
++static int meter_inventory(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
++{
++	struct zte_nppt_plcr_binding binding;
++	unsigned int id;
++	int ret;
++
++	bitmap_zero(p->external_profiles, ZTE_NPPT_PLCR_PROFILES);
++	for (id = 0; id < ZTE_NPPT_PLCR_FLOWS; id++) {
++		unsigned int slot;
++		bool owned = false;
++
++		for (slot = 0; slot < METER_BUCKETS; slot++)
++			if (meter_flow_id(slot) == id && p->buckets[slot].used) {
++				owned = true;
++				break;
++			}
++		if (owned)
++			continue;
++		ret = zx279133_native_plcr_binding_get(eth, id, &binding);
++		if (ret)
++			return ret;
++		if (binding.enabled)
++			__set_bit(binding.profile, p->external_profiles);
++	}
++	p->inventoried = true;
++	return 0;
++}
++
++static int meter_get(struct zx279133_meter_pool **pool,
++		     struct zx279133_eth *eth,
++		     const struct zte_nppt_plcr_profile *wanted,
++		     const void *scope, u32 action_index,
++		     unsigned int first, unsigned int end,
++		     struct zte_nppt_meter **out)
++{
++	struct zte_nppt_plcr_profile actual;
++	struct zte_nppt_plcr_binding binding;
++	struct zx279133_meter_pool *p;
++	struct meter_profile *profile;
++	struct zte_nppt_meter *m = NULL;
++	unsigned int i, id = ZTE_NPPT_PLCR_PROFILES;
++	int ret;
++
++	*out = NULL;
++	if (!wanted || wanted->cir > 0x3ffff || wanted->eir > 0x3ffff ||
++	    wanted->cbs > 0x7ffffff || wanted->ebs > 0x7ffffff ||
++	    wanted->cd_mode != 2 || wanted->cf_flag > 1 || wanted->cm_flag > 1 ||
++	    wanted->pkt_sign > 1)
++		return -EINVAL;
++	if (!*pool) {
++		*pool = kzalloc(sizeof(**pool), GFP_KERNEL);
++		if (!*pool)
++			return -ENOMEM;
++	}
++	p = *pool;
++	ret = meter_reap(p, eth);
++	if (ret)
++		return ret;
++	if (!p->inventoried) {
++		ret = meter_inventory(p, eth);
++		if (ret)
++			return ret;
++	}
++	/* One indexed TC action is one shared token bucket, not a rate per flow.
++	 * Do not update a meter in place while unrelated flows still reference it.
++	 */
++	if (scope && action_index)
++		for (i = first; i < end; i++) {
++			struct zte_nppt_meter *shared = &p->buckets[i];
++
++			if (!shared->used || shared->orphan || shared->scope != scope ||
++			    shared->action_index != action_index)
++				continue;
++			profile = &p->profiles[shared->profile];
++			if (profile->dirty || shared->binding_restored || shared->uncertain ||
++			    !meter_profile_equal(&profile->config, wanted))
++				return -EBUSY;
++			shared->refs++;
++			*out = shared;
++			return 0;
++		}
++	for (i = first; i < end; i++) {
++		if (p->buckets[i].used)
++			continue;
++		ret = zx279133_native_plcr_binding_get(eth, meter_flow_id(i), &binding);
++		if (ret)
++			return ret;
++		if (!binding.enabled) {
++			m = &p->buckets[i];
++			m->bucket = i;
++			break;
++		}
++	}
++	if (!m)
++		return -ENOSPC;
++	for (i = 0; i < ZTE_NPPT_PLCR_PROFILES; i++)
++		if (p->profiles[i].refs && !p->profiles[i].dirty &&
++		    meter_profile_equal(&p->profiles[i].config, wanted)) {
++			id = i;
++			break;
++		}
++	if (id == ZTE_NPPT_PLCR_PROFILES)
++		for (i = 0; i < ZTE_NPPT_PLCR_PROFILES; i++)
++			if (!p->profiles[i].refs && !test_bit(i, p->external_profiles)) {
++				id = i;
++				break;
++			}
++	if (id == ZTE_NPPT_PLCR_PROFILES)
++		return -ENOSPC;
++	profile = &p->profiles[id];
++	ret = zx279133_native_binding_words(eth, meter_flow_id(m->bucket),
++					    m->saved, false);
++	if (ret)
++		return ret;
++	if (!profile->refs) {
++		ret = zx279133_native_profile_words(eth, id, profile->saved, false);
++		if (ret)
++			return ret;
++		profile->config = *wanted;
++	}
++	m->scope = scope;
++	m->action_index = action_index;
++	m->refs = 1;
++	m->profile = id;
++	m->used = true;
++	m->orphan = false;
++	m->binding_restored = false;
++	m->uncertain = false;
++	profile->refs++;
++	if (profile->refs == 1) {
++		profile->dirty = true;
++		ret = zx279133_native_plcr_profile_set(eth, id, wanted);
++		if (ret)
++			goto rollback;
++		ret = zx279133_native_plcr_profile_get(eth, id, &actual);
++		if (ret)
++			goto rollback;
++		if (!meter_profile_equal(&actual, wanted)) {
++			ret = -EIO;
++			goto rollback;
++		}
++		profile->dirty = false;
++	}
++	binding.profile = id;
++	binding.enabled = true;
++	ret = zx279133_native_plcr_binding_set(eth, meter_flow_id(m->bucket), &binding);
++	if (ret)
++		goto rollback;
++	ret = zx279133_native_plcr_binding_get(eth, meter_flow_id(m->bucket), &binding);
++	if (ret)
++		goto rollback;
++	if (!binding.enabled || binding.profile != id) {
++		ret = -EIO;
++		goto rollback;
++	}
++	*out = m;
++	return 0;
++rollback:
++	m->orphan = true;
++	/* Retain failed rollback inside NPU; it is retried before reuse/detach. */
++	zx279133_meter_put(p, eth, m);
++	return ret;
++}
++
++int zx279133_meter_get(struct zx279133_meter_pool **pool,
++		       struct zx279133_eth *eth,
++		       const struct zte_nppt_plcr_profile *wanted,
++		       const void *scope, u32 action_index,
++		       struct zte_nppt_meter **out)
++{
++	return meter_get(pool, eth, wanted, scope, action_index,
++			 0, METER_FAST_BUCKETS, out);
++}
++
++int zx279133_meter_mac_get(struct zx279133_meter_pool **pool,
++			   struct zx279133_eth *eth,
++			   const struct zte_nppt_plcr_profile *wanted,
++			   u8 slot, bool download, struct zte_nppt_meter **out)
++{
++	unsigned int bucket = METER_FAST_BUCKETS + slot * 2 + download;
++
++	if (slot >= METER_MAC_CLIENTS)
++		return -EINVAL;
++	return meter_get(pool, eth, wanted, NULL, 0, bucket, bucket + 1, out);
++}
++
++bool zx279133_meter_profile_busy(struct zx279133_meter_pool *p, u8 id)
++{
++	return p && id < ZTE_NPPT_PLCR_PROFILES && p->profiles[id].refs;
++}
++
++bool zx279133_meter_binding_busy(struct zx279133_meter_pool *p, u16 id)
++{
++	unsigned int i;
++
++	if (p)
++		for (i = 0; i < METER_BUCKETS; i++)
++			if (p->buckets[i].used && meter_flow_id(i) == id)
++				return true;
++	return false;
++}
++
++void zx279133_meter_inventory_changed(struct zx279133_meter_pool *p)
++{
++	if (p)
++		p->inventoried = false;
++}
++
++u8 zte_nppt_meter_bucket(const struct zte_nppt_meter *m)
++{
++	return m->bucket;
++}
++EXPORT_SYMBOL_GPL(zte_nppt_meter_bucket);
++
++void zx279133_meter_destroy(struct zx279133_meter_pool *p)
++{
++	kfree(p);
++}
++
++bool zx279133_meter_active(struct zx279133_meter_pool *p)
++{
++	unsigned int i;
++
++	if (p)
++		for (i = 0; i < METER_BUCKETS; i++)
++			if (p->buckets[i].used)
++				return true;
++	return false;
++}
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-meter.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _ZX279133_METER_H
++#define _ZX279133_METER_H
++#include <linux/zte_nppt_native.h>
++struct zx279133_eth;
++struct zx279133_meter_pool;
++int zx279133_meter_get(struct zx279133_meter_pool **pool,
++		       struct zx279133_eth *eth,
++		       const struct zte_nppt_plcr_profile *profile,
++		       const void *scope, u32 action_index,
++		       struct zte_nppt_meter **out);
++int zx279133_meter_put(struct zx279133_meter_pool *pool,
++		       struct zx279133_eth *eth, struct zte_nppt_meter *meter);
++void zx279133_meter_abandon(struct zx279133_meter_pool *pool,
++			    struct zte_nppt_meter *meter);
++int zx279133_meter_drain(struct zx279133_meter_pool *pool,
++			 struct zx279133_eth *eth);
++bool zx279133_meter_active(struct zx279133_meter_pool *pool);
++void zx279133_meter_destroy(struct zx279133_meter_pool *pool);
++bool zx279133_meter_profile_busy(struct zx279133_meter_pool *pool, u8 id);
++bool zx279133_meter_binding_busy(struct zx279133_meter_pool *pool, u16 id);
++void zx279133_meter_inventory_changed(struct zx279133_meter_pool *pool);
++int zx279133_meter_mac_get(struct zx279133_meter_pool **pool,
++			   struct zx279133_eth *eth,
++			   const struct zte_nppt_plcr_profile *profile,
++			   u8 slot, bool download, struct zte_nppt_meter **out);
++#endif
+--- /dev/null
++++ b/drivers/net/ethernet/zte/zx279133-native.c
+@@ -0,0 +1,741 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* CPU133 NP primitives reconstructed from OEM np.ko. No init-time caller.
++ * Source locations and limitations: docs/NP-NATIVE-API-R1.md in the project.
++ */
++#include <linux/bitfield.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++
++#include "zx279133.h"
++#include "zx279133-native.h"
++
++#define PLCR_PROFILE_BASE	0x40000
++#define PLCR_MODE		0x280016
++#define PLCR_BASE		0x280017
++#define PLCR_CONFIGURED_BASE	40960
++#define SSCH_GATE		0x00b8
++#define SSCH_GATE_BIT		BIT(6)
++#define SSCH_COMMAND		0x2c014
++#define SSCH_DONE		0x2c018
++#define SSCH_DATA		0x2c01c
++#define SSCH_COMMAND_MASK	0xffc0007f
++#define SSCH_MODE0		0x2c02c
++#define SSCH_MODE1		0x2c030
++#define SSCH_QUEUE_ENABLE0	0x2c060
++#define SSCH_QUEUE_ENABLE1	0x2c064
++
++/* OEM red_ind_{read,write}: command precedes data; the last data word is
++ * written first. Caller holds np_ind_lock, including snapshot/rollback.
++ * Unlike the OEM wrapper, a timeout is not overwritten by gate restoration.
++ */
++static int zx279133_red_transfer(struct zx279133_eth *eth, u8 ram, u16 queue,
++				 u32 words[4], bool write)
++{
++	u32 gate, val;
++	int i, ret;
++
++	gate = readl(eth->base + ZX279133_RED_AUTO_GATE_REG);
++	if (gate & ZX279133_RED_AUTO_GATE_BIT)
++		writel(gate & ~ZX279133_RED_AUTO_GATE_BIT,
++		       eth->base + ZX279133_RED_AUTO_GATE_REG);
++	ret = readl_poll_timeout_atomic(eth->base + ZX279133_RED_IND_DONE, val,
++					val & ZX279133_RED_IND_DONE_BIT, 1, 1000);
++	if (ret)
++		goto restore_gate;
++	writel(FIELD_PREP(ZX279133_RED_IND_RAM_ID_MASK, ram) | queue |
++	       (write ? 0 : BIT(27)), eth->base + ZX279133_RED_IND_CMD);
++	if (write) {
++		for (i = 3; i >= 0; i--)
++			writel(words[i], eth->base + ZX279133_RED_IND_DATA + 4 * i);
++	}
++	ret = readl_poll_timeout_atomic(eth->base + ZX279133_RED_IND_DONE, val,
++					val & ZX279133_RED_IND_DONE_BIT, 1, 1000);
++	if (!ret && !write)
++		for (i = 3; i >= 0; i--)
++			words[i] = readl(eth->base + ZX279133_RED_IND_DATA + 4 * i);
++restore_gate:
++	if (gate & ZX279133_RED_AUTO_GATE_BIT) {
++		val = readl(eth->base + ZX279133_RED_AUTO_GATE_REG);
++		writel(val | ZX279133_RED_AUTO_GATE_BIT,
++		       eth->base + ZX279133_RED_AUTO_GATE_REG);
++	}
++	return ret;
++}
++
++static int zx279133_red_pack(const struct zte_nppt_red_buffer *c, u32 w[4])
++{
++	if (!c || c->max_space > 0xffff || c->yellow_p0 > 0xff ||
++	    c->yellow_p1 > 0xff || c->green_p0 > 0xff || c->green_p1 > 0xff ||
++	    c->yellow_th0 > 0xffff || c->yellow_th1 > 0xffff ||
++	    c->green_th0 > 0xffff || c->green_th1 > 0xffff)
++		return -EINVAL;
++	w[0] = c->max_space | c->yellow_p0 << 16 | c->yellow_p1 << 24;
++	w[1] = c->green_p0 | c->green_p1 << 8 | c->yellow_th0 << 16;
++	w[2] = c->yellow_th1 | c->green_th0 << 16;
++	w[3] = c->green_th1;
++	return 0;
++}
++
++static void zx279133_red_unpack(const u32 w[4], struct zte_nppt_red_buffer *c)
++{
++	*c = (struct zte_nppt_red_buffer) {
++		.max_space = w[0] & 0xffff,
++		.yellow_p0 = (w[0] >> 16) & 0xff,
++		.yellow_p1 = w[0] >> 24,
++		.green_p0 = w[1] & 0xff,
++		.green_p1 = (w[1] >> 8) & 0xff,
++		.yellow_th0 = w[1] >> 16,
++		.yellow_th1 = w[2] & 0xffff,
++		.green_th0 = w[2] >> 16,
++		.green_th1 = w[3] & 0xffff,
++	};
++}
++
++int zx279133_native_red_buffer_get(struct zx279133_eth *eth, u16 queue,
++				   struct zte_nppt_red_buffer *config)
++{
++	u32 words[4];
++	int ret;
++
++	if (!config || queue >= ZTE_NPPT_RED_QUEUES)
++		return -EINVAL;
++	mutex_lock(&eth->np_ind_lock);
++	ret = zx279133_red_transfer(eth, 4, queue, words, false);
++	mutex_unlock(&eth->np_ind_lock);
++	if (!ret)
++		zx279133_red_unpack(words, config);
++	return ret;
++}
++
++int zx279133_native_red_buffer_set(struct zx279133_eth *eth, u16 queue,
++				   const struct zte_nppt_red_buffer *config)
++{
++	u32 before[4], after[4], words[4];
++	int ret, restore;
++
++	if (queue >= ZTE_NPPT_RED_QUEUES)
++		return -EINVAL;
++	ret = zx279133_red_pack(config, words);
++	if (ret)
++		return ret;
++	mutex_lock(&eth->np_ind_lock);
++	ret = zx279133_red_transfer(eth, 4, queue, before, false);
++	if (ret)
++		goto out;
++	/* Only low 16 bits of the fourth word are defined by the OEM API. */
++	words[3] |= before[3] & GENMASK(31, 16);
++	if (!memcmp(before, words, sizeof(words)))
++		goto out;
++	ret = zx279133_red_transfer(eth, 4, queue, words, true);
++	if (!ret)
++		ret = zx279133_red_transfer(eth, 4, queue, after, false);
++	if (!ret && memcmp(words, after, sizeof(words)))
++		ret = -EIO;
++	if (ret) {
++		restore = zx279133_red_transfer(eth, 4, queue, before, true);
++		if (!restore)
++			restore = zx279133_red_transfer(eth, 4, queue, after, false);
++		if (restore || memcmp(before, after, sizeof(before)))
++			ret = -EUCLEAN;
++	}
++out:
++	mutex_unlock(&eth->np_ind_lock);
++	return ret;
++}
++
++int zx279133_native_red_usage_full_get(struct zx279133_eth *eth, u16 queue,
++				       struct zte_nppt_red_usage_full *usage)
++{
++	struct zte_nppt_red_usage_full sample;
++	u32 words[4];
++	int ret;
++
++	if (!usage || queue >= ZTE_NPPT_RED_QUEUES)
++		return -EINVAL;
++	mutex_lock(&eth->np_ind_lock);
++	ret = zx279133_red_transfer(eth, 3, queue, words, false);
++	if (ret)
++		goto out;
++	sample.shared.input_raw = FIELD_GET(GENMASK(27, 14), words[0]);
++	sample.input_self_raw = words[0] & GENMASK(13, 0);
++	ret = zx279133_red_transfer(eth, 1, queue, words, false);
++	if (ret)
++		goto out;
++	sample.shared.output_raw = FIELD_GET(GENMASK(27, 12), words[0]);
++	sample.output_self_raw = words[0] & GENMASK(11, 0);
++	ret = zx279133_red_transfer(eth, 5, queue, words, false);
++	if (!ret) {
++		sample.shared.buffer_raw = words[0] & 0xffff;
++		*usage = sample;
++	}
++out:
++	mutex_unlock(&eth->np_ind_lock);
++	return ret;
++}
++
++int zx279133_native_red_usage_get(struct zx279133_eth *eth, u16 queue,
++				  struct zte_nppt_red_usage *usage)
++{
++	struct zte_nppt_red_usage_full sample;
++	int ret;
++
++	if (!usage)
++		return -EINVAL;
++	ret = zx279133_native_red_usage_full_get(eth, queue, &sample);
++	if (!ret)
++		*usage = sample.shared;
++	return ret;
++}
++
++static int zx279133_plcr_pack(const struct zte_nppt_plcr_profile *p, u32 *w)
++{
++	if (!p || p->cir > GENMASK(17, 0) || p->eir > GENMASK(17, 0) ||
++	    p->cbs > GENMASK(26, 0) || p->ebs > GENMASK(26, 0) ||
++	    p->cd_mode != 2 || p->cf_flag > 1 || p->cm_flag > 1 ||
++	    p->pkt_sign > 1)
++		return -EINVAL;
++	w[0] = p->cir | p->cbs << 18;
++	w[1] = (p->cbs >> 14) | p->eir << 13 | p->ebs << 31;
++	w[2] = (p->ebs >> 1) | (u32)p->cd_mode << 26 |
++		(u32)p->cf_flag << 28 | (u32)p->cm_flag << 29 |
++		(u32)p->pkt_sign << 30;
++	return 0;
++}
++
++static void zx279133_plcr_unpack(const u32 *w, struct zte_nppt_plcr_profile *p)
++{
++	*p = (struct zte_nppt_plcr_profile) {
++		.cir = w[0] & GENMASK(17, 0),
++		.cbs = (w[0] >> 18) | (w[1] & GENMASK(12, 0)) << 14,
++		.eir = (w[1] >> 13) & GENMASK(17, 0),
++		.ebs = (w[1] >> 31) | (w[2] & GENMASK(25, 0)) << 1,
++		.cd_mode = (w[2] >> 26) & 3,
++		.cf_flag = (w[2] >> 28) & 1,
++		.cm_flag = (w[2] >> 29) & 1,
++		.pkt_sign = (w[2] >> 30) & 1,
++	};
++}
++
++int zx279133_native_plcr_profile_get(struct zx279133_eth *eth, u8 id,
++				     struct zte_nppt_plcr_profile *profile)
++{
++	u32 words[3];
++	unsigned int i;
++	int ret;
++
++	if (!profile || id >= ZTE_NPPT_PLCR_PROFILES)
++		return -EINVAL;
++	for (i = 0; i < ARRAY_SIZE(words); i++) {
++		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
++					      &words[i], false);
++		if (ret)
++			return ret;
++	}
++	zx279133_plcr_unpack(words, profile);
++	return 0;
++}
++
++int zx279133_native_plcr_profile_set(struct zx279133_eth *eth, u8 id,
++				     const struct zte_nppt_plcr_profile *profile)
++{
++	u32 words[3];
++	unsigned int i;
++	int ret;
++
++	if (id >= ZTE_NPPT_PLCR_PROFILES)
++		return -EINVAL;
++	ret = zx279133_plcr_pack(profile, words);
++	if (ret)
++		return ret;
++	for (i = 0; i < ARRAY_SIZE(words); i++) {
++		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
++					      &words[i], true);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++static int zx279133_plcr_binding_io(struct zx279133_eth *eth, u16 id,
++				    u32 *words, bool write)
++{
++	u32 base, mode;
++	int ret;
++
++	if (id >= ZTE_NPPT_PLCR_FLOWS)
++		return -EINVAL;
++	if (id < 128)
++		return zx279133_native_plcr_io(eth, id * 4 + 3, &words[3], write);
++	/* OEM se_plcr_init builds a mode-3 128-bit descriptor at this pool end.
++	 * Read the live configuration before using the driver's reserved region.
++	 */
++	ret = zx279133_native_plcr_io(eth, PLCR_MODE, &mode, false);
++	if (ret)
++		return ret;
++	ret = zx279133_native_plcr_io(eth, PLCR_BASE, &base, false);
++	if (ret)
++		return ret;
++	if (mode != 3 || base != PLCR_CONFIGURED_BASE)
++		return -ESTALE;
++	return zx279133_native_eram_io(eth, base + id, words, write);
++}
++
++int zx279133_native_plcr_binding_get(struct zx279133_eth *eth, u16 id,
++				     struct zte_nppt_plcr_binding *binding)
++{
++	u32 words[4] = {};
++	int ret;
++
++	if (!binding)
++		return -EINVAL;
++	ret = zx279133_plcr_binding_io(eth, id, words, false);
++	if (ret)
++		return ret;
++	*binding = (struct zte_nppt_plcr_binding) {
++		.profile = (words[3] >> 15) & 0x7f,
++		.enabled = !!(words[3] & BIT(22)),
++	};
++	return 0;
++}
++
++int zx279133_native_plcr_binding_set(struct zx279133_eth *eth, u16 id,
++				     const struct zte_nppt_plcr_binding *binding)
++{
++	u32 words[4] = {};
++
++	if (!binding || binding->profile >= ZTE_NPPT_PLCR_PROFILES)
++		return -EINVAL;
++	words[3] = (u32)binding->profile << 15 | (u32)binding->enabled << 22;
++	return zx279133_plcr_binding_io(eth, id, words, true);
++}
++
++int zx279133_native_plcr_timing_get(struct zx279133_eth *eth,
++				    struct zte_nppt_plcr_timing *timing)
++{
++	static const u32 addresses[] = { 0x280018, 0x300010, 0x30000e, 0x28001f };
++	u32 value[ARRAY_SIZE(addresses)];
++	unsigned int i;
++	int ret;
++
++	if (!timing)
++		return -EINVAL;
++	for (i = 0; i < ARRAY_SIZE(addresses); i++) {
++		ret = zx279133_native_plcr_io(eth, addresses[i], &value[i], false);
++		if (ret)
++			return ret;
++	}
++	*timing = (struct zte_nppt_plcr_timing) {
++		.time_count = value[0], .packet_length = value[1],
++		.packet_offset = value[2], .loose_length = value[3],
++	};
++	return 0;
++}
++
++/* np.ko ssch_ind_{read,write}: command -> wait -> data, also for writes.
++ * Do not substitute the data-before-command protocol used by other windows.
++ * np_ind_lock protects the shared scheduler gate and the entire transaction.
++ */
++static int zx279133_ssch_ind(struct zx279133_eth *eth, u8 ram, u8 index,
++			     u32 *value, bool write)
++{
++	u32 gate = readl(eth->base + SSCH_GATE);
++	u32 command, status;
++	int ret;
++
++	if (gate & SSCH_GATE_BIT)
++		writel(gate & ~SSCH_GATE_BIT, eth->base + SSCH_GATE);
++	ret = readl_poll_timeout_atomic(eth->base + SSCH_DONE, status,
++					status & BIT(0), 1, 1000);
++	if (ret)
++		goto restore;
++	command = (u32)ram << 22 | index | (write ? 0 : BIT(27));
++	command |= readl(eth->base + SSCH_COMMAND) & ~SSCH_COMMAND_MASK;
++	writel(command, eth->base + SSCH_COMMAND);
++	ret = readl_poll_timeout_atomic(eth->base + SSCH_DONE, status,
++					status & BIT(0), 1, 1000);
++	if (ret)
++		goto restore;
++	if (write)
++		writel(*value, eth->base + SSCH_DATA);
++	else
++		*value = readl(eth->base + SSCH_DATA);
++restore:
++	gate = (readl(eth->base + SSCH_GATE) & ~SSCH_GATE_BIT) |
++		(gate & SSCH_GATE_BIT);
++	writel(gate, eth->base + SSCH_GATE);
++	return ret;
++}
++
++int zx279133_native_ssch_global_get(struct zx279133_eth *eth,
++				    struct zte_nppt_ssch_global *config)
++{
++	u32 value;
++
++	if (!config)
++		return -EINVAL;
++	mutex_lock(&eth->np_ind_lock);
++	value = readl(eth->base + ZX279133_SSCH_CFG);
++	*config = (struct zte_nppt_ssch_global) {
++		.shaping = !!(value & BIT(0)), .dwrr = !!(value & BIT(1)),
++		.fill_time = readl(eth->base + ZX279133_SSCH_FILL_TIME) &
++			     ZX279133_SSCH_FILL_TIME_MASK,
++	};
++	mutex_unlock(&eth->np_ind_lock);
++	return 0;
++}
++
++int zx279133_native_ssch_global_set(struct zx279133_eth *eth,
++				    const struct zte_nppt_ssch_global *config)
++{
++	u32 value;
++
++	if (!config || config->fill_time > ZX279133_SSCH_FILL_TIME_MASK)
++		return -EINVAL;
++	mutex_lock(&eth->np_ind_lock);
++	value = readl(eth->base + ZX279133_SSCH_FILL_TIME);
++	writel((value & ~ZX279133_SSCH_FILL_TIME_MASK) | config->fill_time,
++	       eth->base + ZX279133_SSCH_FILL_TIME);
++	value = readl(eth->base + ZX279133_SSCH_CFG);
++	writel((value & ~GENMASK(1, 0)) | (u32)config->shaping |
++	       (u32)config->dwrr << 1, eth->base + ZX279133_SSCH_CFG);
++	mutex_unlock(&eth->np_ind_lock);
++	return 0;
++}
++
++static int zx279133_ssch_mode_io(struct zx279133_eth *eth, u8 port, u8 queue,
++				 u8 *mode_bit, bool write)
++{
++	u32 reg, value, bit;
++
++	if (!mode_bit || port > 7 || queue > 7 || (write && *mode_bit > 1))
++		return -EINVAL;
++	reg = port < 4 ? SSCH_MODE0 : SSCH_MODE1;
++	bit = BIT((port % 4) * 8 + queue);
++	/* ssch_regtable_init expands descriptor 18 to all 32 bits on CPU133. */
++	mutex_lock(&eth->np_ind_lock);
++	value = readl(eth->base + reg);
++	if (write)
++		writel((value & ~bit) | (*mode_bit ? bit : 0), eth->base + reg);
++	else
++		*mode_bit = !!(value & bit);
++	mutex_unlock(&eth->np_ind_lock);
++	return 0;
++}
++
++int zx279133_native_ssch_mode_get(struct zx279133_eth *eth, u8 port, u8 queue,
++				  u8 *mode_bit)
++{
++	return zx279133_ssch_mode_io(eth, port, queue, mode_bit, false);
++}
++
++int zx279133_native_ssch_mode_set(struct zx279133_eth *eth, u8 port, u8 queue,
++				  u8 mode_bit)
++{
++	return zx279133_ssch_mode_io(eth, port, queue, &mode_bit, true);
++}
++
++static int zx279133_ssch_weight_io(struct zx279133_eth *eth, u8 port, u8 queue,
++				   u32 *weight, bool write)
++{
++	int ret;
++
++	if (!weight || port > 7 || queue > 7 ||
++	    (write && *weight > GENMASK(17, 0)))
++		return -EINVAL;
++	mutex_lock(&eth->np_ind_lock);
++	ret = zx279133_ssch_ind(eth, 0, port * 8 + queue, weight, write);
++	mutex_unlock(&eth->np_ind_lock);
++	return ret;
++}
++
++int zx279133_native_ssch_weight_get(struct zx279133_eth *eth, u8 port, u8 queue,
++				    u32 *weight)
++{
++	return zx279133_ssch_weight_io(eth, port, queue, weight, false);
++}
++
++int zx279133_native_ssch_weight_set(struct zx279133_eth *eth, u8 port, u8 queue,
++				    u32 weight)
++{
++	return zx279133_ssch_weight_io(eth, port, queue, &weight, true);
++}
++
++static int zx279133_ssch_shaper_io(struct zx279133_eth *eth, u8 port, u8 queue,
++				   struct zte_nppt_ssch_shaper *shaper,
++				   bool per_queue, bool write, bool exact)
++{
++	struct zte_nppt_ssch_shaper result;
++	u8 index = per_queue ? port * 8 + queue : port;
++	u8 fill_ram = per_queue ? 3 : 1;
++	u32 reg, bit, value, fill, cap;
++	int ret;
++
++	if (!shaper || port > 7 || queue > 7 ||
++	    (write && !exact && (shaper->fill > GENMASK(28, 0) ||
++		       shaper->cap > GENMASK(20, 0))))
++		return -EINVAL;
++	reg = per_queue ? (index < 32 ? SSCH_QUEUE_ENABLE0 : SSCH_QUEUE_ENABLE1) :
++			 ZX279133_SSCH_CFG;
++	bit = per_queue ? BIT(index % 32) : BIT(port + 2);
++	mutex_lock(&eth->np_ind_lock);
++	value = readl(eth->base + reg);
++	if (write) {
++		/* OEM queue/port setters quiesce this shaper before replacement. */
++		writel(value & ~bit, eth->base + reg);
++		fill = shaper->fill;
++		cap = shaper->cap;
++	} else {
++		result.enabled = !!(value & bit);
++	}
++	ret = zx279133_ssch_ind(eth, fill_ram, index, &fill, write);
++	if (ret)
++		goto out;
++	ret = zx279133_ssch_ind(eth, fill_ram + 1, index, &cap, write);
++	if (ret)
++		goto out;
++	if (write) {
++		value = readl(eth->base + reg) & ~bit;
++		writel(value | (shaper->enabled ? bit : 0), eth->base + reg);
++	} else {
++		result.fill = fill;
++		result.cap = cap;
++		*shaper = result;
++	}
++out:
++	mutex_unlock(&eth->np_ind_lock);
++	return ret;
++}
++
++int zx279133_native_ssch_queue_get(struct zx279133_eth *eth, u8 port, u8 queue,
++				   struct zte_nppt_ssch_shaper *shaper)
++{
++	return zx279133_ssch_shaper_io(eth, port, queue, shaper, true, false, false);
++}
++
++int zx279133_native_ssch_queue_set(struct zx279133_eth *eth, u8 port, u8 queue,
++				   const struct zte_nppt_ssch_shaper *shaper)
++{
++	struct zte_nppt_ssch_shaper config;
++
++	if (!shaper)
++		return -EINVAL;
++	config = *shaper;
++	return zx279133_ssch_shaper_io(eth, port, queue, &config, true, true, false);
++}
++
++int zx279133_native_ssch_port_get(struct zx279133_eth *eth, u8 port,
++				  struct zte_nppt_ssch_shaper *shaper)
++{
++	return zx279133_ssch_shaper_io(eth, port, 0, shaper, false, false, false);
++}
++
++int zx279133_native_ssch_port_set(struct zx279133_eth *eth, u8 port,
++				  const struct zte_nppt_ssch_shaper *shaper)
++{
++	struct zte_nppt_ssch_shaper config;
++
++	if (!shaper)
++		return -EINVAL;
++	config = *shaper;
++	return zx279133_ssch_shaper_io(eth, port, 0, &config, false, true, false);
++}
++
++/* Manager-only exact snapshots: never exposed as an arbitrary RAM writer. */
++int zx279133_native_ssch_exact_set(struct zx279133_eth *eth, u8 port, u8 queue,
++				   const struct zte_nppt_ssch_shaper *shaper)
++{
++	struct zte_nppt_ssch_shaper copy = *shaper;
++
++	return zx279133_ssch_shaper_io(eth, port,
++				     queue == ZTE_NPPT_SHAPER_PORT ? 0 : queue,
++				     &copy, queue != ZTE_NPPT_SHAPER_PORT, true, true);
++}
++
++void zx279133_native_ssch_disable(struct zx279133_eth *eth, u8 port, u8 queue)
++{
++	u32 index = port * 8 + queue;
++	u32 reg, bit;
++
++	if (queue == ZTE_NPPT_SHAPER_PORT) {
++		reg = ZX279133_SSCH_CFG;
++		bit = BIT(port + 2);
++	} else {
++		reg = index < 32 ? SSCH_QUEUE_ENABLE0 : SSCH_QUEUE_ENABLE1;
++		bit = BIT(index % 32);
++	}
++	mutex_lock(&eth->np_ind_lock);
++	writel(readl(eth->base + reg) & ~bit, eth->base + reg);
++	/* Flush the disable before the caller shuts down the working clock. */
++	readl(eth->base + reg);
++	mutex_unlock(&eth->np_ind_lock);
++}
++
++int zx279133_native_vlan_get(struct zx279133_eth *eth, u16 vid,
++			     struct zte_nppt_vlan_row *row)
++{
++	if (!row || vid > 4095)
++		return -EINVAL;
++	return zx279133_native_sdt128_io(eth, 0, vid, row->words, false);
++}
++
++int zx279133_native_vlan_set(struct zx279133_eth *eth, u16 vid,
++			     const struct zte_nppt_vlan_row *row)
++{
++	struct zte_nppt_vlan_row data;
++
++	if (!row || vid > 4095)
++		return -EINVAL;
++	data = *row;
++	return zx279133_native_sdt128_io(eth, 0, vid, data.words, true);
++}
++
++static bool zx279133_vlan_port_valid(u8 port)
++{
++	return port <= 7 || (port >= 16 && port <= 39) ||
++		(port >= 58 && port <= 63);
++}
++
++int zx279133_native_vlan_mode_get(struct zx279133_eth *eth, u16 vid, u8 port,
++				  u8 *mode)
++{
++	struct zte_nppt_vlan_row row;
++	int ret;
++
++	if (!mode || !zx279133_vlan_port_valid(port))
++		return -EINVAL;
++	ret = zx279133_native_vlan_get(eth, vid, &row);
++	if (!ret)
++		*mode = (row.words[3 - port / 16] >> ((port % 16) * 2)) & 3;
++	return ret;
++}
++
++int zx279133_native_vlan_mode_set(struct zx279133_eth *eth, u16 vid, u8 port,
++				  u8 mode)
++{
++	struct zte_nppt_vlan_row row;
++	u32 shift;
++	int ret;
++
++	if (mode > 3 || !zx279133_vlan_port_valid(port))
++		return -EINVAL;
++	ret = zx279133_native_vlan_get(eth, vid, &row);
++	if (ret)
++		return ret;
++	shift = (port % 16) * 2;
++	row.words[3 - port / 16] &= ~(3U << shift);
++	row.words[3 - port / 16] |= (u32)mode << shift;
++	return zx279133_native_vlan_set(eth, vid, &row);
++}
++
++int zx279133_native_pvid_get(struct zx279133_eth *eth, u8 mem, u16 *vid, u8 *prio)
++{
++	u32 words[2];
++	int ret;
++
++	if (!vid || !prio)
++		return -EINVAL;
++	ret = zx279133_native_spa_io(eth, mem, 1, &words[0], false);
++	if (ret)
++		return ret;
++	ret = zx279133_native_spa_io(eth, mem, 2, &words[1], false);
++	if (!ret) {
++		*prio = FIELD_GET(GENMASK(27, 25), words[0]);
++		*vid = FIELD_GET(GENMASK(29, 18), words[1]);
++	}
++	return ret;
++}
++
++int zx279133_native_pvid_set(struct zx279133_eth *eth, u8 mem, u16 vid, u8 prio)
++{
++	u32 words[2];
++	int ret;
++
++	if (vid > 4095 || prio > 7)
++		return -EINVAL;
++	ret = zx279133_native_spa_io(eth, mem, 1, &words[0], false);
++	if (ret)
++		return ret;
++	ret = zx279133_native_spa_io(eth, mem, 2, &words[1], false);
++	if (ret)
++		return ret;
++	words[0] = (words[0] & ~GENMASK(27, 25)) | FIELD_PREP(GENMASK(27, 25), prio);
++	words[1] = (words[1] & ~GENMASK(29, 18)) | FIELD_PREP(GENMASK(29, 18), vid);
++	ret = zx279133_native_spa_io(eth, mem, 1, &words[0], true);
++	if (ret)
++		return ret;
++	return zx279133_native_spa_io(eth, mem, 2, &words[1], true);
++}
++
++static bool zx279133_native_port_valid(u8 port)
++{
++	/* port_mem_id_get is identity for these CPU133 NP indices. */
++	return port <= 8 || port == 10 || port == 14 || port == 15 ||
++		(port >= 16 && port <= 48) || (port >= 57 && port <= 63);
++}
++
++int zx279133_native_invlan_get(struct zx279133_eth *eth, u8 mem, bool *enabled)
++{
++	u32 word;
++	int ret;
++
++	if (!enabled || !zx279133_native_port_valid(mem))
++		return -EINVAL;
++	ret = zx279133_native_spa_io(eth, mem, 19, &word, false);
++	if (!ret)
++		*enabled = !!(word & BIT(27));
++	return ret;
++}
++
++int zx279133_native_invlan_set(struct zx279133_eth *eth, u8 mem, bool enabled)
++{
++	u32 row[4], word;
++	int ret;
++
++	if (!zx279133_native_port_valid(mem))
++		return -EINVAL;
++	ret = zx279133_native_spa_io(eth, mem, 19, &word, false);
++	if (ret)
++		return ret;
++	ret = zx279133_native_sdt128_io(eth, 0x32, mem, row, false);
++	if (ret)
++		return ret;
++	/* OEM modifies bit 3 of byte 3 of the selector-0x47 word: bit 27. */
++	word = (word & ~BIT(27)) | (enabled ? BIT(27) : 0);
++	ret = zx279133_native_spa_io(eth, mem, 19, &word, true);
++	if (ret)
++		return ret;
++	if (mem == 0 || mem == 5) {
++		ret = zx279133_native_spa_io(eth, mem ? 10 : 14, 19, &word, true);
++		if (ret)
++			return ret;
++	}
++	/* OEM mf_port_invlancheck_set also mirrors the whole SPA word to SDT50. */
++	row[3] = word;
++	return zx279133_native_sdt128_io(eth, 0x32, mem, row, true);
++}
++
++/* Restore captured state, including disabled cd_mode=0 and reserved bits.
++ * This is intentionally not exposed as a raw-write debug command.
++ */
++int zx279133_native_profile_words(struct zx279133_eth *eth, u8 id,
++				  u32 words[3], bool restore)
++{
++	unsigned int i;
++	int ret;
++
++	if (id >= ZTE_NPPT_PLCR_PROFILES || !words)
++		return -EINVAL;
++	for (i = 0; i < 3; i++) {
++		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
++					      &words[i], restore);
++		if (ret)
++			return ret;
++	}
++	return 0;
++}
++
++int zx279133_native_binding_words(struct zx279133_eth *eth, u16 id,
++				  u32 words[4], bool restore)
++{
++	return zx279133_plcr_binding_io(eth, id, words, restore);
++}
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-np.c
-@@ -0,0 +1,2636 @@
+@@ -0,0 +1,3108 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#include <linux/bitfield.h>
 +#include <linux/crc32.h>
++#include <linux/debugfs.h>
 +#include <linux/delay.h>
 +#include <linux/device.h>
 +#include <linux/etherdevice.h>
@@ -26,9 +1189,12 @@ Add the PPU microcode, NP table programming and metering primitives.
 +#include "zx279133-rx-hash-ipv6.h"
 +
 +/* Cold-load only: key layout and SE mask must never change under live flows. */
-+static bool experimental_vid_key;
-+module_param(experimental_vid_key, bool, 0444);
-+MODULE_PARM_DESC(experimental_vid_key, "Experimental LAN IPv4 VID key; requires calibrated firmware, cold load only");
++static bool vlan_offload;
++module_param(vlan_offload, bool, 0444);
++MODULE_PARM_DESC(vlan_offload, "Enable single-tag LAN/WAN IPv4 VID keys with calibrated firmware; cold load only");
++/* Keep existing module options and read-only diagnostic scripts compatible. */
++module_param_named(experimental_vid_key, vlan_offload, bool, 0444);
++MODULE_PARM_DESC(experimental_vid_key, "Compatibility alias for vlan_offload");
 +
 +static bool rx_hash = true;
 +module_param(rx_hash, bool, 0444);
@@ -36,6 +1202,78 @@ Add the PPU microcode, NP table programming and metering primitives.
 +static bool rx_hash_ipv6 = true;
 +module_param(rx_hash_ipv6, bool, 0444);
 +MODULE_PARM_DESC(rx_hash_ipv6, "Enable IPv6 tuple hashing with the calibrated RX hash programs");
++
++/* np.ko 0x7b5b8: PPS word 0x248b8 + 0x10 * field + 2 * ME.
++ * fpga_read_reg(..., 1) selects PPS and scales word addresses by four.
++ * No selector, counter-enable/clear, clock, interrupt or ME control writes.
++ */
++static u64 zx279133_ppu_stats_pair(struct zx279133_eth *eth, u32 offset)
++{
++	u32 low = readl(eth->pps_base + offset);
++	u32 high = readl(eth->pps_base + offset + 4);
++
++	/* Preserve the OEM low-then-high order; do not assume a latch protocol. */
++	return (u64)high << 32 | low;
++}
++
++int zx279133_ppu_me_stats_read(struct zx279133_eth *eth,
++			       struct zte_nppt_me_stats *stats)
++{
++	unsigned int me;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (!eth->hardware_prepared || !eth->ppu_mcode_prepared)
++		return -ENETDOWN;
++	if (!stats)
++		return -EINVAL;
++	/* OEM cluster descriptor 27: RO, PPS word 0x24006, mask 0xff. */
++	stats->not_idle = readl(eth->pps_base + 0x90018) & 0xff;
++	for (me = 0; me < ZTE_NPPT_PPU_MES; me++) {
++		struct zte_nppt_me_counters *c = &stats->me[me];
++		u32 offset = 0x922e0 + me * 8;
++
++		c->in_valid = zx279133_ppu_stats_pair(eth, offset);
++		c->in_sop = zx279133_ppu_stats_pair(eth, offset + 0x40);
++		c->in_eop = zx279133_ppu_stats_pair(eth, offset + 0x80);
++		c->out_valid = zx279133_ppu_stats_pair(eth, offset + 0xc0);
++		c->out_sop = zx279133_ppu_stats_pair(eth, offset + 0x100);
++		c->out_eop = zx279133_ppu_stats_pair(eth, offset + 0x140);
++	}
++	return 0;
++}
++
++int zx279133_ppu_me_diagnostics_read(struct zx279133_eth *eth,
++				     struct zte_nppt_me_diagnostics *diagnostics)
++{
++	unsigned int me;
++	int ret;
++
++	lockdep_assert_held(&eth->datapath_lock);
++	if (!eth->hardware_prepared || !eth->ppu_mcode_prepared)
++		return -ENETDOWN;
++	if (!diagnostics)
++		return -EINVAL;
++	ret = zx279133_ppu_me_stats_read(eth, &diagnostics->stats);
++	if (ret)
++		return ret;
++	/* OEM cluster descriptors 45..47; global descriptors 35..39.
++	 * Read whole words, preserving reserved bits for diagnostics only.
++	 */
++	diagnostics->active_cnt_en_raw = readl(eth->pps_base + 0x90448);
++	diagnostics->grant_cnt_en_raw = readl(eth->pps_base + 0x9044c);
++	diagnostics->bank_miss_cnt_en_raw = readl(eth->pps_base + 0x90450);
++	diagnostics->stat_clock_raw = readl(eth->pps_base + 0x18);
++	/* np.ko ppu_clutser_stats and ppu_me_stats, CPU133 branch. */
++	diagnostics->thread_active_raw = zx279133_ppu_stats_pair(eth, 0x92720);
++	diagnostics->cluster_grant_raw = zx279133_ppu_stats_pair(eth, 0x92768);
++	for (me = 0; me < ZTE_NPPT_PPU_MES; me++) {
++		diagnostics->state[me].ready =
++			zx279133_ppu_stats_pair(eth, 0x92728 + me * 8);
++		diagnostics->state[me].grant =
++			zx279133_ppu_stats_pair(eth, 0x92770 + me * 8);
++	}
++	return 0;
++}
 +
 +void zx279133_route_set(struct zx279133_eth *eth, bool enabled)
 +{
@@ -712,6 +1950,65 @@ Add the PPU microcode, NP table programming and metering primitives.
 +out_unlock:
 +	mutex_unlock(&eth->wanid_lock);
 +}
++
++#ifdef CONFIG_DEBUG_FS
++/* One line per WANID: the hardware entry decoded, then who borrows it. */
++static int zx279133_wanid_show(struct seq_file *s, void *unused)
++{
++	struct zx279133_eth *eth = s->private;
++	u32 data[ZX279133_SMMU0_WORDS];
++	unsigned int i;
++	__be32 sip;
++	u8 mac[ETH_ALEN];
++	int ret = 0;
++
++	mutex_lock(&eth->datapath_lock);
++	if (!READ_ONCE(eth->hardware_prepared)) {
++		seq_puts(s, "hardware not prepared\n");
++		goto out_unlock;
++	}
++	mutex_lock(&eth->wanid_lock);
++	for (i = 0; i < ZX279133_WANID_COUNT; i++) {
++		const struct zx279133_wanid_slot *slot = &eth->wanid[i];
++
++		ret = zx279133_smmu0_read(eth, (16386 + i) << 7, data,
++					  ARRAY_SIZE(data),
++					  ZX279133_SMMU0_CMD_READ);
++		if (ret)
++			break;
++		put_unaligned_be16(data[3], mac);
++		put_unaligned_be32(data[2], mac + 2);
++		sip = cpu_to_be32(data[1]);
++		seq_printf(s, "%2u %08x %08x %08x %08x mtu %lu sid %lu sip %pI4 mac %pM pppoe %lu users %u snat %u\n",
++			   i, data[0], data[1], data[2], data[3],
++			   data[0] & GENMASK(15, 0),
++			   FIELD_GET(ZX279133_WANID_PPPOE_SID, data[0]),
++			   &sip, mac,
++			   FIELD_GET(ZX279133_WANID_PPPOE_MODE, data[3]),
++			   slot->users, slot->snat_users);
++	}
++	mutex_unlock(&eth->wanid_lock);
++out_unlock:
++	mutex_unlock(&eth->datapath_lock);
++	return ret;
++}
++DEFINE_SHOW_ATTRIBUTE(zx279133_wanid);
++
++static void zx279133_wanid_debugfs_remove(void *data)
++{
++	debugfs_remove(data);
++}
++
++int zx279133_wanid_debugfs_init(struct zx279133_eth *eth)
++{
++	struct dentry *dentry;
++
++	dentry = debugfs_create_file("zx279133-wanid", 0400, NULL, eth,
++				     &zx279133_wanid_fops);
++	return devm_add_action_or_reset(eth->dev,
++					zx279133_wanid_debugfs_remove, dentry);
++}
++#endif
 +
 +#define ZX279133_FAST_IKEY_BASE_BLOCK	23186
 +#define ZX279133_FAST_STAT_BASE_BLOCK	0x9081
@@ -1602,7 +2899,7 @@ Add the PPU microcode, NP table programming and metering primitives.
 +	/* Linux key bytes 0..1 carry VID, as verified by R16 captures.
 +	 * Other parser/key layouts remain unchanged; VID0 is the legacy key.
 +	 */
-+	if (experimental_vid_key)
++	if (vlan_offload)
 +		config[0] |= 0x00000fff;
 +	ret = zx279133_se_parser_write(eth, 0x8800, config,
 +				       ARRAY_SIZE(config));
@@ -1929,6 +3226,331 @@ Add the PPU microcode, NP table programming and metering primitives.
 +	return 0;
 +}
 +
++/* A bounded version of the calibrated author tracer. No arbitrary PC,
++ * instruction, MMIO address, persistent breakpoint or background worker ABI.
++ */
++static int zx279133_ppu_instruction_read(struct zx279133_eth *eth, u16 pc,
++				       u64 block[4])
++{
++	u32 value;
++	unsigned int i;
++	int ret;
++
++	ret = readl_poll_timeout_atomic(eth->pps_base + ZX279133_PPU_CLUSTER_RDY,
++					value, value & BIT(0), 1, 1000);
++	if (ret)
++		return ret;
++	writel((readl(eth->pps_base + ZX279133_PPU_CLUSTER_PC) &
++		~ZX279133_PPU_CLUSTER_PC_MASK) | BIT(12) | pc >> 2,
++	       eth->pps_base + ZX279133_PPU_CLUSTER_PC);
++	ret = readl_poll_timeout_atomic(eth->pps_base + ZX279133_PPU_CLUSTER_PC,
++					value, value & BIT(0), 1, 1000);
++	if (ret)
++		return ret;
++	for (i = 0; i < 4; i++)
++		block[i] = (u64)(readl(eth->pps_base + 0x90d5c + i * 8) &
++				ZX279133_PPU_CLUSTER_HI_MASK) << 32 |
++			   readl(eth->pps_base + 0x90d58 + i * 8);
++	return 0;
++}
++
++/* np.ko ppu_get_key_mem: 3 debug groups, current thread bank from
++ * cluster word 0x24032. Command/data descriptors are .data+0xe080 rows
++ * 17..21; PPS addresses here are bytes, not the OEM word indices.
++ */
++static int zx279133_ppu_query_key_read(struct zx279133_eth *eth, u8 me,
++				     struct zte_nppt_ppu_context *context)
++{
++	u32 command, ready;
++	unsigned int group, i;
++	int ret;
++
++	context->key_bank = (readl(eth->pps_base + 0x900c8) >> (me * 4)) & 0xf;
++	for (group = 0; group < 3; group++) {
++		command = BIT(24) | (u32)me << 16 |
++			  (context->key_bank & 7) << 8 | group;
++		writel(command, eth->pps_base + 0x94004);
++		ret = readl_poll_timeout_atomic(eth->pps_base + 0x94008,
++						ready, ready & BIT(2 - group), 1, 1000);
++		if (ret)
++			return ret;
++		if (!group)
++			context->key[0] = readl(eth->pps_base + 0x94080);
++		else if (group == 1)
++			for (i = 0; i < 12; i++)
++				context->key[2 + i] = readl(eth->pps_base + 0x94028 + i * 4);
++		else
++			for (i = 0; i < 3; i++)
++				context->key[14 + i] = readl(eth->pps_base + 0x94084 + i * 4);
++	}
++	return 0;
++}
++
++static int zx279133_ppu_capture_mode(struct zx279133_eth *eth, u16 pc,
++				     u8 *selected,
++				     struct zte_nppt_ppu_context *context,
++				     bool vid_probe)
++{
++	u64 query;
++	u64 original[4], block[4], key_original[4], key_block[4];
++	unsigned long deadline;
++	u32 gate, mask, now, interrupt_mask = 0;
++	bool mask_changed = false;
++	unsigned int me, i, pass;
++	int ret, restored = -EIO;
++	bool patched = false, key_patched = false;
++	int key_restored = 0;
++
++	switch (pc) {
++	case 10:
++	case 561:
++		query = 0x0701000018380523ULL;
++		break;
++	case 77:
++	case 106:
++		query = 0x0018000120800004ULL;
++		break;
++	case 78:
++		query = 0x01080027823ccbe0ULL;
++		break;
++	case 107:
++		query = 0x01080036024d4be0ULL;
++		break;
++	/* R12/R13: sample the IPv4 constructor before each instruction.
++	 * The displaced instruction is replayed by the existing restore path.
++	 * This does not change the query layout or enable VLAN classification.
++	 */
++	case 133:
++		query = 0x0750000028122880ULL;
++		break;
++	case 134:
++		query = 0x0750100028182887ULL;
++		break;
++	case 135:
++		query = 0x07500000280c2860ULL;
++		break;
++	case 136:
++		query = 0x0750100018782863ULL;
++		break;
++	case 137:
++		query = 0x0750500018702863ULL;
++		break;
++	case 138:
++		query = 0x0750900008000523ULL;
++		break;
++	case 139:
++	case 650:
++		query = READ_ONCE(eth->vid_key_active) ?
++			0x0500c09c0000852bULL : 0x0010c0000000001fULL;
++		break;
++	case 140:
++		query = 0x0000000000000000ULL;
++		break;
++	case 141:
++		query = 0x0550d01800000522ULL;
++		break;
++
++	case 142:
++	case 653:
++	case 2949:
++	case 3398:
++		query = 0x0018000560800004ULL;
++		break;
++	case 143:
++		query = 0x01080048004b4be0ULL;
++		break;
++	case 150:
++	case 661:
++	case 2957:
++	case 3406:
++		query = 0x00180001c0800004ULL;
++		break;
++	case 151:
++		query = 0x0108004c0304cbe0ULL;
++		break;
++	case 1277:
++	case 1482:
++	case 1489:
++	case 1788:
++		query = 0x00180081a9000004ULL;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++	if (READ_ONCE(eth->ppu_firmware_crc32) != 0xef1d7647)
++		return -ESTALE;
++	*selected = 0xff;
++	context->key_rc = -ENODATA;
++	context->firmware_crc = READ_ONCE(eth->ppu_firmware_crc32);
++	mutex_lock(&eth->np_ind_lock);
++	gate = readl(eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++	writel(gate & ~ZX279133_PPU_CORE_AGCLK,
++	       eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++	if (readl(eth->pps_base + 0x90004) & 0xff) {
++		ret = -EBUSY;
++		goto out_gate;
++	}
++	/* Factory normal snapshots mask all MEs (0xff); the successful
++	 * author's single-step snapshots unmask them (0). Own only low 8 bits.
++	 */
++	interrupt_mask = readl(eth->pps_base + 0x90008);
++	context->interrupt_mask = interrupt_mask;
++	mask_changed = true;
++	writel(interrupt_mask & ~0xff, eth->pps_base + 0x90008);
++	if (readl(eth->pps_base + 0x90008) & 0xff) {
++		ret = -EIO;
++		goto out_gate;
++	}
++	ret = zx279133_ppu_instruction_read(eth, pc & ~3, original);
++	if (ret)
++		goto out_gate;
++	if (original[pc & 3] != query) {
++		ret = -ESTALE;
++		goto out_gate;
++	}
++	/* R15 proved SPR19 contains business VID while SPR3/key tail stay zero.
++	 * Reuse the exact factory PC57 extraction at PC139 for one bounded
++	 * capture. This is an experiment, not a production VLAN key contract.
++	 * Both instruction blocks are restored before resuming trapped MEs.
++	 */
++	if (vid_probe) {
++		ret = zx279133_ppu_instruction_read(eth, 136, key_original);
++		if (ret)
++			goto out_gate;
++		if (key_original[3] != 0x0010c0000000001fULL) {
++			ret = -ESTALE;
++			goto out_gate;
++		}
++		memcpy(key_block, key_original, sizeof(key_block));
++		key_block[3] = 0x0500c09c0000852bULL;
++		key_patched = true;
++		ret = zx279133_ppu_hash_write(eth, 136, key_block);
++		if (ret)
++			goto restore;
++	}
++	context->stage = 1;
++	memcpy(block, original, sizeof(block));
++	block[pc & 3] = 0x0080000017d80000ULL;
++	/* A partial failed write must also go through the restore path. */
++	patched = true;
++	ret = zx279133_ppu_hash_write(eth, pc & ~3, block);
++	if (ret)
++		goto restore;
++	context->stage = 2;
++	ret = -ETIMEDOUT;
++	deadline = jiffies + msecs_to_jiffies(100);
++	do {
++		mask = readl(eth->pps_base + 0x90004) & 0xff;
++		for (me = 0; me < 8; me++) {
++			if (!(mask & BIT(me)))
++				continue;
++			now = readl(eth->pps_base + 0x90100 + me * 4) & 0xffff;
++			if (now != pc)
++				continue;
++			*selected = me;
++			context->captured = true;
++			context->stage = 3;
++			context->stopped_before = mask;
++			context->pc_before = now;
++			for (i = 0; i < ARRAY_SIZE(context->words); i++)
++				context->words[i] = readl(eth->pps_base + 0x94400 +
++							me * 0x400 + i * 4);
++			context->pc_after = readl(eth->pps_base + 0x90100 + me * 4) & 0xffff;
++			context->stopped_after = readl(eth->pps_base + 0x90004) & 0xff;
++			context->key_rc = zx279133_ppu_query_key_read(eth, me, context);
++			if (!context->key_rc)
++				context->stage = 4;
++			ret = 0;
++			goto restore;
++		}
++		usleep_range(100, 200);
++	} while (time_before(jiffies, deadline));
++restore:
++	if (key_patched) {
++		key_restored = -EIO;
++		for (pass = 0; pass < 3; pass++) {
++			key_restored = zx279133_ppu_hash_write(eth, 136,
++							 key_original);
++			if (!key_restored)
++				break;
++		}
++		if (key_restored)
++			ret = key_restored;
++		context->restore_verified = !key_restored;
++	}
++	if (patched) {
++		for (pass = 0; pass < 3; pass++) {
++			restored = zx279133_ppu_hash_write(eth, pc & ~3, original);
++			if (!restored)
++				break;
++		}
++		/* Restore the SRAM before resuming, including a late-arriving ME.
++		 * The latch executes the displaced query once, as in ppu-trace.
++		 */
++		for (pass = 0; pass < 3; pass++) {
++			mask = readl(eth->pps_base + 0x90004) & 0xff;
++			for (me = 0; me < 8; me++) {
++				if (!(mask & BIT(me)) ||
++				    (readl(eth->pps_base + 0x90100 + me * 4) & 0xffff) != pc)
++					continue;
++				writel(lower_32_bits(query), eth->pps_base + 0x900cc);
++				writel(upper_32_bits(query), eth->pps_base + 0x900d0);
++				writel(BIT(me), eth->pps_base + 0x900c0);
++			}
++			usleep_range(1000, 1100);
++		}
++		context->restore_verified = !restored && !key_restored;
++		context->resume_verified = true;
++		if (restored) {
++			dev_err(eth->dev, "PPU query capture restore failed at PC %u: %d\n",
++				pc, restored);
++			ret = restored;
++		}
++		mask = readl(eth->pps_base + 0x90004) & 0xff;
++		for (me = 0; me < 8; me++)
++			if ((mask & BIT(me)) &&
++			    (readl(eth->pps_base + 0x90100 + me * 4) & 0xffff) == pc)
++				context->resume_verified = false;
++		if (!context->resume_verified)
++			ret = -EIO;
++	}
++out_gate:
++	if (key_patched && !patched)
++		context->resume_verified = true;
++	if (mask_changed) {
++		context->stopped_final = readl(eth->pps_base + 0x90004) & 0xff;
++		if (context->stopped_final) {
++			context->resume_verified = false;
++			ret = -EIO;
++		}
++		writel((readl(eth->pps_base + 0x90008) & ~0xff) |
++		       (interrupt_mask & 0xff), eth->pps_base + 0x90008);
++		context->mask_restored = (readl(eth->pps_base + 0x90008) & 0xff) ==
++					(interrupt_mask & 0xff);
++		if (!context->mask_restored)
++			ret = -EIO;
++	}
++	writel((readl(eth->pps_base + ZX279133_PPU_AGCLK_CFG) &
++		~ZX279133_PPU_CORE_AGCLK) | (gate & ZX279133_PPU_CORE_AGCLK),
++	       eth->pps_base + ZX279133_PPU_AGCLK_CFG);
++	mutex_unlock(&eth->np_ind_lock);
++	return ret;
++}
++
++int zx279133_ppu_capture(struct zx279133_eth *eth, u16 pc, u8 *selected,
++			 struct zte_nppt_ppu_context *context)
++{
++	return zx279133_ppu_capture_mode(eth, pc, selected, context, false);
++}
++
++int zx279133_ppu_vid_probe(struct zx279133_eth *eth, u8 *selected,
++			   struct zte_nppt_ppu_context *context)
++{
++	if (READ_ONCE(eth->vid_key_active))
++		return -EBUSY;
++	return zx279133_ppu_capture_mode(eth, 142, selected, context, true);
++}
++
 +static int zx279133_ppu_rx_hash_prepare(struct zx279133_eth *eth,
 +					const struct firmware *fw)
 +{
@@ -2016,10 +3638,14 @@ Add the PPU microcode, NP table programming and metering primitives.
 +	if (rx_hash && !hash)
 +		dev_warn(eth->dev, "uncalibrated PPU firmware; retaining native RX queues\n");
 +
-+	if (experimental_vid_key &&
++	if (vlan_offload &&
 +	    (fw_crc != 0xef1d7647 || fw->size != 103456 ||
 +	     get_unaligned_be64(fw->data + 16 + 139 * 8) !=
-+					0x0010c0000000001fULL)) {
++					0x0010c0000000001fULL ||
++	     get_unaligned_be64(fw->data + 16 + 650 * 8) !=
++					0x0010c0000000001fULL ||
++	     get_unaligned_be64(fw->data + 16 + 582 * 8) !=
++					0x0704c00018680523ULL)) {
 +		release_firmware(fw);
 +		return -ESTALE;
 +	}
@@ -2035,10 +3661,18 @@ Add the PPU microcode, NP table programming and metering primitives.
 +			hi[entry] = get_unaligned_be32(p + 8 * entry);
 +			lo[entry] = get_unaligned_be32(p + 8 * entry + 4);
 +		}
-+		/* R16: exact factory PC57 extraction, only verified LAN IPv4 path. */
-+		if (experimental_vid_key && i == 136) {
++		/* Factory PC57 copies SPR19[27:16] into the low query VID bits.
++		 * PC139 (LAN) and PC650 (WAN) have identical IPv4 constructors.
++		 * WAN PC582 loads SPR19 from packet metadata word 13. Keep the
++		 * following gap/packing instructions and both IPv6 paths intact.
++		 */
++		if (vlan_offload && i == 136) {
 +			hi[3] = 0x0500c09c;
 +			lo[3] = 0x0000852b;
++		}
++		if (vlan_offload && i == 648) {
++			hi[2] = 0x0500c09c;
++			lo[2] = 0x0000852b;
 +		}
 +		ret = zx279133_ppu_inst_block(eth, i, lo, hi);
 +		if (ret)
@@ -2152,7 +3786,7 @@ Add the PPU microcode, NP table programming and metering primitives.
 +	eth->ppu_version_major = version_major;
 +	eth->ppu_version_minor = version_minor;
 +	WRITE_ONCE(eth->ppu_firmware_crc32, fw_crc);
-+	WRITE_ONCE(eth->vid_key_active, experimental_vid_key);
++	WRITE_ONCE(eth->vid_key_active, vlan_offload);
 +	eth->ppu_version_valid = version_valid;
 +	WRITE_ONCE(eth->rx_hash_active, hash);
 +	WRITE_ONCE(eth->rx_hash_ipv6_active, hash && rx_hash_ipv6);
@@ -2641,781 +4275,3 @@ Add the PPU microcode, NP table programming and metering primitives.
 +		return zx279133_spa_indirect_write(eth, mem, word, *data);
 +	return zx279133_spa_indirect_read(eth, mem, word, data);
 +}
---- /dev/null
-+++ b/drivers/net/ethernet/zte/zx279133-native.c
-@@ -0,0 +1,355 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/* CPU133 NP primitives reconstructed from OEM np.ko. No init-time caller.
-+ * Source locations and limitations: docs/NP-NATIVE-API-R1.md in the project.
-+ */
-+#include <linux/bitfield.h>
-+#include <linux/io.h>
-+#include <linux/iopoll.h>
-+
-+#include "zx279133.h"
-+#include "zx279133-native.h"
-+
-+#define PLCR_PROFILE_BASE	0x40000
-+#define PLCR_MODE		0x280016
-+#define PLCR_BASE		0x280017
-+#define PLCR_CONFIGURED_BASE	40960
-+#define SSCH_GATE		0x00b8
-+#define SSCH_GATE_BIT		BIT(6)
-+#define SSCH_COMMAND		0x2c014
-+#define SSCH_DONE		0x2c018
-+#define SSCH_DATA		0x2c01c
-+#define SSCH_COMMAND_MASK	0xffc0007f
-+#define SSCH_MODE0		0x2c02c
-+#define SSCH_MODE1		0x2c030
-+#define SSCH_QUEUE_ENABLE0	0x2c060
-+#define SSCH_QUEUE_ENABLE1	0x2c064
-+
-+static int zx279133_plcr_pack(const struct zte_nppt_plcr_profile *p, u32 *w)
-+{
-+	if (!p || p->cir > GENMASK(17, 0) || p->eir > GENMASK(17, 0) ||
-+	    p->cbs > GENMASK(26, 0) || p->ebs > GENMASK(26, 0) ||
-+	    p->cd_mode != 2 || p->cf_flag > 1 || p->cm_flag > 1 ||
-+	    p->pkt_sign > 1)
-+		return -EINVAL;
-+	w[0] = p->cir | p->cbs << 18;
-+	w[1] = (p->cbs >> 14) | p->eir << 13 | p->ebs << 31;
-+	w[2] = (p->ebs >> 1) | (u32)p->cd_mode << 26 |
-+		(u32)p->cf_flag << 28 | (u32)p->cm_flag << 29 |
-+		(u32)p->pkt_sign << 30;
-+	return 0;
-+}
-+
-+static void zx279133_plcr_unpack(const u32 *w, struct zte_nppt_plcr_profile *p)
-+{
-+	*p = (struct zte_nppt_plcr_profile) {
-+		.cir = w[0] & GENMASK(17, 0),
-+		.cbs = (w[0] >> 18) | (w[1] & GENMASK(12, 0)) << 14,
-+		.eir = (w[1] >> 13) & GENMASK(17, 0),
-+		.ebs = (w[1] >> 31) | (w[2] & GENMASK(25, 0)) << 1,
-+		.cd_mode = (w[2] >> 26) & 3,
-+		.cf_flag = (w[2] >> 28) & 1,
-+		.cm_flag = (w[2] >> 29) & 1,
-+		.pkt_sign = (w[2] >> 30) & 1,
-+	};
-+}
-+
-+int zx279133_native_plcr_profile_get(struct zx279133_eth *eth, u8 id,
-+				     struct zte_nppt_plcr_profile *profile)
-+{
-+	u32 words[3];
-+	unsigned int i;
-+	int ret;
-+
-+	if (!profile || id >= ZTE_NPPT_PLCR_PROFILES)
-+		return -EINVAL;
-+	for (i = 0; i < ARRAY_SIZE(words); i++) {
-+		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
-+					      &words[i], false);
-+		if (ret)
-+			return ret;
-+	}
-+	zx279133_plcr_unpack(words, profile);
-+	return 0;
-+}
-+
-+int zx279133_native_plcr_profile_set(struct zx279133_eth *eth, u8 id,
-+				     const struct zte_nppt_plcr_profile *profile)
-+{
-+	u32 words[3];
-+	unsigned int i;
-+	int ret;
-+
-+	if (id >= ZTE_NPPT_PLCR_PROFILES)
-+		return -EINVAL;
-+	ret = zx279133_plcr_pack(profile, words);
-+	if (ret)
-+		return ret;
-+	for (i = 0; i < ARRAY_SIZE(words); i++) {
-+		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
-+					      &words[i], true);
-+		if (ret)
-+			return ret;
-+	}
-+	return 0;
-+}
-+
-+static int zx279133_plcr_binding_io(struct zx279133_eth *eth, u16 id,
-+				    u32 *words, bool write)
-+{
-+	u32 base, mode;
-+	int ret;
-+
-+	if (id >= ZTE_NPPT_PLCR_FLOWS)
-+		return -EINVAL;
-+	if (id < 128)
-+		return zx279133_native_plcr_io(eth, id * 4 + 3, &words[3], write);
-+	/* OEM se_plcr_init builds a mode-3 128-bit descriptor at this pool end.
-+	 * Read the live configuration before using the driver's reserved region.
-+	 */
-+	ret = zx279133_native_plcr_io(eth, PLCR_MODE, &mode, false);
-+	if (ret)
-+		return ret;
-+	ret = zx279133_native_plcr_io(eth, PLCR_BASE, &base, false);
-+	if (ret)
-+		return ret;
-+	if (mode != 3 || base != PLCR_CONFIGURED_BASE)
-+		return -ESTALE;
-+	return zx279133_native_eram_io(eth, base + id, words, write);
-+}
-+
-+int zx279133_native_plcr_binding_get(struct zx279133_eth *eth, u16 id,
-+				     struct zte_nppt_plcr_binding *binding)
-+{
-+	u32 words[4] = {};
-+	int ret;
-+
-+	if (!binding)
-+		return -EINVAL;
-+	ret = zx279133_plcr_binding_io(eth, id, words, false);
-+	if (ret)
-+		return ret;
-+	*binding = (struct zte_nppt_plcr_binding) {
-+		.profile = (words[3] >> 15) & 0x7f,
-+		.enabled = !!(words[3] & BIT(22)),
-+	};
-+	return 0;
-+}
-+
-+int zx279133_native_plcr_binding_set(struct zx279133_eth *eth, u16 id,
-+				     const struct zte_nppt_plcr_binding *binding)
-+{
-+	u32 words[4] = {};
-+
-+	if (!binding || binding->profile >= ZTE_NPPT_PLCR_PROFILES)
-+		return -EINVAL;
-+	words[3] = (u32)binding->profile << 15 | (u32)binding->enabled << 22;
-+	return zx279133_plcr_binding_io(eth, id, words, true);
-+}
-+
-+int zx279133_native_plcr_timing_get(struct zx279133_eth *eth,
-+				    struct zte_nppt_plcr_timing *timing)
-+{
-+	static const u32 addresses[] = { 0x280018, 0x300010, 0x30000e, 0x28001f };
-+	u32 value[ARRAY_SIZE(addresses)];
-+	unsigned int i;
-+	int ret;
-+
-+	if (!timing)
-+		return -EINVAL;
-+	for (i = 0; i < ARRAY_SIZE(addresses); i++) {
-+		ret = zx279133_native_plcr_io(eth, addresses[i], &value[i], false);
-+		if (ret)
-+			return ret;
-+	}
-+	*timing = (struct zte_nppt_plcr_timing) {
-+		.time_count = value[0], .packet_length = value[1],
-+		.packet_offset = value[2], .loose_length = value[3],
-+	};
-+	return 0;
-+}
-+
-+/* np.ko ssch_ind_{read,write}: command -> wait -> data, also for writes.
-+ * Do not substitute the data-before-command protocol used by other windows.
-+ * np_ind_lock protects the shared scheduler gate and the entire transaction.
-+ */
-+static int zx279133_ssch_ind(struct zx279133_eth *eth, u8 ram, u8 index,
-+			     u32 *value, bool write)
-+{
-+	u32 gate = readl(eth->base + SSCH_GATE);
-+	u32 command, status;
-+	int ret;
-+
-+	if (gate & SSCH_GATE_BIT)
-+		writel(gate & ~SSCH_GATE_BIT, eth->base + SSCH_GATE);
-+	ret = readl_poll_timeout_atomic(eth->base + SSCH_DONE, status,
-+					status & BIT(0), 1, 1000);
-+	if (ret)
-+		goto restore;
-+	command = (u32)ram << 22 | index | (write ? 0 : BIT(27));
-+	command |= readl(eth->base + SSCH_COMMAND) & ~SSCH_COMMAND_MASK;
-+	writel(command, eth->base + SSCH_COMMAND);
-+	ret = readl_poll_timeout_atomic(eth->base + SSCH_DONE, status,
-+					status & BIT(0), 1, 1000);
-+	if (ret)
-+		goto restore;
-+	if (write)
-+		writel(*value, eth->base + SSCH_DATA);
-+	else
-+		*value = readl(eth->base + SSCH_DATA);
-+restore:
-+	gate = (readl(eth->base + SSCH_GATE) & ~SSCH_GATE_BIT) |
-+		(gate & SSCH_GATE_BIT);
-+	writel(gate, eth->base + SSCH_GATE);
-+	return ret;
-+}
-+
-+int zx279133_native_ssch_global_get(struct zx279133_eth *eth,
-+				    struct zte_nppt_ssch_global *config)
-+{
-+	u32 value;
-+
-+	if (!config)
-+		return -EINVAL;
-+	mutex_lock(&eth->np_ind_lock);
-+	value = readl(eth->base + ZX279133_SSCH_CFG);
-+	*config = (struct zte_nppt_ssch_global) {
-+		.shaping = !!(value & BIT(0)), .dwrr = !!(value & BIT(1)),
-+		.fill_time = readl(eth->base + ZX279133_SSCH_FILL_TIME) &
-+			     ZX279133_SSCH_FILL_TIME_MASK,
-+	};
-+	mutex_unlock(&eth->np_ind_lock);
-+	return 0;
-+}
-+
-+static int zx279133_ssch_shaper_io(struct zx279133_eth *eth, u8 port, u8 queue,
-+				   struct zte_nppt_ssch_shaper *shaper,
-+				   bool per_queue, bool write, bool exact)
-+{
-+	struct zte_nppt_ssch_shaper result;
-+	u8 index = per_queue ? port * 8 + queue : port;
-+	u8 fill_ram = per_queue ? 3 : 1;
-+	u32 reg, bit, value, fill, cap;
-+	int ret;
-+
-+	if (!shaper || port > 7 || queue > 7 ||
-+	    (write && !exact && (shaper->fill > GENMASK(28, 0) ||
-+		       shaper->cap > GENMASK(20, 0))))
-+		return -EINVAL;
-+	reg = per_queue ? (index < 32 ? SSCH_QUEUE_ENABLE0 : SSCH_QUEUE_ENABLE1) :
-+			 ZX279133_SSCH_CFG;
-+	bit = per_queue ? BIT(index % 32) : BIT(port + 2);
-+	mutex_lock(&eth->np_ind_lock);
-+	value = readl(eth->base + reg);
-+	if (write) {
-+		/* OEM queue/port setters quiesce this shaper before replacement. */
-+		writel(value & ~bit, eth->base + reg);
-+		fill = shaper->fill;
-+		cap = shaper->cap;
-+	} else {
-+		result.enabled = !!(value & bit);
-+	}
-+	ret = zx279133_ssch_ind(eth, fill_ram, index, &fill, write);
-+	if (ret)
-+		goto out;
-+	ret = zx279133_ssch_ind(eth, fill_ram + 1, index, &cap, write);
-+	if (ret)
-+		goto out;
-+	if (write) {
-+		value = readl(eth->base + reg) & ~bit;
-+		writel(value | (shaper->enabled ? bit : 0), eth->base + reg);
-+	} else {
-+		result.fill = fill;
-+		result.cap = cap;
-+		*shaper = result;
-+	}
-+out:
-+	mutex_unlock(&eth->np_ind_lock);
-+	return ret;
-+}
-+
-+int zx279133_native_ssch_queue_get(struct zx279133_eth *eth, u8 port, u8 queue,
-+				   struct zte_nppt_ssch_shaper *shaper)
-+{
-+	return zx279133_ssch_shaper_io(eth, port, queue, shaper, true, false, false);
-+}
-+
-+int zx279133_native_ssch_port_get(struct zx279133_eth *eth, u8 port,
-+				  struct zte_nppt_ssch_shaper *shaper)
-+{
-+	return zx279133_ssch_shaper_io(eth, port, 0, shaper, false, false, false);
-+}
-+
-+/* Manager-only exact snapshots: never exposed as an arbitrary RAM writer. */
-+int zx279133_native_ssch_exact_set(struct zx279133_eth *eth, u8 port, u8 queue,
-+				   const struct zte_nppt_ssch_shaper *shaper)
-+{
-+	struct zte_nppt_ssch_shaper copy = *shaper;
-+
-+	return zx279133_ssch_shaper_io(eth, port,
-+				     queue == ZTE_NPPT_SHAPER_PORT ? 0 : queue,
-+				     &copy, queue != ZTE_NPPT_SHAPER_PORT, true, true);
-+}
-+
-+void zx279133_native_ssch_disable(struct zx279133_eth *eth, u8 port, u8 queue)
-+{
-+	u32 index = port * 8 + queue;
-+	u32 reg, bit;
-+
-+	if (queue == ZTE_NPPT_SHAPER_PORT) {
-+		reg = ZX279133_SSCH_CFG;
-+		bit = BIT(port + 2);
-+	} else {
-+		reg = index < 32 ? SSCH_QUEUE_ENABLE0 : SSCH_QUEUE_ENABLE1;
-+		bit = BIT(index % 32);
-+	}
-+	mutex_lock(&eth->np_ind_lock);
-+	writel(readl(eth->base + reg) & ~bit, eth->base + reg);
-+	/* Flush the disable before the caller shuts down the working clock. */
-+	readl(eth->base + reg);
-+	mutex_unlock(&eth->np_ind_lock);
-+}
-+
-+int zx279133_native_vlan_get(struct zx279133_eth *eth, u16 vid,
-+			     struct zte_nppt_vlan_row *row)
-+{
-+	if (!row || vid > 4095)
-+		return -EINVAL;
-+	return zx279133_native_sdt128_io(eth, 0, vid, row->words, false);
-+}
-+
-+int zx279133_native_vlan_set(struct zx279133_eth *eth, u16 vid,
-+			     const struct zte_nppt_vlan_row *row)
-+{
-+	struct zte_nppt_vlan_row data;
-+
-+	if (!row || vid > 4095)
-+		return -EINVAL;
-+	data = *row;
-+	return zx279133_native_sdt128_io(eth, 0, vid, data.words, true);
-+}
-+
-+/* Restore captured state, including disabled cd_mode=0 and reserved bits.
-+ * This is intentionally not exposed as a raw-write debug command.
-+ */
-+int zx279133_native_profile_words(struct zx279133_eth *eth, u8 id,
-+				  u32 words[3], bool restore)
-+{
-+	unsigned int i;
-+	int ret;
-+
-+	if (id >= ZTE_NPPT_PLCR_PROFILES || !words)
-+		return -EINVAL;
-+	for (i = 0; i < 3; i++) {
-+		ret = zx279133_native_plcr_io(eth, PLCR_PROFILE_BASE + id * 4 + i,
-+					      &words[i], restore);
-+		if (ret)
-+			return ret;
-+	}
-+	return 0;
-+}
-+
-+int zx279133_native_binding_words(struct zx279133_eth *eth, u16 id,
-+				  u32 words[4], bool restore)
-+{
-+	return zx279133_plcr_binding_io(eth, id, words, restore);
-+}
---- /dev/null
-+++ b/drivers/net/ethernet/zte/zx279133-meter.c
-@@ -0,0 +1,387 @@
-+// SPDX-License-Identifier: GPL-2.0-only
-+/* Managed PLCR leases. No workqueues, packet hooks or probe-time table scan. */
-+#include <linux/bitmap.h>
-+#include <linux/errno.h>
-+#include <linux/slab.h>
-+#include <linux/string.h>
-+#include <linux/export.h>
-+#include "zx279133-native.h"
-+#include "zx279133-meter.h"
-+
-+#define METER_FAST_BUCKETS 32
-+#define METER_MAC_CLIENTS 32
-+#define METER_BUCKETS (METER_FAST_BUCKETS + 2 * METER_MAC_CLIENTS)
-+#define METER_FLOW_BASE 192
-+
-+struct meter_profile {
-+	struct zte_nppt_plcr_profile config;
-+	u32 saved[3];
-+	unsigned int refs;
-+	bool dirty;
-+};
-+
-+struct zte_nppt_meter {
-+	u32 saved[4];
-+	const void *scope;
-+	u32 action_index;
-+	unsigned int refs;
-+	u8 bucket;
-+	u8 profile;
-+	bool used;
-+	bool orphan;
-+	bool binding_restored;
-+	bool uncertain;
-+};
-+
-+struct zx279133_meter_pool {
-+	struct meter_profile profiles[ZTE_NPPT_PLCR_PROFILES];
-+	struct zte_nppt_meter buckets[METER_BUCKETS];
-+	DECLARE_BITMAP(external_profiles, ZTE_NPPT_PLCR_PROFILES);
-+	bool inventoried;
-+};
-+
-+static u16 meter_flow_id(unsigned int bucket)
-+{
-+	if (bucket < METER_FAST_BUCKETS)
-+		return METER_FLOW_BASE + bucket;
-+	bucket -= METER_FAST_BUCKETS;
-+	return (bucket & 1 ? 0x814 : 0x414) + bucket / 2;
-+}
-+
-+static bool meter_profile_equal(const struct zte_nppt_plcr_profile *a,
-+				const struct zte_nppt_plcr_profile *b)
-+{
-+	return a->cir == b->cir && a->eir == b->eir && a->cbs == b->cbs &&
-+	a->ebs == b->ebs && a->cd_mode == b->cd_mode &&
-+	a->cf_flag == b->cf_flag && a->cm_flag == b->cm_flag &&
-+	a->pkt_sign == b->pkt_sign;
-+}
-+
-+static int meter_profile_restore(struct zx279133_eth *eth, u8 id, u32 *saved)
-+{
-+	u32 actual[3];
-+	int ret = zx279133_native_profile_words(eth, id, saved, true);
-+
-+	if (!ret)
-+		ret = zx279133_native_profile_words(eth, id, actual, false);
-+	if (!ret && memcmp(saved, actual, sizeof(actual)))
-+		ret = -EIO;
-+	return ret;
-+}
-+
-+static int meter_binding_restore(struct zx279133_eth *eth, u16 id, u32 *saved)
-+{
-+	u32 actual[4];
-+	int ret = zx279133_native_binding_words(eth, id, saved, true);
-+
-+	if (!ret)
-+		ret = zx279133_native_binding_words(eth, id, actual, false);
-+	if (!ret && memcmp(saved, actual, sizeof(actual)))
-+		ret = -EIO;
-+	return ret;
-+}
-+
-+int zx279133_meter_put(struct zx279133_meter_pool *p,
-+		       struct zx279133_eth *eth, struct zte_nppt_meter *m)
-+{
-+	struct meter_profile *profile;
-+	int ret;
-+
-+	if (!p || !m || m->bucket >= METER_BUCKETS ||
-+	    m != &p->buckets[m->bucket] || !m->used)
-+		return -EINVAL;
-+	if (m->refs > 1) {
-+		m->refs--;
-+		return 0;
-+	}
-+	profile = &p->profiles[m->profile];
-+	m->uncertain = true;
-+	if (!m->binding_restored) {
-+		ret = meter_binding_restore(eth, meter_flow_id(m->bucket), m->saved);
-+		if (ret)
-+			return ret;
-+		m->binding_restored = true;
-+	}
-+	if (profile->refs == 1) {
-+		profile->dirty = true;
-+		ret = meter_profile_restore(eth, m->profile, profile->saved);
-+		if (ret)
-+			return ret;
-+		profile->dirty = false;
-+	}
-+	profile->refs--;
-+	m->used = false;
-+	return 0;
-+}
-+
-+void zx279133_meter_abandon(struct zx279133_meter_pool *p,
-+			    struct zte_nppt_meter *m)
-+{
-+	if (p && m && m->bucket < METER_BUCKETS && m == &p->buckets[m->bucket] &&
-+	    m->used)
-+		m->orphan = true;
-+}
-+
-+static int meter_reap(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
-+{
-+	unsigned int i;
-+	int ret;
-+
-+	for (i = 0; i < METER_BUCKETS; i++)
-+		if (p->buckets[i].used && p->buckets[i].orphan) {
-+			ret = zx279133_meter_put(p, eth, &p->buckets[i]);
-+			if (ret)
-+				return ret;
-+		}
-+	return 0;
-+}
-+
-+int zx279133_meter_drain(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
-+{
-+	unsigned int i;
-+	int ret;
-+
-+	if (!p)
-+		return 0;
-+	ret = meter_reap(p, eth);
-+	if (ret)
-+		return ret;
-+	for (i = 0; i < METER_BUCKETS; i++)
-+		if (p->buckets[i].used)
-+			return -EBUSY;
-+	p->inventoried = false;
-+	return 0;
-+}
-+
-+/* Scan only on first use or after an unmanaged binding edit. Never per packet
-+ * or from a timer. Do not overwrite a profile referenced by an external meter.
-+ */
-+static int meter_inventory(struct zx279133_meter_pool *p, struct zx279133_eth *eth)
-+{
-+	struct zte_nppt_plcr_binding binding;
-+	unsigned int id;
-+	int ret;
-+
-+	bitmap_zero(p->external_profiles, ZTE_NPPT_PLCR_PROFILES);
-+	for (id = 0; id < ZTE_NPPT_PLCR_FLOWS; id++) {
-+		unsigned int slot;
-+		bool owned = false;
-+
-+		for (slot = 0; slot < METER_BUCKETS; slot++)
-+			if (meter_flow_id(slot) == id && p->buckets[slot].used) {
-+				owned = true;
-+				break;
-+			}
-+		if (owned)
-+			continue;
-+		ret = zx279133_native_plcr_binding_get(eth, id, &binding);
-+		if (ret)
-+			return ret;
-+		if (binding.enabled)
-+			__set_bit(binding.profile, p->external_profiles);
-+	}
-+	p->inventoried = true;
-+	return 0;
-+}
-+
-+static int meter_get(struct zx279133_meter_pool **pool,
-+		     struct zx279133_eth *eth,
-+		     const struct zte_nppt_plcr_profile *wanted,
-+		     const void *scope, u32 action_index,
-+		     unsigned int first, unsigned int end,
-+		     struct zte_nppt_meter **out)
-+{
-+	struct zte_nppt_plcr_profile actual;
-+	struct zte_nppt_plcr_binding binding;
-+	struct zx279133_meter_pool *p;
-+	struct meter_profile *profile;
-+	struct zte_nppt_meter *m = NULL;
-+	unsigned int i, id = ZTE_NPPT_PLCR_PROFILES;
-+	int ret;
-+
-+	*out = NULL;
-+	if (!wanted || wanted->cir > 0x3ffff || wanted->eir > 0x3ffff ||
-+	    wanted->cbs > 0x7ffffff || wanted->ebs > 0x7ffffff ||
-+	    wanted->cd_mode != 2 || wanted->cf_flag > 1 || wanted->cm_flag > 1 ||
-+	    wanted->pkt_sign > 1)
-+		return -EINVAL;
-+	if (!*pool) {
-+		*pool = kzalloc(sizeof(**pool), GFP_KERNEL);
-+		if (!*pool)
-+			return -ENOMEM;
-+	}
-+	p = *pool;
-+	ret = meter_reap(p, eth);
-+	if (ret)
-+		return ret;
-+	if (!p->inventoried) {
-+		ret = meter_inventory(p, eth);
-+		if (ret)
-+			return ret;
-+	}
-+	/* One indexed TC action is one shared token bucket, not a rate per flow.
-+	 * Do not update a meter in place while unrelated flows still reference it.
-+	 */
-+	if (scope && action_index)
-+		for (i = first; i < end; i++) {
-+			struct zte_nppt_meter *shared = &p->buckets[i];
-+
-+			if (!shared->used || shared->orphan || shared->scope != scope ||
-+			    shared->action_index != action_index)
-+				continue;
-+			profile = &p->profiles[shared->profile];
-+			if (profile->dirty || shared->binding_restored || shared->uncertain ||
-+			    !meter_profile_equal(&profile->config, wanted))
-+				return -EBUSY;
-+			shared->refs++;
-+			*out = shared;
-+			return 0;
-+		}
-+	for (i = first; i < end; i++) {
-+		if (p->buckets[i].used)
-+			continue;
-+		ret = zx279133_native_plcr_binding_get(eth, meter_flow_id(i), &binding);
-+		if (ret)
-+			return ret;
-+		if (!binding.enabled) {
-+			m = &p->buckets[i];
-+			m->bucket = i;
-+			break;
-+		}
-+	}
-+	if (!m)
-+		return -ENOSPC;
-+	for (i = 0; i < ZTE_NPPT_PLCR_PROFILES; i++)
-+		if (p->profiles[i].refs && !p->profiles[i].dirty &&
-+		    meter_profile_equal(&p->profiles[i].config, wanted)) {
-+			id = i;
-+			break;
-+		}
-+	if (id == ZTE_NPPT_PLCR_PROFILES)
-+		for (i = 0; i < ZTE_NPPT_PLCR_PROFILES; i++)
-+			if (!p->profiles[i].refs && !test_bit(i, p->external_profiles)) {
-+				id = i;
-+				break;
-+			}
-+	if (id == ZTE_NPPT_PLCR_PROFILES)
-+		return -ENOSPC;
-+	profile = &p->profiles[id];
-+	ret = zx279133_native_binding_words(eth, meter_flow_id(m->bucket),
-+					    m->saved, false);
-+	if (ret)
-+		return ret;
-+	if (!profile->refs) {
-+		ret = zx279133_native_profile_words(eth, id, profile->saved, false);
-+		if (ret)
-+			return ret;
-+		profile->config = *wanted;
-+	}
-+	m->scope = scope;
-+	m->action_index = action_index;
-+	m->refs = 1;
-+	m->profile = id;
-+	m->used = true;
-+	m->orphan = false;
-+	m->binding_restored = false;
-+	m->uncertain = false;
-+	profile->refs++;
-+	if (profile->refs == 1) {
-+		profile->dirty = true;
-+		ret = zx279133_native_plcr_profile_set(eth, id, wanted);
-+		if (ret)
-+			goto rollback;
-+		ret = zx279133_native_plcr_profile_get(eth, id, &actual);
-+		if (ret)
-+			goto rollback;
-+		if (!meter_profile_equal(&actual, wanted)) {
-+			ret = -EIO;
-+			goto rollback;
-+		}
-+		profile->dirty = false;
-+	}
-+	binding.profile = id;
-+	binding.enabled = true;
-+	ret = zx279133_native_plcr_binding_set(eth, meter_flow_id(m->bucket), &binding);
-+	if (ret)
-+		goto rollback;
-+	ret = zx279133_native_plcr_binding_get(eth, meter_flow_id(m->bucket), &binding);
-+	if (ret)
-+		goto rollback;
-+	if (!binding.enabled || binding.profile != id) {
-+		ret = -EIO;
-+		goto rollback;
-+	}
-+	*out = m;
-+	return 0;
-+rollback:
-+	m->orphan = true;
-+	/* Retain failed rollback inside NPU; it is retried before reuse/detach. */
-+	zx279133_meter_put(p, eth, m);
-+	return ret;
-+}
-+
-+int zx279133_meter_get(struct zx279133_meter_pool **pool,
-+		       struct zx279133_eth *eth,
-+		       const struct zte_nppt_plcr_profile *wanted,
-+		       const void *scope, u32 action_index,
-+		       struct zte_nppt_meter **out)
-+{
-+	return meter_get(pool, eth, wanted, scope, action_index,
-+			 0, METER_FAST_BUCKETS, out);
-+}
-+
-+int zx279133_meter_mac_get(struct zx279133_meter_pool **pool,
-+			   struct zx279133_eth *eth,
-+			   const struct zte_nppt_plcr_profile *wanted,
-+			   u8 slot, bool download, struct zte_nppt_meter **out)
-+{
-+	unsigned int bucket = METER_FAST_BUCKETS + slot * 2 + download;
-+
-+	if (slot >= METER_MAC_CLIENTS)
-+		return -EINVAL;
-+	return meter_get(pool, eth, wanted, NULL, 0, bucket, bucket + 1, out);
-+}
-+
-+bool zx279133_meter_profile_busy(struct zx279133_meter_pool *p, u8 id)
-+{
-+	return p && id < ZTE_NPPT_PLCR_PROFILES && p->profiles[id].refs;
-+}
-+
-+bool zx279133_meter_binding_busy(struct zx279133_meter_pool *p, u16 id)
-+{
-+	unsigned int i;
-+
-+	if (p)
-+		for (i = 0; i < METER_BUCKETS; i++)
-+			if (p->buckets[i].used && meter_flow_id(i) == id)
-+				return true;
-+	return false;
-+}
-+
-+void zx279133_meter_inventory_changed(struct zx279133_meter_pool *p)
-+{
-+	if (p)
-+		p->inventoried = false;
-+}
-+
-+u8 zte_nppt_meter_bucket(const struct zte_nppt_meter *m)
-+{
-+	return m->bucket;
-+}
-+EXPORT_SYMBOL_GPL(zte_nppt_meter_bucket);
-+
-+void zx279133_meter_destroy(struct zx279133_meter_pool *p)
-+{
-+	kfree(p);
-+}
-+
-+bool zx279133_meter_active(struct zx279133_meter_pool *p)
-+{
-+	unsigned int i;
-+
-+	if (p)
-+		for (i = 0; i < METER_BUCKETS; i++)
-+			if (p->buckets[i].used)
-+				return true;
-+	return false;
-+}
---- /dev/null
-+++ b/drivers/net/ethernet/zte/zx279133-meter.h
-@@ -0,0 +1,27 @@
-+/* SPDX-License-Identifier: GPL-2.0-only */
-+#ifndef _ZX279133_METER_H
-+#define _ZX279133_METER_H
-+#include <linux/zte_nppt_native.h>
-+struct zx279133_eth;
-+struct zx279133_meter_pool;
-+int zx279133_meter_get(struct zx279133_meter_pool **pool,
-+		       struct zx279133_eth *eth,
-+		       const struct zte_nppt_plcr_profile *profile,
-+		       const void *scope, u32 action_index,
-+		       struct zte_nppt_meter **out);
-+int zx279133_meter_put(struct zx279133_meter_pool *pool,
-+		       struct zx279133_eth *eth, struct zte_nppt_meter *meter);
-+void zx279133_meter_abandon(struct zx279133_meter_pool *pool,
-+			    struct zte_nppt_meter *meter);
-+int zx279133_meter_drain(struct zx279133_meter_pool *pool,
-+			 struct zx279133_eth *eth);
-+bool zx279133_meter_active(struct zx279133_meter_pool *pool);
-+void zx279133_meter_destroy(struct zx279133_meter_pool *pool);
-+bool zx279133_meter_profile_busy(struct zx279133_meter_pool *pool, u8 id);
-+bool zx279133_meter_binding_busy(struct zx279133_meter_pool *pool, u16 id);
-+void zx279133_meter_inventory_changed(struct zx279133_meter_pool *pool);
-+int zx279133_meter_mac_get(struct zx279133_meter_pool **pool,
-+			   struct zx279133_eth *eth,
-+			   const struct zte_nppt_plcr_profile *profile,
-+			   u8 slot, bool download, struct zte_nppt_meter **out);
-+#endif

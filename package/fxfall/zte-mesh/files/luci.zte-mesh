@@ -1,0 +1,90 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# rpcd plugin for the ZTE Mesh page.
+#
+#   ubus call luci.zte-mesh status
+#   ubus call luci.zte-mesh restart
+#   ubus call luci.zte-mesh reboot_node '{"mac":"aa:bb:cc:dd:ee:ff"}'
+#   ubus call luci.zte-mesh light_node  '{"mac":"aa:bb:cc:dd:ee:ff","on":true}'
+#
+# reboot_node / light_node hand a one-line request to the running controller service (a file in
+# /run/zte-mesh/actions, consumed within a second) and wait a few seconds for its answer in state.json:
+# {"result": 0} = sent to the daemon, -3 = no such online ZTE node, -4 = daemon not ready, -2 = malformed,
+# -5 = the controller is not running, null = no answer yet.
+
+RUNDIR=${ZTE_MESH_RUNDIR:-/run/zte-mesh}
+STATE="$RUNDIR/state.json"
+ACTIONS="$RUNDIR/actions"
+
+# node_action VERB MAC [ARG]: writes the request, waits up to 8 s for its result, prints the JSON reply
+node_action() {
+	local id req i res
+	[ -d "$ACTIONS" ] && [ -s "$STATE" ] || { printf '{ "result": -5 }\n'; return; }
+	id="$(date +%s)-$$"
+	req="$1 $2"
+	[ -n "$3" ] && req="$req $3"
+	( umask 077; printf '%s\n' "$req" > "$ACTIONS/.$id.tmp" && mv "$ACTIONS/.$id.tmp" "$ACTIONS/$id.act" ) ||
+		{ printf '{ "result": -5 }\n'; return; }
+	i=0
+	while [ "$i" -lt "${ZTE_MESH_ACTION_WAIT:-8}" ]; do
+		sleep 1
+		i=$((i + 1))
+		res=$(jsonfilter -i "$STATE" -e "@.actions[@.id='$id'].status" 2>/dev/null)
+		[ -n "$res" ] && { printf '{ "result": %s }\n' "$res"; return; }
+	done
+	printf '{ "result": null }\n'
+}
+
+# valid_mac MAC: lower-case aa:bb:cc:dd:ee:ff only (the service validates again)
+valid_mac() {
+	case "$1" in
+	[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) return 0 ;;
+	esac
+	return 1
+}
+
+case "$1" in
+list)
+	printf '{ "status": {}, "restart": {}, "reboot_node": { "mac": "str" }, "light_node": { "mac": "str", "on": true } }\n'
+	;;
+call)
+	case "$2" in
+	status)
+		installed=false
+		[ -x /usr/libexec/zte-mesh/ns-run ] && installed=true
+		running=false
+		ubus call service list '{"name":"zte-mesh"}' 2>/dev/null | grep -q '"running": true' && running=true
+		age=-1
+		if [ -s "$STATE" ]; then
+			now=$(date +%s)
+			mtime=$(date -r "$STATE" +%s 2>/dev/null || echo 0)
+			age=$((now - mtime))
+			state=$(cat "$STATE")
+		else
+			state=null
+		fi
+		attached=false
+		[ -e /sys/class/net/zmesh0/master ] && attached=true
+		printf '{ "installed": %s, "running": %s, "attached": %s, "age": %d, "state": %s }\n' \
+			"$installed" "$running" "$attached" "$age" "$state"
+		;;
+	restart)
+		( /etc/init.d/zte-mesh restart >/dev/null 2>&1 </dev/null & )
+		printf '{ "result": 0 }\n'
+		;;
+	reboot_node|light_node)
+		read -r input
+		mac=$(jsonfilter -s "$input" -e '@.mac' 2>/dev/null | tr 'A-F' 'a-f')
+		valid_mac "$mac" || { printf '{ "result": -2 }\n'; exit 0; }
+		if [ "$2" = reboot_node ]; then
+			node_action reboot "$mac"
+		else
+			on=$(jsonfilter -s "$input" -e '@.on' 2>/dev/null)
+			case "$on" in true|1) on=1 ;; false|0) on=0 ;; *) printf '{ "result": -2 }\n'; exit 0 ;; esac
+			node_action light "$mac" "$on"
+		fi
+		;;
+	esac
+	;;
+esac
