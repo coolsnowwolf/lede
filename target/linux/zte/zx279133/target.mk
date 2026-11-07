@@ -7,11 +7,10 @@ KERNELNAME:=Image dtbs
 
 # Stock LEDE LuCI and network services; no external application feed required.
 DEFAULT_PACKAGES += \
-	kmod-zte-npu kmod-zte-fnoffload kmod-zte-rtl8372n \
 	kmod-usb-core kmod-usb-storage kmod-usb-storage-uas kmod-loop \
 	dnsmasq firewall4 nftables-json kmod-nft-offload \
 	ppp ppp-mod-pppoe odhcp6c odhcpd-ipv6only \
-	luci uhttpd uhttpd-mod-ubus luci-app-zte-fwslot \
+	luci uhttpd uhttpd-mod-ubus \
 	e2fsprogs f2fsck mkf2fs losetup automount autocore-arm \
 	-kmod-sched-bpf -kmod-xdp-sockets-diag
 

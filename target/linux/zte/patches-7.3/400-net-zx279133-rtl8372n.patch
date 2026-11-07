@@ -1,11 +1,165 @@
 Subject: [PATCH] net: zte: add the SR1010 RTL8372N switch driver
 
-Add the board switch driver, VLAN configuration synchronization,
-device-tree binding and DSA documentation.
-
+--- /dev/null
++++ b/Documentation/devicetree/bindings/net/dsa/zte,zx279133-rtl8372n.yaml
+@@ -0,0 +1,93 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/net/dsa/zte,zx279133-rtl8372n.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: RTL8372N switch on the ZTE ZX279133 NPPT LAN path
++
++maintainers:
++  - cnjn <1779895255@qq.com>
++
++description:
++  The RTL8372N CPU port connects to ZX279133 XMAC0. Switch management uses the
++  SoC MDIO controller's indirect SMI transport, represented by zte,mdio-handle.
++  The CPU conduit is a dedicated netdev owned by the NPPT Ethernet controller
++  rather than the WAN netdev.
++
++properties:
++  compatible:
++    const: zte,zx279133-rtl8372n
++
++  zte,mdio-handle:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: MDIO child implementing the RTL8372N indirect SMI transport
++
++  reset-gpios:
++    maxItems: 1
++    description: Active-low RTL8372N hardware reset
++
++allOf:
++  - $ref: dsa.yaml#/$defs/ethernet-ports
++
++required:
++  - compatible
++  - zte,mdio-handle
++  - reset-gpios
++
++unevaluatedProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/gpio/gpio.h>
++
++    mdio {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        rtl8372n_smi: switch-controller@1d {
++            compatible = "realtek,rtl8372n";
++            reg = <0x1d>;
++        };
++    };
++
++    ethernet {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        lan_cpu: ethernet-lan-cpu {
++            compatible = "zte,zx279133-lan-conduit";
++        };
++
++        switch {
++            compatible = "zte,zx279133-rtl8372n";
++            zte,mdio-handle = <&rtl8372n_smi>;
++            reset-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
++
++            ports {
++                #address-cells = <1>;
++                #size-cells = <0>;
++
++                port@7 {
++                    reg = <7>;
++                    label = "lan1";
++                    phy-mode = "internal";
++                    fixed-link {
++                        speed = <2500>;
++                        full-duplex;
++                    };
++                };
++
++                port@8 {
++                    reg = <8>;
++                    ethernet = <&lan_cpu>;
++                    phy-mode = "10gbase-r";
++                    fixed-link {
++                        speed = <10000>;
++                        full-duplex;
++                    };
++                };
++            };
++        };
++    };
++...
+--- a/Documentation/networking/dsa/index.rst
++++ b/Documentation/networking/dsa/index.rst
+@@ -10,4 +10,5 @@
+    bcm_sf2
+    lan9303
+    sja1105
++   zx279133-rtl8372n
+    configuration
+--- /dev/null
++++ b/Documentation/networking/dsa/zx279133-rtl8372n.rst
+@@ -0,0 +1,50 @@
++.. SPDX-License-Identifier: GPL-2.0-only
++
++===================================
++ZTE ZX279133 and RTL8372N DSA switch
++===================================
++
++The SR1010 connects RTL8372N user ports 4 through 7 to ZX279133 XMAC0 through
++switch CPU port 8.  The ``lan-cpu`` conduit is separate from the WAN netdev.
++
++CPU-link transport
++==================
++
++The switch and conduit carry the source user port in private VLAN IDs 59
++through 62.  These VLAN IDs are an internal CPU-link protocol and must not be
++configured as customer VLANs.  The DSA tagger removes the private VLAN on
++receive and inserts the appropriate private VLAN on transmit.
++
++Customer VLAN restrictions
++==========================
++
++The currently supported customer VLAN mode is one untagged access VLAN per
++user port.  A VLAN added to a user port must have both the ``pvid`` and
++``untagged`` flags.  Tagged or trunk VLANs are not supported.
++
++VID 1 is reserved by the initial switch state and private VIDs 59 through 62
++are reserved by the CPU-link transport.  The driver ignores the implicit VID 1
++add/delete notifications from a VLAN-unaware bridge, where the PVID has no
++data-path meaning, so user ports can join a conventional VLAN-unaware bridge.
++Before enabling VLAN filtering, remove that implicit PVID by setting
++``vlan_default_pvid 0``; enabling VLAN filtering while VID 1 remains is
++rejected.
++
++Create a VLAN-aware bridge with ``vlan_default_pvid 0`` before adding an
++RTL8372N user port.  For example::
++
++  ip link add br0 type bridge vlan_filtering 1 vlan_default_pvid 0
++  ip link set lan1 master br0
++  bridge vlan add dev lan1 vid 100 pvid untagged
++  bridge vlan add dev br0 vid 100 self
++
++The driver keeps each private transport VLAN isolated to one user port and CPU
++port 8.  Linux performs bridge forwarding; the driver does not advertise
++hardware bridge forwarding for this transport.
++
++FDB scope
++=========
++
++Static FDB operations are supported for VLAN-unaware bridges.  Static FDB
++offload for a nonzero customer VID is rejected because customer VLAN filtering
++is performed after the private transport tag is removed.
 --- /dev/null
 +++ b/drivers/net/ethernet/zte/zx279133-rtl8372n.c
-@@ -0,0 +1,8399 @@
+@@ -0,0 +1,8460 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ZTE ZX279133 / RTL8372N DSA switch driver.
@@ -295,6 +449,12 @@ device-tree binding and DSA documentation.
 +#define RTL8372N_REG_DUMP_CPU_WORDS	12
 +#define RTL8372N_REG_DUMP_TRUNK_WORDS	(RTL8372N_TRUNK_GROUPS * 2)
 +#define RTL8372N_REG_DUMP_COUNTER_WORDS	(4 + RTL8372N_ACL_COUNTERS)
++#define RTL8372N_FRAME_DUMP_MAGIC		0x324d5246 /* FRM2, little endian */
++#define RTL8372N_FRAME_DUMP_RECORDS	16
++#define RTL8372N_FRAME_DUMP_WORDS		(4 + RTL8372N_FRAME_DUMP_RECORDS * 3)
++#define RTL8372N_QOS_DUMP_MAGIC		0x31534f51 /* QOS1, little endian */
++#define RTL8372N_QOS_DUMP_RECORDS	34
++#define RTL8372N_QOS_DUMP_WORDS		(4 + RTL8372N_QOS_DUMP_RECORDS * 3)
 +#define RTL8372N_REG_DUMP_WORDS		(RTL8372N_REG_DUMP_HEADER_WORDS + \
 +					 RTL8372N_REG_DUMP_CPU_WORDS + \
 +					 RTL8372N_REG_DUMP_TRUNK_WORDS + \
@@ -302,7 +462,9 @@ device-tree binding and DSA documentation.
 +					 RTL8372N_ACL_TEMPLATES * 2 + \
 +					 ARRAY_SIZE(rtl8372n_acl_field_selectors) + \
 +					 RTL8372N_REG_DUMP_COUNTER_WORDS + \
-+					 RTL8372N_HSB_DATA_WORDS * 3)
++					 RTL8372N_HSB_DATA_WORDS * 3 + \
++					 RTL8372N_FRAME_DUMP_WORDS + \
++					 RTL8372N_QOS_DUMP_WORDS)
 +#define RTL8372N_ACL_ACTION_CTRL_BASE	0x4848
 +#define RTL8372N_ACL_ACTION_CTRL_STRIDE	4
 +#define RTL8372N_ACL_ACTION_CVLAN	BIT(0)
@@ -2270,14 +2432,16 @@ device-tree binding and DSA documentation.
 +	int ret;
 +
 +	if (port < RTL8372N_USER_PORT_MIN || port > RTL8372N_CPU_PORT ||
-+	    mtu < ETH_MIN_MTU ||
-+	    mtu > ZX279133_LAN_USER_MAX_MTU +
-+		  (port == RTL8372N_CPU_PORT ? VLAN_HLEN : 0))
++	    mtu < ETH_MIN_MTU || mtu > ZX279133_LAN_USER_MAX_MTU)
 +		return -EINVAL;
-+	/* User MTU excludes the C-tag. DSA supplies an MTU including its own
-+	 * S-tag for the CPU port, so this adds the C-tag exactly once there too.
++	/* dsa_user_change_mtu() passes largest_mtu to the CPU-port callback;
++	 * only the conduit netdev gets largest_mtu + tag overhead. Both switch
++	 * callbacks therefore take a payload MTU, excluding all VLAN headers.
++	 * The CPU link needs room for the service S-tag AND the customer C-tag.
 +	 */
 +	length = mtu + ETH_HLEN + ETH_FCS_LEN + VLAN_HLEN;
++	if (port == RTL8372N_CPU_PORT)
++		length += VLAN_HLEN;
 +	ret = rtl8372n_read_reg(mdio, reg, &old);
 +	if (ret)
 +		return ret;
@@ -2316,11 +2480,7 @@ device-tree binding and DSA documentation.
 +	 * port gets a private default SVID. Customer C-tags remain untouched.
 +	 */
 +	for (port = RTL8372N_USER_PORT_MIN; port <= RTL8372N_CPU_PORT; port++) {
-+		int mtu = ETH_DATA_LEN;
-+
-+		if (port == RTL8372N_CPU_PORT)
-+			mtu += VLAN_HLEN;
-+		ret = rtl8372n_frame_limit_set(mdiodev, port, mtu);
++		ret = rtl8372n_frame_limit_set(mdiodev, port, ETH_DATA_LEN);
 +		if (ret)
 +			goto out_unlock;
 +	}
@@ -7900,6 +8060,85 @@ device-tree binding and DSA documentation.
 +	return RTL8372N_REG_DUMP_WORDS * sizeof(u32);
 +}
 +
++/* The caller holds mdio_lock. No HSAB arming or forwarding configuration.
++ * Keep a status per register: 0xffffffff can also be a legitimate raw value.
++ * OEM rtl8373_reg_list identifies TX MAX_LEN at 0x4e90; its ten words are
++ * deliberately opaque until the physical-port mapping has been verified.
++ */
++static void rtl8372n_frame_limits_dump(struct mdio_device *mdiodev,
++				      int port, u32 *dump)
++{
++	unsigned int i;
++	u32 address, value;
++	int ret;
++
++	*dump++ = RTL8372N_FRAME_DUMP_MAGIC;
++	*dump++ = 1;
++	*dump++ = port;
++	*dump++ = RTL8372N_FRAME_DUMP_RECORDS;
++	for (i = 0; i < RTL8372N_FRAME_DUMP_RECORDS; i++) {
++		if (i < 5)
++			address = RTL8372N_PORT_MAX_LEN_BASE +
++				  (i + 4) * RTL8372N_PORT_MAX_LEN_STRIDE;
++		else if (i < 15)
++			address = 0x4e90 + (i - 5) * sizeof(u32);
++		else
++			address = RTL8372N_HSAB_CTRL;
++		value = 0;
++		ret = rtl8372n_read_reg(mdiodev, address, &value);
++		*dump++ = address;
++		*dump++ = ret;
++		*dump++ = ret ? 0 : value;
++	}
++}
++
++static void rtl8372n_qos_dump(struct mdio_device *mdiodev, int port,
++			      u32 *dump)
++{
++	u32 address, value;
++	unsigned int index;
++	int ret;
++
++	*dump++ = RTL8372N_QOS_DUMP_MAGIC;
++	*dump++ = 1;
++	*dump++ = port;
++	*dump++ = RTL8372N_QOS_DUMP_RECORDS;
++	address = RTL8372N_QOS_EGBW_CTRL;
++	for (index = 0; index < RTL8372N_QOS_DUMP_RECORDS; index++) {
++		if (index == 1)
++			address = RTL8372N_QOS_EGBW_PORT_RESET;
++		else if (index == 2)
++			address = RTL8372N_QOS_EGBW_PORT_BASE(port);
++		else if (index == 3)
++			address = RTL8372N_QOS_EGBW_PORT_BASE(port) + 4;
++		else if (index == 4)
++			address = RTL8372N_QOS_EGBW_QUEUE_RESET(port);
++		else if (index >= 5 && index < 21)
++			address = RTL8372N_QOS_EGBW_QUEUE_BASE(port,
++								    (index - 5) / 2) +
++				  ((index - 5) % 2) * 4;
++		else if (index == 21)
++			address = RTL8372N_QOS_QUEUE_MAP_BASE +
++				  port * RTL8372N_QOS_QUEUE_MAP_STRIDE;
++		else if (index == 22)
++			address = RTL8372N_QOS_SCHED_TYPE;
++		else if (index >= 23 && index < 31)
++			address = RTL8372N_QOS_SCHED_BASE(port, index - 23);
++		else if (index == 31)
++			address = RTL8372N_QOS_PROFILE_SELECT;
++		else if (index == 32)
++			address = RTL8372N_QOS_PROFILE_BASE;
++		else
++			address = RTL8372N_QOS_PROFILE_BASE +
++				  RTL8372N_QOS_PROFILE_STRIDE;
++		value = 0;
++		ret = rtl8372n_read_reg(mdiodev, address, &value);
++		*dump++ = address;
++		*dump++ = ret;
++		*dump++ = ret ? 0 : value;
++	}
++}
++
 +static void zx279133_rtl8372n_get_regs(struct dsa_switch *ds, int port,
 +				       struct ethtool_regs *regs, void *data)
 +{
@@ -7909,7 +8148,7 @@ device-tree binding and DSA documentation.
 +	unsigned int index;
 +	unsigned int word = 0;
 +
-+	regs->version = 0x8372;
++	regs->version = 0x00028372;
 +	memset(dump, 0xff, RTL8372N_REG_DUMP_WORDS * sizeof(*dump));
 +	mutex_lock(&mdiodev->bus->mdio_lock);
 +	rtl8372n_read_reg(mdiodev, RTL8372N_CHIP_ID, &dump[word++]);
@@ -7969,36 +8208,13 @@ device-tree binding and DSA documentation.
 +	rtl8372n_read_reg(mdiodev, RTL8372N_ACL_COUNTER_MODE, &dump[word++]);
 +	for (index = 0; index < RTL8372N_ACL_COUNTERS; index++)
 +		rtl8372n_acl_counter_read(mdiodev, index, &dump[word++]);
-+	if (!rtl8372n_write_reg(mdiodev, RTL8372N_HSAB_CTRL,
-+				RTL8372N_HSAB_LATCH_FIRST |
-+				RTL8372N_HSAB_SPA_ENABLE |
-+				port << RTL8372N_HSAB_SPA_SHIFT)) {
-+		msleep(20);
-+		for (index = 0; index < RTL8372N_HSB_DATA_WORDS / 5;
-+		     index++)
-+			rtl8372n_table_access(mdiodev,
-+					      RTL8372N_HSAB_TABLE_TARGET,
-+					      index, false, &dump[word + index * 5],
-+					      5);
-+		rtl8372n_write_reg(mdiodev, RTL8372N_HSAB_CTRL, 0);
-+		word += RTL8372N_HSB_DATA_WORDS;
-+	}
-+	if (!rtl8372n_write_reg(mdiodev, RTL8372N_HSAB_CTRL,
-+				RTL8372N_HSAB_LATCH_ALWAYS)) {
-+		msleep(50);
-+		for (index = 0; index < RTL8372N_HSB_DATA_WORDS / 5;
-+		     index++)
-+			rtl8372n_table_access(mdiodev,
-+					      RTL8372N_HSAB_TABLE_TARGET,
-+					      index, false, &dump[word + index * 5],
-+					      5);
-+		rtl8372n_write_reg(mdiodev, RTL8372N_HSAB_CTRL, 0);
-+		word += RTL8372N_HSB_DATA_WORDS;
-+		for (index = 0; index < RTL8372N_HSB_DATA_WORDS / 5;
-+		     index++)
-+			rtl8372n_table_access(mdiodev, 6, index, false,
-+					      &dump[word + index * 5], 5);
-+	}
++	/* Legacy HSAB slots stay unavailable (0xffffffff). A register dump must
++	 * not seize another capture's controls, sleep for traffic, or clear it.
++	 */
++	word += RTL8372N_HSB_DATA_WORDS * 3;
++	rtl8372n_frame_limits_dump(mdiodev, port, &dump[word]);
++	word += RTL8372N_FRAME_DUMP_WORDS;
++	rtl8372n_qos_dump(mdiodev, port, &dump[word]);
 +	mutex_unlock(&mdiodev->bus->mdio_lock);
 +}
 +
@@ -8016,8 +8232,7 @@ device-tree binding and DSA documentation.
 +
 +static int zx279133_rtl8372n_port_max_mtu(struct dsa_switch *ds, int port)
 +{
-+	return ZX279133_LAN_USER_MAX_MTU +
-+	       (port == RTL8372N_CPU_PORT ? VLAN_HLEN : 0);
++	return ZX279133_LAN_USER_MAX_MTU;
 +}
 +
 +static const struct dsa_switch_ops zx279133_rtl8372n_dsa_ops = {
@@ -8405,160 +8620,3 @@ device-tree binding and DSA documentation.
 +
 +MODULE_DESCRIPTION("ZTE ZX279133 RTL8372N DSA switch driver");
 +MODULE_LICENSE("GPL");
---- /dev/null
-+++ b/Documentation/devicetree/bindings/net/dsa/zte,zx279133-rtl8372n.yaml
-@@ -0,0 +1,93 @@
-+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
-+%YAML 1.2
-+---
-+$id: http://devicetree.org/schemas/net/dsa/zte,zx279133-rtl8372n.yaml#
-+$schema: http://devicetree.org/meta-schemas/core.yaml#
-+
-+title: RTL8372N switch on the ZTE ZX279133 NPPT LAN path
-+
-+maintainers:
-+  - cnjn <1779895255@qq.com>
-+
-+description:
-+  The RTL8372N CPU port connects to ZX279133 XMAC0. Switch management uses the
-+  SoC MDIO controller's indirect SMI transport, represented by zte,mdio-handle.
-+  The CPU conduit is a dedicated netdev owned by the NPPT Ethernet controller
-+  rather than the WAN netdev.
-+
-+properties:
-+  compatible:
-+    const: zte,zx279133-rtl8372n
-+
-+  zte,mdio-handle:
-+    $ref: /schemas/types.yaml#/definitions/phandle
-+    description: MDIO child implementing the RTL8372N indirect SMI transport
-+
-+  reset-gpios:
-+    maxItems: 1
-+    description: Active-low RTL8372N hardware reset
-+
-+allOf:
-+  - $ref: dsa.yaml#/$defs/ethernet-ports
-+
-+required:
-+  - compatible
-+  - zte,mdio-handle
-+  - reset-gpios
-+
-+unevaluatedProperties: false
-+
-+examples:
-+  - |
-+    #include <dt-bindings/gpio/gpio.h>
-+
-+    mdio {
-+        #address-cells = <1>;
-+        #size-cells = <0>;
-+
-+        rtl8372n_smi: switch-controller@1d {
-+            compatible = "realtek,rtl8372n";
-+            reg = <0x1d>;
-+        };
-+    };
-+
-+    ethernet {
-+        #address-cells = <1>;
-+        #size-cells = <0>;
-+
-+        lan_cpu: ethernet-lan-cpu {
-+            compatible = "zte,zx279133-lan-conduit";
-+        };
-+
-+        switch {
-+            compatible = "zte,zx279133-rtl8372n";
-+            zte,mdio-handle = <&rtl8372n_smi>;
-+            reset-gpios = <&gpio1 1 GPIO_ACTIVE_LOW>;
-+
-+            ports {
-+                #address-cells = <1>;
-+                #size-cells = <0>;
-+
-+                port@7 {
-+                    reg = <7>;
-+                    label = "lan1";
-+                    phy-mode = "internal";
-+                    fixed-link {
-+                        speed = <2500>;
-+                        full-duplex;
-+                    };
-+                };
-+
-+                port@8 {
-+                    reg = <8>;
-+                    ethernet = <&lan_cpu>;
-+                    phy-mode = "10gbase-r";
-+                    fixed-link {
-+                        speed = <10000>;
-+                        full-duplex;
-+                    };
-+                };
-+            };
-+        };
-+    };
-+...
---- a/Documentation/networking/dsa/index.rst
-+++ b/Documentation/networking/dsa/index.rst
-@@ -10,4 +10,5 @@
-    bcm_sf2
-    lan9303
-    sja1105
-+   zx279133-rtl8372n
-    configuration
---- /dev/null
-+++ b/Documentation/networking/dsa/zx279133-rtl8372n.rst
-@@ -0,0 +1,50 @@
-+.. SPDX-License-Identifier: GPL-2.0-only
-+
-+===================================
-+ZTE ZX279133 and RTL8372N DSA switch
-+===================================
-+
-+The SR1010 connects RTL8372N user ports 4 through 7 to ZX279133 XMAC0 through
-+switch CPU port 8.  The ``lan-cpu`` conduit is separate from the WAN netdev.
-+
-+CPU-link transport
-+==================
-+
-+The switch and conduit carry the source user port in private VLAN IDs 59
-+through 62.  These VLAN IDs are an internal CPU-link protocol and must not be
-+configured as customer VLANs.  The DSA tagger removes the private VLAN on
-+receive and inserts the appropriate private VLAN on transmit.
-+
-+Customer VLAN restrictions
-+==========================
-+
-+The currently supported customer VLAN mode is one untagged access VLAN per
-+user port.  A VLAN added to a user port must have both the ``pvid`` and
-+``untagged`` flags.  Tagged or trunk VLANs are not supported.
-+
-+VID 1 is reserved by the initial switch state and private VIDs 59 through 62
-+are reserved by the CPU-link transport.  The driver ignores the implicit VID 1
-+add/delete notifications from a VLAN-unaware bridge, where the PVID has no
-+data-path meaning, so user ports can join a conventional VLAN-unaware bridge.
-+Before enabling VLAN filtering, remove that implicit PVID by setting
-+``vlan_default_pvid 0``; enabling VLAN filtering while VID 1 remains is
-+rejected.
-+
-+Create a VLAN-aware bridge with ``vlan_default_pvid 0`` before adding an
-+RTL8372N user port.  For example::
-+
-+  ip link add br0 type bridge vlan_filtering 1 vlan_default_pvid 0
-+  ip link set lan1 master br0
-+  bridge vlan add dev lan1 vid 100 pvid untagged
-+  bridge vlan add dev br0 vid 100 self
-+
-+The driver keeps each private transport VLAN isolated to one user port and CPU
-+port 8.  Linux performs bridge forwarding; the driver does not advertise
-+hardware bridge forwarding for this transport.
-+
-+FDB scope
-+=========
-+
-+Static FDB operations are supported for VLAN-unaware bridges.  Static FDB
-+offload for a nonzero customer VID is rejected because customer VLAN filtering
-+is performed after the private transport tag is removed.
