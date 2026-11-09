@@ -835,13 +835,34 @@ sub update {
 		};
 
 	my @index_feeds;
+	my @child_pids;
+
 	foreach my $feed (@feeds) {
 		my ($type, $name, $src) = @$feed;
 		next unless $#ARGV == -1 or $opts{a} or $argv_feeds{$name};
-		if (not $opts{i}) {
-			update_feed($type, $name, $src, $opts{f}) == 0 or $failed=1;
-		}
 		push @index_feeds, $name;
+
+		next if $opts{i};
+
+		my $pid = fork();
+		if (!defined $pid) {
+			warn "fork failed for feed '$name': $!\n";
+			$failed = 1;
+			next;
+		}
+		if ($pid == 0) {
+			# child process: update this feed independently
+			my $rv = update_feed($type, $name, $src, $opts{f});
+			exit($rv);
+		}
+		push @child_pids, $pid;
+	}
+
+	# wait for all feed update child processes
+	foreach my $pid (@child_pids) {
+		waitpid($pid, 0);
+		my $rv = $? >> 8;
+		$rv != 0 and $failed = 1;
 	}
 	foreach my $name (@index_feeds) {
 		warn "Create index file './feeds/$name.index' \n";
