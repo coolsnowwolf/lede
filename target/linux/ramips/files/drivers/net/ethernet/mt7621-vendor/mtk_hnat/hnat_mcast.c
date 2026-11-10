@@ -240,11 +240,7 @@ static struct socket *hnat_mcast_netlink_open(struct net *net)
 	addr.nl_family = PF_NETLINK;
 	addr.nl_pid = 65536; /*fix me:how to get an unique id?*/
 	addr.nl_groups = RTMGRP_MDB;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 57)
-	ret = sock->ops->bind(sock, (struct sockaddr_unsized *)&addr, sizeof(addr));
-#else
-	ret = sock->ops->bind(sock, (struct sockaddr *)&addr, sizeof(addr));
-#endif
+	ret = kernel_bind(sock, (void *)&addr, sizeof(addr));
 	if (ret < 0)
 		goto out;
 
