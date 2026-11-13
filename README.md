@@ -155,12 +155,24 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
 
    ```bash
    brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar gnu-sed grep make \
-     ncurses pkgconf wget quilt xz bash git rsync gpatch python3 python-setuptools go
+     ncurses pkgconf wget quilt xz bash git rsync gpatch python3 python-setuptools go swig
    ```
 
    宿主编译器使用 Command Line Tools 提供的 Clang，目标工具链由构建系统生成。
    Apple Silicon 上编译 Go 软件包时需要已安装的 Go 进行自举，构建系统会自动从 `PATH` 中查找。
    `python-setuptools` 为仍使用 `distutils` 的软件包构建脚本提供兼容模块。
+   `swig` 用于 U-Boot 等组件的 Python FDT 绑定生成。
+   为 U-Boot 的 binman 镜像打包工具准备 Python 依赖：
+
+   ```bash
+   python3 -m venv --system-site-packages ~/.venvs/lede-build
+   source ~/.venvs/lede-build/bin/activate
+   python3 -m pip install pyelftools
+   export PYTHONPATH="$(python3 -c 'import site; print(site.getsitepackages()[0])')${PYTHONPATH:+:$PYTHONPATH}"
+   ```
+
+   每次新开终端编译前需重新激活该环境并执行上述 `export`，使构建系统缓存的 Python 命令也能找到模块。
+   `--system-site-packages` 保留 Homebrew setuptools 的可用性。
 
 4. 准备**区分大小写**的构建文件系统。macOS 默认的 APFS 通常不区分大小写，不能直接在默认的家目录中编译。
    在“磁盘工具”中向现有 APFS 容器添加一个“APFS（区分大小写）”卷，例如 `LEDE-build`，然后在 `/Volumes/LEDE-build` 中存放源码和构建目录。
