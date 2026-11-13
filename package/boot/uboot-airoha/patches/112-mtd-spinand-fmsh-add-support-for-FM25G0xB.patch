@@ -1,0 +1,169 @@
+From 903c9578eeb36d72f087082da494c605ddaed3b2 Mon Sep 17 00:00:00 2001
+From: Aleksei Sviridkin <f@lex.la>
+Date: Sat, 22 Aug 2026 23:55:40 +0300
+Subject: [PATCH] mtd: spinand: fmsh: add support for FM25G01B and FM25G02B
+
+Add the FudanMicro FM25G01B (1Gbit) and FM25G02B (2Gbit) SPI-NAND
+parts. Both have 2048-byte pages with 128 bytes of spare area, 64
+pages per erase block, and on-die ECC with a strength of 8 bits per
+528-byte step. Their ECC status field is 3 bits wide and reports each
+bitflip count from four to eight separately, so it needs a decoder of
+its own instead of the coarse ranges the other parts in this file use.
+
+The 0xEB Quad I/O read-from-cache operation takes a single dummy byte
+on these chips rather than the two the shared read_cache_variants set
+uses, hence the separate variant set: with the extra dummy byte the
+data phase is shifted and reads return corrupted data without any ECC
+error being reported.
+
+FM25G01B datasheet: https://www.fmsh.com/nvm/FM25G01B_ds_eng.pdf
+FM25G02B datasheet: https://www.fmsh.com/nvm/FM25G02B_ds_eng.pdf
+
+This is a port of linux commits
+d5a5c9eb2ee9 ("mtd: spinand: fmsh: add support for FM25G{01,02}B")
+8211f2d74b35 ("mtd: spinand: fmsh: fix FM25G01B/FM25G02B Quad I/O read
+dummy cycles")
+which are queued in the MTD tree and not in mainline yet.
+
+Tested on a Keenetic KN-1012 (MT7981B) that boots from an FM25G02B.
+FM25G01B is taken over from the Linux table and is untested here.
+
+Signed-off-by: Aleksei Sviridkin <f@lex.la>
+Link: https://github.com/u-boot/u-boot/commit/903c9578eeb36d72f087082da494c605ddaed3b2
+Signed-off-by: Mikhail Zhilkin <csharper2005@gmail.com>
+---
+ drivers/mtd/nand/spi/fmsh.c | 103 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 103 insertions(+)
+
+--- a/drivers/mtd/nand/spi/fmsh.c
++++ b/drivers/mtd/nand/spi/fmsh.c
+@@ -11,6 +11,16 @@
+ #endif
+ #include <linux/mtd/spinand.h>
+ 
++#define FM25G01B_STATUS_ECC_MASK		(7 << 4)
++	#define FM25G01B_STATUS_ECC_NO_BITFLIPS		(0 << 4)
++	#define FM25G01B_STATUS_ECC_1_3_BITFLIPS	(1 << 4)
++	#define FM25G01B_STATUS_ECC_4_BITFLIPS		(2 << 4)
++	#define FM25G01B_STATUS_ECC_5_BITFLIPS		(3 << 4)
++	#define FM25G01B_STATUS_ECC_6_BITFLIPS		(4 << 4)
++	#define FM25G01B_STATUS_ECC_7_BITFLIPS		(5 << 4)
++	#define FM25G01B_STATUS_ECC_8_BITFLIPS		(6 << 4)
++	#define FM25G01B_STATUS_ECC_UNCOR_ERROR		(7 << 4)
++
+ #define SPINAND_MFR_FMSH		0xA1
+ 
+ static SPINAND_OP_VARIANTS(read_cache_variants,
+@@ -29,6 +39,74 @@ static SPINAND_OP_VARIANTS(update_cache_
+ 		SPINAND_PROG_LOAD_1S_1S_4S_OP(false, 0, NULL, 0),
+ 		SPINAND_PROG_LOAD_1S_1S_1S_OP(false, 0, NULL, 0));
+ 
++static SPINAND_OP_VARIANTS(fm25g_read_cache_variants,
++		SPINAND_PAGE_READ_FROM_CACHE_1S_4S_4S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_4S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_2S_2S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_2S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_FAST_1S_1S_1S_OP(0, 1, NULL, 0, 0),
++		SPINAND_PAGE_READ_FROM_CACHE_1S_1S_1S_OP(0, 1, NULL, 0, 0));
++
++static int fm25g01b_ooblayout_ecc(struct mtd_info *mtd, int section,
++				  struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	region->offset = 64;
++	region->length = 64;
++
++	return 0;
++}
++
++static int fm25g01b_ooblayout_free(struct mtd_info *mtd, int section,
++				   struct mtd_oob_region *region)
++{
++	if (section)
++		return -ERANGE;
++
++	/* reserve 2 bytes for the BBM */
++	region->offset = 2;
++	region->length = 62;
++
++	return 0;
++}
++
++static int fm25g01b_ecc_get_status(struct spinand_device *spinand,
++				   u8 status)
++{
++	switch (status & FM25G01B_STATUS_ECC_MASK) {
++	case FM25G01B_STATUS_ECC_NO_BITFLIPS:
++		return 0;
++
++	case FM25G01B_STATUS_ECC_1_3_BITFLIPS:
++		return 3;
++
++	case FM25G01B_STATUS_ECC_4_BITFLIPS:
++		return 4;
++
++	case FM25G01B_STATUS_ECC_5_BITFLIPS:
++		return 5;
++
++	case FM25G01B_STATUS_ECC_6_BITFLIPS:
++		return 6;
++
++	case FM25G01B_STATUS_ECC_7_BITFLIPS:
++		return 7;
++
++	case FM25G01B_STATUS_ECC_8_BITFLIPS:
++		return 8;
++
++	case FM25G01B_STATUS_ECC_UNCOR_ERROR:
++		return -EBADMSG;
++
++	default:
++		break;
++	}
++
++	return -EINVAL;
++}
++
+ static int fm25s01a_ooblayout_ecc(struct mtd_info *mtd, int section,
+ 				  struct mtd_oob_region *region)
+ {
+@@ -47,12 +125,37 @@ static int fm25s01a_ooblayout_free(struc
+ 	return 0;
+ }
+ 
++static const struct mtd_ooblayout_ops fm25g01b_ooblayout = {
++	.ecc = fm25g01b_ooblayout_ecc,
++	.rfree = fm25g01b_ooblayout_free,
++};
++
+ static const struct mtd_ooblayout_ops fm25s01a_ooblayout = {
+ 	.ecc = fm25s01a_ooblayout_ecc,
+ 	.rfree = fm25s01a_ooblayout_free,
+ };
+ 
+ static const struct spinand_info fmsh_spinand_table[] = {
++	SPINAND_INFO("FM25G01B",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xd1),
++		     NAND_MEMORG(1, 2048, 128, 64, 1024, 21, 1, 1, 1),
++		     NAND_ECCREQ(8, 528),
++		     SPINAND_INFO_OP_VARIANTS(&fm25g_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25g01b_ooblayout,
++				     fm25g01b_ecc_get_status)),
++	SPINAND_INFO("FM25G02B",
++		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xd2),
++		     NAND_MEMORG(1, 2048, 128, 64, 2048, 41, 1, 1, 1),
++		     NAND_ECCREQ(8, 528),
++		     SPINAND_INFO_OP_VARIANTS(&fm25g_read_cache_variants,
++					      &write_cache_variants,
++					      &update_cache_variants),
++		     SPINAND_HAS_QE_BIT,
++		     SPINAND_ECCINFO(&fm25g01b_ooblayout,
++				     fm25g01b_ecc_get_status)),
+ 	SPINAND_INFO("FM25S01A",
+ 		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xE4),
+ 		     NAND_MEMORG(1, 2048, 64, 64, 1024, 20, 1, 1, 1),

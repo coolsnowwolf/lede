@@ -1,0 +1,187 @@
+From ce82cd191de2bd7d76213c70b339394cc0c156a1 Mon Sep 17 00:00:00 2001
+From: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+Date: Tue, 29 Sep 2026 18:52:14 +0300
+Subject: [PATCH] rng: airoha: add support for the Airoha TRNG
+
+Port the Linux driver for the True Random Number Generator found on
+Airoha EN7581/AN7581 SoCs to the U-Boot driver model.
+
+The Linux driver waits for an interrupt to learn that the startup
+health test finished. U-Boot has no interrupts, so the TRNG interrupt
+is kept masked and RST_STARTUP_TEST_DONE is polled instead.
+
+U-Boot can then provide /chosen/kaslr-seed, which KASLR requires.
+
+Signed-off-by: Vitaliy Sochnev <sochnev.v.74@gmail.com>
+---
+ drivers/rng/Kconfig      |   7 ++
+ drivers/rng/Makefile     |   1 +
+ drivers/rng/airoha-rng.c | 136 +++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 144 insertions(+)
+ create mode 100644 drivers/rng/airoha-rng.c
+
+--- a/drivers/rng/Kconfig
++++ b/drivers/rng/Kconfig
+@@ -15,6 +15,13 @@ config SPL_DM_RNG
+ 
+ if DM_RNG
+ 
++config RNG_AIROHA
++	bool "Airoha True Random Number Generator support"
++	depends on ARCH_AIROHA
++	help
++	  Enable support for the True Random Number Generator (TRNG) found
++	  on Airoha EN7581/AN7581 SoCs.
++
+ config RNG_MESON
+ 	bool "Amlogic Meson Random Number Generator support"
+ 	depends on ARCH_MESON
+--- a/drivers/rng/Makefile
++++ b/drivers/rng/Makefile
+@@ -4,6 +4,7 @@
+ #
+ 
+ obj-$(CONFIG_$(PHASE_)DM_RNG) += rng-uclass.o
++obj-$(CONFIG_RNG_AIROHA) += airoha-rng.o
+ obj-$(CONFIG_RNG_MESON) += meson-rng.o
+ obj-$(CONFIG_RNG_SANDBOX) += sandbox_rng.o
+ obj-$(CONFIG_RNG_MSM) += msm_rng.o
+--- /dev/null
++++ b/drivers/rng/airoha-rng.c
+@@ -0,0 +1,136 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Airoha True Random Number Generator driver
++ *
++ * Ported from the Linux driver drivers/char/hw_random/airoha-trng.c
++ *
++ * Copyright (C) 2024 Christian Marangi <ansuelsmth@gmail.com>
++ */
++
++#include <dm.h>
++#include <rng.h>
++#include <dm/device_compat.h>
++#include <asm/io.h>
++#include <linux/bitfield.h>
++#include <linux/bitops.h>
++#include <linux/iopoll.h>
++#include <linux/string.h>
++
++#define TRNG_IP_RDY			0x800
++#define   CNT_TRANS			GENMASK(15, 8)
++#define   SAMPLE_RDY			BIT(0)
++#define TRNG_NS_SEK_AND_DAT_EN		0x804
++#define   RNG_EN			BIT(31)
++#define   RAW_DATA_EN			BIT(16)
++#define TRNG_HEALTH_TEST_SW_RST		0x808
++#define   SW_RST			BIT(0) /* Active High */
++#define TRNG_INTR_EN			0x818
++#define   INTR_MASK			BIT(16)
++#define   RST_STARTUP_INITR_EN		BIT(0)
++#define TRNG_HEALTH_TEST_STATUS		0x824
++#define   RST_STARTUP_TEST_DONE		BIT(18)
++#define   RST_STARTUP_AP_TEST_FAIL	BIT(17)
++#define   RST_STARTUP_RC_TEST_FAIL	BIT(16)
++#define   RAW_DATA_VALID		BIT(7)
++#define TRNG_RAW_DATA_OUT		0x828
++
++#define TRNG_CNT_TRANS_VALID		0x80
++#define TRNG_TIMEOUT_US			100000
++
++struct airoha_trng {
++	void __iomem *base;
++};
++
++static int airoha_trng_read(struct udevice *dev, void *data, size_t len)
++{
++	struct airoha_trng *trng = dev_get_priv(dev);
++	u8 *buf = data;
++
++	while (len) {
++		size_t step = min(len, sizeof(u32));
++		u32 status, val;
++		int ret;
++
++		ret = readl_poll_timeout(trng->base + TRNG_HEALTH_TEST_STATUS,
++					 status, status & RAW_DATA_VALID,
++					 TRNG_TIMEOUT_US);
++		if (ret) {
++			dev_err(dev, "Timeout waiting for TRNG RAW Data valid\n");
++			return ret;
++		}
++
++		val = readl(trng->base + TRNG_RAW_DATA_OUT);
++		memcpy(buf, &val, step);
++
++		buf += step;
++		len -= step;
++	}
++
++	return 0;
++}
++
++static int airoha_trng_probe(struct udevice *dev)
++{
++	struct airoha_trng *trng = dev_get_priv(dev);
++	u32 val;
++	int ret;
++
++	trng->base = dev_read_addr_ptr(dev);
++	if (!trng->base)
++		return -EINVAL;
++
++	/* No interrupts in U-Boot: keep the TRNG one masked and poll instead */
++	val = readl(trng->base + TRNG_INTR_EN);
++	val |= INTR_MASK | RST_STARTUP_INITR_EN;
++	writel(val, trng->base + TRNG_INTR_EN);
++
++	val = readl(trng->base + TRNG_NS_SEK_AND_DAT_EN);
++	val |= RAW_DATA_EN | RNG_EN;
++	writel(val, trng->base + TRNG_NS_SEK_AND_DAT_EN);
++
++	/* Health Test runs only on the transition out of SW Reset */
++	writel(SW_RST, trng->base + TRNG_HEALTH_TEST_SW_RST);
++	writel(0, trng->base + TRNG_HEALTH_TEST_SW_RST);
++
++	ret = readl_poll_timeout(trng->base + TRNG_HEALTH_TEST_STATUS, val,
++				 val & RST_STARTUP_TEST_DONE, TRNG_TIMEOUT_US);
++	if (ret) {
++		dev_err(dev, "Timeout waiting for Health Check\n");
++		return ret;
++	}
++
++	if (val & (RST_STARTUP_AP_TEST_FAIL | RST_STARTUP_RC_TEST_FAIL)) {
++		dev_err(dev, "Health Check fail: %s test fail\n",
++			val & RST_STARTUP_AP_TEST_FAIL ? "AP" : "RC");
++		return -EIO;
++	}
++
++	ret = readl_poll_timeout(trng->base + TRNG_IP_RDY, val,
++				 val & SAMPLE_RDY &&
++				 FIELD_GET(CNT_TRANS, val) == TRNG_CNT_TRANS_VALID,
++				 TRNG_TIMEOUT_US);
++	if (ret) {
++		dev_err(dev, "Timeout waiting for IP ready\n");
++		return ret;
++	}
++
++	return 0;
++}
++
++static const struct dm_rng_ops airoha_trng_ops = {
++	.read = airoha_trng_read,
++};
++
++static const struct udevice_id airoha_trng_match[] = {
++	{ .compatible = "airoha,en7581-trng" },
++	{ }
++};
++
++U_BOOT_DRIVER(airoha_trng) = {
++	.name = "airoha-trng",
++	.id = UCLASS_RNG,
++	.of_match = airoha_trng_match,
++	.ops = &airoha_trng_ops,
++	.probe = airoha_trng_probe,
++	.priv_auto = sizeof(struct airoha_trng),
++};

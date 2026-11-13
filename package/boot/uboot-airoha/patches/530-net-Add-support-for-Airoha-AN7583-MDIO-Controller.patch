@@ -1,0 +1,276 @@
+From deef0e91119270603748690416f1977a8b4cc035 Mon Sep 17 00:00:00 2001
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Tue, 30 Sep 2025 22:20:13 +0200
+Subject: [PATCH 30/38] net: Add support for Airoha AN7583 MDIO Controller
+
+The Airoha AN7583 SoC have 2 dedicated MDIO controller in the SCU
+register map. Add a dedicated driver for it ported from linux kernel.
+
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+ drivers/net/Kconfig       |   7 ++
+ drivers/net/Makefile      |   1 +
+ drivers/net/mdio-airoha.c | 221 ++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 229 insertions(+)
+ create mode 100644 drivers/net/mdio-airoha.c
+
+diff --git a/drivers/net/Kconfig b/drivers/net/Kconfig
+index 666618681df..40b1e74a30f 100644
+--- a/drivers/net/Kconfig
++++ b/drivers/net/Kconfig
+@@ -118,6 +118,13 @@ config AG7XXX
+ 	  This driver supports the Atheros AG7xxx Ethernet MAC. This MAC is
+ 	  present in the Atheros AR7xxx, AR9xxx and QCA9xxx MIPS chips.
+ 
++config MDIO_AIROHA
++	bool "Airoha AN7583 MDIO interface support"
++	depends on DM_MDIO
++	help
++	  This driver supports the MDIO interface found in Airoha
++	  AN7583 SoC.
++
+ source "drivers/net/airoha/Kconfig"
+ 
+ config AIROHA_ETH
+diff --git a/drivers/net/Makefile b/drivers/net/Makefile
+index 5e90183d090..b9dfadaf2e9 100644
+--- a/drivers/net/Makefile
++++ b/drivers/net/Makefile
+@@ -62,6 +62,7 @@ obj-$(CONFIG_KSZ9477) += ksz9477.o
+ obj-$(CONFIG_LITEETH) += liteeth.o
+ obj-$(CONFIG_MACB) += macb.o
+ obj-$(CONFIG_MCFFEC) += mcffec.o mcfmii.o
++obj-$(CONFIG_MDIO_AIROHA) += mdio-airoha.o
+ obj-$(CONFIG_MDIO_IPQ4019) += mdio-ipq4019.o
+ obj-$(CONFIG_MDIO_MSCC_MIIM) += mdio-mscc-miim.o
+ obj-$(CONFIG_MDIO_GPIO_BITBANG) += mdio_gpio.o
+diff --git a/drivers/net/mdio-airoha.c b/drivers/net/mdio-airoha.c
+new file mode 100644
+index 00000000000..ac1fb13622e
+--- /dev/null
++++ b/drivers/net/mdio-airoha.c
+@@ -0,0 +1,221 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Airoha AN7583 MDIO interface driver
++ *
++ * Copyright (C) 2025 Christian Marangi <ansuelsmth@gmail.com>
++ */
++
++#include <clk.h>
++#include <dm.h>
++#include <dm/ofnode.h>
++#include <linux/delay.h>
++#include <linux/bitfield.h>
++#include <linux/time.h>
++#include <miiphy.h>
++#include <syscon.h>
++#include <regmap.h>
++#include <reset.h>
++
++/* MII address register definitions */
++#define   AN7583_MII_BUSY			BIT(31)
++#define   AN7583_MII_RDY			BIT(30) /* RO signal BUS is ready */
++#define   AN7583_MII_CL22_REG_ADDR		GENMASK(29, 25)
++#define   AN7583_MII_CL45_DEV_ADDR		AN7583_MII_CL22_REG_ADDR
++#define   AN7583_MII_PHY_ADDR			GENMASK(24, 20)
++#define   AN7583_MII_CMD			GENMASK(19, 18)
++#define   AN7583_MII_CMD_CL22_WRITE		FIELD_PREP_CONST(AN7583_MII_CMD, 0x1)
++#define   AN7583_MII_CMD_CL22_READ		FIELD_PREP_CONST(AN7583_MII_CMD, 0x2)
++#define   AN7583_MII_CMD_CL45_ADDR		FIELD_PREP_CONST(AN7583_MII_CMD, 0x0)
++#define   AN7583_MII_CMD_CL45_WRITE		FIELD_PREP_CONST(AN7583_MII_CMD, 0x1)
++#define   AN7583_MII_CMD_CL45_POSTREAD_INCADDR	FIELD_PREP_CONST(AN7583_MII_CMD, 0x2)
++#define   AN7583_MII_CMD_CL45_READ		FIELD_PREP_CONST(AN7583_MII_CMD, 0x3)
++#define   AN7583_MII_ST				GENMASK(17, 16)
++#define   AN7583_MII_ST_CL45			FIELD_PREP_CONST(AN7583_MII_ST, 0x0)
++#define   AN7583_MII_ST_CL22			FIELD_PREP_CONST(AN7583_MII_ST, 0x1)
++#define   AN7583_MII_RWDATA			GENMASK(15, 0)
++#define   AN7583_MII_CL45_REG_ADDR		AN7583_MII_RWDATA
++
++#define AN7583_MII_MDIO_DELAY_USEC		100
++#define AN7583_MII_MDIO_RETRY_MSEC		100
++
++struct airoha_mdio_data {
++	u32 base_addr;
++	struct regmap *regmap;
++	struct clk *clk;
++	struct reset_ctl *reset;
++};
++
++static int airoha_mdio_wait_busy(struct airoha_mdio_data *priv)
++{
++	u32 busy;
++
++	return regmap_read_poll_timeout(priv->regmap, priv->base_addr, busy,
++					!(busy & AN7583_MII_BUSY),
++					AN7583_MII_MDIO_DELAY_USEC,
++					AN7583_MII_MDIO_RETRY_MSEC * USEC_PER_MSEC);
++}
++
++static void airoha_mdio_reset(struct airoha_mdio_data *priv)
++{
++	/* There seems to be Hardware bug where AN7583_MII_RWDATA
++	 * is not wiped in the context of unconnected PHY and the
++	 * previous read value is returned.
++	 *
++	 * Example: (only one PHY on the BUS at 0x1f)
++	 *  - read at 0x1f report at 0x2 0x7500
++	 *  - read at 0x0 report 0x7500 on every address
++	 *
++	 * To workaround this, we reset the Mdio BUS at every read
++	 * to have consistent values on read operation.
++	 */
++	reset_assert(priv->reset);
++	reset_deassert(priv->reset);
++}
++
++static int airoha_mdio_read(struct udevice *dev, int addr, int devnum,
++			    int regnum)
++{
++	struct airoha_mdio_data *priv = dev_get_priv(dev);
++	u32 val;
++	int ret;
++
++	airoha_mdio_reset(priv);
++
++	if (devnum != MDIO_DEVAD_NONE) {
++		val = AN7583_MII_BUSY | AN7583_MII_ST_CL45 |
++		      AN7583_MII_CMD_CL45_ADDR;
++		val |= FIELD_PREP(AN7583_MII_PHY_ADDR, addr);
++		val |= FIELD_PREP(AN7583_MII_CL45_DEV_ADDR, devnum);
++		val |= FIELD_PREP(AN7583_MII_CL45_REG_ADDR, regnum);
++
++		ret = regmap_write(priv->regmap, priv->base_addr, val);
++		if (ret)
++			return ret;
++
++		ret = airoha_mdio_wait_busy(priv);
++		if (ret)
++			return ret;
++	}
++
++	val = AN7583_MII_BUSY | FIELD_PREP(AN7583_MII_PHY_ADDR, addr);
++	if (devnum != MDIO_DEVAD_NONE) {
++		val |= AN7583_MII_ST_CL45 | AN7583_MII_CMD_CL45_READ;
++		val |= FIELD_PREP(AN7583_MII_CL45_DEV_ADDR, devnum);
++	} else {
++		val |= AN7583_MII_ST_CL22 | AN7583_MII_CMD_CL22_READ;
++		val |= FIELD_PREP(AN7583_MII_CL22_REG_ADDR, regnum);
++	}
++
++	ret = regmap_write(priv->regmap, priv->base_addr, val);
++	if (ret)
++		return ret;
++
++	ret = airoha_mdio_wait_busy(priv);
++	if (ret)
++		return ret;
++
++	ret = regmap_read(priv->regmap, priv->base_addr, &val);
++	if (ret)
++		return ret;
++
++	return FIELD_GET(AN7583_MII_RWDATA, val);
++}
++
++static int airoha_mdio_write(struct udevice *dev, int addr, int devnum,
++			     int regnum, u16 value)
++{
++	struct airoha_mdio_data *priv = dev_get_priv(dev);
++	u32 val;
++	int ret;
++
++	if (devnum != MDIO_DEVAD_NONE) {
++		val = AN7583_MII_BUSY | AN7583_MII_ST_CL45 |
++		      AN7583_MII_CMD_CL45_ADDR;
++		val |= FIELD_PREP(AN7583_MII_PHY_ADDR, addr);
++		val |= FIELD_PREP(AN7583_MII_CL45_DEV_ADDR, devnum);
++		val |= FIELD_PREP(AN7583_MII_CL45_REG_ADDR, regnum);
++
++		ret = regmap_write(priv->regmap, priv->base_addr, val);
++		if (ret)
++			return ret;
++
++		ret = airoha_mdio_wait_busy(priv);
++		if (ret)
++			return ret;
++	}
++
++	val = AN7583_MII_BUSY | FIELD_PREP(AN7583_MII_PHY_ADDR, addr) |
++	      FIELD_PREP(AN7583_MII_RWDATA, value);
++	if (devnum != MDIO_DEVAD_NONE) {
++		val |= AN7583_MII_ST_CL45 | AN7583_MII_CMD_CL45_WRITE;
++		val |= FIELD_PREP(AN7583_MII_CL45_DEV_ADDR, devnum);
++	} else {
++		val |= AN7583_MII_ST_CL22 | AN7583_MII_CMD_CL22_WRITE;
++		val |= FIELD_PREP(AN7583_MII_CL22_REG_ADDR, regnum);
++	}
++
++	ret = regmap_write(priv->regmap, priv->base_addr, val);
++	if (ret)
++		return ret;
++
++	ret = airoha_mdio_wait_busy(priv);
++
++	return ret;
++}
++
++static const struct mdio_ops airoha_mdio_ops = {
++	.read = airoha_mdio_read,
++	.write = airoha_mdio_write,
++};
++
++static int airoha_mdio_probe(struct udevice *dev)
++{
++	struct airoha_mdio_data *priv = dev_get_priv(dev);
++	ofnode ofnode = dev_ofnode(dev);
++	u32 addr, freq;
++	int ret;
++
++	ret = dev_read_u32(dev, "reg", &addr);
++	if (ret)
++		return ret;
++
++	priv->base_addr = addr;
++	priv->regmap = syscon_node_to_regmap(ofnode_get_parent(ofnode));
++
++	priv->clk = devm_clk_get(dev, NULL);
++	if (IS_ERR(priv->clk))
++		return PTR_ERR(priv->clk);
++
++	priv->reset = devm_reset_control_get(dev, NULL);
++	if (IS_ERR(priv->reset))
++		return PTR_ERR(priv->reset);
++
++	reset_deassert(priv->reset);
++
++	/* Check if a custom frequency is defined in DT or default to 2.5 MHz */
++	if (dev_read_u32(dev, "clock-frequency", &freq))
++		freq = 2500000;
++
++	ret = clk_enable(priv->clk);
++	if (ret)
++		return ret;
++
++	ret = clk_set_rate(priv->clk, freq);
++	if (ret < 0)
++		return ret;
++
++	return 0;
++}
++
++static const struct udevice_id airoha_mdio_dt_ids[] = {
++	{ .compatible = "airoha,an7583-mdio" },
++	{ }
++};
++
++U_BOOT_DRIVER(airoha_mdio) = {
++	.name           = "airoha-mdio",
++	.id             = UCLASS_MDIO,
++	.of_match	= airoha_mdio_dt_ids,
++	.probe          = airoha_mdio_probe,
++	.ops            = &airoha_mdio_ops,
++	.priv_auto	= sizeof(struct airoha_mdio_data),
++};
+-- 
+2.53.0
+
