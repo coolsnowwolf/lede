@@ -206,6 +206,8 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
    make -j1 V=s
    ```
 
+   长时间或通过 SSH 编译时，可使用 `caffeinate -i make V=s -j$(nproc)`，在构建任务运行期间防止 Mac 因空闲而睡眠。
+
    这是 macOS 原生交叉编译，Apple Silicon 主机也可构建 x86_64 固件，无需虚拟机或容器。
 
 ## 特别提示
