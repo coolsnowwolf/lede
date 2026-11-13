@@ -46,6 +46,7 @@ endif
 # "Optimize i386 syscall inlining for GCC 5"
 GLIBC_CONFIGURE:= \
 	unset LD_LIBRARY_PATH; \
+	MAKE="$(MAKE)" \
 	BUILD_CC="$(HOSTCC)" \
 	$(TARGET_CONFIGURE_OPTS) \
 	CFLAGS="-O2 $(filter-out -Os,$(call qstrip,$(TARGET_CFLAGS)))" \
