@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Paul Spooren <mail@aparcar.org>
+Date: Sat, 3 Oct 2026 14:00:00 +0200
+Subject: [PATCH] mkfs.ubifs: make images reproducible
+
+Two builds of the same root file system give different UBIFS images:
+
+ - the superblock gets a random UUID
+ - the inodes get the ctime of the host, which can't be set, so it is
+   the time the files were created or last changed
+ - the entries of each directory are added in readdir() order, which
+   depends on the host file system and decides the inode numbers and the
+   layout of the image
+
+When SOURCE_DATE_EPOCH is set, use a time-based (version 1) UUID with
+that time instead of a random one. Its node ID can be given with the new
+--uuid-node option, e.g. from a hash, otherwise it is zero. Either way
+the multicast bit is set, as for node IDs that are not a MAC address.
+
+Also clamp atime, ctime and mtime of all inodes to SOURCE_DATE_EPOCH,
+and add the entries of each directory sorted by name, comparing bytes so
+the order does not depend on the locale either.
+
+Signed-off-by: Paul Spooren <mail@aparcar.org>
+---
+ ubifs-utils/mkfs.ubifs/mkfs.ubifs.c | 134 ++++++++++++++++++++++++----
+ 1 file changed, 117 insertions(+), 17 deletions(-)
+
+--- a/ubifs-utils/mkfs.ubifs/mkfs.ubifs.c
++++ b/ubifs-utils/mkfs.ubifs/mkfs.ubifs.c
+@@ -159,6 +159,9 @@
+ static int do_create_inum_attr;
+ static char *context;
+ static int context_len;
++static long long source_date_epoch = -1;
++static int uuid_node_set;
++static unsigned char uuid_node[6];
+ static struct stat context_st;
+ 
+ /* The 'head' (position) which nodes are written */
+@@ -188,6 +191,7 @@
+ 	HASH_ALGO_OPTION = CHAR_MAX + 1,
+ 	AUTH_KEY_OPTION,
+ 	AUTH_CERT_OPTION,
++	UUID_NODE_OPTION,
+ };
+ 
+ static const struct option longopts[] = {
+@@ -221,6 +225,7 @@
+ 	{"hash-algo",          1, NULL, HASH_ALGO_OPTION},
+ 	{"auth-key",           1, NULL, AUTH_KEY_OPTION},
+ 	{"auth-cert",          1, NULL, AUTH_CERT_OPTION},
++	{"uuid-node",          1, NULL, UUID_NODE_OPTION},
+ 	{NULL, 0, NULL, 0}
+ };
+ 
+@@ -277,6 +282,8 @@
+ "                         for signing\n"
+ "    --auth-cert=FILE     Authentication certificate filename for signing. Unused\n"
+ "                         when certificate is provided via PKCS #11\n"
++"    --uuid-node=HEX      node ID of the time-based UUID used if SOURCE_DATE_EPOCH\n"
++"                         is set, from the first 12 of at least 12 hex digits\n"
+ "-h, --help               display this help text\n\n"
+ "Note, SIZE is specified in bytes, but it may also be specified in Kilobytes,\n"
+ "Megabytes, and Gigabytes if a KiB, MiB, or GiB suffix is used.\n\n"
+@@ -540,17 +547,39 @@
+ #endif
+ }
+ 
++/* Take the node ID from the first 12 of at least 12 hex digits */
++static int parse_uuid_node(const char *str)
++{
++	int i;
++
++	if (strlen(str) < 12 || str[strspn(str, "0123456789abcdefABCDEF")])
++		return -1;
++	for (i = 0; i < 6; i++)
++		if (sscanf(str + 2 * i, "%2hhx", &uuid_node[i]) != 1)
++			return -1;
++	uuid_node_set = 1;
++	return 0;
++}
++
+ static int get_options(int argc, char**argv)
+ {
+ 	int opt, i, fscrypt_flags = FS_POLICY_FLAGS_PAD_4;
+ 	const char *key_file = NULL, *key_desc = NULL;
+ 	const char *tbl_file = NULL;
+ 	struct stat st;
+-	char *endp;
++	char *endp, *env;
+ #ifdef WITH_CRYPTO
+ 	const char *cipher_name = NULL;
+ #endif
+ 
++	env = getenv("SOURCE_DATE_EPOCH");
++	if (env && *env) {
++		errno = 0;
++		source_date_epoch = strtoll(env, &endp, 10);
++		if (errno || *endp || source_date_epoch < 0)
++			return errmsg("bad SOURCE_DATE_EPOCH '%s'", env);
++	}
++
+ 	c->fanout = 8;
+ 	c->orph_lebs = 1;
+ 	c->key_hash = key_r5_hash;
+@@ -778,6 +807,10 @@
+ 			}
+ 			break;
+ 		}
++		case UUID_NODE_OPTION:
++			if (parse_uuid_node(optarg))
++				return errmsg("bad UUID node '%s'", optarg);
++			break;
+ #ifdef WITH_CRYPTO
+ 		case 'C':
+ 			cipher_name = optarg;
+@@ -1090,6 +1123,14 @@
+ 	return 0;
+ }
+ 
++/* Clamp times to SOURCE_DATE_EPOCH, as ctime can't be set on the host */
++static time_t clamp_time(time_t t)
++{
++	if (source_date_epoch >= 0 && t > source_date_epoch)
++		return source_date_epoch;
++	return t;
++}
++
+ /**
+  * add_node - write a node to the head.
+  * @key: node key
+@@ -1178,9 +1219,9 @@
+ 	 * The time fields are updated assuming the default time granularity
+ 	 * of 1 second. To support finer granularities, utime() would be needed.
+ 	 */
+-	ino->atime_sec  = cpu_to_le64(st->st_atime);
+-	ino->ctime_sec  = cpu_to_le64(st->st_ctime);
+-	ino->mtime_sec  = cpu_to_le64(st->st_mtime);
++	ino->atime_sec  = cpu_to_le64(clamp_time(st->st_atime));
++	ino->ctime_sec  = cpu_to_le64(clamp_time(st->st_ctime));
++	ino->mtime_sec  = cpu_to_le64(clamp_time(st->st_mtime));
+ 	ino->atime_nsec = 0;
+ 	ino->ctime_nsec = 0;
+ 	ino->mtime_nsec = 0;
+@@ -1495,9 +1536,9 @@
+ 	 * The time fields are updated assuming the default time granularity
+ 	 * of 1 second. To support finer granularities, utime() would be needed.
+ 	 */
+-	ino->atime_sec  = cpu_to_le64(st->st_atime);
+-	ino->ctime_sec  = cpu_to_le64(st->st_ctime);
+-	ino->mtime_sec  = cpu_to_le64(st->st_mtime);
++	ino->atime_sec  = cpu_to_le64(clamp_time(st->st_atime));
++	ino->ctime_sec  = cpu_to_le64(clamp_time(st->st_ctime));
++	ino->mtime_sec  = cpu_to_le64(clamp_time(st->st_mtime));
+ 	ino->atime_nsec = 0;
+ 	ino->ctime_nsec = 0;
+ 	ino->mtime_nsec = 0;
+@@ -1928,6 +1969,54 @@
+ 	return errmsg("file '%s' has unknown inode type", path_name);
+ }
+ 
++/*
++ * With SOURCE_DATE_EPOCH set, use a time-based (version 1) UUID with that
++ * time instead of a random one, so that the image is reproducible. The node
++ * ID comes from --uuid-node, e.g. a hash, otherwise it is zero. Either way the
++ * multicast bit is set, which marks it as not being a MAC address. Returns 1
++ * if it did so.
++ */
++static int set_reproducible_uuid(unsigned char *uuid)
++{
++	unsigned long long t;
++
++	if (source_date_epoch < 0)
++		return 0;
++
++	/* 100 ns intervals from 1582-10-15, the start of UUID time */
++	t = source_date_epoch * 10000000ULL + 0x01b21dd213814000ULL;
++	uuid[0] = t >> 24;			/* time_low */
++	uuid[1] = t >> 16;
++	uuid[2] = t >> 8;
++	uuid[3] = t;
++	uuid[4] = t >> 40;			/* time_mid */
++	uuid[5] = t >> 32;
++	uuid[6] = ((t >> 56) & 0x0f) | 0x10;	/* version 1, time_hi */
++	uuid[7] = t >> 48;
++	uuid[8] = 0x80;				/* RFC 4122 variant, clock_seq 0 */
++	uuid[9] = 0;
++	if (uuid_node_set)
++		memcpy(uuid + 10, uuid_node, 6);
++	else
++		memset(uuid + 10, 0, 6);
++	/* multicast bit, as the node ID is not a MAC address */
++	uuid[10] |= 0x01;
++	return 1;
++}
++
++/* Byte-wise order, independent of the locale unlike alphasort() */
++static int dirent_cmp(const struct dirent **a, const struct dirent **b)
++{
++	return strcmp((*a)->d_name, (*b)->d_name);
++}
++
++static void free_dirents(struct dirent **entries, int cnt)
++{
++	while (cnt-- > 0)
++		free(entries[cnt]);
++	free(entries);
++}
++
+ /**
+  * add_directory - write a directory tree to the output file.
+  * @dir_name: directory path name
+@@ -1941,6 +2030,8 @@
+ 			 int existing, struct fscrypt_context *fctx)
+ {
+ 	struct dirent *entry;
++	struct dirent **entries = NULL;
++	int entry_cnt = 0, entry_idx = 0;
+ 	DIR *dir = NULL;
+ 	int kname_len, err = 0;
+ 	loff_t size = UBIFS_INO_NODE_SZ;
+@@ -1959,6 +2050,17 @@
+ 		if (dir == NULL)
+ 			return sys_errmsg("cannot open directory '%s'",
+ 					   dir_name);
++		/*
++		 * Add the entries in a fixed order rather than in the one of
++		 * readdir(), which depends on the host file system. The order
++		 * decides the inode numbers and the layout of the image.
++		 */
++		entry_cnt = scandir(dir_name, &entries, NULL, dirent_cmp);
++		if (entry_cnt < 0) {
++			closedir(dir);
++			return sys_errmsg("error reading directory '%s'",
++					   dir_name);
++		}
+ 	}
+ 
+ 	/*
+@@ -1976,14 +2078,9 @@
+ 		struct stat dent_st;
+ 		struct fscrypt_context *new_fctx = NULL;
+ 
+-		errno = 0;
+-		entry = readdir(dir);
+-		if (!entry) {
+-			if (errno == 0)
+-				break;
+-			sys_errmsg("error reading directory '%s'", dir_name);
+-			goto out_free;
+-		}
++		if (entry_idx >= entry_cnt)
++			break;
++		entry = entries[entry_idx++];
+ 
+ 		if (strcmp(".", entry->d_name) == 0)
+ 			continue;
+@@ -2148,6 +2245,7 @@
+ 		goto out_free;
+ 
+ 	free(name);
++	free_dirents(entries, entry_cnt);
+ 	if (existing && closedir(dir) == -1)
+ 		return sys_errmsg("error closing directory '%s'", dir_name);
+ 
+@@ -2156,6 +2254,7 @@
+ out_free:
+ 	free(itr);
+ 	free(name);
++	free_dirents(entries, entry_cnt);
+ 	if (existing)
+ 		closedir(dir);
+ 	return -1;
+@@ -2201,7 +2300,7 @@
+ 		if (squash_owner)
+ 			root_st.st_uid = root_st.st_gid = 0;
+ 	} else {
+-		root_st.st_mtime = time(NULL);
++		root_st.st_mtime = clamp_time(time(NULL));
+ 		root_st.st_atime = root_st.st_ctime = root_st.st_mtime;
+ 		root_st.st_mode = mode;
+ 	}
+@@ -2554,7 +2653,8 @@
+ 	sup->rp_size       = cpu_to_le64(c->rp_size);
+ 	sup->time_gran     = cpu_to_le32(DEFAULT_TIME_GRAN);
+ 	sup->hash_algo     = cpu_to_le16(c->hash_algo);
+-	uuid_generate_random(sup->uuid);
++	if (!set_reproducible_uuid(sup->uuid))
++		uuid_generate_random(sup->uuid);
+ 
+ 	if (verbose) {
+ 		char s[40];

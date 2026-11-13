@@ -154,38 +154,47 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
 3. 使用 Homebrew 安装工具链、依赖与基础软件包：
 
    ```bash
-   brew unlink awk
-   brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar grep make ncurses pkg-config wget quilt xz
-   brew install gcc@11
+   brew install coreutils diffutils findutils gawk gnu-getopt gnu-tar gnu-sed grep make \
+     ncurses pkgconf wget quilt xz bash git rsync gpatch python3 python-setuptools go
    ```
 
-4. 然后输入以下命令，添加到系统环境变量中：
+   宿主编译器使用 Command Line Tools 提供的 Clang，目标工具链由构建系统生成。
+   Apple Silicon 上编译 Go 软件包时需要已安装的 Go 进行自举，构建系统会自动从 `PATH` 中查找。
+   `python-setuptools` 为仍使用 `distutils` 的软件包构建脚本提供兼容模块。
 
-   - intel 芯片的 mac
+4. 准备**区分大小写**的构建文件系统。macOS 默认的 APFS 通常不区分大小写，不能直接在默认的家目录中编译。
+   在“磁盘工具”中向现有 APFS 容器添加一个“APFS（区分大小写）”卷，例如 `LEDE-build`，然后在 `/Volumes/LEDE-build` 中存放源码和构建目录。
+   建议至少保留 100 GB 可用空间；多个 target 的构建回归需要更多空间。APFS 卷默认共享容器空间，可不设置配额上限。
+
+5. 进入 Bash，配置 GNU 工具路径（通过 Homebrew 前缀同时兼容 Intel 和 Apple Silicon）：
 
    ```bash
-   echo 'export PATH="/usr/local/opt/coreutils/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/findutils/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/gnu-getopt/bin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/gnu-tar/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/usr/local/opt/make/libexec/gnubin:$PATH"' >> ~/.bashrc
+   # Intel Mac 的 Homebrew 通常位于 /usr/local，Apple Silicon 通常位于 /opt/homebrew
+   eval "$(/opt/homebrew/bin/brew shellenv)" # Intel Mac 请改为 /usr/local/bin/brew
+   bash
+   export BREW_PREFIX="$(brew --prefix)"
+   for tool in coreutils diffutils findutils gnu-tar gnu-sed grep make; do
+     export PATH="$BREW_PREFIX/opt/$tool/libexec/gnubin:$PATH"
+   done
+   export PATH="$BREW_PREFIX/opt/gnu-getopt/bin:$PATH"
+   umask 022
    ```
 
-   - apple 芯片的 mac
+   每次新开终端编译前需重新加载以上环境；也可将 `export` 和循环部分保存到 `~/.bashrc`，进入 Bash 后执行 `source ~/.bashrc`。
+   macOS 默认的 Zsh 不会自动加载 `~/.bashrc`。
 
-   ```zsh
-   echo 'export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/findutils/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/gnu-getopt/bin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/gnu-tar/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/grep/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/gnu-sed/libexec/gnubin:$PATH"' >> ~/.bashrc
-   echo 'export PATH="/opt/homebrew/opt/make/libexec/gnubin:$PATH"' >> ~/.bashrc
+6. 在上述大小写敏感卷内获取源码，按本文的 feeds 和配置步骤进行编译；使用普通用户执行，不要使用 `sudo make`。
+   例如选择 `Target System: x86`、`Subtarget: x86_64` 后：
+
+   ```bash
+   make defconfig
+   make download -j8
+   make V=s -j$(nproc)
+   # 如果失败，使用单线程详细输出定位首个错误
+   make -j1 V=s
    ```
 
-5. 重新加载一下 shell 启动文件 `source ~/.bashrc`，然后输入 `bash` 进入 bash shell，就可以和 Linux 一样正常编译了
+   这是 macOS 原生交叉编译，Apple Silicon 主机也可构建 x86_64 固件，无需虚拟机或容器。
 
 ## 特别提示
 

@@ -1,0 +1,89 @@
+From dc5565c4478135999d8bb193bd9dfb4f8ef5f96b Mon Sep 17 00:00:00 2001
+From: Mark Mentovai <mark@mentovai.com>
+Date: Mon, 1 Jun 2026 09:11:43 -0400
+Subject: [PATCH] objtool: fix build on macOS hosts
+
+Since 5a406031d0719 (2025-03-17, in 6.15), objtool calls sendfile, but
+sendfile is Linux-specific and a sendfile with the requisite
+capabilities is not available on other operating systems. Provide a more
+portable fallback implementation to be used when cross-building on
+non-Linux hosts.
+
+Signed-off-by: Mark Mentovai <mark@mentovai.com>
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/tools/objtool/builtin-check.c
++++ b/tools/objtool/builtin-check.c
+@@ -10,7 +10,9 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <sys/stat.h>
++#ifdef __linux__
+ #include <sys/sendfile.h>
++#endif
+ #include <objtool/builtin.h>
+ #include <objtool/objtool.h>
+ #include <objtool/warn.h>
+@@ -187,12 +189,28 @@
+ 	return false;
+ }
+ 
++#ifndef __linux__
++#define RETRY_EINTR(x)                                                  \
++	({                                                              \
++		__typeof__(x) eintr_wrapper_result;                     \
++		do {                                                    \
++			eintr_wrapper_result = (x);                     \
++		} while (eintr_wrapper_result == -1 && errno == EINTR); \
++		eintr_wrapper_result;                                   \
++	})
++#endif
++
+ static int copy_file(const char *src, const char *dst)
+ {
+ 	size_t to_copy, copied;
+ 	int dst_fd, src_fd;
+ 	struct stat stat;
++#ifdef __linux__
+ 	off_t offset = 0;
++#else
++	char buf[65536];
++	ssize_t nread, nwrote;
++#endif
+ 
+ 	src_fd = open(src, O_RDONLY);
+ 	if (src_fd == -1) {
+@@ -217,11 +235,33 @@
+ 	}
+ 
+ 	for (to_copy = stat.st_size; to_copy > 0; to_copy -= copied) {
++#ifdef __linux__
+ 		copied = sendfile(dst_fd, src_fd, &offset, to_copy);
+ 		if (copied == -1) {
+ 			ERROR_GLIBC("sendfile");
+ 			return 1;
+ 		}
++#else
++		nread = RETRY_EINTR(
++			read(src_fd, buf,
++			     to_copy < sizeof(buf) ? to_copy : sizeof(buf)));
++		if (nread < 0) {
++			ERROR_GLIBC("read");
++			return 1;
++		}
++		if (nread == 0) {
++			ERROR("unexpected premature EOF");
++			return 1;
++		}
++		for (copied = 0; copied < nread; copied += nwrote) {
++			nwrote = RETRY_EINTR(
++				write(dst_fd, buf + copied, nread - copied));
++			if (nwrote < 0) {
++				ERROR_GLIBC("write");
++				return 1;
++			}
++		}
++#endif
+ 	}
+ 
+ 	close(dst_fd);
