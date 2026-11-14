@@ -43,7 +43,7 @@ endef
 define Build/copy-kernel
 	rm -f $@ $@.elf
 	cp $< $@
-	cp $< $@.elf
+	cp $<.elf $@.elf
 endef
 
 define Build/elf-kernel
