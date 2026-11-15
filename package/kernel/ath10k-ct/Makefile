@@ -36,6 +36,9 @@ ifeq ($(KERNEL_PATCHVER),6.18)
 PKG_SOURCE_DATE:=2026-07-31
 PKG_SOURCE_VERSION:=fcbdb70debc261f9df6734bbb76d81cdc88e0e26
 PKG_MIRROR_HASH:=3bfcb2c8bc08902b95de16593b9d757e8c48f8891bd8ecd0934af14789294f37
+# Match the upstream archive name and format associated with this mirror hash.
+PKG_VERSION:=$(subst -,.,$(PKG_SOURCE_DATE))~$(call version_abbrev,$(PKG_SOURCE_VERSION))
+PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.zst
 CT_KVER:=-7.2
 endif
 
