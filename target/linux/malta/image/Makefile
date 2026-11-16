@@ -6,7 +6,6 @@ include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/image.mk
 
 KERNEL_LOADADDR := 0x80100000
-ROOTFS_PARTSIZE := 16M
 
 define Device/Default
   PROFILES := Default
