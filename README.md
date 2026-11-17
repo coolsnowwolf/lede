@@ -211,6 +211,8 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
    这是 macOS 原生交叉编译，Apple Silicon 主机也可构建 x86_64 固件，无需虚拟机或容器。
    Airoha AN7581/AN7583 的 BL2 构建会自动下载经过 SHA256 校验的 Arm 工具链；Apple Silicon 使用原生 macOS ARM64 版本。Intel Mac 需额外执行 `brew install arm-none-eabi-gcc`。
 
+   mvebu 的 Cortex-A53 / Cortex-A72 SD 卡镜像默认使用 32 MiB boot 分区。复用旧配置时，请在 `Image Options` 中将 `Kernel partition size (in MiB)` 设为至少 `32`，为内核、设备树和文件系统元数据留出空间。
+
    UML（User Mode Linux）目标仅支持 Linux x86_64 主机构建，不适用于本节的 macOS 原生构建流程。
 
 ## 特别提示
