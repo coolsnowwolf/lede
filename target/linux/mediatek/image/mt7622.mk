@@ -76,7 +76,7 @@ define Device/bananapi_bpi-r64
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   ARTIFACT/emmc-preloader.bin	:= bl2 emmc-2ddr
   ARTIFACT/emmc-bl31-uboot.fip	:= bl31-uboot bananapi_bpi-r64-emmc
-  ARTIFACT/snand-preloader.bin	:= bl2 snand-2ddr
+  ARTIFACT/snand-preloader.bin	:= bl2 snand-ubi-2ddr
   ARTIFACT/snand-bl31-uboot.fip	:= bl31-uboot bananapi_bpi-r64-snand
   ARTIFACT/sdcard.img.gz	:= mt7622-gpt sdmmc |\
 				   pad-to 512k | bl2 sdmmc-2ddr |\
@@ -87,7 +87,7 @@ define Device/bananapi_bpi-r64
 				   pad-to 38912k | mt7622-gpt emmc |\
 				   pad-to 39424k | bl2 emmc-2ddr |\
 				   pad-to 40960k | bl31-uboot bananapi_bpi-r64-emmc |\
-				   pad-to 43008k | bl2 snand-2ddr |\
+				   pad-to 43008k | bl2 snand-ubi-2ddr |\
 				   pad-to 43520k | bl31-uboot bananapi_bpi-r64-snand |\
 				$(if $(CONFIG_TARGET_ROOTFS_SQUASHFS), \
 				   pad-to 46080k | append-image squashfs-sysupgrade.itb | check-size |\
