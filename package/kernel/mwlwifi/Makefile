@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=mwlwifi
-PKG_RELEASE=1
+PKG_RELEASE=2
 
 PKG_LICENSE:=ISC
 PKG_LICENSE_FILES:=
@@ -43,6 +43,11 @@ NOSTDINC_FLAGS := \
 	-I$(STAGING_DIR)/usr/include/mac80211 \
 	-include backport/backport.h \
 	-Wno-unused-result
+
+# Keep in sync with the mac80211 backports version selection.
+ifneq ($(filter y,$(CONFIG_LINUX_6_12) $(CONFIG_LINUX_6_18) $(CONFIG_LINUX_7_3)),)
+NOSTDINC_FLAGS += -DMWLWIFI_MAC80211_6_18
+endif
 
 define Build/Compile
 	+$(KERNEL_MAKE) $(PKG_JOBS) \

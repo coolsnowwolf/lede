@@ -1,0 +1,236 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] mwlwifi: support current kernel and mac80211 interfaces
+
+Adapt the timer API and mac80211 callbacks using the OpenWrt upstream
+compatibility fixes. Select the wireless callbacks with the same kernel
+configuration symbols that choose mac80211 6.18 in this tree, retaining
+the older backports interfaces for older targets.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+---
+--- a/core.c
++++ b/core.c
+@@ -719,7 +719,11 @@
+ 				   drv_priv);
+ 
+ 		if (vif->bss_conf.csa_active)
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_csa_finish(vif, 0);
++#else
+ 			ieee80211_csa_finish(vif);
++#endif
+ 	}
+ 	spin_unlock_bh(&priv->vif_lock);
+ 
+@@ -738,7 +742,11 @@
+ #ifdef timer_setup
+ static void timer_routine(struct timer_list *t)
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
++	struct mwl_priv *priv = timer_container_of(priv, t, period_timer);
++#else
+ 	struct mwl_priv *priv = from_timer(priv, t, period_timer);
++#endif
+ 	struct ieee80211_hw *hw = priv->hw;
+ #else
+ static void timer_routine(unsigned long data)
+@@ -975,7 +983,11 @@
+ {
+ 	struct ieee80211_hw *hw = priv->hw;
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++	timer_shutdown_sync(&priv->period_timer);
++#else
+ 	del_timer_sync(&priv->period_timer);
++#endif
+ 
+ 	if (priv->irq != -1) {
+ 		free_irq(priv->irq, hw);
+--- a/debugfs.c
++++ b/debugfs.c
+@@ -1210,7 +1210,11 @@
+ 	struct mwl_priv *priv = (struct mwl_priv *)file->private_data;
+ 
+ 	wiphy_info(priv->hw->wiphy, "simulate radar detected\n");
++#ifdef MWLWIFI_MAC80211_6_18
++	ieee80211_radar_detected(priv->hw, NULL);
++#else
+ 	ieee80211_radar_detected(priv->hw);
++#endif
+ 
+ 	return count;
+ }
+--- a/hif/fwcmd.c
++++ b/hif/fwcmd.c
+@@ -678,7 +678,11 @@
+ 	phy_ds_param_set = &pcmd->start_cmd.phy_param_set.ds_param_set;
+ 	phy_ds_param_set->elem_id = WLAN_EID_DS_PARAMS;
+ 	phy_ds_param_set->len = sizeof(phy_ds_param_set->current_chnl);
++#ifdef MWLWIFI_MAC80211_6_18
++	phy_ds_param_set->current_chnl = bss_conf->chanreq.oper.chan->hw_value;
++#else
+ 	phy_ds_param_set->current_chnl = bss_conf->chandef.chan->hw_value;
++#endif
+ 
+ 	pcmd->start_cmd.probe_delay = cpu_to_le16(10);
+ 	pcmd->start_cmd.cap_info = cpu_to_le16(mwl_vif->beacon_info.cap_info);
+@@ -772,9 +776,17 @@
+ 	bool enable = false;
+ 
+ 	if (b_inf->ie_country_ptr) {
++#ifdef MWLWIFI_MAC80211_6_18
++		if (bss_conf->chanreq.oper.chan->band == NL80211_BAND_2GHZ)
++#else
+ 		if (bss_conf->chandef.chan->band == NL80211_BAND_2GHZ)
++#endif
+ 			a_band = false;
++#ifdef MWLWIFI_MAC80211_6_18
++		else if (bss_conf->chanreq.oper.chan->band == NL80211_BAND_5GHZ)
++#else
+ 		else if (bss_conf->chandef.chan->band == NL80211_BAND_5GHZ)
++#endif
+ 			a_band = true;
+ 		else
+ 			return -EINVAL;
+--- a/hif/pcie/8864/tx.c
++++ b/hif/pcie/8864/tx.c
+@@ -478,7 +478,11 @@
+ 			} else
+ 				memmove(dma_data->data - hdrlen, &dma_data->wh, hdrlen);
+ 			skb_pull(done_skb, sizeof(*dma_data) - hdrlen);
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_tx_status_skb(priv->hw, done_skb);
++#else
+ 			ieee80211_tx_status(priv->hw, done_skb);
++#endif
+ next:
+ 			tx_hndl = tx_hndl->pnext;
+ 			tx_desc = tx_hndl->pdesc;
+--- a/hif/pcie/8964/tx_ndp.c
++++ b/hif/pcie/8964/tx_ndp.c
+@@ -287,7 +287,11 @@
+ 		skb_get(tx_skb);
+ 		pcie_tx_prepare_info(priv, tx_ctrl->rate, tx_info);
+ 		tx_ctrl->flags |= TX_CTRL_TYPE_DATA;
++#ifdef MWLWIFI_MAC80211_6_18
++		ieee80211_tx_status_skb(priv->hw, tx_skb);
++#else
+ 		ieee80211_tx_status(priv->hw, tx_skb);
++#endif
+ 	}
+ 
+ 	if (++tx_send_head_new >= MAX_NUM_TX_DESC)
+@@ -483,7 +487,11 @@
+ 		}
+ 
+ 		pcie_tx_prepare_info(priv, 0, tx_info);
++#ifdef MWLWIFI_MAC80211_6_18
++		ieee80211_tx_status_skb(hw, skb);
++#else
+ 		ieee80211_tx_status(hw, skb);
++#endif
+ 
+ bypass_ack:
+ 		if (++tx_done_tail >= MAX_TX_RING_DONE_SIZE)
+@@ -593,7 +601,11 @@
+ 			ack_skb = skb_copy(skb, GFP_ATOMIC);
+ 			ack_info = IEEE80211_SKB_CB(ack_skb);
+ 			pcie_tx_prepare_info(priv, 0, ack_info);
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_tx_status_skb(hw, ack_skb);
++#else
+ 			ieee80211_tx_status(hw, ack_skb);
++#endif
+ 		}
+ 
+ 		pcie_tx_encapsulate_frame(priv, skb, k_conf);
+--- a/hif/pcie/8997/tx.c
++++ b/hif/pcie/8997/tx.c
+@@ -431,7 +431,11 @@
+ 			} else
+ 				memmove(dma_data->data - hdrlen, &dma_data->wh, hdrlen);
+ 			skb_pull(done_skb, sizeof(*pfu_dma) - hdrlen);
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_tx_status_skb(priv->hw, done_skb);
++#else
+ 			ieee80211_tx_status(priv->hw, done_skb);
++#endif
+ 		}
+ next:
+ 		memset(data_buf, 0, sizeof(*data_buf));
+--- a/hif/pcie/pcie.c
++++ b/hif/pcie/pcie.c
+@@ -533,7 +533,11 @@
+ 
+ 		if (int_status & MACREG_A2HRIC_BIT_RADAR_DETECT) {
+ 			wiphy_info(hw->wiphy, "radar detected by firmware\n");
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_radar_detected(hw, NULL);
++#else
+ 			ieee80211_radar_detected(hw);
++#endif
+ 		}
+ 
+ 		if (int_status & MACREG_A2HRIC_BIT_CHAN_SWITCH)
+@@ -575,7 +579,11 @@
+ 
+ 		if (int_status & MACREG_A2HRIC_BIT_RADAR_DETECT) {
+ 			wiphy_info(hw->wiphy, "radar detected by firmware\n");
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_radar_detected(hw, NULL);
++#else
+ 			ieee80211_radar_detected(hw);
++#endif
+ 		}
+ 
+ 		if (int_status & MACREG_A2HRIC_BIT_CHAN_SWITCH)
+@@ -1053,7 +1061,11 @@
+ 
+ 		if (int_status & MACREG_A2HRIC_NEWDP_DFS) {
+ 			wiphy_info(hw->wiphy, "radar detected by firmware\n");
++#ifdef MWLWIFI_MAC80211_6_18
++			ieee80211_radar_detected(hw, NULL);
++#else
+ 			ieee80211_radar_detected(hw);
++#endif
+ 		}
+ 
+ 		if (int_status & MACREG_A2HRIC_NEWDP_CHANNEL_SWITCH)
+--- a/mac80211.c
++++ b/mac80211.c
+@@ -159,7 +159,11 @@
+ 	return rc;
+ }
+ 
++#ifdef MWLWIFI_MAC80211_6_18
++static void mwl_mac80211_stop(struct ieee80211_hw *hw, bool suspend)
++#else
+ static void mwl_mac80211_stop(struct ieee80211_hw *hw)
++#endif
+ {
+ 	mwl_fwcmd_radio_disable(hw);
+ 
+@@ -308,7 +312,11 @@
+ 	mwl_mac80211_remove_vif(priv, vif);
+ }
+ 
++#ifdef MWLWIFI_MAC80211_6_18
++static int mwl_mac80211_config(struct ieee80211_hw *hw, int radio_idx,
++#else
+ static int mwl_mac80211_config(struct ieee80211_hw *hw,
++#endif
+ 			       u32 changed)
+ {
+ 	struct ieee80211_conf *conf = &hw->conf;
+@@ -564,7 +572,11 @@
+ 	return rc;
+ }
+ 
++#ifdef MWLWIFI_MAC80211_6_18
++static int mwl_mac80211_set_rts_threshold(struct ieee80211_hw *hw, int radio_idx,
++#else
+ static int mwl_mac80211_set_rts_threshold(struct ieee80211_hw *hw,
++#endif
+ 					  u32 value)
+ {
+ 	return mwl_fwcmd_set_rts_threshold(hw, value);
