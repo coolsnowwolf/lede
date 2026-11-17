@@ -1,3 +1,7 @@
+ifneq ($(KERNEL),6.1)
+DTS_DIR := $(DTS_DIR)/mediatek
+endif
+
 DEVICE_VARS += UBOOT_TARGET UBOOT_OFFSET UBOOT_IMAGE
 
 # The bootrom of MT7623 expects legacy MediaTek headers present in

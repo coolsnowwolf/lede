@@ -1,3 +1,7 @@
+ifneq ($(KERNEL),6.1)
+DTS_DIR := $(DTS_DIR)/mediatek
+endif
+
 define Device/mediatek_mt7629-rfb
   DEVICE_VENDOR := MediaTek
   DEVICE_MODEL := MT7629 rfb AP
