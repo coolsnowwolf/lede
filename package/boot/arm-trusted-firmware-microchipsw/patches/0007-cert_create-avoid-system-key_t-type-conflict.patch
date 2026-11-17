@@ -1,0 +1,311 @@
+From: coolsnowwolf <coolsnowwolf@gmail.com>
+Subject: [PATCH] cert_create: avoid host type and function name conflicts
+
+macOS exposes the System V IPC key_t typedef through the host headers
+included by OpenSSL. The certificate tool's private key_t definition
+conflicts with that type and prevents the native cert_create build.
+
+Use cert_key_t for certificate keys, matching current Trusted Firmware-A,
+including the platform key definitions. This only renames the internal
+type and leaves certificate generation and the firmware layout unchanged.
+
+Upstream reference: https://github.com/ARM-software/arm-trusted-firmware/blob/master/tools/cert_create/include/key.h
+Also give the private strdup implementation its own cert_strdup name to
+avoid redeclaring the libc function with static linkage on macOS. Keep
+the existing allocation and copy behavior on all hosts.
+
+Signed-off-by: coolsnowwolf <coolsnowwolf@gmail.com>
+
+--- a/tools/cert_create/include/key.h
++++ b/tools/cert_create/include/key.h
+@@ -65,35 +65,35 @@
+ 	const char *desc;	/* Key description (debug purposes) */
+ 	char *fn;		/* Filename to load/store the key */
+ 	EVP_PKEY *key;		/* Key container */
+-} key_t;
++} cert_key_t;
+ 
+ /* Exported API */
+ int key_init(void);
+-key_t *key_get_by_opt(const char *opt);
++cert_key_t *key_get_by_opt(const char *opt);
+ #if !USING_OPENSSL3
+-int key_new(key_t *key);
++int key_new(cert_key_t *key);
+ #endif
+-int key_create(key_t *key, int type, int key_bits);
+-int key_load(key_t *key, unsigned int *err_code);
+-int key_store(key_t *key);
++int key_create(cert_key_t *key, int type, int key_bits);
++int key_load(cert_key_t *key, unsigned int *err_code);
++int key_store(cert_key_t *key);
+ void key_cleanup(void);
+ 
+ /* Macro to register the keys used in the CoT */
+ #define REGISTER_KEYS(_keys) \
+-	key_t *def_keys = &_keys[0]; \
++	cert_key_t *def_keys = &_keys[0]; \
+ 	const unsigned int num_def_keys = sizeof(_keys)/sizeof(_keys[0])
+ 
+ /* Macro to register the platform defined keys used in the CoT */
+ #define PLAT_REGISTER_KEYS(_pdef_keys) \
+-	key_t *pdef_keys = &_pdef_keys[0]; \
++	cert_key_t *pdef_keys = &_pdef_keys[0]; \
+ 	const unsigned int num_pdef_keys = sizeof(_pdef_keys)/sizeof(_pdef_keys[0])
+ 
+ /* Exported variables */
+-extern key_t *def_keys;
++extern cert_key_t *def_keys;
+ extern const unsigned int num_def_keys;
+-extern key_t *pdef_keys;
++extern cert_key_t *pdef_keys;
+ extern const unsigned int num_pdef_keys;
+ 
+-extern key_t *keys;
++extern cert_key_t *keys;
+ extern unsigned int num_keys;
+ #endif /* KEY_H */
+--- a/tools/cert_create/src/cca/cot.c
++++ b/tools/cert_create/src/cca/cot.c
+@@ -399,7 +399,7 @@
+ REGISTER_EXTENSIONS(cot_ext);
+ 
+ /* Keys used to establish the chain of trust. */
+-static key_t cot_keys[] = {
++static cert_key_t cot_keys[] = {
+ 	[ROT_KEY] = {
+ 		.id = ROT_KEY,
+ 		.opt = "rot-key",
+--- a/tools/cert_create/src/dualroot/cot.c
++++ b/tools/cert_create/src/dualroot/cot.c
+@@ -536,7 +536,7 @@
+ 
+ 
+ /* Keys used to establish the chain of trust. */
+-static key_t cot_keys[] = {
++static cert_key_t cot_keys[] = {
+ 	[ROT_KEY] = {
+ 		.id = ROT_KEY,
+ 		.opt = "rot-key",
+--- a/tools/cert_create/src/key.c
++++ b/tools/cert_create/src/key.c
+@@ -23,14 +23,14 @@
+ 
+ #define MAX_FILENAME_LEN		1024
+ 
+-key_t *keys;
++cert_key_t *keys;
+ unsigned int num_keys;
+ 
+ #if !USING_OPENSSL3
+ /*
+  * Create a new key container
+  */
+-int key_new(key_t *key)
++int key_new(cert_key_t *key)
+ {
+ 	/* Create key pair container */
+ 	key->key = EVP_PKEY_new();
+@@ -42,7 +42,7 @@
+ }
+ #endif
+ 
+-static int key_create_rsa(key_t *key, int key_bits)
++static int key_create_rsa(cert_key_t *key, int key_bits)
+ {
+ #if USING_OPENSSL3
+ 	EVP_PKEY *rsa = EVP_RSA_gen(key_bits);
+@@ -96,7 +96,7 @@
+ 
+ #ifndef OPENSSL_NO_EC
+ #if USING_OPENSSL3
+-static int key_create_ecdsa(key_t *key, int key_bits, const char *curve)
++static int key_create_ecdsa(cert_key_t *key, int key_bits, const char *curve)
+ {
+ 	EVP_PKEY *ec = EVP_EC_gen(curve);
+ 	if (ec == NULL) {
+@@ -108,22 +108,22 @@
+ 	return 1;
+ }
+ 
+-static int key_create_ecdsa_nist(key_t *key, int key_bits)
++static int key_create_ecdsa_nist(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, "prime256v1");
+ }
+ 
+-static int key_create_ecdsa_brainpool_r(key_t *key, int key_bits)
++static int key_create_ecdsa_brainpool_r(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, "brainpoolP256r1");
+ }
+ 
+-static int key_create_ecdsa_brainpool_t(key_t *key, int key_bits)
++static int key_create_ecdsa_brainpool_t(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, "brainpoolP256t1");
+ }
+ #else
+-static int key_create_ecdsa(key_t *key, int key_bits, const int curve_id)
++static int key_create_ecdsa(cert_key_t *key, int key_bits, const int curve_id)
+ {
+ 	EC_KEY *ec;
+ 
+@@ -150,24 +150,24 @@
+ 	return 0;
+ }
+ 
+-static int key_create_ecdsa_nist(key_t *key, int key_bits)
++static int key_create_ecdsa_nist(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, NID_X9_62_prime256v1);
+ }
+ 
+-static int key_create_ecdsa_brainpool_r(key_t *key, int key_bits)
++static int key_create_ecdsa_brainpool_r(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, NID_brainpoolP256r1);
+ }
+ 
+-static int key_create_ecdsa_brainpool_t(key_t *key, int key_bits)
++static int key_create_ecdsa_brainpool_t(cert_key_t *key, int key_bits)
+ {
+ 	return key_create_ecdsa(key, key_bits, NID_brainpoolP256t1);
+ }
+ #endif /* USING_OPENSSL3 */
+ #endif /* OPENSSL_NO_EC */
+ 
+-typedef int (*key_create_fn_t)(key_t *key, int key_bits);
++typedef int (*key_create_fn_t)(cert_key_t *key, int key_bits);
+ static const key_create_fn_t key_create_fn[KEY_ALG_MAX_NUM] = {
+ 	[KEY_ALG_RSA] = key_create_rsa,
+ #ifndef OPENSSL_NO_EC
+@@ -177,7 +177,7 @@
+ #endif /* OPENSSL_NO_EC */
+ };
+ 
+-int key_create(key_t *key, int type, int key_bits)
++int key_create(cert_key_t *key, int type, int key_bits)
+ {
+ 	if (type >= KEY_ALG_MAX_NUM) {
+ 		printf("Invalid key type\n");
+@@ -191,7 +191,7 @@
+ 	return 0;
+ }
+ 
+-int key_load(key_t *key, unsigned int *err_code)
++int key_load(cert_key_t *key, unsigned int *err_code)
+ {
+ 	FILE *fp;
+ 	EVP_PKEY *k;
+@@ -221,7 +221,7 @@
+ 	return 0;
+ }
+ 
+-int key_store(key_t *key)
++int key_store(cert_key_t *key)
+ {
+ 	FILE *fp;
+ 
+@@ -245,7 +245,7 @@
+ int key_init(void)
+ {
+ 	cmd_opt_t cmd_opt;
+-	key_t *key;
++	cert_key_t *key;
+ 	unsigned int i;
+ 
+ 	keys = malloc((num_def_keys * sizeof(def_keys[0]))
+@@ -285,9 +285,9 @@
+ 	return 0;
+ }
+ 
+-key_t *key_get_by_opt(const char *opt)
++cert_key_t *key_get_by_opt(const char *opt)
+ {
+-	key_t *key;
++	cert_key_t *key;
+ 	unsigned int i;
+ 
+ 	/* Sequential search. This is not a performance concern since the number
+--- a/tools/cert_create/src/main.c
++++ b/tools/cert_create/src/main.c
+@@ -71,7 +71,7 @@
+ extern const char platform_msg[];
+ 
+ 
+-static char *strdup(const char *str)
++static char *cert_strdup(const char *str)
+ {
+ 	int n = strlen(str) + 1;
+ 	char *dup = malloc(n);
+@@ -178,7 +178,7 @@
+ {
+ 	cert_t *cert;
+ 	ext_t *ext;
+-	key_t *key;
++	cert_key_t *key;
+ 	int i, j;
+ 	bool valid_size;
+ 
+@@ -299,7 +299,7 @@
+ 	STACK_OF(X509_EXTENSION) * sk;
+ 	X509_EXTENSION *cert_ext = NULL;
+ 	ext_t *ext;
+-	key_t *key;
++	cert_key_t *key;
+ 	cert_t *cert;
+ 	FILE *file;
+ 	int i, j, ext_nid, nvctr;
+@@ -391,17 +391,17 @@
+ 		case CMD_OPT_EXT:
+ 			cur_opt = cmd_opt_get_name(opt_idx);
+ 			ext = ext_get_by_opt(cur_opt);
+-			ext->arg = strdup(optarg);
++			ext->arg = cert_strdup(optarg);
+ 			break;
+ 		case CMD_OPT_KEY:
+ 			cur_opt = cmd_opt_get_name(opt_idx);
+ 			key = key_get_by_opt(cur_opt);
+-			key->fn = strdup(optarg);
++			key->fn = cert_strdup(optarg);
+ 			break;
+ 		case CMD_OPT_CERT:
+ 			cur_opt = cmd_opt_get_name(opt_idx);
+ 			cert = cert_get_by_opt(cur_opt);
+-			cert->fn = strdup(optarg);
++			cert->fn = cert_strdup(optarg);
+ 			break;
+ 		case '?':
+ 		default:
+@@ -607,7 +607,7 @@
+ 	CRYPTO_cleanup_all_ex_data();
+ 
+ 
+-	/* We allocated strings through strdup, so now we have to free them */
++	/* We allocated strings through cert_strdup, so now we have to free them */
+ 
+ 	ext_cleanup();
+ 
+--- a/tools/cert_create/src/tbbr/tbb_key.c
++++ b/tools/cert_create/src/tbbr/tbb_key.c
+@@ -11,7 +11,7 @@
+  *
+  * The order of the keys must follow the enumeration specified in tbb_key.h
+  */
+-static key_t tbb_keys[] = {
++static cert_key_t tbb_keys[] = {
+ 	[ROT_KEY] = {
+ 		.id = ROT_KEY,
+ 		.opt = "rot-key",
+--- a/tools/nxp/cert_create_helper/src/pdef_tbb_key.c
++++ b/tools/nxp/cert_create_helper/src/pdef_tbb_key.c
+@@ -6,7 +6,7 @@
+ 
+ #include <pdef_tbb_key.h>
+ 
+-static key_t pdef_tbb_keys[] = {
++static cert_key_t pdef_tbb_keys[] = {
+ 	[DDR_FW_CONTENT_KEY - DDR_FW_CONTENT_KEY] = {
+ 		.id = DDR_FW_CONTENT_KEY,
+ 		.opt = "ddr-fw-key",
