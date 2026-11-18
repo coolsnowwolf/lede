@@ -30,12 +30,18 @@ ifeq ($(IS_TTY),1)
 endif
 
 define ERROR_MESSAGE
-  printf "$(_R)%s$(_N)\n" "$(1)" >&8
+  { \
+	printf "$(_R)%s$(_N)\n" "$(1)" >&9 || \
+	printf "$(_R)%s$(_N)\n" "$(1)"; \
+  } >&2 2>/dev/null
 endef
 
 ifeq ($(findstring s,$(OPENWRT_VERBOSE)),)
   define MESSAGE
-	printf "$(_Y)%s$(_N)\n" "$(1)" >&8
+	{ \
+		printf "$(_Y)%s$(_N)\n" "$(1)" >&8 || \
+		printf "$(_Y)%s$(_N)\n" "$(1)"; \
+	} 2>/dev/null
   endef
 
   ifeq ($(QUIET),1)
@@ -44,9 +50,12 @@ ifeq ($(findstring s,$(OPENWRT_VERBOSE)),)
     else
       _DIR:=
     endif
-    _NULL:=$(if $(MAKECMDGOALS),$(shell \
+    _MESSAGE:=$(if $(MAKECMDGOALS),$(shell \
 		$(call MESSAGE, make[$(MAKELEVEL)]$(if $(_DIR), -C $(_DIR)) $(MAKECMDGOALS)); \
     ))
+    ifneq ($(strip $(_MESSAGE)),)
+      $(info $(_MESSAGE))
+    endif
     SUBMAKE=$(MAKE)
   else
     SILENT:=>/dev/null $(if $(findstring w,$(OPENWRT_VERBOSE)),,2>&1)
