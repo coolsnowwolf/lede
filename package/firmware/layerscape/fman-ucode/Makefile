@@ -9,7 +9,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=fman-ucode
 PKG_VERSION:=LSDK-20.04
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/NXP/qoriq-fm-ucode.git
@@ -24,7 +24,8 @@ define Package/layerscape-fman
   SECTION:=firmware
   CATEGORY:=Firmware
   TITLE:=NXP FMan ucode
-  DEPENDS:=@TARGET_layerscape
+  DEPENDS:=@TARGET_layerscape||TARGET_qoriq
+  DEFAULT:=y if TARGET_qoriq
 endef
 
 define Build/Compile
@@ -36,6 +37,8 @@ define Build/InstallDev
 		$(STAGING_DIR_IMAGE)/fsl_ls1043a-rdb-fman.bin
 	$(CP) $(PKG_BUILD_DIR)/fsl_fman_ucode_ls1046_r1.0_106_4_18.bin \
 		$(STAGING_DIR_IMAGE)/fsl_ls1046a-rdb-fman.bin
+	$(CP) $(PKG_BUILD_DIR)/fsl_fman_ucode_t4240_r2.0_106_4_18.bin \
+		$(STAGING_DIR_IMAGE)/fsl_t4240-rdb-fman.bin
 endef
 
 $(eval $(call BuildPackage,layerscape-fman))
