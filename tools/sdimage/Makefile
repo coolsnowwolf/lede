@@ -7,7 +7,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=imx-uuc
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/mhei/fsl-imx-uuc.git
@@ -19,6 +19,11 @@ PKG_LICENSE:=GPL-2.0+
 PKG_LICENSE_FILES:=LICENSE
 
 include $(INCLUDE_DIR)/host-build.mk
+
+ifeq ($(HOST_OS),Darwin)
+  # Only sdimage is installed; uuc depends on Linux-specific system calls.
+  HOST_MAKE_FLAGS += PROGRAMS=sdimage
+endif
 
 define Host/Configure
 endef
