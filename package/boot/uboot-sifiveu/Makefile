@@ -10,6 +10,8 @@ PKG_RELEASE:=2
 PKG_VERSION:=2023.10
 PKG_HASH:=e00e6c6f014e046101739d08d06f328811cebcf5ae101348f409cbbd55ce6900
 
+PKG_BUILD_DEPENDS:=python3/host
+
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 
@@ -43,6 +45,7 @@ UBOOT_TARGETS := \
 	sifive_unmatched
 
 UBOOT_MAKE_FLAGS += \
+        PYTHON3="$(STAGING_DIR_HOSTPKG)/bin/python3" \
         OPENSBI=$(STAGING_DIR_IMAGE)/fw_dynamic-${OPENSBI}.bin
 
 define Build/Configure
