@@ -55,11 +55,12 @@ if output:
             "target/linux/",
             "val.DEFAULT_PACKAGES",
             "val.ARCH_PACKAGES",
+            "V=s",
         ],
         stdout=PIPE,
         stderr=PIPE,
         check=True,
-        env=environ.copy().update({"TOPDIR": Path().cwd()}),
+        env={**environ, "TOPDIR": str(Path.cwd())},
         universal_newlines=True,
     ).stdout.splitlines()
 
