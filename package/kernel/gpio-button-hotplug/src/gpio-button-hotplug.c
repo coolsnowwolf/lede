@@ -25,7 +25,11 @@
 #include <linux/input.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
+#include <linux/of.h>
+#include <linux/gpio.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 3, 0)
 #include <linux/of_gpio.h>
+#endif
 #include <linux/of_irq.h>
 #include <linux/gpio_keys.h>
 #include <linux/gpio/consumer.h>
