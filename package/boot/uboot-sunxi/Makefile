@@ -9,10 +9,13 @@
 include $(TOPDIR)/rules.mk
 include $(INCLUDE_DIR)/kernel.mk
 
+PKG_RELEASE:=2
 PKG_VERSION:=2026.04
 PKG_HASH:=ac7c04b8b7004923b00a4e5d6699c5df4d21233bac9fda690d8cfbc209fff2fd
 
 PKG_MAINTAINER:=Zoltan HERPAI <wigyori@uid0.hu>
+
+PKG_BUILD_DEPENDS:=python3/host
 
 include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
@@ -518,6 +521,7 @@ UBOOT_CUSTOMIZE_CONFIG := \
 	--disable TOOLS_MKEFICAPSULE
 
 UBOOT_MAKE_FLAGS += \
+	PYTHON3="$(STAGING_DIR_HOSTPKG)/bin/python3" \
 	BL31=$(STAGING_DIR_IMAGE)/bl31_sunxi-$(ATF).bin SCP=/dev/null
 
 define Build/InstallDev
