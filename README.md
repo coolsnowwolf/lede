@@ -162,12 +162,12 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
    Apple Silicon 上编译 Go 软件包时需要已安装的 Go 进行自举，构建系统会自动从 `PATH` 中查找。
    `python-setuptools` 为仍使用 `distutils` 的软件包构建脚本提供兼容模块。
    `swig` 用于 U-Boot 等组件的 Python FDT 绑定生成。
-   为 U-Boot 的 binman 镜像打包工具准备 Python 依赖：
+   为 U-Boot 的 binman 镜像打包工具和 STM32 的 OP-TEE 构建准备 Python 依赖：
 
    ```bash
    python3 -m venv --system-site-packages ~/.venvs/lede-build
    source ~/.venvs/lede-build/bin/activate
-   python3 -m pip install pyelftools
+   python3 -m pip install pyelftools cryptography
    export PYTHONPATH="$(python3 -c 'import site; print(site.getsitepackages()[0])')${PYTHONPATH:+:$PYTHONPATH}"
    ```
 
