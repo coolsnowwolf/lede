@@ -10,7 +10,7 @@ define Device/buffalo_whr-g301n
   SUPPORTED_DEVICES += whr-g301n
   DEFAULT := n
 endef
-TARGET_DEVICES += buffalo_whr-g301n
+# TARGET_DEVICES += buffalo_whr-g301n # 4 MiB flash is unsupported
 
 define Device/dlink_dap-1720-a1
   $(Device/seama)
@@ -41,7 +41,7 @@ define Device/dlink_dir-615-e4
   SUPPORTED_DEVICES += dir-615-e4
   DEFAULT := n
 endef
-TARGET_DEVICES += dlink_dir-615-e4
+# TARGET_DEVICES += dlink_dir-615-e4 # 4 MiB flash is unsupported
 
 define Device/engenius_eap350-v1
   $(Device/senao_loader_okli)

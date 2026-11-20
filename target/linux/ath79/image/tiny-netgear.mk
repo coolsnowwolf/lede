@@ -12,7 +12,7 @@ define Device/netgear_wnr612-v2
   SUPPORTED_DEVICES += wnr612-v2
   DEFAULT := n
 endef
-TARGET_DEVICES += netgear_wnr612-v2
+# TARGET_DEVICES += netgear_wnr612-v2 # 4 MiB flash is unsupported
 
 define Device/on_n150r
   $(Device/netgear_generic)
@@ -25,7 +25,7 @@ define Device/on_n150r
   SUPPORTED_DEVICES += n150r
   DEFAULT := n
 endef
-TARGET_DEVICES += on_n150r
+# TARGET_DEVICES += on_n150r # 4 MiB flash is unsupported
 
 define Device/netgear_wnr1000-v2
   $(Device/netgear_generic)
@@ -39,7 +39,7 @@ define Device/netgear_wnr1000-v2
   SUPPORTED_DEVICES += wnr1000-v2
   DEFAULT := n
 endef
-TARGET_DEVICES += netgear_wnr1000-v2
+# TARGET_DEVICES += netgear_wnr1000-v2 # 4 MiB flash is unsupported
 
 define Device/netgear_wnr2000-v3
   $(Device/netgear_generic)
@@ -56,4 +56,4 @@ define Device/netgear_wnr2000-v3
   SUPPORTED_DEVICES += wnr2000-v3
   DEFAULT := n
 endef
-TARGET_DEVICES += netgear_wnr2000-v3
+# TARGET_DEVICES += netgear_wnr2000-v3 # 4 MiB flash is unsupported

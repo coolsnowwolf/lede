@@ -59,7 +59,7 @@ define Device/lantiq_easy98000-nand
   DEVICE_PACKAGES := kmod-dm9000 kmod-i2c-lantiq kmod-eeprom-at24
   DEFAULT := n
 endef
-TARGET_DEVICES += lantiq_easy98000-nand
+# TARGET_DEVICES += lantiq_easy98000-nand # firmware partition below 4 MiB is unsupported
 
 define Device/lantiq_easy98000-nor
   DEVICE_VENDOR := Lantiq
@@ -69,7 +69,7 @@ define Device/lantiq_easy98000-nor
   DEVICE_PACKAGES := kmod-dm9000 kmod-i2c-lantiq kmod-eeprom-at24
   DEFAULT := n
 endef
-TARGET_DEVICES += lantiq_easy98000-nor
+# TARGET_DEVICES += lantiq_easy98000-nor # firmware partition below 4 MiB is unsupported
 
 define Device/lantiq_easy98000-sflash
   DEVICE_VENDOR := Lantiq

@@ -8,7 +8,7 @@ define Device/tplink_tl-mr10u
   TPLINK_HWID := 0x00100101
   SUPPORTED_DEVICES += tl-mr10u
 endef
-TARGET_DEVICES += tplink_tl-mr10u
+# TARGET_DEVICES += tplink_tl-mr10u # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3020-v1
   $(Device/tplink-4mlzma)
@@ -20,7 +20,7 @@ define Device/tplink_tl-mr3020-v1
   TPLINK_HWID := 0x30200001
   SUPPORTED_DEVICES += tl-mr3020
 endef
-TARGET_DEVICES += tplink_tl-mr3020-v1
+# TARGET_DEVICES += tplink_tl-mr3020-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3040-v2
   $(Device/tplink-4mlzma)
@@ -31,7 +31,7 @@ define Device/tplink_tl-mr3040-v2
   TPLINK_HWID := 0x30400002
   SUPPORTED_DEVICES += tl-mr3040-v2
 endef
-TARGET_DEVICES += tplink_tl-mr3040-v2
+# TARGET_DEVICES += tplink_tl-mr3040-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3220-v1
   $(Device/tplink-4m)
@@ -42,7 +42,7 @@ define Device/tplink_tl-mr3220-v1
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += tl-mr3220
 endef
-TARGET_DEVICES += tplink_tl-mr3220-v1
+# TARGET_DEVICES += tplink_tl-mr3220-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3420-v1
   $(Device/tplink-4m)
@@ -53,7 +53,7 @@ define Device/tplink_tl-mr3420-v1
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += tl-mr3420
 endef
-TARGET_DEVICES += tplink_tl-mr3420-v1
+# TARGET_DEVICES += tplink_tl-mr3420-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3420-v2
   $(Device/tplink-4mlzma)
@@ -64,7 +64,7 @@ define Device/tplink_tl-mr3420-v2
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
   SUPPORTED_DEVICES += tl-mr3420-v2
 endef
-TARGET_DEVICES += tplink_tl-mr3420-v2
+# TARGET_DEVICES += tplink_tl-mr3420-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-mr3420-v3
   $(Device/tplink-4mlzma)
@@ -74,7 +74,7 @@ define Device/tplink_tl-mr3420-v3
   TPLINK_HWID := 0x34200003
   DEVICE_PACKAGES := kmod-usb2 kmod-usb-ledtrig-usbport
 endef
-TARGET_DEVICES += tplink_tl-mr3420-v3
+# TARGET_DEVICES += tplink_tl-mr3420-v3 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa701nd-v1
   $(Device/tplink-4m)
@@ -84,7 +84,7 @@ define Device/tplink_tl-wa701nd-v1
   TPLINK_HWID := 0x07010001
   SUPPORTED_DEVICES += tl-wa901nd
 endef
-TARGET_DEVICES += tplink_tl-wa701nd-v1
+# TARGET_DEVICES += tplink_tl-wa701nd-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa730re-v1
   $(Device/tplink-4m)
@@ -94,7 +94,7 @@ define Device/tplink_tl-wa730re-v1
   TPLINK_HWID := 0x07300001
   SUPPORTED_DEVICES += tl-wa901nd
 endef
-TARGET_DEVICES += tplink_tl-wa730re-v1
+# TARGET_DEVICES += tplink_tl-wa730re-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa801nd-v1
   $(Device/tplink-4m)
@@ -104,7 +104,7 @@ define Device/tplink_tl-wa801nd-v1
   TPLINK_HWID := 0x08010001
   SUPPORTED_DEVICES += tl-wa901nd
 endef
-TARGET_DEVICES += tplink_tl-wa801nd-v1
+# TARGET_DEVICES += tplink_tl-wa801nd-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa801nd-v3
   $(Device/tplink-4mlzma)
@@ -114,7 +114,7 @@ define Device/tplink_tl-wa801nd-v3
   TPLINK_HWID := 0x08010003
   SUPPORTED_DEVICES += tl-wa801nd-v3
 endef
-TARGET_DEVICES += tplink_tl-wa801nd-v3
+# TARGET_DEVICES += tplink_tl-wa801nd-v3 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa801nd-v4
   $(Device/tplink-4mlzma)
@@ -124,7 +124,7 @@ define Device/tplink_tl-wa801nd-v4
   TPLINK_HWID := 0x08010004
   SUPPORTED_DEVICES += tl-wa801nd-v3
 endef
-TARGET_DEVICES += tplink_tl-wa801nd-v4
+# TARGET_DEVICES += tplink_tl-wa801nd-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa830re-v1
   $(Device/tplink-4m)
@@ -134,7 +134,7 @@ define Device/tplink_tl-wa830re-v1
   TPLINK_HWID := 0x08300010
   SUPPORTED_DEVICES += tl-wa901nd
 endef
-TARGET_DEVICES += tplink_tl-wa830re-v1
+# TARGET_DEVICES += tplink_tl-wa830re-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa850re-v1
   $(Device/tplink-4mlzma)
@@ -145,7 +145,7 @@ define Device/tplink_tl-wa850re-v1
   DEVICE_PACKAGES := rssileds
   SUPPORTED_DEVICES += tl-wa850re
 endef
-TARGET_DEVICES += tplink_tl-wa850re-v1
+# TARGET_DEVICES += tplink_tl-wa850re-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa850re-v2
   $(Device/tplink-safeloader)
@@ -159,7 +159,7 @@ define Device/tplink_tl-wa850re-v2
   SUPPORTED_DEVICES += tl-wa850re-v2
   DEFAULT := n
 endef
-TARGET_DEVICES += tplink_tl-wa850re-v2
+# TARGET_DEVICES += tplink_tl-wa850re-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa860re-v1
   $(Device/tplink-4mlzma)
@@ -169,7 +169,7 @@ define Device/tplink_tl-wa860re-v1
   TPLINK_HWID := 0x08600001
   SUPPORTED_DEVICES += tl-wa860re
 endef
-TARGET_DEVICES += tplink_tl-wa860re-v1
+# TARGET_DEVICES += tplink_tl-wa860re-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa901nd-v1
   $(Device/tplink-4m)
@@ -179,7 +179,7 @@ define Device/tplink_tl-wa901nd-v1
   TPLINK_HWID := 0x09010001
   SUPPORTED_DEVICES += tl-wa901nd
 endef
-TARGET_DEVICES += tplink_tl-wa901nd-v1
+# TARGET_DEVICES += tplink_tl-wa901nd-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa901nd-v2
   $(Device/tplink-4m)
@@ -189,7 +189,7 @@ define Device/tplink_tl-wa901nd-v2
   TPLINK_HWID := 0x09010002
   SUPPORTED_DEVICES += tl-wa901nd-v2
 endef
-TARGET_DEVICES += tplink_tl-wa901nd-v2
+# TARGET_DEVICES += tplink_tl-wa901nd-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa901nd-v3
   $(Device/tplink-4mlzma)
@@ -199,7 +199,7 @@ define Device/tplink_tl-wa901nd-v3
   TPLINK_HWID := 0x09010003
   SUPPORTED_DEVICES += tl-wa901nd-v3
 endef
-TARGET_DEVICES += tplink_tl-wa901nd-v3
+# TARGET_DEVICES += tplink_tl-wa901nd-v3 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa901nd-v4
   $(Device/tplink-4mlzma)
@@ -210,7 +210,7 @@ define Device/tplink_tl-wa901nd-v4
   SUPPORTED_DEVICES += tl-wa901nd-v4
   IMAGE/factory.bin := tplink-v1-image factory -C EU
 endef
-TARGET_DEVICES += tplink_tl-wa901nd-v4
+# TARGET_DEVICES += tplink_tl-wa901nd-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wa901nd-v5
   $(Device/tplink-4mlzma)
@@ -221,7 +221,7 @@ define Device/tplink_tl-wa901nd-v5
   SUPPORTED_DEVICES += tl-wa901nd-v5
   IMAGE/factory.bin := tplink-v1-image factory -C EU
 endef
-TARGET_DEVICES += tplink_tl-wa901nd-v5
+# TARGET_DEVICES += tplink_tl-wa901nd-v5 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr703n
   $(Device/tplink-4mlzma)
@@ -231,7 +231,7 @@ define Device/tplink_tl-wr703n
   TPLINK_HWID := 0x07030101
   SUPPORTED_DEVICES += tl-wr703n
 endef
-TARGET_DEVICES += tplink_tl-wr703n
+# TARGET_DEVICES += tplink_tl-wr703n # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr740n-v1
   $(Device/tplink-4m)
@@ -241,7 +241,7 @@ define Device/tplink_tl-wr740n-v1
   TPLINK_HWID := 0x07400001
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr740n-v1
+# TARGET_DEVICES += tplink_tl-wr740n-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr740n-v3
   $(Device/tplink-4m)
@@ -251,7 +251,7 @@ define Device/tplink_tl-wr740n-v3
   TPLINK_HWID := 0x07400003
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr740n-v3
+# TARGET_DEVICES += tplink_tl-wr740n-v3 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr740n-v4
   $(Device/tplink-4mlzma)
@@ -261,7 +261,7 @@ define Device/tplink_tl-wr740n-v4
   TPLINK_HWID := 0x07400004
   SUPPORTED_DEVICES += tl-wr741nd-v4
 endef
-TARGET_DEVICES += tplink_tl-wr740n-v4
+# TARGET_DEVICES += tplink_tl-wr740n-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr740n-v5
   $(Device/tplink-4mlzma)
@@ -271,7 +271,7 @@ define Device/tplink_tl-wr740n-v5
   TPLINK_HWID := 0x07400005
   SUPPORTED_DEVICES += tl-wr741nd-v4
 endef
-TARGET_DEVICES += tplink_tl-wr740n-v5
+# TARGET_DEVICES += tplink_tl-wr740n-v5 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr741-v1
   $(Device/tplink-4m)
@@ -281,7 +281,7 @@ define Device/tplink_tl-wr741-v1
   TPLINK_HWID := 0x07410001
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr741-v1
+# TARGET_DEVICES += tplink_tl-wr741-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr741nd-v4
   $(Device/tplink-4mlzma)
@@ -291,7 +291,7 @@ define Device/tplink_tl-wr741nd-v4
   TPLINK_HWID := 0x07410004
   SUPPORTED_DEVICES += tl-wr741nd-v4
 endef
-TARGET_DEVICES += tplink_tl-wr741nd-v4
+# TARGET_DEVICES += tplink_tl-wr741nd-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr743nd-v1
   $(Device/tplink-4m)
@@ -301,7 +301,7 @@ define Device/tplink_tl-wr743nd-v1
   TPLINK_HWID := 0x07430001
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr743nd-v1
+# TARGET_DEVICES += tplink_tl-wr743nd-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr802n-v1
   $(Device/tplink-4mlzma)
@@ -311,7 +311,7 @@ define Device/tplink_tl-wr802n-v1
   TPLINK_HWID := 0x08020001
   SUPPORTED_DEVICES += tl-wr802n-v1
 endef
-TARGET_DEVICES += tplink_tl-wr802n-v1
+# TARGET_DEVICES += tplink_tl-wr802n-v1 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr802n-v2
   $(Device/tplink-4mlzma)
@@ -325,7 +325,7 @@ define Device/tplink_tl-wr802n-v2
   IMAGE/factory-us.bin := tplink-v1-image factory -C US
   IMAGE/factory-eu.bin := tplink-v1-image factory -C EU
 endef
-TARGET_DEVICES += tplink_tl-wr802n-v2
+# TARGET_DEVICES += tplink_tl-wr802n-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v5
   $(Device/tplink-4m)
@@ -335,7 +335,7 @@ define Device/tplink_tl-wr841-v5
   TPLINK_HWID := 0x08410005
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr841-v5
+# TARGET_DEVICES += tplink_tl-wr841-v5 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v7
   $(Device/tplink-4m)
@@ -345,7 +345,7 @@ define Device/tplink_tl-wr841-v7
   TPLINK_HWID := 0x08410007
   SUPPORTED_DEVICES += tl-wr841n-v7
 endef
-TARGET_DEVICES += tplink_tl-wr841-v7
+# TARGET_DEVICES += tplink_tl-wr841-v7 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v8
   $(Device/tplink-4mlzma)
@@ -355,7 +355,7 @@ define Device/tplink_tl-wr841-v8
   TPLINK_HWID := 0x08410008
   SUPPORTED_DEVICES += tl-wr841n-v8
 endef
-TARGET_DEVICES += tplink_tl-wr841-v8
+# TARGET_DEVICES += tplink_tl-wr841-v8 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v9
   $(Device/tplink-4mlzma)
@@ -365,7 +365,7 @@ define Device/tplink_tl-wr841-v9
   TPLINK_HWID := 0x08410009
   SUPPORTED_DEVICES += tl-wr841n-v9
 endef
-TARGET_DEVICES += tplink_tl-wr841-v9
+# TARGET_DEVICES += tplink_tl-wr841-v9 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v10
   $(Device/tplink-4mlzma)
@@ -375,7 +375,7 @@ define Device/tplink_tl-wr841-v10
   TPLINK_HWID := 0x08410010
   SUPPORTED_DEVICES += tl-wr841n-v9
 endef
-TARGET_DEVICES += tplink_tl-wr841-v10
+# TARGET_DEVICES += tplink_tl-wr841-v10 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v11
   $(Device/tplink-4mlzma)
@@ -388,7 +388,7 @@ define Device/tplink_tl-wr841-v11
   IMAGE/factory-us.bin := tplink-v1-image factory -C US
   IMAGE/factory-eu.bin := tplink-v1-image factory -C EU
 endef
-TARGET_DEVICES += tplink_tl-wr841-v11
+# TARGET_DEVICES += tplink_tl-wr841-v11 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr841-v12
   $(Device/tplink-4mlzma)
@@ -401,7 +401,7 @@ define Device/tplink_tl-wr841-v12
   IMAGE/factory-us.bin := tplink-v1-image factory -C US
   IMAGE/factory-eu.bin := tplink-v1-image factory -C EU
 endef
-TARGET_DEVICES += tplink_tl-wr841-v12
+# TARGET_DEVICES += tplink_tl-wr841-v12 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr940n-v3
   $(Device/tplink-4mlzma)
@@ -411,7 +411,7 @@ define Device/tplink_tl-wr940n-v3
   TPLINK_HWID := 0x09410006
   SUPPORTED_DEVICES += tl-wr941nd-v6
 endef
-TARGET_DEVICES += tplink_tl-wr940n-v3
+# TARGET_DEVICES += tplink_tl-wr940n-v3 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr940n-v4
   $(Device/tplink-4mlzma)
@@ -425,7 +425,7 @@ define Device/tplink_tl-wr940n-v4
   IMAGE/factory-eu.bin := tplink-v1-image factory -C EU
   IMAGE/factory-br.bin := tplink-v1-image factory -C BR
 endef
-TARGET_DEVICES += tplink_tl-wr940n-v4
+# TARGET_DEVICES += tplink_tl-wr940n-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr940n-v6
   $(Device/tplink-4mlzma)
@@ -439,7 +439,7 @@ define Device/tplink_tl-wr940n-v6
   IMAGE/factory-eu.bin := tplink-v1-image factory -C EU
   IMAGE/factory-br.bin := tplink-v1-image factory -C BR
 endef
-TARGET_DEVICES += tplink_tl-wr940n-v6
+# TARGET_DEVICES += tplink_tl-wr940n-v6 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr941-v2
   $(Device/tplink-4m)
@@ -453,7 +453,7 @@ define Device/tplink_tl-wr941-v2
   TPLINK_HWREV := 2
   SUPPORTED_DEVICES += tl-wr941nd
 endef
-TARGET_DEVICES += tplink_tl-wr941-v2
+# TARGET_DEVICES += tplink_tl-wr941-v2 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr941-v4
   $(Device/tplink-4m)
@@ -466,7 +466,7 @@ define Device/tplink_tl-wr941-v4
   TPLINK_HWID := 0x09410004
   SUPPORTED_DEVICES += tl-wr741nd
 endef
-TARGET_DEVICES += tplink_tl-wr941-v4
+# TARGET_DEVICES += tplink_tl-wr941-v4 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr941nd-v6
   $(Device/tplink-4mlzma)
@@ -476,7 +476,7 @@ define Device/tplink_tl-wr941nd-v6
   TPLINK_HWID := 0x09410006
   SUPPORTED_DEVICES += tl-wr941nd-v6
 endef
-TARGET_DEVICES += tplink_tl-wr941nd-v6
+# TARGET_DEVICES += tplink_tl-wr941nd-v6 # 4 MiB flash is unsupported
 
 define Device/tplink_tl-wr941n-v7-cn
   $(Device/tplink-4mlzma)
@@ -485,4 +485,4 @@ define Device/tplink_tl-wr941n-v7-cn
   DEVICE_VARIANT := v7 (CN)
   TPLINK_HWID := 0x09410007
 endef
-TARGET_DEVICES += tplink_tl-wr941n-v7-cn
+# TARGET_DEVICES += tplink_tl-wr941n-v7-cn # 4 MiB flash is unsupported

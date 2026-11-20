@@ -32,7 +32,7 @@ define Device/arcadyan_arv4519pw
   SUPPORTED_DEVICES += ARV4519PW
   DEFAULT := n
 endef
-TARGET_DEVICES += arcadyan_arv4519pw
+# TARGET_DEVICES += arcadyan_arv4519pw # firmware partition below 4 MiB is unsupported
 
 define Device/arcadyan_arv7506pw11
   DEVICE_VENDOR := Arcadyan
@@ -114,7 +114,7 @@ define Device/arcadyan_arv7525pw
   SUPPORTED_DEVICES += ARV4510PW
   DEFAULT := n
 endef
-TARGET_DEVICES += arcadyan_arv7525pw
+# TARGET_DEVICES += arcadyan_arv7525pw # firmware partition below 4 MiB is unsupported
 
 define Device/arcadyan_arv752dpw
   DEVICE_VENDOR := Arcadyan
@@ -207,7 +207,7 @@ define Device/lantiq_easy50712
   IMAGE_SIZE := 3776k
   DEFAULT := n
 endef
-TARGET_DEVICES += lantiq_easy50712
+# TARGET_DEVICES += lantiq_easy50712 # firmware partition below 4 MiB is unsupported
 
 define Device/siemens_gigaset-sx76x
   DEVICE_VENDOR := Siemens
