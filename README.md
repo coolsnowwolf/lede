@@ -215,6 +215,10 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
 
    UML（User Mode Linux）目标仅支持 Linux x86_64 主机构建，不适用于本节的 macOS 原生构建流程。
 
+   小容量设备仅支持 ROM 至少 8 MiB 的机型；4 MiB 及以下不再纳入支持范围，对应的 ath79、ramips 设备 profile 已屏蔽。Lantiq 固件分区不足 4 MiB 的设备 profile 也已屏蔽；`ase`、`xway_legacy` 已从子目标选择中移除。不会通过扩大分区绕过设备容量限制。
+
+   8 MiB 设备需在 `make menuconfig` 中裁减可选应用：关闭 SSR Plus 及其专用依赖、DDNS、UPnP、FTP、KMS 和流量统计等，保留基本 LuCI 管理、防火墙、SSH 和设备驱动；镜像仍超限时，可将 Design 主题替换为体积较小的 Bootstrap 主题。TLS 可选用 mbedTLS，避免同时引入 OpenSSL；裁减后仍须确认所选设备的正常 sysupgrade 镜像生成成功且未超过原分区容量。
+
 ## 特别提示
 
 1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒，安全干净才是固件应该做到的。
