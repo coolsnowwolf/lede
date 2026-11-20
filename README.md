@@ -219,6 +219,8 @@ PS > git clone https://github.com/coolsnowwolf/lede <your_local_lede_path>
 
    8 MiB 设备需在 `make menuconfig` 中裁减可选应用：关闭 SSR Plus 及其专用依赖、DDNS、UPnP、FTP、KMS 和流量统计等，保留基本 LuCI 管理、防火墙、SSH 和设备驱动；镜像仍超限时，可将 Design 主题替换为体积较小的 Bootstrap 主题。TLS 可选用 mbedTLS，避免同时引入 OpenSSL；裁减后仍须确认所选设备的正常 sysupgrade 镜像生成成功且未超过原分区容量。
 
+   对于仍然超限的 8 MiB 设备（如部分 Lantiq xway），还需按用途裁减可选网络模块，以及内核调试、跟踪、cgroups、MPTCP、swap 和 core dump 等功能，并启用内核体积优化。保留设备所需的 DSL、无线、IPv6、防火墙和进程隔离功能；每次修改后重新完整编译并检查正常升级镜像，不能仅凭 initramfs 镜像或 `make` 退出码判断通过。
+
 ## 特别提示
 
 1. 源代码中绝不含任何后门和可以监控或者劫持你的 HTTPS 的闭源软件， SSL 安全是互联网最后的壁垒，安全干净才是固件应该做到的。
