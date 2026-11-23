@@ -113,11 +113,10 @@ accounting interfaces while retaining flowtable connection ownership.
  struct flow_offload {
  	struct flow_offload_tuple_rhash		tuplehash[FLOW_OFFLOAD_DIR_MAX];
  	struct nf_conn				*ct;
-@@ -203,7 +234,23 @@
+@@ -203,8 +234,24 @@
  	u16					type;
  	u32					timeout;
  	struct rcu_head				rcu_head;
--};
 +	/* Protects worker updates and diagnostic snapshots, not packet hints. */
 +	spinlock_t				hw_lock;
 +	struct nf_flow_hw_dir			hw[FLOW_OFFLOAD_DIR_MAX];
@@ -129,15 +128,16 @@ accounting interfaces while retaining flowtable connection ownership.
 +	bool summary_active;
 +	bool summary_hw;
 +#endif
-+};
-+
+ };
+ 
 +static inline bool nf_flow_offload_has_hw(const struct flow_offload *flow)
 +{
 +	return READ_ONCE(flow->hw_mask) != 0;
 +}
- 
++
  #define NF_FLOW_TIMEOUT (30 * HZ)
  #define nf_flowtable_time_stamp	(u32)jiffies
+ 
 @@ -318,6 +365,13 @@
  	return dst_check(tuple->dst_cache, tuple->dst_cookie);
  }
@@ -184,15 +184,14 @@ accounting interfaces while retaining flowtable connection ownership.
  void nf_flow_table_fini_proc(struct net *net);
 --- a/include/net/netns/flow_table.h
 +++ b/include/net/netns/flow_table.h
-@@ -1,6 +1,7 @@
- /* SPDX-License-Identifier: GPL-2.0 */
+@@ -2,13 +2,19 @@
  #ifndef __NETNS_FLOW_TABLE_H
  #define __NETNS_FLOW_TABLE_H
-+
  
++
  struct nf_flow_table_stat {
  	unsigned int count_wq_add;
-@@ -8,7 +9,12 @@
+ 	unsigned int count_wq_del;
  	unsigned int count_wq_stats;
  };
  
@@ -366,15 +365,14 @@ accounting interfaces while retaining flowtable connection ownership.
  static void nf_flow_offload_work_gc(struct work_struct *work)
  {
 -	struct nf_flowtable *flow_table;
--
--	flow_table = container_of(work, struct nf_flowtable, gc_work.work);
--	nf_flow_table_gc_run(flow_table);
--	queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
 +	struct nf_flowtable *table = container_of(work, struct nf_flowtable, gc_work.work);
 +#ifdef CONFIG_NF_FLOW_TABLE_SUMMARY
 +	u64 now = ktime_to_ms(ktime_get_boottime());
 +	bool due = !table->stats_polled_ms || now - table->stats_polled_ms >= 3000;
-+
+ 
+-	flow_table = container_of(work, struct nf_flowtable, gc_work.work);
+-	nf_flow_table_gc_run(flow_table);
+-	queue_delayed_work(system_power_efficient_wq, &flow_table->gc_work, HZ);
 +	/* Only shared hardware/interface counters use the existing GC cadence.
 +	 * HW/SW connection totals are updated on lifecycle changes, not sampled.
 +	 */
@@ -430,7 +428,7 @@ accounting interfaces while retaining flowtable connection ownership.
  
 --- a/net/netfilter/nf_flow_table_ip.c
 +++ b/net/netfilter/nf_flow_table_ip.c
-@@ -511,6 +511,9 @@
+@@ -512,6 +512,9 @@
  
  	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
  		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
@@ -440,7 +438,7 @@ accounting interfaces while retaining flowtable connection ownership.
  
  	return 1;
  }
-@@ -1106,6 +1109,9 @@
+@@ -1108,6 +1111,9 @@
  
  	if (flow_table->flags & NF_FLOWTABLE_COUNTER)
  		nf_ct_acct_update(flow->ct, tuplehash->tuple.dir, skb->len);
@@ -546,51 +544,35 @@ accounting interfaces while retaining flowtable connection ownership.
  }
  
 -static void nf_flow_offload_destroy(struct nf_flow_rule *flow_rule[])
--{
--	int i;
--
--	for (i = 0; i < FLOW_OFFLOAD_DIR_MAX; i++)
--		__nf_flow_offload_destroy(flow_rule[i]);
--}
--
--static int nf_flow_offload_alloc(const struct flow_offload_work *offload,
--				 struct nf_flow_rule *flow_rule[])
--{
--	struct net *net = read_pnet(&offload->flowtable->net);
--
--	flow_rule[0] = nf_flow_offload_rule_alloc(net, offload,
--						  FLOW_OFFLOAD_DIR_ORIGINAL);
--	if (!flow_rule[0])
--		return -ENOMEM;
--
--	flow_rule[1] = nf_flow_offload_rule_alloc(net, offload,
--						  FLOW_OFFLOAD_DIR_REPLY);
--	if (!flow_rule[1]) {
--		__nf_flow_offload_destroy(flow_rule[0]);
--		return -ENOMEM;
--	}
--
--	return 0;
--}
 +#ifdef CONFIG_NF_FLOW_TABLE_SUMMARY
 +static void nf_flow_stats_scope_get(const struct flow_stats_scope *scope)
-+{
+ {
+-	int i;
 +	nf_flow_summary_scope_get(scope->owner);
 +	__module_get(THIS_MODULE);
 +}
-+
+ 
+-	for (i = 0; i < FLOW_OFFLOAD_DIR_MAX; i++)
+-		__nf_flow_offload_destroy(flow_rule[i]);
 +static void nf_flow_stats_scope_put(const struct flow_stats_scope *scope)
 +{
 +	nf_flow_summary_scope_put(scope->owner);
 +	module_put(THIS_MODULE);
-+}
-+
+ }
+ 
+-static int nf_flow_offload_alloc(const struct flow_offload_work *offload,
+-				 struct nf_flow_rule *flow_rule[])
 +static void nf_flow_stats_scope_account(const struct flow_stats_scope *scope,
 +				      u64 packets, u64 bytes)
-+{
+ {
+-	struct net *net = read_pnet(&offload->flowtable->net);
 +	struct net *net;
 +	int d;
-+
+ 
+-	flow_rule[0] = nf_flow_offload_rule_alloc(net, offload,
+-						  FLOW_OFFLOAD_DIR_ORIGINAL);
+-	if (!flow_rule[0])
+-		return -ENOMEM;
 +	/* Shared bytes only update bypassed PPP/macvlan interface counters. */
 +	rcu_read_lock();
 +	net = nf_flow_summary_scope_net(scope->owner);
@@ -600,7 +582,12 @@ accounting interfaces while retaining flowtable connection ownership.
 +		struct pcpu_sw_netstats *tstats;
 +		struct net_device *dev;
 +		u32 lower = scope->path[d * 2], upper = scope->path[d * 2 + 1];
-+
+ 
+-	flow_rule[1] = nf_flow_offload_rule_alloc(net, offload,
+-						  FLOW_OFFLOAD_DIR_REPLY);
+-	if (!flow_rule[1]) {
+-		__nf_flow_offload_destroy(flow_rule[0]);
+-		return -ENOMEM;
 +		if (!upper || upper == lower)
 +			continue;
 +		dev = dev_get_by_index_rcu(net, upper);
@@ -618,20 +605,20 @@ accounting interfaces while retaining flowtable connection ownership.
 +		}
 +		u64_stats_update_end(&tstats->syncp);
 +		local_bh_enable();
-+	}
+ 	}
+-
+-	return 0;
 +unlock:
 +	rcu_read_unlock();
-+}
+ }
 +#endif
  
  static void nf_flow_offload_init(struct flow_cls_offload *cls_flow,
  				 __be16 proto, int priority,
-@@ -896,6 +942,109 @@
- 	cls_flow->common.extack = extack;
- 	cls_flow->command = cmd;
+@@ -898,140 +944,346 @@
  	cls_flow->cookie = (unsigned long)tuple;
-+}
-+
+ }
+ 
 +static bool nf_flow_hw_dir_due(const struct nf_flow_hw_dir *hw)
 +{
 +	u8 state = READ_ONCE(hw->state);
@@ -733,10 +720,11 @@ accounting interfaces while retaining flowtable connection ownership.
 +	default:
 +		return "hardware callback failed";
 +	}
- }
- 
++}
++
  static int nf_flow_offload_tuple(struct nf_flowtable *flowtable,
-@@ -904,134 +1053,237 @@
+ 				 struct flow_offload *flow,
+ 				 struct nf_flow_rule *flow_rule,
  				 enum flow_offload_tuple_dir dir,
  				 int priority, int cmd,
  				 struct flow_stats *stats,
@@ -833,30 +821,31 @@ accounting interfaces while retaining flowtable connection ownership.
  				     offload->flowtable->priority,
 -				     FLOW_CLS_REPLACE, NULL,
 -				     &offload->flowtable->flow_block.cb_list);
--}
--
--static void flow_offload_tuple_del(struct flow_offload_work *offload,
--				   enum flow_offload_tuple_dir dir)
--{
--	nf_flow_offload_tuple(offload->flowtable, offload->flow, NULL, dir,
 +				     FLOW_CLS_REPLACE, stats,
 +				     &offload->flowtable->flow_block.cb_list, result);
-+}
-+
+ }
+ 
+-static void flow_offload_tuple_del(struct flow_offload_work *offload,
+-				   enum flow_offload_tuple_dir dir)
 +static int flow_offload_tuple_del(struct flow_offload_work *offload,
 +				  enum flow_offload_tuple_dir dir,
 +				  struct flow_stats *stats,
 +				  struct nf_flow_hw_result *result)
-+{
+ {
+-	nf_flow_offload_tuple(offload->flowtable, offload->flow, NULL, dir,
 +	return nf_flow_offload_tuple(offload->flowtable, offload->flow, NULL, dir,
  			      offload->flowtable->priority,
 -			      FLOW_CLS_DESTROY, NULL,
 -			      &offload->flowtable->flow_block.cb_list);
--}
--
++			      FLOW_CLS_DESTROY, stats,
++			      &offload->flowtable->flow_block.cb_list, result);
+ }
+ 
 -static int flow_offload_rule_add(struct flow_offload_work *offload,
 -				 struct nf_flow_rule *flow_rule[])
--{
++static void flow_offload_stats_account(struct flow_offload_work *offload,
++				       int dir, const struct flow_stats *stats)
+ {
 -	int ok_count = 0;
 -
 -	ok_count += flow_offload_tuple_add(offload, flow_rule[0],
@@ -868,13 +857,6 @@ accounting interfaces while retaining flowtable connection ownership.
 -		return -ENOENT;
 -
 -	return 0;
-+			      FLOW_CLS_DESTROY, stats,
-+			      &offload->flowtable->flow_block.cb_list, result);
-+}
-+
-+static void flow_offload_stats_account(struct flow_offload_work *offload,
-+				       int dir, const struct flow_stats *stats)
-+{
 +	if (!stats->pkts)
 +		return;
 +	if (offload->flowtable->flags & NF_FLOWTABLE_COUNTER)
@@ -919,9 +901,6 @@ accounting interfaces while retaining flowtable connection ownership.
 -	if (test_bit(NF_FLOW_HW_BIDIRECTIONAL, &offload->flow->flags))
 -		flow_offload_tuple_del(offload, FLOW_OFFLOAD_DIR_REPLY);
 -	set_bit(NF_FLOW_HW_DEAD, &offload->flow->flags);
--}
--
--static void flow_offload_tuple_stats(struct flow_offload_work *offload,
 +	for (dir = 0; dir < FLOW_OFFLOAD_DIR_MAX; dir++) {
 +		if (dir == FLOW_OFFLOAD_DIR_REPLY &&
 +		    !test_bit(NF_FLOW_HW_BIDIRECTIONAL, &flow->flags))
@@ -939,19 +918,19 @@ accounting interfaces while retaining flowtable connection ownership.
 +		nf_flow_hw_record(flow, dir, &result, true);
 +	}
 +	nf_flow_hw_sync(flow);
-+}
-+
+ }
+ 
+-static void flow_offload_tuple_stats(struct flow_offload_work *offload,
 +static int flow_offload_tuple_stats(struct flow_offload_work *offload,
  				     enum flow_offload_tuple_dir dir,
 -				     struct flow_stats *stats)
--{
++				     struct flow_stats *stats,
++				     struct nf_flow_hw_result *result)
+ {
 -	nf_flow_offload_tuple(offload->flowtable, offload->flow, NULL, dir,
 -			      offload->flowtable->priority,
 -			      FLOW_CLS_STATS, stats,
 -			      &offload->flowtable->flow_block.cb_list);
-+				     struct flow_stats *stats,
-+				     struct nf_flow_hw_result *result)
-+{
 +	return nf_flow_offload_tuple(offload->flowtable, offload->flow, NULL, dir,
 +				    offload->flowtable->priority,
 +				    FLOW_CLS_STATS, stats,
@@ -1008,7 +987,6 @@ accounting interfaces while retaining flowtable connection ownership.
 -			nf_ct_acct_add(offload->flow->ct,
 -				       FLOW_OFFLOAD_DIR_REPLY,
 -				       stats[1].pkts, stats[1].bytes);
--	}
 +	for (dir = 0; dir < FLOW_OFFLOAD_DIR_MAX; dir++)
 +		flow_offload_stats_account(offload, dir, &stats[dir]);
 +}
@@ -1044,7 +1022,7 @@ accounting interfaces while retaining flowtable connection ownership.
 +		}
 +		WRITE_ONCE(flow->hw[dir].retry_at, 0);
 +		spin_unlock_bh(&flow->hw_lock);
-+	}
+ 	}
 +	nf_flow_hw_sync(flow);
 +	/* Software teardown is complete; quarantined resources belong to driver. */
 +	set_bit(NF_FLOW_HW_DEAD, &flow->flags);
@@ -1066,7 +1044,7 @@ accounting interfaces while retaining flowtable connection ownership.
  	offload = nf_flow_offload_work_alloc(flowtable, flow, FLOW_CLS_REPLACE);
  	if (!offload)
  		return;
-@@ -1150,18 +1410,90 @@
+@@ -1150,19 +1410,91 @@
  			   struct flow_offload *flow)
  {
  	struct flow_offload_work *offload;
@@ -1079,7 +1057,7 @@ accounting interfaces while retaining flowtable connection ownership.
 -	if ((delta >= (9 * flow_offload_get_timeout(flow)) / 10))
 +	if (!nf_flow_offload_has_hw(flow))
  		return;
-+
+ 
 +#ifdef CONFIG_NF_FLOW_TABLE_SUMMARY
 +	if (flowtable->stats_aggregate) {
 +		u64 next = READ_ONCE(flow->hw_stats_next);
@@ -1106,7 +1084,7 @@ accounting interfaces while retaining flowtable connection ownership.
 +		if (delta >= (9 * flow_offload_get_timeout(flow)) / 10)
 +			return;
 +	}
- 
++
  	offload = nf_flow_offload_work_alloc(flowtable, flow, FLOW_CLS_STATS);
  	if (!offload)
  		return;
@@ -1117,7 +1095,7 @@ accounting interfaces while retaining flowtable connection ownership.
 +#endif
  	flow_offload_queue_work(offload);
  }
-+
+ 
 +#ifdef CONFIG_NF_FLOW_TABLE_SUMMARY
 +bool nf_flow_offload_stats_aggregate(struct nf_flowtable *table)
 +{
@@ -1157,17 +1135,18 @@ accounting interfaces while retaining flowtable connection ownership.
 +	flush_workqueue(nf_flow_offload_stats_wq);
 +}
 +#endif
- 
++
  void nf_flow_table_offload_flush_cleanup(struct nf_flowtable *flowtable)
  {
-@@ -1170,6 +1502,7 @@
- 		nf_flow_table_gc_run(flowtable);
+ 	if (nf_flowtable_hw_offload(flowtable)) {
+@@ -1171,6 +1503,7 @@
  	}
  }
-+
  
++
  void nf_flow_table_offload_flush(struct nf_flowtable *flowtable)
  {
+ 	if (nf_flowtable_hw_offload(flowtable)) {
 @@ -1279,6 +1612,16 @@
  	if (!nf_flowtable_hw_offload(flowtable))
  		return nf_flow_offload_xdp_setup(flowtable, dev, cmd);
