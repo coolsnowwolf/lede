@@ -33,7 +33,7 @@ PATCH_DIR:=./patchs
 endif
 endif
 
-PKG_RELEASE:=$(if $(CONFIG_TARGET_qualcommbe),26,6)
+PKG_RELEASE:=$(if $(CONFIG_TARGET_qualcommbe),27,7)
 PKG_LICENSE:=GPL-2.0-only
 PKG_LICENSE_FILES:=COPYING
 
