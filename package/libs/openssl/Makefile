@@ -8,10 +8,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=openssl
-PKG_VERSION:=3.6.4
+PKG_VERSION:=3.5.9
 PKG_RELEASE:=2
-PKG_USE_MIPS16:=0
-PKG_BUILD_FLAGS:=gc-sections no-lto
+PKG_BUILD_FLAGS:=no-mips16 gc-sections no-lto
 
 PKG_BUILD_PARALLEL:=1
 
@@ -22,7 +21,7 @@ PKG_SOURCE_URL:= \
 	https://www.openssl.org/source/old/$(PKG_BASE)/ \
 	https://github.com/openssl/openssl/releases/download/$(PKG_NAME)-$(PKG_VERSION)/
 
-PKG_HASH:=9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef
+PKG_HASH:=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 
 PKG_LICENSE:=Apache-2.0
 PKG_LICENSE_FILES:=LICENSE.txt
@@ -38,6 +37,7 @@ PKG_CONFIG_DEPENDS:= \
 	CONFIG_OPENSSL_OPTIMIZE_SPEED \
 	CONFIG_OPENSSL_PREFER_CHACHA_OVER_GCM \
 	CONFIG_OPENSSL_SMALL_FOOTPRINT \
+	CONFIG_OPENSSL_KTLS \
 	CONFIG_OPENSSL_WITH_ARIA \
 	CONFIG_OPENSSL_WITH_ASM \
 	CONFIG_OPENSSL_WITH_ASYNC \
@@ -294,6 +294,10 @@ ifeq ($(CONFIG_OPENSSL_SMALL_FOOTPRINT),y)
   OPENSSL_OPTIONS += -DOPENSSL_SMALL_FOOTPRINT
 endif
 
+ifdef CONFIG_OPENSSL_KTLS
+  OPENSSL_OPTIONS += enable-ktls
+endif
+
 ifdef CONFIG_OPENSSL_ENGINE
   ifdef CONFIG_OPENSSL_ENGINE_BUILTIN
     OPENSSL_OPTIONS += disable-dynamic-engine
@@ -357,34 +361,33 @@ OPENSSL_TARGET:=linux-$(call qstrip,$(CONFIG_ARCH))-openwrt
 
 STAMP_CONFIGURED := $(STAMP_CONFIGURED)_$(shell echo $(OPENSSL_OPTIONS) | $(MKHASH) md5)
 
+TARGET_CFLAGS += $(FPIC)
+TARGET_LDFLAGS += -Wl,--as-needed
+
 define Build/Configure
 	(cd $(PKG_BUILD_DIR); \
+		CC="gcc" \
+		CFLAGS="$(TARGET_CFLAGS)" \
+		CPPFLAGS="$(TARGET_CPPFLAGS)" \
+		LDFLAGS="$(TARGET_LDFLAGS)" \
 		./Configure $(OPENSSL_TARGET) \
 			--prefix=/usr \
 			--libdir=lib \
 			--openssldir=/etc/ssl \
 			--cross-compile-prefix="$(TARGET_CROSS)" \
-			$(TARGET_CFLAGS) \
-			$(TARGET_CPPFLAGS) \
-			$(TARGET_LDFLAGS) \
 			$(OPENSSL_OPTIONS) && \
 		{ [ -f $(STAMP_CONFIGURED) ] || make clean; } \
 	)
 endef
 
-TARGET_CFLAGS += $(FPIC)
-
 define Build/Compile
 	+$(MAKE) $(PKG_JOBS) -C $(PKG_BUILD_DIR) \
 		CC="$(TARGET_CC)" \
 		SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
-		OPENWRT_OPTIMIZATION_FLAGS="$(TARGET_CFLAGS)" \
-		$(OPENSSL_MAKEFLAGS) \
 		all
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CC="$(TARGET_CC)" \
 		DESTDIR="$(PKG_INSTALL_DIR)" \
-		$(OPENSSL_MAKEFLAGS) \
 		install_sw install_ssldirs
 endef
 
