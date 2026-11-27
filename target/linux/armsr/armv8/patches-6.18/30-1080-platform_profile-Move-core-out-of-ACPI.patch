@@ -77,7 +77,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
  obj-$(CONFIG_MELLANOX_PLATFORM)	+= mellanox/
 --- a/drivers/acpi/platform_profile.c
 +++ /dev/null
-@@ -1,731 +0,0 @@
+@@ -1,747 +0,0 @@
 -// SPDX-License-Identifier: GPL-2.0-or-later
 -
 -/* Platform profile sysfs interface */
@@ -88,15 +88,25 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -#include <linux/bits.h>
 -#include <linux/cleanup.h>
 -#include <linux/init.h>
+-#include <linux/list.h>
 -#include <linux/mutex.h>
 -#include <linux/platform_profile.h>
 -#include <linux/sysfs.h>
 -
 -#define to_pprof_handler(d)	(container_of(d, struct platform_profile_handler, dev))
 -
+-/*
+- * Protects profile_handlers membership and serializes profile operations
+- * against each other and handler removal. Never held across sysfs teardown,
+- * which can wait for callbacks that acquire this lock.
+- */
 -static DEFINE_MUTEX(profile_lock);
+-/* Serialize registration and sysfs updates without blocking sysfs callbacks. */
+-static DEFINE_MUTEX(profile_registration_lock);
+-static LIST_HEAD(profile_handlers);
 -
 -struct platform_profile_handler {
+-	struct list_head node;
 -	const char *name;
 -	struct device dev;
 -	int minor;
@@ -128,6 +138,23 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -{
 -	if (acpi_kobj)
 -		sysfs_notify(acpi_kobj, NULL, "platform_profile");
+-}
+-
+-static int profile_for_each_handler(void *data,
+-				    int (*fn)(struct device *dev, void *data))
+-{
+-	struct platform_profile_handler *handler;
+-	int ret;
+-
+-	lockdep_assert_held(&profile_lock);
+-
+-	list_for_each_entry(handler, &profile_handlers, node) {
+-		ret = fn(&handler->dev, data);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	return 0;
 -}
 -
 -/**
@@ -392,20 +419,18 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -	int err;
 -
 -	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
--		err = class_for_each_device(&platform_profile_class, NULL,
--					    &data, _aggregate_choices);
+-		err = profile_for_each_handler(&data, _aggregate_choices);
 -		if (err)
 -			return err;
 -		if (data.count == 1) {
--			err = class_for_each_device(&platform_profile_class, NULL,
--						    &data, _remove_hidden_choices);
+-			err = profile_for_each_handler(&data, _remove_hidden_choices);
 -			if (err)
 -				return err;
 -		}
 -	}
 -
 -	/* no profile handler registered any more */
--	if (bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
+-	if (!data.count || bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
 -		return -EINVAL;
 -
 -	return _commmon_choices_show(data.aggregate, buf);
@@ -470,8 +495,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -	int err;
 -
 -	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
--		err = class_for_each_device(&platform_profile_class, NULL,
--					    &profile, _aggregate_profiles);
+-		err = profile_for_each_handler(&profile, _aggregate_profiles);
 -		if (err)
 -			return err;
 -	}
@@ -509,15 +533,13 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -		return -EINVAL;
 -
 -	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
--		ret = class_for_each_device(&platform_profile_class, NULL,
--					    &data, _aggregate_choices);
+-		ret = profile_for_each_handler(&data, _aggregate_choices);
 -		if (ret)
 -			return ret;
--		if (!test_bit(i, data.aggregate))
+-		if (!data.count || !test_bit(i, data.aggregate))
 -			return -EOPNOTSUPP;
 -
--		ret = class_for_each_device(&platform_profile_class, NULL, &i,
--					    _store_and_notify);
+-		ret = profile_for_each_handler(&i, _store_and_notify);
 -		if (ret)
 -			return ret;
 -	}
@@ -536,22 +558,11 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -	NULL
 -};
 -
--static int profile_class_registered(struct device *dev, const void *data)
--{
--	return 1;
--}
--
 -static umode_t profile_class_is_visible(struct kobject *kobj, struct attribute *attr, int idx)
 -{
--	struct device *dev;
+-	guard(mutex)(&profile_lock);
 -
--	dev = class_find_device(&platform_profile_class, NULL, NULL, profile_class_registered);
--	if (!dev)
--		return 0;
--
--	put_device(dev);
--
--	return attr->mode;
+-	return list_empty(&profile_handlers) ? 0 : attr->mode;
 -}
 -
 -static const struct attribute_group platform_profile_group = {
@@ -596,8 +607,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -	int err;
 -
 -	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
--		err = class_for_each_device(&platform_profile_class, NULL,
--					    &profile, _aggregate_profiles);
+-		err = profile_for_each_handler(&profile, _aggregate_profiles);
 -		if (err)
 -			return err;
 -
@@ -605,8 +615,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -		    profile == PLATFORM_PROFILE_LAST)
 -			return -EINVAL;
 -
--		err = class_for_each_device(&platform_profile_class, NULL,
--					    &data, _aggregate_choices);
+-		err = profile_for_each_handler(&data, _aggregate_choices);
 -		if (err)
 -			return err;
 -
@@ -617,8 +626,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -					  PLATFORM_PROFILE_LAST,
 -					  profile + 1);
 -
--		err = class_for_each_device(&platform_profile_class, NULL, &next,
--					    _store_and_notify);
+-		err = profile_for_each_handler(&next, _store_and_notify);
 -
 -		if (err)
 -			return err;
@@ -676,7 +684,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -		}
 -	}
 -
--	guard(mutex)(&profile_lock);
+-	guard(mutex)(&profile_registration_lock);
 -
 -	/* create class interface for individual handler */
 -	minor = ida_alloc(&platform_profile_ida, GFP_KERNEL);
@@ -697,6 +705,8 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -		put_device(ppdev);
 -		goto cleanup_ida;
 -	}
+-	scoped_guard(mutex, &profile_lock)
+-		list_add_tail(&to_pprof_handler(ppdev)->node, &profile_handlers);
 -
 -	platform_profile_legacy_notify();
 -
@@ -707,6 +717,9 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -	return ppdev;
 -
 -cleanup_cur:
+-	scoped_guard(mutex, &profile_lock)
+-		list_del(&to_pprof_handler(ppdev)->node);
+-
 -	device_unregister(ppdev);
 -
 -cleanup_ida:
@@ -729,7 +742,10 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -
 -	pprof = to_pprof_handler(dev);
 -
--	guard(mutex)(&profile_lock);
+-	guard(mutex)(&profile_registration_lock);
+-
+-	scoped_guard(mutex, &profile_lock)
+-		list_del(&pprof->node);
 -
 -	ida_free(&platform_profile_ida, pprof->minor);
 -	device_unregister(&pprof->dev);
@@ -811,7 +827,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 -MODULE_LICENSE("GPL");
 --- /dev/null
 +++ b/drivers/platform/platform_profile.c
-@@ -0,0 +1,766 @@
+@@ -0,0 +1,759 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +
 +/* Platform profile sysfs interface */
@@ -821,6 +837,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +#include <linux/bits.h>
 +#include <linux/cleanup.h>
 +#include <linux/init.h>
++#include <linux/list.h>
 +#include <linux/mutex.h>
 +#include <linux/platform_profile.h>
 +#include <linux/sysfs.h>
@@ -829,11 +846,29 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +#include <linux/acpi.h>
 +#endif
 +
++static inline struct kobject *platform_profile_acpi_kobj(void)
++{
++#if IS_ENABLED(CONFIG_ACPI)
++	return acpi_kobj;
++#else
++	return NULL;
++#endif
++}
++
 +#define to_pprof_handler(d)	(container_of(d, struct platform_profile_handler, dev))
 +
++/*
++ * Protects profile_handlers membership and serializes profile operations
++ * against each other and handler removal. Never held across sysfs teardown,
++ * which can wait for callbacks that acquire this lock.
++ */
 +static DEFINE_MUTEX(profile_lock);
++/* Serialize registration and sysfs updates without blocking sysfs callbacks. */
++static DEFINE_MUTEX(profile_registration_lock);
++static LIST_HEAD(profile_handlers);
 +
 +struct platform_profile_handler {
++	struct list_head node;
 +	const char *name;
 +	struct device dev;
 +	int minor;
@@ -861,17 +896,28 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +
 +static DEFINE_IDA(platform_profile_ida);
 +
-+#if IS_ENABLED(CONFIG_ACPI)
 +static void platform_profile_legacy_notify(void)
 +{
-+	if (acpi_kobj)
-+		sysfs_notify(acpi_kobj, NULL, "platform_profile");
++	if (platform_profile_acpi_kobj())
++		sysfs_notify(platform_profile_acpi_kobj(), NULL, "platform_profile");
 +}
-+#else
-+static void platform_profile_legacy_notify(void)
++
++static int profile_for_each_handler(void *data,
++				    int (*fn)(struct device *dev, void *data))
 +{
++	struct platform_profile_handler *handler;
++	int ret;
++
++	lockdep_assert_held(&profile_lock);
++
++	list_for_each_entry(handler, &profile_handlers, node) {
++		ret = fn(&handler->dev, data);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
 +}
-+#endif
 +
 +/**
 + * _commmon_choices_show - Show the available profile choices
@@ -1135,20 +1181,18 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	int err;
 +
 +	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-+		err = class_for_each_device(&platform_profile_class, NULL,
-+					    &data, _aggregate_choices);
++		err = profile_for_each_handler(&data, _aggregate_choices);
 +		if (err)
 +			return err;
 +		if (data.count == 1) {
-+			err = class_for_each_device(&platform_profile_class, NULL,
-+						    &data, _remove_hidden_choices);
++			err = profile_for_each_handler(&data, _remove_hidden_choices);
 +			if (err)
 +				return err;
 +		}
 +	}
 +
 +	/* no profile handler registered any more */
-+	if (bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
++	if (!data.count || bitmap_empty(data.aggregate, PLATFORM_PROFILE_LAST))
 +		return -EINVAL;
 +
 +	return _commmon_choices_show(data.aggregate, buf);
@@ -1213,8 +1257,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	int err;
 +
 +	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-+		err = class_for_each_device(&platform_profile_class, NULL,
-+					    &profile, _aggregate_profiles);
++		err = profile_for_each_handler(&profile, _aggregate_profiles);
 +		if (err)
 +			return err;
 +	}
@@ -1252,15 +1295,13 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +		return -EINVAL;
 +
 +	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-+		ret = class_for_each_device(&platform_profile_class, NULL,
-+					    &data, _aggregate_choices);
++		ret = profile_for_each_handler(&data, _aggregate_choices);
 +		if (ret)
 +			return ret;
-+		if (!test_bit(i, data.aggregate))
++		if (!data.count || !test_bit(i, data.aggregate))
 +			return -EOPNOTSUPP;
 +
-+		ret = class_for_each_device(&platform_profile_class, NULL, &i,
-+					    _store_and_notify);
++		ret = profile_for_each_handler(&i, _store_and_notify);
 +		if (ret)
 +			return ret;
 +	}
@@ -1279,22 +1320,11 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	NULL
 +};
 +
-+static int profile_class_registered(struct device *dev, const void *data)
-+{
-+	return 1;
-+}
-+
 +static umode_t profile_class_is_visible(struct kobject *kobj, struct attribute *attr, int idx)
 +{
-+	struct device *dev;
++	guard(mutex)(&profile_lock);
 +
-+	dev = class_find_device(&platform_profile_class, NULL, NULL, profile_class_registered);
-+	if (!dev)
-+		return 0;
-+
-+	put_device(dev);
-+
-+	return attr->mode;
++	return list_empty(&profile_handlers) ? 0 : attr->mode;
 +}
 +
 +static const struct attribute_group platform_profile_group = {
@@ -1302,43 +1332,13 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	.is_visible = profile_class_is_visible,
 +};
 +
-+#if IS_ENABLED(CONFIG_ACPI)
-+static int platform_profile_legacy_create_group(void)
-+{
-+	if (!acpi_kobj)
-+		return 0;
-+
-+	return sysfs_create_group(acpi_kobj, &platform_profile_group);
-+}
-+
 +static int platform_profile_legacy_update_group(void)
 +{
-+	if (!acpi_kobj)
++	if (!platform_profile_acpi_kobj())
 +		return 0;
 +
-+	return sysfs_update_group(acpi_kobj, &platform_profile_group);
++	return sysfs_update_group(platform_profile_acpi_kobj(), &platform_profile_group);
 +}
-+
-+static void platform_profile_legacy_remove_group(void)
-+{
-+	if (acpi_kobj)
-+		sysfs_remove_group(acpi_kobj, &platform_profile_group);
-+}
-+#else
-+static int platform_profile_legacy_create_group(void)
-+{
-+	return 0;
-+}
-+
-+static int platform_profile_legacy_update_group(void)
-+{
-+	return 0;
-+}
-+
-+static void platform_profile_legacy_remove_group(void)
-+{
-+}
-+#endif
 +
 +/**
 + * platform_profile_notify - Notify class device and legacy sysfs interface
@@ -1369,8 +1369,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	int err;
 +
 +	scoped_cond_guard(mutex_intr, return -ERESTARTSYS, &profile_lock) {
-+		err = class_for_each_device(&platform_profile_class, NULL,
-+					    &profile, _aggregate_profiles);
++		err = profile_for_each_handler(&profile, _aggregate_profiles);
 +		if (err)
 +			return err;
 +
@@ -1378,8 +1377,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +		    profile == PLATFORM_PROFILE_LAST)
 +			return -EINVAL;
 +
-+		err = class_for_each_device(&platform_profile_class, NULL,
-+					    &data, _aggregate_choices);
++		err = profile_for_each_handler(&data, _aggregate_choices);
 +		if (err)
 +			return err;
 +
@@ -1390,8 +1388,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +					  PLATFORM_PROFILE_LAST,
 +					  profile + 1);
 +
-+		err = class_for_each_device(&platform_profile_class, NULL, &next,
-+					    _store_and_notify);
++		err = profile_for_each_handler(&next, _store_and_notify);
 +
 +		if (err)
 +			return err;
@@ -1449,7 +1446,7 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +		}
 +	}
 +
-+	guard(mutex)(&profile_lock);
++	guard(mutex)(&profile_registration_lock);
 +
 +	/* create class interface for individual handler */
 +	minor = ida_alloc(&platform_profile_ida, GFP_KERNEL);
@@ -1470,6 +1467,8 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +		put_device(ppdev);
 +		goto cleanup_ida;
 +	}
++	scoped_guard(mutex, &profile_lock)
++		list_add_tail(&to_pprof_handler(ppdev)->node, &profile_handlers);
 +
 +	platform_profile_legacy_notify();
 +
@@ -1480,6 +1479,9 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	return ppdev;
 +
 +cleanup_cur:
++	scoped_guard(mutex, &profile_lock)
++		list_del(&to_pprof_handler(ppdev)->node);
++
 +	device_unregister(ppdev);
 +
 +cleanup_ida:
@@ -1502,7 +1504,10 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +
 +	pprof = to_pprof_handler(dev);
 +
-+	guard(mutex)(&profile_lock);
++	guard(mutex)(&profile_registration_lock);
++
++	scoped_guard(mutex, &profile_lock)
++		list_del(&pprof->node);
 +
 +	ida_free(&platform_profile_ida, pprof->minor);
 +	device_unregister(&pprof->dev);
@@ -1560,7 +1565,10 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +	if (err)
 +		return err;
 +
-+	err = platform_profile_legacy_create_group();
++	if (!platform_profile_acpi_kobj())
++		return 0;
++
++	err = sysfs_create_group(platform_profile_acpi_kobj(), &platform_profile_group);
 +	if (err)
 +		class_unregister(&platform_profile_class);
 +
@@ -1569,14 +1577,15 @@ Signed-off-by: Xilin Wu <sophon@radxa.com>
 +
 +static void __exit platform_profile_exit(void)
 +{
-+	platform_profile_legacy_remove_group();
++	if (platform_profile_acpi_kobj())
++		sysfs_remove_group(platform_profile_acpi_kobj(), &platform_profile_group);
 +	class_unregister(&platform_profile_class);
 +}
 +module_init(platform_profile_init);
 +module_exit(platform_profile_exit);
 +
 +MODULE_AUTHOR("Mark Pearson <markpearson@lenovo.com>");
-+MODULE_DESCRIPTION("Platform profile sysfs interface");
++MODULE_DESCRIPTION("ACPI platform profile sysfs interface");
 +MODULE_LICENSE("GPL");
 --- a/drivers/platform/surface/Kconfig
 +++ b/drivers/platform/surface/Kconfig
